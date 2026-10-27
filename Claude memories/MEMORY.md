@@ -54,7 +54,6 @@
 - [Bindreq peer-to-peer](project_bindreq_peer_to_peer.md) — FGTW = phonebook only; bind request goes device to device (BUILT 2026-10-26)
 - [Fleet over the mesh](project_fleet_over_mesh.md) — 2026-10-26 BUILT: chain/bind request/fan-out device to device (fleet_req/resp, bind_req, fanout_resp), chain held on device, seed = mirror asked last; next: attest degrades to the held chain; field test pending
 - [Beams](project_beams.md) — H.264 beams BUILT (desktop + phone); g2t stream planned
-- [Wave fishtank on cellular](project_wave_fishtank_cellular.md) — 2026-10-02 L rule; BUILT
 - [opsin byte order + async loads](project_opsin_android_byte_order_async_loads.md) — 2026-10-05: pixels pack thru fluor::theme::fmt; loads off-thread
 - [Chain = text + pointers](project_chain_text_and_pointers.md) — DOCTRINE: attachments = wrapped VSF blobs keyed by header hb;…
 - [HDR stack](project_hdr_stack.md) — OWNED; Android 10-bit surface merged; peak metric open
@@ -74,6 +73,7 @@
 - [Member relay](project_member_relay.md) — 2026-10-25 grp_relay: members hand ORIGINAL signed group…
 - [Sibling group pages](project_sibling_group_pages.md) — 2026-10-25 FIXED: sibling molecule pages dropped at dispatch; sibling pongs rotated friend lanes
 - [Sticky catching up](project_sticky_catching_up.md) — 2026-10-27 Petunia: an era-0 copy held + replayed forever; FIXED (derived phase, joiners wait for cutover), v132
+- [Old-self import removal](project_old_self_import_removal.md) — DELETE every "OLD-SELF IMPORT" piece at v145 (Nick: version out in 12 versions)
 - [Group waves](project_group_waves.md) — 2026-10-26 waves+beams in molecules BUILT (mesh, beam fan, roll, recorded, reconnect, express, never-friended members); field test pending
 - [Beam settings + g2t](project_beam_settings.md) — 2026-10-26 BUILT: Beam page (per-device keys, follow-fleet toggle, 5 live controls, test patterns) + HLG10→g2t HDR beams; field test pending
 - [File drag-out](project_file_drag_out.md) — 2026-10-26 BUILT unverified: drag files out (mac promise / Win virtual file / X11 staged move) + mac Save panel; no share sheet
@@ -167,7 +167,7 @@
 - [project_lockout_enforcement.md](project_lockout_enforcement.md) — lockout + handle-confirmed UNLOCK, typed tombstone
 - [UI thread snapshot+CAS](ui-thread-snapshot-cas.md) — workers get snapshots, commits CAS, writers fire post-durability
 - [Lane rotation wedge heal](lane-rotation-wedge-heal.md) — exhausted pendings → rotate lane, re-serve at original stamps
-- Smaller: [connection-flow ladder](connection-flow-revision.md) · [window geometry](project_window_geometry_shipped.md)
+- Smaller: [connection-flow ladder](connection-flow-revision.md) · [window geometry](project_window_geometry_shipped.md) · [wave fishtank on cellular](project_wave_fishtank_cellular.md)
 - [project_fgtw_migration_state.md](project_fgtw_migration_state.md) — fgtw crate extraction thru M3; stays std until ferros…
 - [project_manifestus_custodes_split.md](project_manifestus_custodes_split.md) — manifestus = storage engine (was custodes)
 

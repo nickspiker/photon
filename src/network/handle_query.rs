@@ -894,6 +894,7 @@ impl HandleQuery {
                             let local = crate::storage::molecule::load_molecule_local(&gid, &storage).unwrap_or_default();
                             groups.push((gid, roster, local));
                         }
+                        // OLD-SELF IMPORT — delete at v145 (Nick 2026-10-27: "that import of old will be english only and version out in 12 versions, no reason to keep old non atoms around in the code"); grep the tag to find every piece.
                         // The old self conversation, when it holds a photon and is no atom yet: the UI founds it in place as one (found_self_atom).
                         {
                             let mut legacy = crate::types::Conversation::new([our_pid]);

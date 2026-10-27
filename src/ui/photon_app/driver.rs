@@ -4662,6 +4662,7 @@ impl PhotonApp {
                             for (fp, table, rows, detail) in &census {
                                 crate::logf!("STORAGE: census — {} table {} holds {} row(s) in RAM after load{}", fp, hex::encode(&table[..4]), rows, detail);
                             }
+                            // OLD-SELF IMPORT — delete at v145 (Nick 2026-10-27: "that import of old will be english only and version out in 12 versions, no reason to keep old non atoms around in the code"); grep the tag to find every piece.
                             // THE SELF ROW RETIRES (docs/conversations.md Phase 2; Nick 2026-10-26: "You should drop out of your own people list. As Jeff said 'I should be able to unfriend myself'"): the conversation with only us in it is an atom like any other (found_self_atom), so the contact that used to stand for it goes — from the list, the vault and the index; its rows stay in their table.
                             if let Some(us) = self.session.as_ref().map(|se| crate::crypto::clutch::identity_party_id(&se.identity_seed)) {
                                 if self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == us) {
@@ -4787,6 +4788,7 @@ impl PhotonApp {
                                 self.molecule_locals.push((gid, local));
                             }
                         }
+                        // OLD-SELF IMPORT — delete at v145 (Nick 2026-10-27: "that import of old will be english only and version out in 12 versions, no reason to keep old non atoms around in the code"); grep the tag to find every piece.
                         // The old self conversation, after the atoms: founded in place as one when it holds a photon and is none yet (found_self_atom).
                         self.adopt_old_self_conversation(&s);
                         for offer in crate::storage::molecule::load_all_offers(&s) {

@@ -1080,6 +1080,7 @@ impl PhotonApp {
         Some(gid)
     }
 
+    /// OLD-SELF IMPORT — delete at v145 (Nick 2026-10-27: "that import of old will be english only and version out in 12 versions, no reason to keep old non atoms around in the code"); grep the tag to find every piece.
     /// Boot: the old self conversation (`Conversation::new([us])`, its own table) becomes an atom in place when it holds a photon and is no atom yet; an empty one is never founded. Runs after the atoms load, so a device that converted earlier finds its atom already held.
     pub(super) fn adopt_old_self_conversation(&mut self, storage: &crate::storage::FlatStorage) {
         let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
@@ -1099,6 +1100,7 @@ impl PhotonApp {
         }
     }
 
+    /// OLD-SELF IMPORT — delete at v145 (Nick 2026-10-27: "that import of old will be english only and version out in 12 versions, no reason to keep old non atoms around in the code"); grep the tag to find every piece.
     /// THE CONVERSATION WITH ONLY US IN IT BECOMES AN ATOM (Nick 2026-10-27: "You still keep baking weird shit into self conversations that don't behave like the others"): the old self conversation — `Conversation::new([us])`, no roster, its own hidden-until-opened rule — is founded IN PLACE as an atom like any other, listed under Atoms, renamable, bindable, leavable.
     /// In place: a DERIVED genesis for founders [us] names exactly the id the old conversation already had, so its table and its rows stay where they are.
     /// The same atom on every device of ours with no race: the era-0 root and history key derive from our identity seed (which only our devices hold, one-way), the genesis certifies itself, and each device adds its own member grant and bundle the way any member device does.
@@ -1123,6 +1125,9 @@ impl PhotonApp {
         roster.merge_genesis(genesis);
         roster.merge_member(crate::types::molecule::join_record(us, hp, &name, avatar, us, &seed));
         roster.merge_bundle(crate::types::molecule::bundle_record(us, 0, &eph, &seed));
+        // Every atom has a name (Nick 2026-10-27): the old conversation never had one, so its import takes our preferred name as its title — or "Self" when none is set ("and if blank, just title it 'Self'") — a real title, renamed like any other.
+        let title = if name.is_empty() { "Self".to_string() } else { name.clone() };
+        roster.merge_title(crate::types::molecule::title_record(us, &title, &seed));
         let root = blake3::derive_key("photon 2026-10-27 self atom era 0 root", &identity_seed);
         let history_key = blake3::derive_key("photon 2026-10-27 self atom era 0 history key", &identity_seed);
         let mut chains = crate::types::FriendshipChains::from_molecule_root(gid, &roster.standing(), root, history_key, 0, crate::crypto::clutch::era_lineage(&root));

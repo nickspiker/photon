@@ -8,7 +8,7 @@ One sentence per line, however long; plain language for the person who installs 
 ## Upcoming
 - **Pick people while you create.** Tap New atom and the list becomes a picker: you are at the top, already checked, and a tap checks any friend. Your picture turns into a Create atom button, or Create molecule once you have picked someone, and everyone you picked is invited the moment it is created.
 - **Atom names are kept exactly as typed.** A name can be anything, even a space or a line break, and an empty box no longer creates a nameless atom.
-- **Your conversation with yourself is an atom like any other.** If you have sent yourself photons, that conversation now shows under Atoms every time, named after you like any untitled atom, and you can rename it, add people to it or leave it the same way; every photon in it stays. Typing your own handle in the add box now just says "That's you".
+- **Your conversation with yourself is an atom like any other.** If you have sent yourself photons, that conversation now shows under Atoms every time, titled with your preferred name (or "Self" if you have not set one), and you can rename it, add people to it or leave it the same way; every photon in it stays. Typing your own handle in the add box now just says "That's you".
 
 ## v132
 - **Adding a device no longer needs fgtw.org.** A new device on the same network hands its request straight to your other device, and that device hands back the fleet's device list and the key; fgtw.org is told afterwards when it can be reached. Friends learn about your new device from your devices rather than from fgtw.org too.

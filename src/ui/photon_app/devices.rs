@@ -1733,6 +1733,7 @@ impl PhotonApp {
                 .as_ref()
                 .map(|s| (s.handle_proof, s.identity_seed))
             {
+                // OLD-SELF IMPORT — delete at v145 (Nick 2026-10-27: "that import of old will be english only and version out in 12 versions, no reason to keep old non atoms around in the code"); grep the tag to find every piece.
                 // Our own identity is never a contact: under a foreign key it is self-stub debris, under our own the retired self row (the conversation with only us in it is an atom now — an older device still pushes it).
                 if e.handle_proof == our_proof {
                     if e.handle_hash != crate::crypto::clutch::identity_party_id(&our_seed) {

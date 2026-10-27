@@ -225,6 +225,7 @@ impl PhotonApp {
                 let mut added = 0usize;
                 let mut merged_ids: Vec<(ContactId, [u8; 32])> = Vec::new();
                 for incoming in &data.contacts {
+                    // OLD-SELF IMPORT — delete at v145 (Nick 2026-10-27: "that import of old will be english only and version out in 12 versions, no reason to keep old non atoms around in the code"); grep the tag to find every piece.
                     // The retired self row never comes back from the cloud: the conversation with only us in it is an atom.
                     if !incoming.is_sibling && self.session.as_ref().is_some_and(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed) == incoming.handle_hash) {
                         continue;
@@ -292,6 +293,7 @@ impl PhotonApp {
                         self.molecule_rosters.push((gid, roster));
                     }
                 }
+                // OLD-SELF IMPORT — delete at v145 (Nick 2026-10-27: "that import of old will be english only and version out in 12 versions, no reason to keep old non atoms around in the code"); grep the tag to find every piece.
                 // The old self conversation the worker handed over (it holds a photon and is no atom yet): founded in place as one, after the atoms (found_self_atom).
                 if let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
                     let nid = crate::types::Conversation::new([us]).id();

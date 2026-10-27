@@ -986,6 +986,7 @@ mod tests {
     }
 
     #[test]
+    // OLD-SELF IMPORT — delete at v145 (Nick 2026-10-27: "that import of old will be english only and version out in 12 versions, no reason to keep old non atoms around in the code"); grep the tag to find every piece.
     fn the_conversation_with_only_us_in_it_is_its_own_derived_atom() {
         // found_self_atom founds the old self conversation IN PLACE: a derived genesis for [us] must name exactly the id (and so the table) that conversation already had.
         let us = [0x5A; 32];
