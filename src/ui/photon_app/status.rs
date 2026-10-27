@@ -464,6 +464,8 @@ impl PhotonApp {
         // Wi-Fi Direct credential provisioning, collected on came-online edges (after releasing the checker borrow): the elected-GO side mints/re-offers the pair's group credential once per session (docs/offgrid.md).
         // Wi-Fi Direct beacon answer-back target, collected on the p2p learn edge (the reply teaches the peer OUR group address).
         let mut wfd_beacon_reply: Option<std::net::SocketAddr> = None;
+        // A JOINER's beacon (our handle, a device our fold does not hold): answered with a unicast beacon from the main socket — it tells the joiner where we are even where the access point passes no multicast between wireless clients, and it opens a host firewall's return path for the request the joiner will send (2026-10-26).
+        let mut joiner_beacon_reply: Vec<std::net::SocketAddr> = Vec::new();
         let mut consent_roster_push = false;
         // Complete-without-chains probe (field 2026-08-26, Emma's post-wipe Frankenstein): tokens whose inbound frames found NO friendship chains — checked post-drain against the contact's claimed ceremony state.
         let mut rekey_probe: Vec<[u8; 32]> = Vec::new();
@@ -3063,6 +3065,9 @@ impl PhotonApp {
                                 Some(e) => e.1 = from,
                                 None => self.lan_heard_addr.push((dk, from)),
                             }
+                            if !self.contacts.iter().any(|c| c.is_sibling && c.device_key() == Some(dk)) && !self.lan_heard.iter().any(|(k, _)| *k == dk) {
+                                joiner_beacon_reply.push(std::net::SocketAddr::from((local_ip, port)));
+                            }
                             match self.lan_heard.iter_mut().find(|(k, _)| *k == dk) {
                                 Some(e) => e.1 = now,
                                 None => {
@@ -5657,6 +5662,13 @@ impl PhotonApp {
             self.status_checker.as_ref(),
         ) {
             checker.send_lan_unicast(session.handle_proof, hq.port(), target);
+        }
+        // A joiner's beacon answered (see joiner_beacon_reply).
+        if let (Some(session), Some(hq), Some(checker)) = (self.session.as_ref(), self.handle_query.as_ref(), self.status_checker.as_ref()) {
+            for target in joiner_beacon_reply {
+                crate::logf!("LAN: a device of ours we have not bound beacons from {} — answering it directly", target);
+                checker.send_lan_unicast(session.handle_proof, hq.port(), target);
+            }
         }
 
         if seal_reseed_requested {

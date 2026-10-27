@@ -5090,12 +5090,10 @@ async fn run_checker(
             let packet =
                 udp::build_lan_discovery(request.our_handle_proof, request.our_port, our_device_pk);
 
-            // Unicast form (Wi-Fi Direct group-up exchange): one targeted frame, no multicast/broadcast legs.
+            // Unicast form (Wi-Fi Direct group-up, and the answer to a joiner's beacon): one targeted frame, no multicast/broadcast legs — from the MAIN socket, so a host firewall that admits only answers (this dev box's, 2026-10-26) opens the return path for the peer's frames to our 4383.
             if let Some(target) = request.unicast {
-                if let Ok(sock) = UdpSocket::bind("0.0.0.0:0") {
-                    let _ = udp::send_sync(&sock, &packet, target);
-                    crate::logf!("LAN: unicast pt_disc {} bytes to {}", packet.len(), target);
-                }
+                udp::send(&socket, &packet, target).await;
+                crate::logf!("LAN: unicast pt_disc {} bytes to {}", packet.len(), target);
                 continue;
             }
 
