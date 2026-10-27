@@ -22,6 +22,7 @@
 - [feedback_spelling.md](feedback_spelling.md) — thru/thruout/altho; colour British; rest US
 - [Smoothness for humans](feedback_smoothness_for_humans.md) — C¹+ GUI math; humans feel discontinuities
 - [Photons are messages](feedback_photons_are_messages.md) — official 2026-10-06: a message is a photon (docs/lexicon.md); no rename sweep unasked
+- [Atoms, not notes](feedback_atoms_not_notes.md) — never call atoms "notes"; the self-only conversation is one atom among any number
 - [Wave, never call](project_wave_beam_transition.md) — HARD: wave = audio (sound wave), beam = video (beam of light); the word "call" only in the docs/waves.md + lexicon passage that retires it
 - [feedback_stops_not_db.md](feedback_stops_not_db.md) — STOPS not dB: 1 stop = ×2 amplitude
 - [feedback_self_is_a_contact.md](feedback_self_is_a_contact.md) — HARD: self and bob are both people
