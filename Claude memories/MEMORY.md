@@ -48,9 +48,7 @@
 
 ## Active / open
 - [Android dark in background](project_android_headless_dark.md) — Activity destroy freed the app; fix built, verify pending
-- [Address ports](project_address_ports.md) — 2026-10-15 LAN candidates used the NAT port; FIXED
 - [Backfill dings](project_backfill_dings.md) — 2026-10-21 re-serve rang per old photon
-- [Hotplug abort](project_hotplug_abort.md) — 0-px avatar SIGABRT; fixed
 - [Redox dropped](project_redox_dropped.md) — 2026-10-15 target removed everywhere; ferros is the next…
 - [Bindreq peer-to-peer](project_bindreq_peer_to_peer.md) — FGTW = phonebook only; bind request goes device to device (BUILT 2026-10-26)
 - [Fleet over the mesh](project_fleet_over_mesh.md) — 2026-10-26 BUILT: chain/bind request/fan-out device to device (fleet_req/resp, bind_req, fanout_resp), chain held on device, seed = mirror asked last; next: attest degrades to the held chain; field test pending
@@ -63,7 +61,6 @@
 - [Phonebook strict anchor](project_phonebook_strict_anchor.md) — 2026-10-21 FIXED: records failed verification a month (strict…
 - [Removal safety](project_device_removal_safety.md) — 2026-10-17 phases 2-3 BUILT: at-risk lines,…
 - [Fleet holds everything](project_fleet_holds_everything.md) — DOCTRINE 2026-10-07: every device copies…
-- [Pigeon fetch reach](project_pigeon_fetch_reach.md) — fetch asked one friend device (fixed)
 - [Scroll as a memmove](project_scroll_memmove.md) — 2026-10-06 BUILT (conversation + contacts): band-only paint…
 - [Ideas page](project_ideas_gripes.md) — BUILT: anonymous gripes
 - [Braid salt codec](project_braid_salt_codec.md) — 2026-10-01 CONVICTED: "chain fork" = chains-blob codec stored…
@@ -75,22 +72,19 @@
 - [Hit wipe inside damage](project_hit_wipe_damage.md) — 2026-10-24: per-frame HIT_NONE wipes stay inside…
 - [Member relay](project_member_relay.md) — 2026-10-25 grp_relay: members hand ORIGINAL signed group…
 - [Sibling group pages](project_sibling_group_pages.md) — 2026-10-25 FIXED: sibling molecule pages dropped at dispatch; sibling pongs rotated friend lanes
-- [Sticky catching up](project_sticky_catching_up.md) — 2026-10-27 Petunia: CatchingUp set by any unreadable frame, cleared only by cutover; Brittany sends on an era nobody holds (Emma = 9ce64cc2)
+- [Sticky catching up](project_sticky_catching_up.md) — 2026-10-27 Petunia: an era-0 copy held + replayed forever; FIXED (derived phase, joiners wait for cutover), v132
 - [Group waves](project_group_waves.md) — 2026-10-26 waves+beams in molecules BUILT (mesh, beam fan, roll, recorded, reconnect, express, never-friended members); field test pending
 - [Beam settings + g2t](project_beam_settings.md) — 2026-10-26 BUILT: Beam page (per-device keys, follow-fleet toggle, 5 live controls, test patterns) + HLG10→g2t HDR beams; field test pending
 - [File drag-out](project_file_drag_out.md) — 2026-10-26 BUILT unverified: drag files out (mac promise / Win virtual file / X11 staged move) + mac Save panel; no share sheet
-- [One conversation model](project_conversation_convergence.md) — docs/conversations.md; step E stage 5 BUILT 2026-10-26, NOT deployed (Nick rolls); F next
+- [One conversation model](project_conversation_convergence.md) — docs/conversations.md; step E stage 5 SHIPPED v132 (2026-10-27); F next
 - [project-molecules-build.md](project-molecules-build.md) — MOLECULES phase 1 BUILT 2026-09-15; join-by-replay SCOPED…
 - [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — 2026-09-18 sibling churn CONVICTED + fixed; ghost 1be949c1…
-- [project_fluor_busy_loop.md](project_fluor_busy_loop.md) — 2026-10-21 FIXED: fluor sticky WaitUntil
 - [project_era_ratchet.md](project_era_ratchet.md) — ERA RATCHET stages 1-4 SHIPPED; NEXT stage 5 consent, 6 soak
-- [project_macos_resize_cursor.md](project_macos_resize_cursor.md) — macOS resize arrows intermittent; FIXED in fluor
 - [project_multimonitor_status.md](project_multimonitor_status.md) — phase D + Windows not built; macOS drag VANISHES
 - [project_notifications_pinned.md](project_notifications_pinned.md) — fleet-wide notification design PINNED (unnotified flag +…
 - [project_windows_dark_theme_bug.md](project_windows_dark_theme_bug.md) — PINNED: install corrupted dark-theme search text
 - [project_doorbell.md](project_doorbell.md) — v1 BUILT; OPEN: sibling bell overwrite
 - [project_offgrid_wfd.md](project_offgrid_wfd.md) — Wi-Fi Direct off-grid v1 BUILT; field test PENDING
-- [History early-stop blindness](project_history_early_stop_blindness.md) — early-stop hid divergences; fixed
 - [AAudio ignores clockid](project_aaudio_clockid_ignored.md) — Pixel HALs stamp MONOTONIC even if asked BOOTTIME; map it
 - [Media fallback rocker](project_media_fallback_rocker.md) — media at 7% while rocker bound VOICE_CALL
 - [Aligner windup](project_aligner_windup.md) — 2026-09-27 CONVICTED: TX slip integrator wound up while…
@@ -178,6 +172,8 @@
 - [project_manifestus_custodes_split.md](project_manifestus_custodes_split.md) — manifestus = storage engine (was custodes)
 
 ## Closed incidents (conviction hooks)
+- Fixed (hooks): [address ports](project_address_ports.md) · [hotplug abort](project_hotplug_abort.md) · [pigeon fetch reach](project_pigeon_fetch_reach.md) · [early-stop blindness](project_history_early_stop_blindness.md)
+- Fixed (hooks): [fluor busy loop](project_fluor_busy_loop.md) · [macOS resize cursor](project_macos_resize_cursor.md)
 - Perf: [ANR-at-launch](project_android_hang_nag.md) · [idle-CPU](project_idle_tick_cost.md) · [render lag](project_render_storm_lag.md)
 - Vault: [seal failures](project_vault_seal_failures.md) · [plow refusal](project_manifestus_plow_reloc_refusal.md) · [tombstone](project_manifestus_tombstone_bug.md)
 - CLUTCH/braid: [desync class](project_chain_advance_desync.md) · [offer deadlock](project_clutch_offer_deadlock.md) · [UI-thread hitch](project_clutch_ui_thread_hitch.md)
