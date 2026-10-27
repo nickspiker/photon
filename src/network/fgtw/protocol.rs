@@ -2384,6 +2384,85 @@ pub fn parse_depart_req_vsf(vsf_bytes: &[u8]) -> Result<(i64, Vec<u8>, [u8; 32],
     Ok((body.t, body.cs, sender_pubkey, intent, body.words_commit))
 }
 
+// ── The membership chain over the peer mesh (docs/peers-are-fgtw.md; Nick 2026-10-26). Until these two frames, a fleet's membership chain lived only on the seed: a friend learning of our new device had to fetch it from fgtw.org, and a joiner could only be bound through it. `fleet_req` asks a device for the chain of one handle; `fleet_resp` carries it — as the answer, or UNASKED as a push (a sponsor handing the extended chain to its siblings and to the device it just bound). The chain is self-verifying (every op member-signed, consent eggs inside), so the carrier earns no trust: the receiver folds, checks the slot and the genesis pin, and adopts only a newer tip. Both are device-signed envelopes like every sibling frame. ──
+
+/// Build a `fleet_req` — "send me the membership chain of handle `hp`". Signed by the asking device; the answerer gates on knowing that device (a friend's or a sibling's), the chain being public but a 10–50 KB answer being amplification bait.
+pub fn build_fleet_req_vsf(handle_proof: &[u8; 32], device_pubkey: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+    let mut section = VsfSection::new("fleet_req");
+    section.add_field("hp", VsfType::hP(handle_proof.to_vec()));
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build fleet_req VSF: {}", e))?;
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
+}
+
+/// Parse + verify a `fleet_req`. Returns (handle proof asked for, sender device pubkey).
+pub fn parse_fleet_req_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("fleet_req verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "fleet_req" {
+        return Err(format!("Expected 'fleet_req' section, got '{}'", section_name));
+    }
+    let hp = field_handle_proof(&section.fields, "hp").ok_or("fleet_req missing hp")?;
+    Ok((hp, sender_pubkey))
+}
+
+/// Build a `fleet_resp` — the membership chain of handle `hp`, as `MembershipBlob::to_vsf_bytes` produced it (a complete VSF document inside this one's `ch` field). The answer to a `fleet_req`, and the push a sponsor sends after extending the chain.
+pub fn build_fleet_resp_vsf(handle_proof: &[u8; 32], chain: &[u8], device_pubkey: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+    let mut section = VsfSection::new("fleet_resp");
+    section.add_field("hp", VsfType::hP(handle_proof.to_vec()));
+    section.add_field("ch", VsfType::ge(chain.to_vec()));
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build fleet_resp VSF: {}", e))?;
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
+}
+
+/// Parse + verify a `fleet_resp`. Returns (handle proof, the chain's bytes, sender device pubkey). The chain itself is NOT verified here — `fleet::adopt_chain_bytes` parses and folds it.
+pub fn parse_fleet_resp_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], Vec<u8>, [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("fleet_resp verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "fleet_resp" {
+        return Err(format!("Expected 'fleet_resp' section, got '{}'", section_name));
+    }
+    let hp = field_handle_proof(&section.fields, "hp").ok_or("fleet_resp missing hp")?;
+    let chain = match section.get_field("ch").and_then(|f| f.values.first()) {
+        Some(VsfType::ge(b)) => b.clone(),
+        _ => return Err("fleet_resp missing ch".into()),
+    };
+    Ok((hp, chain, sender_pubkey))
+}
+
+/// A 32-byte handle proof field (`hP`, the fgtw sections' type for it; `hp`/`hb` accepted too).
+fn field_handle_proof(fields: &[vsf::file_format::VsfField], name: &str) -> Option<[u8; 32]> {
+    fields
+        .iter()
+        .find(|f| f.name == name)
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::hP(b) | VsfType::hp(b) | VsfType::hb(b) if b.len() == 32 => {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(b);
+                Some(arr)
+            }
+            _ => None,
+        })
+}
+
 /// Build a `chain_pull_miss` — the negative answer to a `chain_pull`: this sibling holds NO chains for the token. The requester re-keys only when EVERY live sibling has answered miss; a sibling that has the chains never sends this (it re-pushes instead).
 pub fn build_chain_pull_miss_vsf(
     conversation_token: &[u8; 32],
@@ -4434,6 +4513,21 @@ mod pong_seal_tests {
     }
 
     /// The fold-freshness tip: e6 signed round-trip (a negative osc survives — eagle times are signed, and the ek trap taught us width-typed reads die), and absence reads None (legacy sender = no verdict, never a zero sentinel).
+    #[test]
+    fn fleet_req_and_resp_round_trip() {
+        let kp = fgtw::keys::Keypair::from_seed(&[0x33u8; 32]);
+        let hp = [0x44u8; 32];
+        let req = build_fleet_req_vsf(&hp, &kp.public.to_bytes(), kp.secret.as_bytes()).unwrap();
+        assert_eq!(parse_fleet_req_vsf(&req).unwrap(), (hp, kp.public.to_bytes()));
+        // The chain rides as opaque bytes — a complete VSF document of its own; here any bytes, the parser does not look inside.
+        let chain = vec![0xABu8; 20_000];
+        let resp = build_fleet_resp_vsf(&hp, &chain, &kp.public.to_bytes(), kp.secret.as_bytes()).unwrap();
+        let (h, ch, pk) = parse_fleet_resp_vsf(&resp).unwrap();
+        assert_eq!((h, ch.len(), pk), (hp, 20_000, kp.public.to_bytes()));
+        assert_eq!(ch, chain);
+        assert!(parse_fleet_resp_vsf(&req).is_err(), "a req is not a resp");
+    }
+
     #[test]
     fn ftip_round_trips_and_absent_reads_none() {
         let key = [0x51u8; 32];

@@ -2045,6 +2045,10 @@ pub struct PhotonApp {
     add_candidate_hit_base: HitId,
     /// Devices heard broadcasting LAN discovery under OUR OWN handle recently: (device pubkey, last heard). Feeds AddCandidate::heard_lan; entries older than LAN_HEARD_FRESH are pruned at read.
     lan_heard: Vec<([u8; 32], std::time::Instant)>,
+    /// Where each own-handle LAN beacon came from: (device pubkey, its socket address) — the address a sponsor hands the extended chain and the fan-out to right after binding that device (it is not a contact yet, so no endpoint table holds it).
+    lan_heard_addr: Vec<([u8; 32], std::net::SocketAddr)>,
+    /// Contacts whose membership chain we asked their own devices for (`fleet_req`) and have not heard back on: a second refresh for one of these goes to the seed as well — "fgtw.org only when nobody on the list answers" (Nick 2026-10-26). Cleared by the chain's arrival.
+    fleet_asked: Vec<[u8; 32]>,
     /// AddDevice flow: the tap-to-bind (BLE/list select) path is in flight, so the Bound result shows the "did it turn green?" confirm instead of auto-rotating (that auto path is words-match only, where the typed key IS the confirmation). Reset when the flow ends.
     add_device_bind_ble: bool,
     /// Diagnostics "Submit" flow: result of the off-thread log upload to FGTW (blocking HTTP over up to 16 MiB). `Ok(())` → "Log sent" toast; `Err` → the reason. Drained in tick.
@@ -2086,6 +2090,11 @@ pub struct PhotonApp {
     launch_add_mode: bool,
     /// Join flow: the handle once entered; `None` while still awaiting it.
     add_join_handle: Option<String>,
+    /// The fleet this device is JOINING (its handle proof), set once the join thread has derived it — the handle a `fleet_resp` for may be adopted under before any session exists.
+    add_join_hp: Option<[u8; 32]>,
+    /// A membership chain handed to the JOINING device over the mesh (a sponsor's push after binding it), waiting for the join thread to check it against the identity it derived: shared slot + poke, since the thread owns the roots and the UI thread receives the frame.
+    add_join_chain: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+    add_join_poke: Option<std::sync::mpsc::Sender<()>>,
     /// Roots from the pre-attest probe, stashed so the permanence-confirm press claims WITHOUT re-deriving the ~1s proof. Set on a `Fresh` probe outcome; cleared on any handle edit (via clear_launch_error) or when the claim fires.
     probed_session: Option<tohu::SessionIdentity>,
     /// Canonical spelling of the handle `probed_session` was derived from — the confirm press fires the stashed roots ONLY when the box still canonicalizes to this, so stale roots can never attest a different identity than the one on screen.
@@ -3117,6 +3126,8 @@ impl PhotonApp {
             add_confirm_hit_id: HIT_NONE,
             add_candidate_hit_base: HIT_NONE,
             lan_heard: Vec::new(),
+            lan_heard_addr: Vec::new(),
+            fleet_asked: Vec::new(),
             add_device_bind_ble: false,
             log_submit_rx: None,
             log_submit_tx: None,
@@ -3132,6 +3143,9 @@ impl PhotonApp {
             successor_inflight: crate::linear_map::SortedSet::new(),
             launch_add_mode: false,
             add_join_handle: None,
+            add_join_hp: None,
+            add_join_chain: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            add_join_poke: None,
             probed_session: None,
             probed_handle: None,
             add_join_status: String::new(),

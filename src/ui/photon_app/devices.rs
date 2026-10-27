@@ -810,17 +810,32 @@ impl PhotonApp {
     }
 
     /// Off-thread: fold each given contact's public membership chain (`fleet::current_members_with_ts` by handle_proof, blocking HTTP) and post back the current device set plus the chain-tip eagle time for tick to adopt into `fleet_members` (monotonically — see the drain). Idempotent and best-effort: a fetch failure sends nothing, so the drain never runs and the last-known folded set + arm flag stay untouched (never trust-nobody on a network blip). Results land via `contact_members_rx`. Started on contact load/merge (wake-up catch-up) and on a `fleet` bump for a contact's identity (live).
+    /// PEERS FIRST, SEED LAST (docs/peers-are-fgtw.md §Phase A; Nick 2026-10-26): a contact whose devices we hold an address for is asked for its chain over the mesh (`fleet_req`, answered by any of its devices with a `fleet_resp` that lands in the same drain); the seed is asked only for a contact with no reachable device, or for one whose earlier ask is still unanswered when a refresh fires again (the standing-ask edge — no wall clock). Our own handle always takes the seed path: `fleet::fetch` serves the held copy when the seed is down, and siblings push extensions to us unasked.
     pub(super) fn spawn_contact_fleet_refresh(&mut self, handle_proofs: Vec<[u8; 32]>) {
         if handle_proofs.is_empty() {
             return;
         }
-        if self.contact_members_tx.is_none() {
-            let (tx, rx) =
-                std::sync::mpsc::channel::<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool)>();
-            self.contact_members_rx = Some(rx);
-            self.contact_members_tx = Some(tx);
+        let our_hp = self.our_handle_proof();
+        let mut seed: Vec<[u8; 32]> = Vec::new();
+        for hp in handle_proofs {
+            if Some(hp) == our_hp {
+                seed.push(hp);
+                continue;
+            }
+            let standing = self.fleet_asked.contains(&hp);
+            let asked = self.ask_peers_for_chain(hp);
+            if asked && !standing {
+                self.fleet_asked.push(hp);
+            }
+            if !asked || standing {
+                seed.push(hp);
+            }
         }
-        let tx = self.contact_members_tx.as_ref().unwrap().clone();
+        if seed.is_empty() {
+            return;
+        }
+        let handle_proofs = seed;
+        let tx = self.contact_members_sender();
         let wake = self.event_proxy.clone();
         std::thread::spawn(move || {
             for hp in handle_proofs {
@@ -847,6 +862,144 @@ impl PhotonApp {
                 let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
             }
         });
+    }
+
+    /// The channel the fold drain reads (protocol.rs member_updates), created on first use — shared by the seed-fetch thread and the peer-chain adoption.
+    pub(super) fn contact_members_sender(&mut self) -> std::sync::mpsc::Sender<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool)> {
+        if self.contact_members_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel::<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool)>();
+            self.contact_members_rx = Some(rx);
+            self.contact_members_tx = Some(tx);
+        }
+        self.contact_members_tx.as_ref().unwrap().clone()
+    }
+
+    /// One signed frame to a device at an address, direct (no relay: the mesh path is the point here).
+    fn send_frame_direct(&self, frame: Vec<u8>, device: [u8; 32], addr: std::net::SocketAddr, alt: Option<std::net::SocketAddr>) {
+        let Some(checker) = self.status_checker.as_ref() else { return };
+        let _ = checker.history_dispatch().send(crate::network::status::HistorySendRequest {
+            peer_addr: addr,
+            alt_addr: alt,
+            recipient_pubkey: device,
+            relay_to: Vec::new(),
+            vsf_bytes: frame,
+            tag: None,
+        });
+    }
+
+    /// Ask the contact holding `hp` for its membership chain: a `fleet_req` to every device of theirs we hold an address for. Returns whether any ask went out.
+    fn ask_peers_for_chain(&self, hp: [u8; 32]) -> bool {
+        let Some(kp) = self.device_keypair.as_ref() else { return false };
+        let Some(c) = self.contacts.iter().find(|c| c.handle_proof == hp && !c.is_sibling) else { return false };
+        let Ok(frame) = crate::network::fgtw::protocol::build_fleet_req_vsf(&hp, &kp.public.to_bytes(), kp.secret.as_bytes()) else { return false };
+        let mut sent = 0usize;
+        for ep in c.device_endpoints.iter().filter(|e| !c.refused_devices.contains(&e.pubkey)) {
+            let (addr, alt) = match (ep.lan, ep.public) {
+                (Some(l), p) => (l, p),
+                (None, Some(p)) => (p, None),
+                (None, None) => continue,
+            };
+            self.send_frame_direct(frame.clone(), ep.pubkey, addr, alt);
+            sent += 1;
+        }
+        if sent == 0 {
+            if let (Some(dev), Some((addr, alt))) = (c.device_key(), c.race_addrs()) {
+                self.send_frame_direct(frame, dev, addr, alt);
+                sent = 1;
+            }
+        }
+        if sent > 0 {
+            crate::logf!("FLEET: asked {} device(s) of {} for its chain over the mesh", sent, c.display_name());
+        }
+        sent > 0
+    }
+
+    /// Answer a `fleet_req`: the chain we hold for `hp`, if any, to the asker where it asked from.
+    pub(super) fn answer_fleet_ask(&self, hp: [u8; 32], asker: [u8; 32], addr: std::net::SocketAddr) {
+        let Some(kp) = self.device_keypair.as_ref() else { return };
+        let Some(chain) = crate::network::fgtw::fleet::held_chain(&hp) else {
+            crate::logf!("FLEET: {} asked for {}'s chain — we hold none", crate::fp(&asker), crate::fp(&hp));
+            return;
+        };
+        let Ok(bytes) = chain.to_vsf_bytes() else { return };
+        match crate::network::fgtw::protocol::build_fleet_resp_vsf(&hp, &bytes, &kp.public.to_bytes(), kp.secret.as_bytes()) {
+            Ok(frame) => {
+                crate::logf!("FLEET: serving {}'s chain ({} op(s), {} B) to {} at {}", crate::fp(&hp), chain.ops.len(), bytes.len(), crate::fp(&asker), addr);
+                self.send_frame_direct(frame, asker, addr, None);
+            }
+            Err(e) => crate::logf!("FLEET: fleet_resp build failed: {}", e),
+        }
+    }
+
+    /// A chain a peer handed us (`fleet_resp`): fold it, hold it, and feed the fold drain exactly as a seed fetch would — the drain's genesis pin and monotonic tip decide adoption. For the fleet this device is JOINING (no session yet) the bytes go to the join thread instead, which checks them against its own identity. Returns whether anything changed.
+    pub(super) fn adopt_peer_chain(&mut self, hp: [u8; 32], chain: &[u8], sender: [u8; 32]) -> bool {
+        if self.session.is_none() && self.add_join_hp == Some(hp) {
+            return self.offer_join_chain(chain);
+        }
+        match crate::network::fgtw::fleet::adopt_chain_bytes(&hp, chain) {
+            Ok((blob, members, tip, genesis)) => {
+                self.fleet_asked.retain(|h| *h != hp);
+                let ours = self.our_handle_proof() == Some(hp);
+                crate::logf!("FLEET: {} chain from {} over the mesh — {} op(s), {} member(s), tip {}", if ours { "OUR" } else { "a contact's" }, crate::fp(&sender), blob.ops.len(), members.len(), tip);
+                if ours {
+                    self.fleet_chain_store();
+                }
+                let _ = self.contact_members_sender().send((hp, members, tip, genesis, true));
+                true
+            }
+            Err(e) => {
+                crate::logf!("SECURITY: a chain for {} from {} was refused — {}", crate::fp(&hp), crate::fp(&sender), e);
+                false
+            }
+        }
+    }
+
+    /// A chain pushed to THIS device while it is joining: park the bytes for the join thread (which holds the identity roots and verifies genesis + membership) and poke it.
+    pub(super) fn offer_join_chain(&mut self, chain: &[u8]) -> bool {
+        if let Ok(mut slot) = self.add_join_chain.lock() {
+            *slot = Some(chain.to_vec());
+        }
+        if let Some(poke) = self.add_join_poke.as_ref() {
+            let _ = poke.send(());
+        }
+        crate::logf!("JOIN: a chain for the fleet we are joining arrived over the mesh ({} B)", chain.len());
+        true
+    }
+
+    /// Hand OUR fleet's chain (as held) to every live sibling, and to the extra (device, address) targets — the device just bound, which is not a sibling contact yet.
+    pub(super) fn fleet_chain_push(&self, extra: &[([u8; 32], std::net::SocketAddr)]) {
+        let (Some(hp), Some(kp)) = (self.our_handle_proof(), self.device_keypair.as_ref()) else { return };
+        let Some(chain) = crate::network::fgtw::fleet::held_chain(&hp) else { return };
+        let Ok(bytes) = chain.to_vsf_bytes() else { return };
+        let Ok(frame) = crate::network::fgtw::protocol::build_fleet_resp_vsf(&hp, &bytes, &kp.public.to_bytes(), kp.secret.as_bytes()) else { return };
+        crate::logf!("FLEET: pushing our chain ({} op(s), {} B) to the siblings and {} other device(s)", chain.ops.len(), bytes.len(), extra.len());
+        self.dispatch_frame_to_siblings(frame.clone());
+        for (dev, addr) in extra {
+            self.send_frame_direct(frame.clone(), *dev, *addr, None);
+        }
+    }
+
+    /// Persist the chain we hold for OUR fleet to the vault (`fleet_chain`), so a device that cannot reach the seed still serves its fleet's chain after a relaunch.
+    pub(super) fn fleet_chain_store(&self) {
+        let (Some(storage), Some(session)) = (self.storage.as_ref(), self.session.as_ref()) else { return };
+        let Some(chain) = crate::network::fgtw::fleet::held_chain(&session.handle_proof) else { return };
+        let Ok(bytes) = chain.to_vsf_bytes() else { return };
+        let addr = crate::storage::vault_key("fleet_chain", &session.vault_seed);
+        if let Err(e) = storage.write_addr(&addr, &bytes) {
+            crate::logf!("FLEET: chain store failed: {}", e);
+        }
+    }
+
+    /// Load our fleet's chain from the vault into the held set (attest/resume), before the first refresh asks the seed — so the seed being down is not a dark fleet.
+    pub(super) fn fleet_chain_load(&self) {
+        let (Some(storage), Some(session)) = (self.storage.as_ref(), self.session.as_ref()) else { return };
+        let addr = crate::storage::vault_key("fleet_chain", &session.vault_seed);
+        if let Ok(Some(bytes)) = storage.read_addr(&addr) {
+            match crate::network::fgtw::fleet::adopt_chain_bytes(&session.handle_proof, &bytes) {
+                Ok((blob, members, _, _)) => crate::logf!("FLEET: our chain loaded from the vault — {} op(s), {} member(s)", blob.ops.len(), members.len()),
+                Err(e) => crate::logf!("FLEET: the vault's chain copy was refused — {}", e),
+            }
+        }
     }
 
     /// Off-thread: a contact's fold arrived with a genesis DIFFERENT from its pinned one — probe for a succession record that traces back to the pin (docs/identity-succession.md). Fetches the (public) successor slot and runs `verify_for_pin` against `pinned_genesis` HERE, off the UI thread — only a record whose continuity egg is signed by a PREDECESSOR-chain member over the exact transition verifies, so a handle-only impostor cannot forge a re-pin. Posts `(hp, Some(new_genesis))` on success (tick migrates the pin), `(hp, None)` otherwise (tick just clears the in-flight guard so a later refresh re-probes). Results land via `successor_rx`.
@@ -1591,8 +1744,9 @@ impl PhotonApp {
             self.add_device_tx.clone(),
         ) {
             std::thread::spawn(move || {
-                let _ = tx.send(match fleet::bind_device(&kp, &hp, &req) {
-                    Ok(()) => AddDeviceUpdate::Bound(req.device_pubkey),
+                // Seed-optional: the Add lands in the chain we hold and reaches the fleet over the mesh (the Bound arm pushes it); the seed is a mirror that may be down.
+                let _ = tx.send(match fleet::bind_device_held(&kp, &hp, &req) {
+                    Ok(_) => AddDeviceUpdate::Bound(req.device_pubkey),
                     Err(e) => AddDeviceUpdate::Failed(e),
                 });
             });

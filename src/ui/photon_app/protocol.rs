@@ -394,6 +394,10 @@ impl PhotonApp {
                 AddDeviceUpdate::Bound(pk) => {
                     self.add_device_checking = false;
                     self.add_device_bound = Some(pk);
+                    // The extended chain goes to the fleet NOW over the mesh — every sibling (so their folds take the newcomer in) and the newcomer itself at the address its LAN beacon came from (its green). The seed's copy, if it took, is the mirror.
+                    let newcomer: Vec<([u8; 32], std::net::SocketAddr)> = self.lan_heard_addr.iter().filter(|(k, _)| *k == pk).copied().collect();
+                    self.fleet_chain_push(&newcomer);
+                    self.fleet_chain_store();
                     let name = self
                         .session
                         .as_ref()
@@ -916,6 +920,8 @@ impl PhotonApp {
                 if Some(hp) == our_hp {
                     // The fold-freshness tripwire's SENDER half: publish our own chain-tip eagle time to the RX worker, which stamps it into every sealed pong tail (ftip). Every chain-changing path funnels thru this drain, so one line covers attest, device add/remove, roster merge, and the 45s refold. fetch_max inside — a stale R2 self-read can't regress the claim.
                     crate::network::status::set_own_fleet_tip(tip_ts);
+                    // The held copy of our chain is current: keep it in the vault for the next launch (docs/peers-are-fgtw.md).
+                    self.fleet_chain_store();
                     self.reconcile_fleet_siblings(&members);
                     // The chain moved: re-read what it says about schemes (a Declare, a Lock, a join) for the Fleet page.
                     self.spawn_scheme_refresh(&hp);

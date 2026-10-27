@@ -62,15 +62,94 @@ impl FleetSealer for PhotonSealer {
     }
 }
 
-// ── Oracle wrappers: identical signatures to the pre-migration free functions, transport/sealer injected. ──
+// ── The chains this device HOLDS (peers-first, seed-last — docs/peers-are-fgtw.md, Nick 2026-10-26: "not sure why we have to rely on this fgtw.org unless everyone on our list does not respond"). ──
+//
+// Every membership chain this process has seen that FOLDS — our own fleet's and every contact's — keyed by the handle proof its genesis claims. The seed (fgtw.org) was the only source of a chain until now; every `fetch` below still asks it, but a copy in hand answers when the seed does not, and a copy a PEER hands us (`fleet_resp`, protocol.rs) is adopted by the same rule a seed copy is. Our own chain is persisted to the vault by the app (devices.rs `fleet_chain_store`) and reloaded at attest, so a device that never reaches the seed still serves its fleet's chain to friends and joiners.
+// Two copies of one chain are ordered by `prefer`: an extension wins over its prefix; between forks (two members appended at once with no seed to serialise them) the longer valid chain wins, then the newer tip, then the lower head hash — deterministic, so every holder converges on the same head without a server. Nothing here trusts bytes: a caller adopts only what folds and claims the slot it asked for.
 
-/// Fetch the identity's stored fleet chain, or `None` if none exists yet. Parsed but not trusted until `fold()`.
-pub fn fetch(handle_proof: &[u8; 32]) -> Result<Option<MembershipBlob>, String> {
-    fgtw::client::fetch(&PhotonTransport, handle_proof)
+static HELD_CHAINS: std::sync::Mutex<Vec<([u8; 32], MembershipBlob)>> = std::sync::Mutex::new(Vec::new());
+
+/// Should `new` replace `old` as the held copy of one fleet's chain? Both must have folded already.
+fn prefer(new: &MembershipBlob, old: &MembershipBlob) -> bool {
+    if new.extends(old) {
+        return new.ops.len() > old.ops.len();
+    }
+    if old.extends(new) {
+        return false;
+    }
+    // A fork: longest valid chain, then the newest tip, then the lower head hash — the same verdict on every device.
+    let (nt, ot) = (new.ops.last().map(|o| o.eagle_time).unwrap_or(0), old.ops.last().map(|o| o.eagle_time).unwrap_or(0));
+    (new.ops.len(), nt, std::cmp::Reverse(new.head())) > (old.ops.len(), ot, std::cmp::Reverse(old.head()))
 }
 
-/// Publish a new (or extended) chain (`stale` reason → `"fleet: stale"` for the retry loop).
+/// The chain we hold for `handle_proof`, if any.
+pub fn held_chain(handle_proof: &[u8; 32]) -> Option<MembershipBlob> {
+    let held = HELD_CHAINS.lock().ok()?;
+    held.iter().find(|(hp, _)| hp == handle_proof).map(|(_, b)| b.clone())
+}
+
+/// Keep `blob` as the held copy of its fleet's chain if it is preferred over what we hold (or we hold nothing). Returns whether the held copy changed. The caller has folded it.
+pub fn hold_chain(blob: &MembershipBlob) -> bool {
+    let Some(hp) = blob.genesis_handle_proof() else { return false };
+    let Ok(mut held) = HELD_CHAINS.lock() else { return false };
+    match held.iter_mut().find(|(h, _)| *h == hp) {
+        Some((_, old)) => {
+            if prefer(blob, old) {
+                *old = blob.clone();
+                true
+            } else {
+                false
+            }
+        }
+        None => {
+            held.push((hp, blob.clone()));
+            true
+        }
+    }
+}
+
+/// A chain handed to us by a PEER (a `fleet_resp` frame, or our own vault copy at attest): parse, fold, require it to claim the slot `handle_proof`, hold it if preferred. Returns the fold facts the contact drain adopts — (members, tip eagle time, genesis hash) — or why it was refused. Who sent it does not matter: the chain is self-verifying (every op signed by a member, consent eggs inside), and the drain's genesis pin + monotonic tip decide what is adopted.
+pub fn adopt_chain_bytes(handle_proof: &[u8; 32], bytes: &[u8]) -> Result<(MembershipBlob, Vec<[u8; 32]>, i64, [u8; 32]), String> {
+    let blob = MembershipBlob::from_vsf_bytes(bytes)?;
+    if blob.genesis_handle_proof() != Some(*handle_proof) {
+        return Err("chain claims a different handle".into());
+    }
+    let (members, tip) = blob.fold_with_ts().map_err(|e| format!("chain does not fold: {e:?}"))?;
+    hold_chain(&blob);
+    let genesis = blob.genesis_hash().unwrap_or([0u8; 32]);
+    Ok((blob, members, tip, genesis))
+}
+
+// ── Oracle wrappers: identical signatures to the pre-migration free functions, transport/sealer injected. ──
+
+/// The identity's fleet chain: the seed's copy when it answers, else the copy we hold; `None` only when neither exists. A seed copy that folds is held; where the two differ, `prefer` picks (a local extension the seed never received outranks the seed's prefix). Parsed but not trusted until `fold()` — a caller that trusts the result folds it.
+pub fn fetch(handle_proof: &[u8; 32]) -> Result<Option<MembershipBlob>, String> {
+    let held = held_chain(handle_proof);
+    match fgtw::client::fetch(&PhotonTransport, handle_proof) {
+        Ok(Some(seed)) => {
+            if seed.fold().is_ok() {
+                hold_chain(&seed);
+            }
+            Ok(Some(match held {
+                Some(h) if h.fold().is_ok() && !prefer(&seed, &h) => h,
+                _ => seed,
+            }))
+        }
+        // The seed holds nothing: a verdict only when we hold nothing either — a seed that lost a record is not an identity's death while a device still carries the chain.
+        Ok(None) => Ok(held),
+        Err(e) => match held {
+            Some(h) => {
+                crate::logf!("FLEET: seed unreachable ({}) — serving the held chain for {}", e, crate::fp(handle_proof));
+                Ok(Some(h))
+            }
+            None => Err(e),
+        },
+    }
+}
+
+/// Publish a new (or extended) chain to the seed (`stale` reason → `"fleet: stale"` for the retry loop). The blob is held locally first, whatever the seed says: the chain is the fleet's, the seed mirrors it.
 pub fn publish(blob: &MembershipBlob) -> Result<(), String> {
+    hold_chain(blob);
     fgtw::client::publish(&PhotonTransport, blob)
 }
 
@@ -199,6 +278,38 @@ pub fn bind_device(
     req: &BindRequest,
 ) -> Result<(), String> {
     fgtw::client::bind_device(&PhotonTransport, member_key, handle_proof, req)
+}
+
+/// The same bind, SEED-OPTIONAL: append the consent-carrying Add to the chain we hold (refreshed from the seed when it answers), hold the result, and publish it to the seed as a mirror — a seed that cannot be reached does not fail the add, since the chain reaches the fleet and the new device over the peer frames (`fleet_resp`). Returns the extended chain for the caller to hand out. A seed `stale` answer (a sibling extended first) re-fetches and re-applies, as the seed-only bind does.
+pub fn bind_device_held(
+    member_key: &impl FleetSigner,
+    handle_proof: &[u8; 32],
+    req: &BindRequest,
+) -> Result<MembershipBlob, String> {
+    let me = member_key.keypair().public.to_bytes();
+    for _attempt in 0..4 {
+        let mut blob = fetch(handle_proof)?.ok_or("no fleet to add to — attest this identity first")?;
+        let members = blob.fold().map_err(|e| format!("stored fleet invalid: {e:?}"))?;
+        if !members.contains(&me) {
+            return Err("this device isn't a fleet member, so it can't add another".into());
+        }
+        if members.contains(&req.device_pubkey) {
+            return Ok(blob); // already in — idempotent
+        }
+        match &req.bundle {
+            Some(b) => blob.add_declared(member_key, req.device_pubkey, vsf::eagle_time_oscillations(), req.t, req.device_sig.clone(), b.clone()),
+            None => blob.add(member_key, req.device_pubkey, vsf::eagle_time_oscillations(), req.t, req.device_sig.clone()),
+        }
+        match publish(&blob) {
+            Ok(()) => return Ok(blob),
+            Err(e) if e.contains("stale") => continue,
+            Err(e) => {
+                crate::logf!("FLEET: add bound and held; the seed mirror failed ({}) — the chain reaches the fleet over the peer frames", e);
+                return Ok(blob);
+            }
+        }
+    }
+    Err("fleet add: lost too many extension races".into())
 }
 
 /// This device's own self-signed departure. RETIRED as a publish path (the worker refuses bare removes since the bilateral cutover) — kept only so old call sites fail with the worker's clear message instead of a missing symbol.

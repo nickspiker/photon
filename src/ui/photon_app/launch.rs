@@ -339,6 +339,7 @@ impl PhotonApp {
                             self.reseed_contact_pubkeys();
                         }
                     }
+                    self.fleet_chain_load();
                     self.spawn_contact_fleet_refresh(vec![data.handle_proof]);
                 }
                 // Notes-to-self is not created here either — see the resume path. Adding yourself is a deliberate act.

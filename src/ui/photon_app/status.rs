@@ -338,6 +338,8 @@ impl PhotonApp {
                 StatusUpdate::ChainPullReceived { .. } => "ChainPullReceived",
                 StatusUpdate::ChainPullMissReceived { .. } => "ChainPullMissReceived",
                 StatusUpdate::DepartReqReceived { .. } => "DepartReqReceived",
+                StatusUpdate::FleetChainAsked { .. } => "FleetChainAsked",
+                StatusUpdate::FleetChainReceived { .. } => "FleetChainReceived",
                 StatusUpdate::FocusClaimReceived { .. } => "FocusClaimReceived",
                 StatusUpdate::FriendKnockReceived { .. } => "FriendKnockReceived",
                 StatusUpdate::AttentionReceived { .. } => "AttentionReceived",
@@ -442,6 +444,9 @@ impl PhotonApp {
         let mut chain_pull_misses_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
         // Sibling departure requests (bilateral removal), deferred past the checker borrow.
         let mut depart_reqs_after: Vec<(i64, Vec<u8>, [u8; 32], u8, Option<[u8; 32]>)> = Vec::new();
+        // Membership chains over the mesh (docs/peers-are-fgtw.md), deferred past the checker borrow: asks to answer (handle, asker, where), and chains handed to us (handle, bytes, sender).
+        let mut fleet_asks_after: Vec<([u8; 32], [u8; 32], std::net::SocketAddr)> = Vec::new();
+        let mut fleet_chains_after: Vec<([u8; 32], Vec<u8>, [u8; 32])> = Vec::new();
         // Departure have-set frames (holdings.rs), handled after the drain: (kind, nonce, sealed, sender device, sender addr).
         let mut holdings_after: Vec<(crate::network::fgtw::protocol::HoldingsKind, [u8; 32], Vec<u8>, [u8; 32], std::net::SocketAddr)> = Vec::new();
         // Fetch edges (attach_none, an unreachable peer) wait for the loop to end: the fetch state is &mut self, and the loop holds the checker.
@@ -3043,6 +3048,11 @@ impl PhotonApp {
                             let now = std::time::Instant::now();
                             self.lan_heard
                                 .retain(|(_, t)| now.duration_since(*t) < LAN_HEARD_FRESH);
+                            let from = std::net::SocketAddr::from((local_ip, port));
+                            match self.lan_heard_addr.iter_mut().find(|(k, _)| *k == dk) {
+                                Some(e) => e.1 = from,
+                                None => self.lan_heard_addr.push((dk, from)),
+                            }
                             match self.lan_heard.iter_mut().find(|(k, _)| *k == dk) {
                                 Some(e) => e.1 = now,
                                 None => {
@@ -4248,6 +4258,19 @@ impl PhotonApp {
                         c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
                     }) {
                         chain_pull_misses_after.push((conversation_token, sender_pubkey.key));
+                    }
+                }
+                // The chain is public, but a 10–50 KB answer to any asker is amplification bait: answer only a device some contact's fold knows (a friend's or a sibling's).
+                StatusUpdate::FleetChainAsked { handle_proof, sender_pubkey, sender_addr } => {
+                    if self.contacts.iter().any(|c| c.knows_device(&sender_pubkey.key)) {
+                        fleet_asks_after.push((handle_proof, sender_pubkey.key, sender_addr));
+                    }
+                }
+                // A chain handed to us: adopted after the drain by the same rule a seed copy is (fold, slot, genesis pin, monotonic tip) — the carrier earns no trust, so no sender gate here beyond caring about the handle (ours, a contact's, or the fleet this device is joining).
+                StatusUpdate::FleetChainReceived { handle_proof, chain, sender_pubkey, .. } => {
+                    let ours = self.our_handle_proof() == Some(handle_proof) || self.add_join_hp == Some(handle_proof);
+                    if ours || self.contacts.iter().any(|c| c.handle_proof == handle_proof) || self.molecule_party_for_proof(&handle_proof).is_some() {
+                        fleet_chains_after.push((handle_proof, chain, sender_pubkey.key));
                     }
                 }
                 StatusUpdate::DepartReqReceived {
@@ -5531,6 +5554,16 @@ impl PhotonApp {
                 changed = true;
             } else if self.holdings_answer(nonce, sealed, sender) {
                 self.scene_dirty = true;
+                changed = true;
+            }
+        }
+
+        // Membership chains over the mesh (deferred): answer asks from the chain we hold; adopt chains handed to us.
+        for (hp, asker, addr) in fleet_asks_after {
+            self.answer_fleet_ask(hp, asker, addr);
+        }
+        for (hp, chain, sender) in fleet_chains_after {
+            if self.adopt_peer_chain(hp, &chain, sender) {
                 changed = true;
             }
         }

@@ -460,6 +460,19 @@ pub enum StatusUpdate {
         conversation_token: [u8; 32],
         sender_pubkey: DevicePubkey,
     },
+    /// A device asking for the membership chain of handle `handle_proof` (`fleet_req`, docs/peers-are-fgtw.md) — the UI answers from the chain it holds if it knows the asking device.
+    FleetChainAsked {
+        handle_proof: [u8; 32],
+        sender_pubkey: DevicePubkey,
+        sender_addr: SocketAddr,
+    },
+    /// A membership chain handed to us by a peer (`fleet_resp`): the answer to our ask, or a sponsor's push after it extended its fleet's chain. Opaque bytes here — the UI thread folds, checks the slot and the genesis pin, and adopts only a newer tip (fleet::adopt_chain_bytes).
+    FleetChainReceived {
+        handle_proof: [u8; 32],
+        chain: Vec<u8>,
+        sender_pubkey: DevicePubkey,
+        sender_addr: SocketAddr,
+    },
     /// A sibling requesting its own removal from the fleet (bilateral removal): consent stamp + its signature over the departure request. This device's user approves; then this device countersigns and publishes the consented Remove.
     DepartReqReceived {
         consent_t: i64,
@@ -709,6 +722,8 @@ impl StatusUpdate {
             StatusUpdate::DepartReqReceived { sender_pubkey, .. } => {
                 Some(sender_pubkey.as_bytes())
             }
+            StatusUpdate::FleetChainAsked { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::FleetChainReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FocusClaimReceived { sender_pubkey, .. } => {
                 Some(sender_pubkey.as_bytes())
             }
@@ -2734,6 +2749,46 @@ async fn run_checker(
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                         held_era,
                                         held_tag,
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            // The membership chain over the mesh (fleet_req / fleet_resp): an ask, or a chain handed to us. Same mandatory packet-ack; who may ask and what is adopted is decided on the UI thread, which holds the chains.
+                            if let Ok((handle_proof, sender_pubkey)) = crate::network::fgtw::protocol::parse_fleet_req_vsf(msg_bytes) {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::FleetChainAsked {
+                                        handle_proof,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                        sender_addr: src_addr,
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            if let Ok((handle_proof, chain, sender_pubkey)) = crate::network::fgtw::protocol::parse_fleet_resp_vsf(msg_bytes) {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::FleetChainReceived {
+                                        handle_proof,
+                                        chain,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                        sender_addr: src_addr,
                                     },
                                     &event_proxy_recv,
                                 );
