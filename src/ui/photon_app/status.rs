@@ -4300,9 +4300,9 @@ impl PhotonApp {
                         fleet_chains_after.push((handle_proof, chain, sender_pubkey.key));
                     }
                 }
-                // A joining device's request, only while THIS device's AddDevice screen is up for the fleet it names — the human at this screen is the gate, the words the selector.
+                // A joining device's request for OUR fleet: kept (fresh ones only) so the candidate is on the AddDevice screen the moment the human opens it — the request arrives whenever the joiner hears us beacon, not when the screen happens to be up. The human at that screen is still the gate, the words the selector; nothing binds without them.
                 StatusUpdate::BindReqReceived { handle_proof, req, sender_addr, .. } => {
-                    if matches!(self.state, AppState::AddDevice) && self.our_handle_proof() == Some(handle_proof) {
+                    if self.our_handle_proof() == Some(handle_proof) {
                         bind_reqs_after.push((req, sender_addr));
                     }
                 }

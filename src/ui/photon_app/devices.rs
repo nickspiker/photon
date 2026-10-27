@@ -7,7 +7,8 @@ impl PhotonApp {
     pub(super) fn open_add_device_flow(&mut self) {
         self.add_device_candidates.clear();
         self.add_device_registry_reqs.clear();
-        self.add_device_lan_reqs.clear();
+        // Requests handed to us over the LAN stay: they arrived while the screen was closed and are what this screen is for. Lapsed ones are dropped when the rows are built.
+        self.add_device_lan_reqs.retain(|r| vsf::eagle_time_oscillations().abs_diff(r.t) <= crate::network::fgtw::fleet::BINDREQ_FRESH_OSC as u64);
         self.add_device_bound = None;
         self.add_device_bind_ble = false;
         self.add_device_typo = None;
@@ -206,6 +207,8 @@ impl PhotonApp {
     pub(super) fn rebuild_add_device_candidates(&mut self) {
         use crate::network::fgtw::fleet;
         let Some((seed, hp)) = self.session.as_ref().map(|s| (s.identity_seed, s.handle_proof)) else { return };
+        let now = vsf::eagle_time_oscillations();
+        self.add_device_lan_reqs.retain(|r| now.abs_diff(r.t) <= fleet::BINDREQ_FRESH_OSC as u64);
         let mut reqs: Vec<fleet::BindRequest> = Vec::new();
         for req in self.add_device_registry_reqs.iter().chain(self.add_device_lan_reqs.iter()) {
             match reqs.iter_mut().find(|r| r.device_pubkey == req.device_pubkey) {
@@ -269,7 +272,12 @@ impl PhotonApp {
             Some(e) => e.1 = from,
             None => self.lan_heard_addr.push((dk, from)),
         }
-        self.rebuild_add_device_candidates();
+        if matches!(self.state, AppState::AddDevice) {
+            self.rebuild_add_device_candidates();
+        } else {
+            // The screen is closed: say a device is asking, so the human knows to open Fleet → Add.
+            self.ready_toast = Some(format!("{} asks to join — Settings → Fleet → Add device", crate::network::fgtw::fleet::device_name_default(&dk, &seed)));
+        }
         true
     }
 
