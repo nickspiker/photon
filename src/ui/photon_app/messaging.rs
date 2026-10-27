@@ -1036,33 +1036,6 @@ impl PhotonApp {
         Some(Route { peer_addr, alt_addr, recipient_pubkey, relay_to, party: Some(contact.handle_hash) })
     }
 
-    /// The recipient list of a GROUP send (docs/molecules.md step 4): one route per standing member's addressable device — the contact fold for friends (their active device and race addresses, their fleet as relay copies), the MoleculePeer fold for members we never friended (relay only, by device pubkey; step 5 wires the fold). We are never our own route. Empty = nobody reachable yet (the retransmit sweep re-resolves on every pass).
-    pub(super) fn routes_for_molecule(&self, gid: crate::types::molecule::MoleculeId) -> Vec<Route> {
-        let Some((_, roster)) = self.molecule_rosters.iter().find(|(g, _)| *g == gid) else {
-            return Vec::new();
-        };
-        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
-        let mut routes: Vec<Route> = Vec::new();
-        for party in roster.standing() {
-            if Some(party) == us {
-                continue;
-            }
-            if let Some(c) = self.contacts.iter().find(|c| !c.is_sibling && c.handle_hash == party) {
-                if let Some(r) = Self::route_to_contact(c) {
-                    routes.push(r);
-                }
-            } else if let Some(peer) = self.molecule_peers.iter().find(|p| p.party == party) {
-                // Never friended: the first folded device at the addresses the phonebook holds for it (device_addresses — the peer store's records), every folded device a relay copy; the relay alone when no address is known.
-                if let Some(first) = peer.devices.first() {
-                    let addrs = self.device_addresses(first);
-                    let (peer_addr, alt_addr) = (addrs.first().copied().unwrap_or(crate::network::status::RELAY_ADDR), addrs.get(1).copied());
-                    routes.push(Route { peer_addr, alt_addr, recipient_pubkey: *first, relay_to: peer.devices.clone(), party: Some(party) });
-                }
-            }
-        }
-        routes
-    }
-
     /// A GROUP send (docs/molecules.md step 4): the same braid encrypt on OUR lane in the group's chains, the one ciphertext fanned to every standing member's device. Refuses while we hold no root (Joining) or have left.
     pub(super) fn molecule_transmit(
         &mut self,

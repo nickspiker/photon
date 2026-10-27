@@ -528,8 +528,7 @@ impl PhotonApp {
         // Opening the conversation is the interaction that clears unread (ring + float drop away on the next list frame).
         self.clear_unread_of(id);
         self.change_focus(None);
-        let us = self.our_pid_in(id);
-        let people: Vec<usize> = self.members_of(id).iter().filter(|p| Some(**p) != us).filter_map(|p| self.contacts.iter().position(|c| c.handle_hash == *p)).collect();
+        let people = self.people_of(id);
         for &ci in &people {
             // Looking at someone is the clearest signal their presence matters now: the backoff collapses, the ping is due at once.
             self.contacts[ci].ping_backoff = 0;
@@ -543,6 +542,12 @@ impl PhotonApp {
         }
         self.scene_dirty = true;
         true
+    }
+
+    /// Everyone in a conversation we hold a contact for, any size, ourselves left out — a pair's one friend, a group's friended members, our siblings in our fleet's own, nobody in notes.
+    pub(super) fn people_of(&self, id: crate::types::ConversationId) -> Vec<usize> {
+        let us = self.our_pid_in(id);
+        self.members_of(id).iter().filter(|p| Some(**p) != us).filter_map(|p| self.contacts.iter().position(|c| c.handle_hash == *p)).collect()
     }
 
     pub(super) fn open_conversation_with(&mut self, ci: usize) {
@@ -651,8 +656,8 @@ impl PhotonApp {
             && crate::platform::attended_here()
         {
             self.broadcast_focus_claim(true);
-            if let Some(ci) = self.active_contact() {
-                self.clear_unread(ci);
+            if let Some(id) = self.active_conversation {
+                self.clear_unread_of(id);
             }
         }
         true
@@ -719,6 +724,11 @@ impl PhotonApp {
             let fid = crate::types::FriendshipId::from_bytes(gid.0);
             let phase = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
             return matches!(phase, crate::storage::molecule::MoleculePhase::Standing | crate::storage::molecule::MoleculePhase::CatchingUp) && self.friendship_chains.iter().any(|(id, c)| *id == fid && c.lane_capable());
+        }
+        // A conversation with nobody else in it (notes) is delivered by its durable write — always composable.
+        if let Some(id) = self.active_conversation.filter(|id| self.pair_contact_of(*id).is_none()) {
+            let us = self.our_pid_in(id);
+            return us.is_some() && self.members_of(id).iter().all(|p| Some(*p) == us);
         }
         let Some(ci) = self.active_contact() else {
             return false;
@@ -1279,6 +1289,9 @@ impl PhotonApp {
                 m.delivered = row.delivered;
                 m.notified = row.notified;
                 m.star_osc = row.star_osc;
+            } else {
+                // A member's page is recovered history, never a fresh arrival — it lands discharged, as a friend's walk page does.
+                m.notified = true;
             }
             m.delivered_to = row.delivered_to.clone();
             m.reference = row.reference.and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t)));
@@ -1306,13 +1319,6 @@ impl PhotonApp {
             return None;
         }
         Some(newest)
-    }
-
-    /// The group twin of `clear_unread`: opening a group conversation clears its ring.
-    pub(super) fn clear_molecule_unread(&mut self, gi: usize) {
-        if let Some(gid) = self.molecule_rosters.get(gi).map(|(g, _)| *g) {
-            self.clear_unread_of(crate::types::FriendshipId::from_bytes(gid.0));
-        }
     }
 
     pub(super) fn clear_unread(&mut self, ci: usize) {
@@ -2729,6 +2735,8 @@ impl PhotonApp {
                             self.on_group_wave_row_merged(ts);
                         }
                         let fresh = self.merge_molecule_page_rows(conv_pos, &page.rows, member_from.map(|m| (our_pid, m)));
+                        // The catch-up summary, any size: a sibling batch nobody flagged alerts once, a finished walk flushes its batch (notes holds only our own rows, so it never alerts).
+                        let flagged = group.is_some() && self.catch_up_alert(conv_pos, &fresh, from_sibling);
                         // Cursor + completion, the pair walk's rule (molecules walk since docs/conversations.md Phase 2).
                         if rid_matches {
                             let conv = &mut self.conversations[conv_pos];
@@ -2747,6 +2755,9 @@ impl PhotonApp {
                                     rec.complete = true;
                                 }
                             }
+                        }
+                        if flagged && fresh.is_empty() {
+                            self.persist_conversation_async(fid);
                         }
                         if !fresh.is_empty() {
                             self.persist_conversation_async(fid);
@@ -3057,54 +3068,9 @@ impl PhotonApp {
                     conv.history_recovery.as_ref().is_some_and(|r| r.complete)
                 );
             }
-            // CATCH-UP SUMMARY (2026-07-23 design): a sibling batch carrying rows NOBODY flagged means the whole fleet was offline when they landed — alert duty was never discharged. ONE summary chirp for the batch (never a per-row storm — this is exactly the wake-from-doze ding-storm killer), then flag every one. Rows arriving pre-flagged (the origin dinged or its clearer watched) stay silent, which is the steady-state forward path. Restricted to the FRESH batch: older stored-but-unflagged rows may be legitimately suppressed by a LIVE claim right now — those belong to the drop-sweep, which fires only when the claim actually drops.
-            if from_sibling && !self.contacts[idx].is_sibling {
-                let undischarged: Vec<i64> = fresh
-                    .iter()
-                    .filter(|m| {
-                        !m.notified && !m.is_outgoing && !m.is_control()
-                    })
-                    .map(|m| m.timestamp)
-                    .collect();
-                // ONE ALERT PER CATCH-UP, NOT PER PAGE (field 2026-09-24): a backfill arrives as many pages, and alerting per page turned 288 backfilled rows into 36 chirps in three minutes — fifteen of them for a single contact.
-                // While the walk is still running the rows ride here UNFLAGGED, so a walk that dies mid-way re-collects them next time instead of losing the duty; the summary fires on the page that finishes the walk.
-                // A live sibling push carries no walk, so it falls through to the immediate alert exactly as before.
-                let mid_walk = self.conversations[conv_pos]
-                    .history_recovery
-                    .as_ref()
-                    .is_some_and(|r| !r.complete);
-                if mid_walk {
-                    if let Some(rec) = self.conversations[conv_pos].history_recovery.as_mut() {
-                        rec.pending_alert.extend(undischarged);
-                    }
-                } else {
-                    let mut batch = self.conversations[conv_pos]
-                        .history_recovery
-                        .as_mut()
-                        .map(|r| std::mem::take(&mut r.pending_alert))
-                        .unwrap_or_default();
-                    batch.extend(undischarged);
-                    batch.sort_unstable();
-                    batch.dedup();
-                    self.summary_chirp_and_flag(idx, conv_pos, &batch);
-                }
-            }
-            // SAFETY FLUSH: the page that FINISHES a walk may be a friend's, and the sibling block above only runs on sibling pages — without this the collected batch would sit in the recovery state until the next sibling page happened along.
+            // The catch-up summary for a sibling batch, and the flush for a walk this page finished, whoever sent it (catch_up_alert); our fleet's own terminal never alerts.
             if !self.contacts[idx].is_sibling {
-                let done = self.conversations[conv_pos]
-                    .history_recovery
-                    .as_ref()
-                    .map_or(true, |r| r.complete);
-                if done {
-                    let batch = self.conversations[conv_pos]
-                        .history_recovery
-                        .as_mut()
-                        .map(|r| std::mem::take(&mut r.pending_alert))
-                        .unwrap_or_default();
-                    if !batch.is_empty() {
-                        self.summary_chirp_and_flag(idx, conv_pos, &batch);
-                    }
-                }
+                let _ = self.catch_up_alert(conv_pos, &fresh, from_sibling);
             }
             // WAVE signals via sibling merge are STOP edges ONLY (docs/waves.md): our sibling's answer/decline row stops this device's ring; replayed catch-up signals correctly ring nothing (a ring requires the DIRECT offer decrypt — which is also what kills the stale-offer-rings-days-later class).
             if from_sibling {
@@ -3183,44 +3149,41 @@ impl PhotonApp {
         }
     }
 
-    /// ONE summary chirp for a batch of undischarged rows, then flag them notified. The shared mechanics behind the sibling-merge catch-up and the claim drop-sweep — never a per-row storm. No-ops on an empty batch. (The digest excludes flags, so flagging live rows needs no invalidation.)
-    pub(super) fn summary_chirp_and_flag(
-        &mut self,
-        idx: usize,
-        conv_pos: usize,
-        undischarged: &[i64],
-    ) {
+    /// Who a conversation's alert speaks as, any size: a pair's friend by name and relationship digest, a group by its title and its id — so one conversation sounds the same on every device.
+    fn alert_voice(&self, id: crate::types::ConversationId) -> (String, [u8; 32]) {
+        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
+        if let Some(ci) = self.pair_contact_of(id) {
+            return (self.contacts[ci].display_name(), relationship_digest(&self.contacts[ci].handle_hash, &us));
+        }
+        let title = self.roster_id_of(id).and_then(|gid| self.molecule_rosters.iter().find(|(g, _)| *g == gid)).map(|(_, r)| r.display_title()).unwrap_or_else(|| tr(Msg::ConversationTitle).into_owned());
+        (title, relationship_digest(id.as_bytes(), &us))
+    }
+
+    /// ONE summary chirp for a batch of undischarged rows, then flag them notified, in any conversation. The shared mechanics behind the sibling-merge catch-up and the claim drop-sweep — never a per-row storm. No-ops on an empty batch. (The digest excludes flags, so flagging live rows needs no invalidation.)
+    pub(super) fn summary_chirp_and_flag(&mut self, conv_pos: usize, undischarged: &[i64]) {
         if undischarged.is_empty() {
             return;
         }
-        let sender_name = self.contacts[idx].display_name();
-        crate::logf!(
-            "NOTIFY: batch of {} undischarged row(s) from {} — one summary alert",
-            undischarged.len(),
-            sender_name
-        );
+        let Some(id) = self.conversations.get(conv_pos).map(|v| v.id()) else {
+            return;
+        };
+        // A muted group discharges silently, as its live rows do.
+        let muted = self.roster_id_of(id).is_some_and(|gid| self.molecule_muted(&gid));
+        let (sender_name, chirp_seed) = self.alert_voice(id);
+        crate::logf!("NOTIFY: batch of {} undischarged row(s) from {} — one summary alert", undischarged.len(), sender_name);
         let summary = tr(Msg::NewMessages(undischarged.len())).into_owned();
         let batch_hp = *blake3::hash(&undischarged[0].to_le_bytes()).as_bytes();
         #[cfg(target_os = "android")]
-        {
-            let chirp_seed = relationship_digest(
-                &self.contacts[idx].handle_hash,
-                &self
-                    .session
-                    .as_ref()
-                    .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
-                    .unwrap_or([0u8; 32]),
-            );
-            crate::platform::jni_android::notify_new_message(
-                &batch_hp,
-                &chirp_seed,
-                &sender_name,
-                &summary,
-                self.conversations.get(conv_pos).map(|v| *v.id().as_bytes()),
-            );
+        if !muted {
+            crate::platform::jni_android::notify_new_message(&batch_hp, &chirp_seed, &sender_name, &summary, Some(*id.as_bytes()));
         }
         #[cfg(not(target_os = "android"))]
-        crate::platform::desktop_notify::notify_new_message(&batch_hp, &sender_name, &summary, self.conversations.get(conv_pos).map(|v| *v.id().as_bytes()));
+        {
+            let _ = chirp_seed;
+            if !muted {
+                crate::platform::desktop_notify::notify_new_message(&batch_hp, &sender_name, &summary, Some(*id.as_bytes()));
+            }
+        }
         if let Some(conv) = self.conversations.get_mut(conv_pos) {
             for m in conv.messages.iter_mut() {
                 if undischarged.contains(&m.timestamp) {
@@ -3230,42 +3193,45 @@ impl PhotonApp {
         }
     }
 
-    /// DROP-SWEEP: when a focus claim drops (retraction received, holder's presence void, or the ball stolen from the claim holder), any rows THIS device suppressed while honoring that claim are still undischarged — chirp them ONCE and flag. The scan is bounded below by the claim's own osc (suppression-by-claim can only have happened while the claim stood; an unbounded scan would summary-ding ancient anomalies). No-ops when nothing was suppressed — the steady state.
-    pub(super) fn sweep_undischarged(&mut self, conversation_token: [u8; 32], min_osc: i64) {
-        let Some((idx, conv_id)) = self.contacts.iter().enumerate().find_map(|(i, c)| {
-            if c.is_sibling {
-                return None;
+    /// CATCH-UP SUMMARY (2026-07-23 design), any size: a sibling batch carrying rows NOBODY flagged means the whole fleet was offline when they landed — alert duty was never discharged. ONE summary chirp for the batch, then flag every one; rows arriving pre-flagged stay silent.
+    /// ONE ALERT PER CATCH-UP, NOT PER PAGE (field 2026-09-24): while the walk is still running the rows ride UNFLAGGED in the walk's pending alert, so a walk that dies mid-way re-collects them next time; the summary fires on the page that finishes the walk, whoever sent it.
+    /// A live sibling push carries no walk, so it falls thru to the immediate alert.
+    /// Returns whether rows were flagged (the caller persists them).
+    pub(super) fn catch_up_alert(&mut self, conv_pos: usize, fresh: &[crate::types::ChatMessage], from_sibling: bool) -> bool {
+        let undischarged: Vec<i64> = if from_sibling { fresh.iter().filter(|m| !m.notified && !m.is_outgoing && !m.is_control()).map(|m| m.timestamp).collect() } else { Vec::new() };
+        let mid_walk = self.conversations[conv_pos].history_recovery.as_ref().is_some_and(|r| !r.complete);
+        if mid_walk {
+            if let Some(rec) = self.conversations[conv_pos].history_recovery.as_mut() {
+                rec.pending_alert.extend(undischarged);
             }
-            let us = self.our_party_id(c)?;
-            (crate::crypto::clutch::derive_conversation_token(&[us, c.handle_hash])
-                == conversation_token)
-                .then(|| (i, c.conversation(&us).id()))
-        }) else {
+            return false;
+        }
+        let mut batch = self.conversations[conv_pos].history_recovery.as_mut().map(|r| std::mem::take(&mut r.pending_alert)).unwrap_or_default();
+        batch.extend(undischarged);
+        batch.sort_unstable();
+        batch.dedup();
+        self.summary_chirp_and_flag(conv_pos, &batch);
+        !batch.is_empty()
+    }
+
+    /// DROP-SWEEP: when a focus claim drops (retraction received, holder's presence void, or the ball stolen from the claim holder), any rows THIS device suppressed while honoring that claim are still undischarged — chirp them ONCE and flag, in any conversation the token names. The scan is bounded below by the claim's own osc (suppression-by-claim can only have happened while the claim stood; an unbounded scan would summary-ding ancient anomalies). No-ops when nothing was suppressed — the steady state.
+    pub(super) fn sweep_undischarged(&mut self, conversation_token: [u8; 32], min_osc: i64) {
+        let Some(conv_id) = self.conversation_for_token(&conversation_token) else {
             return;
         };
+        if self.pair_contact_of(conv_id).is_some_and(|ci| self.contacts[ci].is_sibling) {
+            return;
+        }
         let Some(conv_pos) = self.conversations.iter().position(|c| c.id() == conv_id) else {
             return;
         };
-        let undischarged: Vec<i64> = self.conversations[conv_pos]
-            .messages
-            .iter()
-            .filter(|m| {
-                !m.notified
-                    && !m.is_outgoing
-                    && m.timestamp >= min_osc
-                    && !m.is_control()
-            })
-            .map(|m| m.timestamp)
-            .collect();
+        let undischarged: Vec<i64> = self.conversations[conv_pos].messages.iter().filter(|m| !m.notified && !m.is_outgoing && m.timestamp >= min_osc && !m.is_control()).map(|m| m.timestamp).collect();
         if undischarged.is_empty() {
             return;
         }
-        crate::logf!(
-            "NOTIFY: claim dropped with {} suppressed row(s) in the crossing window — sweeping",
-            undischarged.len()
-        );
-        self.summary_chirp_and_flag(idx, conv_pos, &undischarged);
-        self.persist_messages_async(idx);
+        crate::logf!("NOTIFY: claim dropped with {} suppressed row(s) in the crossing window — sweeping", undischarged.len());
+        self.summary_chirp_and_flag(conv_pos, &undischarged);
+        self.persist_conversation_async(conv_id);
     }
 
     pub(super) fn drain_avatar_downloads(&mut self) {

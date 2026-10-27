@@ -129,8 +129,8 @@ impl FluorApp for PhotonApp {
                 )
             {
                 self.broadcast_focus_claim(true);
-                if let Some(ci) = self.active_contact() {
-                    self.clear_unread(ci);
+                if let Some(id) = self.active_conversation {
+                    self.clear_unread_of(id);
                 }
             }
         } else {

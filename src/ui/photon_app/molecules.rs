@@ -444,11 +444,16 @@ impl PhotonApp {
         self.sync_molecule_conversation(&gid);
         self.persist_molecule(&gid);
         let from_genesis = self.molecule_rosters[pos].1.genesis.as_ref().map_or(false, |g| g.history_from_genesis);
+        // THE BOND RULE (docs/conversations.md §7): an era at or below the conversation's bond_split_era derived a bond, so it is never handed out — a join into such a conversation mints first, whatever its history policy.
+        let fid = crate::types::FriendshipId::from_bytes(gid.0);
+        let split_bars = self.friendship_chains.iter().find(|(id, _)| *id == fid).is_some_and(|(_, c)| c.bond_split_era.is_some_and(|s| c.era_index <= s));
+        if split_bars {
+            crate::logf!("MOLECULE: {} current era derived a bond — the join mints a fresh era first", hex::encode(&gid.0[..4]));
+        }
         // The records go into the group for everyone; the joiner is standing from the merge above, so the fan-out reaches it too once it holds the era.
         self.queue_molecule_post(MoleculePost { gid, signal: MoleculeSignal::Records, blob: Some(crate::storage::molecule::roster_to_vsf_bytes(&gid, &posted).ok().unwrap_or_default()), wrap: None, kem: None, text: None, queued: self.tick_serial, control: false });
-        if from_genesis || already_standing {
+        if (from_genesis || already_standing) && !split_bars {
             // Re-wrap the CURRENT era whole to each of the joiner's devices, over the friendship.
-            let fid = crate::types::FriendshipId::from_bytes(gid.0);
             let Some((era, lineage, root, hk)) = self.friendship_chains.iter().find(|(id, _)| *id == fid).and_then(|(_, c)| Some((c.era_index, c.era_lineage, *c.lane_root()?, *c.history_key()?))) else {
                 crate::logf!("MOLECULE: {} holds no root here — cannot answer the join", hex::encode(&gid.0[..4]));
                 return;

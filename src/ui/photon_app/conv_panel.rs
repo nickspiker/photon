@@ -60,9 +60,7 @@ impl PhotonApp {
         if let Some(id) = self.active_conversation {
             self.clear_unread_of(id);
         }
-        if self.active_contact().is_some() {
-            self.reset_contact_ping_backoff();
-        }
+        self.reset_contact_ping_backoff();
     }
 
     /// A press inside the panel: the rail switches page, the pills act, a Bonds row opens a person or toggles a staged invite. Returns whether the press was the panel's.

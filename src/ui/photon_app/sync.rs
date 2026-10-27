@@ -152,11 +152,11 @@ impl PhotonApp {
     }
 
     pub(super) fn reset_contact_ping_backoff(&mut self) {
-        if let Some(ci) = self.active_contact() {
-            if let Some(c) = self.contacts.get_mut(ci) {
-                c.ping_backoff = 0;
-                c.last_pinged = None; // due immediately, so the ring is fresh by the time it renders
-            }
+        let people = self.active_conversation.map(|id| self.people_of(id)).unwrap_or_default();
+        for ci in people {
+            let c = &mut self.contacts[ci];
+            c.ping_backoff = 0;
+            c.last_pinged = None; // due immediately, so the ring is fresh by the time it renders
         }
     }
 
@@ -175,9 +175,10 @@ impl PhotonApp {
         self.ping_contacts_filtered(None)
     }
 
-    /// Ping exactly the OPEN conversation's contact (the demand-driven presence model, Nick 2026-09-02: in a chat you care about THAT person; everyone else's state arrives on inbound edges). No LAN beacon ride-along — beacons belong to the full sweep.
+    /// Ping exactly the OPEN conversation's people, any size (the demand-driven presence model, Nick 2026-09-02: in a chat you care about THAT person; everyone else's state arrives on inbound edges). No LAN beacon ride-along — beacons belong to the full sweep.
     pub(super) fn ping_active_contact(&mut self) {
-        if let Some(ci) = self.active_contact() {
+        let people = self.active_conversation.map(|id| self.people_of(id)).unwrap_or_default();
+        for ci in people {
             self.ping_contacts_filtered(Some(ci));
         }
     }

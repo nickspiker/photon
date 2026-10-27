@@ -168,14 +168,10 @@ impl PhotonApp {
             .unwrap_or_default();
         // THE DELIVERY RING (Nick 2026-10-25: "equal segments per identity, consistent for 1 or 1000"), snapshotted pre-chrome: the conversation's people in join order, and the stamps of our rows that have not left this device yet.
         let ring_us: [u8; 32] = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
-        let ring_parties: Vec<[u8; 32]> = match (active_gi, active_ci) {
+        let ring_parties: Vec<[u8; 32]> = match (active_gi, self.active_conversation) {
             (Some(gi), _) => self.molecule_rosters[gi].1.join_order(),
-            (None, Some(ci)) => {
-                let them = self.contacts[ci].handle_hash;
-                let mut v = vec![ring_us];
-                if them != ring_us && self.contacts[ci].remote_count(&ring_us) > 0 {
-                    v.push(them);
-                }
+            (None, Some(id)) => {
+                let mut v = self.members_of(id);
                 v.sort_unstable();
                 v
             }
@@ -2464,7 +2460,7 @@ impl PhotonApp {
             use crate::ui::state::ConversationPage;
             let layout = SettingsLayout::compute(&ctx.viewport);
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
-            if active_ci.is_some() || active_gi.is_some() {
+            if conv_hdr.is_some() {
                 // Clear the panel region's hit stamps before re-stamping this frame (immediate-mode stamps must not linger across page switches) — INSIDE THIS FRAME'S DAMAGE only: a pill re-stamps only pixels it paints, and outside the damage nothing paints, so a region-wide wipe on a caret-blink or chrome frame left every pill there dead (Nick 2026-10-24: Leave neither lit nor clicked).
                 let d = ctx.damage_clip;
                 restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, d.x0 as isize, (layout.rail.y as isize).max(d.y0 as isize), d.x1 as isize, d.y1 as isize, HIT_NONE);
@@ -2857,7 +2853,7 @@ impl PhotonApp {
             // ── DISTINCT VIEWER SCREEN (2026-09-11) ── while the image viewer or text reader is open it IS the conversation screen: the header, message walk, and composer are skipped entirely. They used to render every frame under an opaque pane that discarded them pixel by pixel (full shaping + paint cost for a black rectangle — Nick: "thrashing the CPU, RAM and bus for literally no reason"), and the pane itself was painted FIRST, so under topmost-first under-blend the pane swallowed its own image and pills too (the documented 2026-08-31 backdrop-order class).
             let viewer_open = self.viewer.is_some() || self.reader.is_some();
             if viewer_open {
-                if let Some(ci) = active_ci {
+                if let Some(open_id) = self.active_conversation {
                     let ru = ctx.viewport.ru;
                     let unit = ReadyLayout::compute(buf_w, buf_h, ru).unit_height;
                     let msg_size = unit * 0.62;
@@ -2917,8 +2913,7 @@ impl PhotonApp {
                                     paint::fill_rect(&mut canvas, bar_x, bar_y, fill_w,bar_h, *theme::PROGRESS_FILL, None, None);
                                     paint::fill_rect(&mut canvas, bar_x, bar_y, bar_w, bar_h, *theme::PROGRESS_TRACK, None, None);
                                 }
-                                let our_hh = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
-                                let msgs: &[crate::types::ChatMessage] = dm_conversation(&self.conversations, &our_hh, &self.contacts[ci]).map(|c| c.messages.as_slice()).unwrap_or(&[]);
+                                let msgs: &[crate::types::ChatMessage] = self.conversations.iter().find(|v| v.id() == open_id).map(|c| c.messages.as_slice()).unwrap_or(&[]);
                                 if let Some((w, h, px)) = super::viewer::viewer_pixels_of(v, &self.img_cache, msgs) {
                                     let ah = buf_h as f32 - area_top;
                                     // WHY/PROOF: w and h are an image's claimed dimensions (a peer's metadata or a decoder's header) — a 0 would divide into infinity and size the view to nothing.
