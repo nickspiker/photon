@@ -5209,6 +5209,7 @@ dependencies = [
  "fluor",
  "frodo-kem-rs",
  "futures",
+ "getrandom 0.2.17",
  "hayro",
  "hex",
  "i256",
