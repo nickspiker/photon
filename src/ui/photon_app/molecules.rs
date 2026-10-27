@@ -491,6 +491,12 @@ impl PhotonApp {
     /// MINT (§10.4): a fresh secret, the next era derived from it, one WRAP per standing device posted inside the group on the OLD era — and, for a join under from-join, a wrap over the friendship to each of the joiner's devices. The minter installs the era as pending; the cutover edge is its first ACK of any wrap row (step 9 wires the edge and the triggers beyond a join).
     pub(super) fn mint_molecule_era(&mut self, gid: MoleculeId, joiner: Option<(usize, Vec<crate::types::molecule::BundleRecord>)>) {
         let fid = crate::types::FriendshipId::from_bytes(gid.0);
+        // The joiner holds only the era this mint hands it: our rows reach it once we are on that era too.
+        if let Some(party) = joiner.as_ref().and_then(|(ci, _)| self.contacts.get(*ci)).map(|c| c.handle_hash) {
+            if !self.molecule_era_joiners.contains(&(gid, party)) {
+                self.molecule_era_joiners.push((gid, party));
+            }
+        }
         // A MINT IS ALREADY IN FLIGHT (its era is pending until the first member's frame on it): a second mint from the same current era would overwrite it and split the group (Brittany 2026-10-25: two joins 12 s apart minted era 1 twice — Nick held the first, Emma and Brittany the second).
         // A joiner takes the pending era whole — it reads nothing from before it, the from-join promise kept; any other mint waits for the cutover.
         let pending = self.friendship_chains.iter().find(|(id, _)| *id == fid).and_then(|(_, c)| c.pending_era().map(|p| (p.era_index, p.lane_root, p.history_key, c.era_lineage)));
@@ -1138,6 +1144,62 @@ impl PhotonApp {
         self.molecule_held_frames.push((gid, update));
     }
 
+    /// A member device sent a frame stamped `ts` on an era we hold: anything it stamped no later on an era we do not hold is an older copy (a device moves eras forward, and a row it re-sends keeps its stamp).
+    pub(super) fn note_device_on_held_era(&mut self, gid: MoleculeId, device: [u8; 32], ts: i64) {
+        match self.molecule_device_era.iter_mut().find(|(g, d, _)| *g == gid && *d == device) {
+            Some(e) => e.2 = e.2.max(ts),
+            None => self.molecule_device_era.push((gid, device, ts)),
+        }
+    }
+
+    /// CATCHING UP, DERIVED (Petunia 2026-10-27: a frame on the era from before Nick joined was held, replayed on every roster edge and re-flagged the group each time, and only a cutover ever cleared the flag — the header said Catching up forever while every row opened): a group is Catching up exactly while a held frame waits on an era we do not hold.
+    /// A held frame stamped no later than a frame the same device sent on an era we hold is an old copy — a from-join member is never given the era it rides, and a row we never ACK is re-sent on the sender's current lane — so it is dropped here, never waited on; a newer stamp on an unknown era is the real wait (our wrap is in flight).
+    /// Returns whether a phase moved.
+    pub(super) fn settle_catching_up(&mut self, gids: &[MoleculeId]) -> bool {
+        let mut changed = false;
+        for &gid in gids {
+            let fid = crate::types::FriendshipId::from_bytes(gid.0);
+            let Some(chains) = self.friendship_chains.iter().find(|(id, _)| *id == fid).map(|(_, c)| c) else {
+                continue;
+            };
+            // The signer and stamp of a held frame on an era we hold no slot for.
+            let waits = |u: &crate::network::status::StatusUpdate| match u {
+                crate::network::status::StatusUpdate::ChatMessage { era: Some(t), sender_pubkey, timestamp, .. } if chains.era_slot_for_tag(Some(*t)).is_none() => Some((sender_pubkey.key, *timestamp)),
+                _ => None,
+            };
+            let mut dropped = 0usize;
+            let mut waiting = 0usize;
+            let device_era = &self.molecule_device_era;
+            self.molecule_held_frames.retain(|(g, u)| {
+                if *g != gid {
+                    return true;
+                }
+                let Some((dev, ts)) = waits(u) else { return true };
+                if device_era.iter().any(|(eg, ed, seen)| *eg == gid && *ed == dev && *seen >= ts) {
+                    dropped += 1;
+                    return false;
+                }
+                waiting += 1;
+                true
+            });
+            if dropped > 0 {
+                crate::logf!("MOLECULE: {} held frame(s) in {} dropped — their senders have since sent on an era we hold, so these ride an older one", dropped, hex::encode(&gid.0[..4]));
+            }
+            let was = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
+            let now = match was {
+                MoleculePhase::Standing if waiting > 0 => MoleculePhase::CatchingUp,
+                MoleculePhase::CatchingUp if waiting == 0 => MoleculePhase::Standing,
+                p => p,
+            };
+            if now != was {
+                crate::logf!("MOLECULE: {} is {} — {} held frame(s) wait on an era we do not hold", hex::encode(&gid.0[..4]), if now == MoleculePhase::CatchingUp { "catching up" } else { "standing again" }, waiting);
+                self.set_molecule_local(&gid, |l| l.phase = now);
+                changed = true;
+            }
+        }
+        changed
+    }
+
     /// An edge a held frame waits on (the roster's standing set moved, an era installed, the chains landed): every frame held for this group re-enters the receive arm, full gates and all.
     pub(super) fn release_molecule_frames(&mut self, gid: MoleculeId) {
         if !self.molecule_held_frames.iter().any(|(g, _)| *g == gid) {
@@ -1334,7 +1396,9 @@ impl PhotonApp {
                     crate::logf!("MOLECULE: dropped a held post in {} — we left and hold no root", hex::encode(&gid.0[..4]));
                     continue;
                 }
-                held.queued = if phase == MoleculePhase::Joining || !keyed { u64::MAX } else { serial };
+                // A post whose every member waits for a pending era (never a wrap — those are never held) parks for its cutover too.
+                let minting = held.signal != MoleculeSignal::Wrap && self.friendship_chains.iter().any(|(id, c)| *id == fid && c.pending_era().is_some());
+                held.queued = if phase == MoleculePhase::Joining || !keyed || minting { u64::MAX } else { serial };
                 self.pending_molecule_posts.push(held);
             }
         }
@@ -1424,14 +1488,13 @@ impl PhotonApp {
         self.molecule_locals.iter().find(|(g, _)| g == gid).map_or(false, |(_, l)| l.muted)
     }
 
-    /// After a GROUP cutover (docs/molecules.md §10.4), on either side: the pendings the cutover cleared re-serve on the fresh lane, a fresh KEM bundle publishes for the new era (the next mint wraps to it), and Catching-up devices are Standing again.
+    /// After a GROUP cutover (docs/molecules.md §10.4), on either side: the pendings the cutover cleared re-serve on the fresh lane, a fresh KEM bundle publishes for the new era (the next mint wraps to it), and a Catching-up device settles from what it still holds.
     pub(super) fn after_molecule_cutover(&mut self, gid: MoleculeId) {
         let fid = crate::types::FriendshipId::from_bytes(gid.0);
-        self.set_molecule_local(&gid, |l| {
-            if l.phase == MoleculePhase::CatchingUp {
-                l.phase = MoleculePhase::Standing;
-            }
-        });
+        // Catching up settles from what is still held: a frame on the era just installed no longer waits.
+        self.settle_catching_up(&[gid]);
+        // The joiners hold the era we are on now: their rows go out from here (the held flush below reaches them on the fresh lane).
+        self.molecule_era_joiners.retain(|(g, _)| *g != gid);
         // Fresh bundle for the new era.
         if let (Some(our_pid), Some(seed)) = (self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)), self.device_seed()) {
             let era = self.friendship_chains.iter().find(|(id, _)| *id == fid).map(|(_, c)| c.era_index).unwrap_or(0);

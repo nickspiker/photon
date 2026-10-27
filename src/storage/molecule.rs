@@ -410,7 +410,12 @@ pub fn load_molecule_local(molecule_id: &MoleculeId, storage: &FlatStorage) -> R
         })
         .collect();
     let offered = parties.into_iter().zip(oscs).collect();
-    Ok(MoleculeLocal { muted: u("muted") != 0, phase: MoleculePhase::from_u64(u("phase")), offered })
+    // Catching up is a runtime state: the frames it waits on are held in RAM only, so a stored one has nothing behind it and loads as Standing (Petunia 2026-10-27: a label stuck across restarts).
+    let phase = match MoleculePhase::from_u64(u("phase")) {
+        MoleculePhase::CatchingUp => MoleculePhase::Standing,
+        p => p,
+    };
+    Ok(MoleculeLocal { muted: u("muted") != 0, phase, offered })
 }
 
 /// A PARKED OFFER (§10.1 Offered): a friend's offer we have not answered — the roster snapshot they sent and who sent it. No secret rides here (D10). Persisted so a relaunch between offer and Join keeps the row alive; deleted on Join or expiry.
@@ -742,6 +747,10 @@ mod tests {
         let local = MoleculeLocal { muted: true, phase: MoleculePhase::Joining, offered: vec![([0x0C; 32], 4242)] };
         save_molecule_local(&birth.molecule_id, &local, &storage).expect("save local");
         assert_eq!(load_molecule_local(&birth.molecule_id, &storage).expect("load"), local);
+        // A stored Catching up loads as Standing: nothing held survives a restart.
+        let catching = MoleculeLocal { phase: MoleculePhase::CatchingUp, ..local.clone() };
+        save_molecule_local(&birth.molecule_id, &catching, &storage).expect("save catching up");
+        assert_eq!(load_molecule_local(&birth.molecule_id, &storage).expect("load").phase, MoleculePhase::Standing);
         assert!(!bytes.windows(5).any(|w| w == b"muted"), "a mute never replicates");
         // Parked offer: park, enumerate, unpark.
         let offer = BondOffer { molecule_id: birth.molecule_id, sponsor: [0x0A; 32], row_osc: 777, snapshot: roster.clone(), accepted: false };

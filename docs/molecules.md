@@ -112,7 +112,7 @@ Decisions folded in here, superseding §2/§4/§6/§8 where they differ: **a mol
 | **Expired** | The person who vouched is gone. Row relabels; nothing else changes. | A fresh offer (from anyone standing) → Offered. |
 | **Joining** | You hold chains + roster; your member record went out as your first frame on your lane. Under from-join the molecule also has to mint you an era. | Any standing member ACKs your record → Standing. No timeout. |
 | **Standing** | The normal state. **Alone** is the same state with nobody else standing (the header says so). | Leave → Leaving. Era moved while you slept → Catching up. Everyone else leaves → Standing (alone). |
-| **Catching up** | A wrap for the current era is in re-serve; current-era frames drop pre-decrypt until it opens. | Wrap opens → Standing. |
+| **Catching up** | Derived, never stored past a restart: a held frame waits on an era this device does not hold (its wrap is in re-serve). A held frame stamped no later than one its device sent on an era we hold is an old copy (a from-join member never gets the era it rides) and is dropped, never waited on (Petunia 2026-10-27). | Nothing left waiting (the wrap opened, or the copies were old) → Standing. |
 | **Leaving** | Your leave record is posted; the molecule leaves your contact list at once (its records stay on disk, read-only — nothing is deleted). | A survivor countersigns (the mint) → Left. Alone: at once. |
 | **Left** | Read-only history, greyed row, winnowable. Terminal for this lineage. | A fresh offer → Offered (a re-join is a new member record; newest wins). |
 

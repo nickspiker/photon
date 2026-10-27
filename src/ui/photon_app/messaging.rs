@@ -759,11 +759,13 @@ impl PhotonApp {
                 // A minted group we cannot send in yet (Joining, no root) or any more (Left) PARKS the row until the edge that changes that (`unpark_molecule_posts`); a left group whose root is gone drops it — nothing will ever carry it.
                 let phase = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
                 let keyed = self.friendship_chains.iter().any(|(id, c)| *id == p.conv && c.lane_capable() && !c.awaiting_root());
+                // …and a row whose every member waits for a pending era parks for its cutover too.
+                let minting = self.friendship_chains.iter().any(|(id, c)| *id == p.conv && c.pending_era().is_some());
                 if phase == crate::storage::molecule::MoleculePhase::Left && !keyed {
                     crate::logf!("MOLECULE: dropped a held row in {} — we left and hold no root", hex::encode(&gid.0[..4]));
                     continue;
                 }
-                p.queued = if phase == crate::storage::molecule::MoleculePhase::Joining || !keyed { u64::MAX } else { serial };
+                p.queued = if phase == crate::storage::molecule::MoleculePhase::Joining || !keyed || minting { u64::MAX } else { serial };
                 self.pending_sends.push(p);
                 continue;
             }
@@ -930,6 +932,16 @@ impl PhotonApp {
                 return false;
             };
             let routes = self.routes_for_conversation(id, &our_pid);
+            // BETWEEN A MINT AND ITS CUTOVER (Petunia 2026-10-27: a row sent 0.4 s before the cutover reached the joiner on the era from before it joined, which it can never open, and held it forever): a member the pending era was made for waits for the cutover — its missing ACK re-sends the row on the fresh lane.
+            // A WRAP never waits: the cutover itself waits for our wraps to leave, so holding one would hold the cutover forever.
+            let wrap_row = matches!(control, Some(crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Wrap)));
+            let pending = !wrap_row && self.friendship_chains.iter().any(|(fid2, c)| *fid2 == fid && c.pending_era().is_some());
+            let all = routes.len();
+            let routes: Vec<Route> = routes.into_iter().filter(|r| !pending || !r.party.is_some_and(|p| self.molecule_era_joiners.contains(&(gid, p)))).collect();
+            if all > 0 && routes.is_empty() {
+                crate::logf!("MOLECULE: {} — every member we would reach waits for the pending era; the row goes at the cutover", hex::encode(&gid.0[..4]));
+                return false;
+            }
             if routes.is_empty() {
                 crate::logf!("MOLECULE: {} has no reachable member right now — the row is held for the sweep", hex::encode(&gid.0[..4]));
                 return false;

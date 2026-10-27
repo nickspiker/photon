@@ -253,6 +253,8 @@ impl PhotonApp {
         let mut molecule_acks: Vec<(crate::types::molecule::MoleculeId, [u8; 32], i64)> = Vec::new();
         // GROUPS whose current-era frames we could not open (a mint we slept thru) — flipped to Catching up after the loop.
         let mut catching_up: Vec<crate::types::molecule::MoleculeId> = Vec::new();
+        // Member devices whose frame rode an era we hold this batch, with its stamp (settle_catching_up drops their older copies).
+        let mut molecule_current_from: Vec<(crate::types::molecule::MoleculeId, [u8; 32], i64)> = Vec::new();
         // GROUP MEMBERS still writing on an era we retired (a wrap that never reached them): (conversation, their party), each handed the current era whole over our bond after the loop.
         let mut molecule_stragglers: Vec<(crate::types::FriendshipId, [u8; 32])> = Vec::new();
         // GROUP frames from a signer our roster does not name yet (a member whose join records are still on their way): held after the loop and replayed when that roster advances, never dropped.
@@ -1316,6 +1318,9 @@ impl PhotonApp {
                         }
                         if chains.molecule && slot == crate::types::friendship::EraSlot::Retired {
                             molecule_stragglers.push((*fid_ref, from_handle_hash));
+                        }
+                        if chains.molecule {
+                            molecule_current_from.push((crate::types::molecule::MoleculeId(*fid_ref.as_bytes()), sender_pubkey.key, timestamp));
                         }
                         if chains.ensure_lane_era(&lane, slot).is_none() {
                             crate::log("CHAT: frame for pre-lane chains (no root) — dropped; re-clutch re-mints");
@@ -5757,15 +5762,19 @@ impl PhotonApp {
         for (fid, party) in molecule_stragglers {
             self.deliver_era_to_straggler(fid, party);
         }
-        for gid in catching_up.iter().copied() {
-            // Our own devices may already hold the era we cannot open: ask them first, once per held era.
-            self.pull_era_from_fleet(crate::types::FriendshipId::from_bytes(gid.0));
+        // CATCHING UP, DERIVED (settle_catching_up): the devices seen on our era first, then every group this batch touched settles from what it still holds.
+        let mut touched = catching_up.clone();
+        for (gid, dev, ts) in molecule_current_from {
+            self.note_device_on_held_era(gid, dev, ts);
+            touched.push(gid);
         }
+        touched.sort_unstable_by_key(|g| g.0);
+        touched.dedup();
+        changed |= self.settle_catching_up(&touched);
         for gid in catching_up {
-            let was = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
-            if was == crate::storage::molecule::MoleculePhase::Standing {
-                self.set_molecule_local(&gid, |l| l.phase = crate::storage::molecule::MoleculePhase::CatchingUp);
-                changed = true;
+            // Our own devices may already hold the era we cannot open: ask them first, once per held era — only while a frame still waits on it.
+            if self.molecule_locals.iter().any(|(g, l)| *g == gid && l.phase == crate::storage::molecule::MoleculePhase::CatchingUp) {
+                self.pull_era_from_fleet(crate::types::FriendshipId::from_bytes(gid.0));
             }
         }
         // Sibling fork repair (deferred past the checker borrow): apply inbound resets first (each echoes once so the initiator converges), then fire any detector-initiated resets (mint nonce + apply + send).

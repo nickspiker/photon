@@ -1777,6 +1777,10 @@ pub struct PhotonApp {
     chat_replay_queue: std::collections::VecDeque<crate::network::status::StatusUpdate>,
     /// GROUP frames from a signer the roster did not name yet, per group, replayed thru `chat_replay_queue` when that roster's standing set moves (molecules.rs `hold_molecule_frame`).
     molecule_held_frames: Vec<(crate::types::molecule::MoleculeId, crate::network::status::StatusUpdate)>,
+    /// The newest stamp each member device sent on an era we hold, per group — the evidence that a held frame stamped no later, on an era we do not hold, is an old copy (molecules.rs `settle_catching_up`). Runtime only.
+    molecule_device_era: Vec<(crate::types::molecule::MoleculeId, [u8; 32], i64)>,
+    /// Members a pending mint was made for, per group: they hold only the new era, so a row on the old one would reach them unreadable — their routes wait for the cutover (messaging.rs `conversation_transmit`). Runtime only.
+    molecule_era_joiners: Vec<(crate::types::molecule::MoleculeId, [u8; 32])>,
     /// GROUP frames as their authors signed them, per group (molecules.rs `store_group_frame`): what a member hands on to another member who missed them while the author is away.
     molecule_frames: Vec<molecules::GroupFrame>,
     /// How often each frame was handed to each member device ((device, frame stamp) → tries): a frame goes at most three times to one device.
@@ -2980,6 +2984,8 @@ impl PhotonApp {
             braid_rx_rx: std::sync::mpsc::channel().1,
             chat_replay_queue: std::collections::VecDeque::new(),
             molecule_held_frames: Vec::new(),
+            molecule_device_era: Vec::new(),
+            molecule_era_joiners: Vec::new(),
             molecule_frames: Vec::new(),
             molecule_relay_tries: crate::linear_map::LinearMap::new(),
             braid_tx_tx: {

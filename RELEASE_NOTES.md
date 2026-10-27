@@ -12,6 +12,7 @@ One sentence per line, however long; plain language for the person who installs 
 - **Pictures open in molecules.** Tapping a picture in a molecule (or in your notes) opens it in the viewer; before, the viewer stayed empty.
 - **Missed molecule photons alert once.** When all your devices were offline, a molecule's missed photons now give one summary alert when they catch up, as a friend's do; a muted molecule stays quiet.
 - **Opening a molecule wakes everyone in it.** Opening a molecule checks right away whether each friend in it is there, as opening one friend does.
+- **Molecules stop saying "catching up" forever.** A photon sent just before a new member got the molecule's keys could leave that member's header stuck on "catching up" even though every photon arrived; it now clears on its own, and the sender holds such a photon until the new member can read it.
 
 ## v131
 - **Molecule members you have never met.** If you bind a friend into a molecule and they bind someone you do not know, your photons, waves and beams with that person now work like anyone else's; before, their photons never showed for you.
