@@ -39,13 +39,7 @@ impl PhotonApp {
             }
         };
 
-        {
-            use thread_priority::{ThreadBuilderExt, ThreadPriority};
-            std::thread::Builder::new()
-                .name("clutch-keygen".to_string())
-                .spawn_with_priority(ThreadPriority::Min, move |_| thread_body())
-                .expect("Failed to spawn CLUTCH keygen thread");
-        }
+        crate::platform::spawn_at("clutch-keygen", crate::platform::Priority::Min, thread_body);
         progress
     }
 
@@ -98,13 +92,7 @@ impl PhotonApp {
             }
         };
 
-        {
-            use thread_priority::{ThreadBuilderExt, ThreadPriority};
-            std::thread::Builder::new()
-                .name("clutch-kem-encap".to_string())
-                .spawn_with_priority(ThreadPriority::Min, move |_| thread_body())
-                .expect("Failed to spawn KEM encap thread");
-        }
+        crate::platform::spawn_at("clutch-kem-encap", crate::platform::Priority::Min, thread_body);
     }
 
     /// Spawn background thread to decapsulate a peer's KEM response — 8 PQ decapsulations against our secret keys, the fourth CLUTCH job stage. Ran inline in three drain arms until 2026-08-15 (the last of the 2026-08-08 "deliberately inline" residue); on a throttled phone the inline open was the visible "weaving the chain" UI freeze. Results drain in check_clutch_kem_decaps(); the caller sets clutch_kem_decap_in_progress to serialize.
@@ -144,13 +132,7 @@ impl PhotonApp {
             }
         };
 
-        {
-            use thread_priority::{ThreadBuilderExt, ThreadPriority};
-            std::thread::Builder::new()
-                .name("clutch-kem-decap".to_string())
-                .spawn_with_priority(ThreadPriority::Min, move |_| thread_body())
-                .expect("Failed to spawn KEM decap thread");
-        }
+        crate::platform::spawn_at("clutch-kem-decap", crate::platform::Priority::Min, thread_body);
     }
 
     /// Drain background KEM-decap results: the one place decapped secrets enter a slot, consolidating what three inline arms each half-did (store, offer backfill, encap trigger, completion check).
@@ -388,13 +370,7 @@ impl PhotonApp {
             }
         };
 
-        {
-            use thread_priority::{ThreadBuilderExt, ThreadPriority};
-            std::thread::Builder::new()
-                .name("clutch-ceremony".to_string())
-                .spawn_with_priority(ThreadPriority::Min, move |_| thread_body())
-                .expect("Failed to spawn ceremony thread");
-        }
+        crate::platform::spawn_at("clutch-ceremony", crate::platform::Priority::Min, thread_body);
     }
 
     /// Process background CLUTCH key generation results.

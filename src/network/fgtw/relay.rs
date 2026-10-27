@@ -85,6 +85,13 @@ fn relay_target_locked(recipient: &[u8; 32]) -> bool {
         .any(|d| d == recipient)
 }
 
+/// The relay is fgtw.org; ferros does not speak to it — a peer with no direct path is out of reach from the phone for now.
+#[cfg(target_os = "ferros")]
+pub async fn send_via_relay(_keypair: &Keypair, _recipient_pubkey: &[u8; 32], _message_bytes: &[u8]) -> Result<(), String> {
+    Err("no relay from ferros".to_string())
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub async fn send_via_relay(
     keypair: &Keypair,
     recipient_pubkey: &[u8; 32],
@@ -169,6 +176,12 @@ fn relay_reached(body: &[u8]) -> bool {
 }
 
 /// Synchronous version of send_via_relay for non-async contexts
+#[cfg(target_os = "ferros")]
+pub fn send_via_relay_sync(_keypair: &Keypair, _recipient_pubkey: &[u8; 32], _message_bytes: &[u8]) -> Result<(), String> {
+    Err("no relay from ferros".to_string())
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn send_via_relay_sync(
     keypair: &Keypair,
     recipient_pubkey: &[u8; 32],

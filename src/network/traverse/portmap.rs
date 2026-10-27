@@ -142,6 +142,13 @@ fn pcp(gateway: Ipv4Addr, port: u16, lifetime: Duration) -> Option<Mapping> {
 }
 
 /// UPnP IGD: SSDP discovery on the LAN, the device description for the WANIPConnection control URL, then one SOAP AddPortMapping and one GetExternalIPAddress. String-parsed on purpose — the three fields we need are unambiguous and an XML crate is a dependency the doctrine does not want.
+/// UPnP speaks HTTP to the gateway; ferros has no HTTP client yet, and the phone sits behind no NAT of its own.
+#[cfg(target_os = "ferros")]
+fn upnp(_gateway: Ipv4Addr, _port: u16, _lifetime: Duration) -> Option<Mapping> {
+    None
+}
+
+#[cfg(not(target_os = "ferros"))]
 fn upnp(_gateway: Ipv4Addr, port: u16, lifetime: Duration) -> Option<Mapping> {
     let s = UdpSocket::bind("0.0.0.0:0").ok()?;
     s.set_read_timeout(Some(Duration::from_millis(1500))).ok()?;

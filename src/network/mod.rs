@@ -9,7 +9,7 @@ pub mod inspect;
 pub mod message_package;
 pub mod pairing_beacon;
 pub mod pairing_nfc;
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ferros")))]
 pub mod peer_updates;
 pub mod pt;
 pub mod pigeon;
@@ -29,7 +29,7 @@ pub use clutch_jobs::{
     ClutchCeremonyResult, ClutchKemDecapResult, ClutchKemEncapResult, ClutchKeygenResult,
 };
 pub use handle_query::{HandleQuery, QueryResult};
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ferros")))]
 pub use peer_updates::{PeerUpdate, PeerUpdateClient};
 pub use pt::PTManager;
 pub use status::{StatusChecker, StatusUpdate};

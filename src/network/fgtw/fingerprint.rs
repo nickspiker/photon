@@ -30,7 +30,9 @@ impl FgtwPaths {
             base_dir.join("peers.vsf")
         };
 
-        #[cfg(not(target_os = "android"))]
+        #[cfg(target_os = "ferros")]
+        let peer_cache: std::path::PathBuf = return Err(io::Error::new(io::ErrorKind::Unsupported, "no peer cache on ferros yet: it belongs in the vault"));
+        #[cfg(not(any(target_os = "android", target_os = "ferros")))]
         let peer_cache = dirs::cache_dir()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "No cache dir"))?
             .join("fgtw")

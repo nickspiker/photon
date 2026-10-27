@@ -34,6 +34,12 @@ impl std::fmt::Display for PhonebookError {
     }
 }
 
+#[cfg(target_os = "ferros")]
+async fn post(_body: Vec<u8>) -> Result<Vec<u8>, PhonebookError> {
+    Err(PhonebookError::Network("no fgtw.org from ferros".to_string()))
+}
+
+#[cfg(not(target_os = "ferros"))]
 async fn post(body: Vec<u8>) -> Result<Vec<u8>, PhonebookError> {
     let client = reqwest::Client::builder()
         .timeout(TIMEOUT)

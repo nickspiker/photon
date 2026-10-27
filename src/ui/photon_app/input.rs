@@ -300,7 +300,18 @@ impl PhotonApp {
     }
 
     /// Set the clipboard thru the app's long-lived handle, recreating it once on failure. LONG-LIVED is the fix (field 2026-09-02, "fifty copies, two land"): X11/Wayland clipboards are ownership-based — the selection is served only while the arboard instance lives, so the old create-set-drop pattern surrendered ownership microseconds after every copy and the text survived only when a clipboard manager happened to snatch it first. Loud on every outcome so a field log can convict the next failure mode instead of guessing.
-    #[cfg(not(target_os = "android"))]
+    /// No clipboard on ferros yet: the copy is refused and the paste is empty.
+    #[cfg(target_os = "ferros")]
+    pub(super) fn clipboard_set(&mut self, _s: String) -> bool {
+        false
+    }
+
+    #[cfg(target_os = "ferros")]
+    pub(super) fn clipboard_get(&mut self) -> Option<String> {
+        None
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ferros")))]
     pub(super) fn clipboard_set(&mut self, s: String) -> bool {
         let n = s.len();
         for attempt in 0..2u8 {
@@ -330,7 +341,7 @@ impl PhotonApp {
     }
 
     /// Read the clipboard thru the same long-lived handle (one recreate on failure, same law as `clipboard_set`).
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "ferros")))]
     pub(super) fn clipboard_get(&mut self) -> Option<String> {
         for _ in 0..2u8 {
             if self.clipboard.is_none() {
@@ -816,7 +827,7 @@ impl PhotonApp {
                 }
             }
         };
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ferros")))]
         {
             wipe_dir(dirs::config_dir(), &mut count);
             wipe_dir(dirs::data_dir(), &mut count);

@@ -274,7 +274,7 @@ impl PhotonApp {
         crate::logf!("NOTIFY: invitation to {} from {}", hex::encode(&gid.0[..4]), crate::fp(&c.handle_proof));
         #[cfg(target_os = "android")]
         crate::platform::jni_android::notify_new_message(&alert_hp, &digest, &sender, &body, None);
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ferros")))]
         {
             crate::platform::desktop_notify::notify_new_message(&alert_hp, &sender, &body, None);
             if crate::platform::notify_prefs::chime() {

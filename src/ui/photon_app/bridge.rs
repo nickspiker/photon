@@ -1099,7 +1099,7 @@ impl PhotonApp {
         };
         // The landing directory: the sibling's shell cwd as of its last command, else the shell's starting directory (home).
         let cwd = self.bridge_cwds.as_ref().and_then(|m| m.lock().ok()).and_then(|m| m.get(&from).cloned()).filter(|c| !c.is_empty());
-        let dir = cwd.map(std::path::PathBuf::from).or_else(dirs::home_dir).unwrap_or_else(|| std::path::PathBuf::from("."));
+        let dir = cwd.map(std::path::PathBuf::from).or_else(home_dir).unwrap_or_else(|| std::path::PathBuf::from("."));
         let (tx, wake) = (self.pigeon_landed_tx.clone(), self.event_proxy.clone());
         queue_job(&self.seal_job_tx, move || {
             let dir_s = dir.to_string_lossy().into_owned();
@@ -1226,4 +1226,12 @@ mod ack_thinning {
         assert!(pigeon_ack_due(0, 1, 545), "and the first");
         assert!(!pigeon_ack_due(0, 0, 545));
     }
+}
+
+/// The user's home directory, where the OS has one; ferros has no directories.
+fn home_dir() -> Option<std::path::PathBuf> {
+    #[cfg(not(target_os = "ferros"))]
+    return dirs::home_dir();
+    #[cfg(target_os = "ferros")]
+    None
 }

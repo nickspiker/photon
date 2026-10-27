@@ -1704,6 +1704,12 @@ impl PhotonApp {
     pub(super) fn ring_alert_for(&mut self, sender_name: String, from_hh: &[u8; 32], us: &[u8; 32]) -> Option<crate::wave::RingGuard> {
         let digest = relationship_digest(from_hh, us);
         let ring_hp = *blake3::hash(&digest).as_bytes();
+        // No ring on ferros yet: no notification surface and no audio engine.
+        #[cfg(target_os = "ferros")]
+        {
+            let _ = ring_hp;
+            return None;
+        }
         // Honor the Notifications "Ring on incoming wave" tick: unchecked = the notification still posts (the wave is never invisible) but the audible ring loop stays silent. Read BEFORE the platform blocks — Android's ring loops now, and an unhonored mute there is a ring that cannot be silenced.
         let ring_audible = self
             .fleet_settings
@@ -1731,7 +1737,7 @@ impl PhotonApp {
                 );
             }
         }
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ferros")))]
         {
             use std::sync::atomic::{AtomicBool, Ordering};
             crate::platform::desktop_notify::notify_new_message(

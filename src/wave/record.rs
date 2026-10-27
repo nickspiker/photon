@@ -395,11 +395,13 @@ fn grid_from_records(records: &[Record]) -> Option<(usize, Vec<Vec<Option<Cell>>
     Some((nchan, grid))
 }
 
+#[cfg(not(target_os = "ferros"))]
 fn mono_decoder() -> Option<opus::Decoder> {
     opus::Decoder::new(48_000, opus::Channels::Mono).ok()
 }
 
 /// Decode one channel's slot (or silence) with its running decoder, at the origin's frame size — `FRAME_IN` for live-spool input (the keep's envelope pass + the preview), `FRAME` for archive playback. Silence slots do NOT touch the decoder (no frame was ever encoded there — the gap is genuine), so the next real frame decodes in step.
+#[cfg(not(target_os = "ferros"))]
 fn decode_slot_n(dec: &mut opus::Decoder, cell: &Option<Cell>, frame: usize) -> Vec<i16> {
     match cell {
         Some(Cell::Opus(opus)) => {
@@ -422,6 +424,14 @@ fn decode_slot_n(dec: &mut opus::Decoder, cell: &Option<Cell>, frame: usize) -> 
 }
 
 /// KEEP → the `PHCALL8` container (every spooled packet verbatim, one decode pass for the envelope), stored as a content-addressed blob. Returns (content_hash, size); consumes the ticket (dropping it crypto-shreds the spool key either way); removes the spool file on success. `None` = nothing recorded (treat keep as delete) or a codec init failure.
+/// No libopus on ferros yet: a wave cannot be kept there.
+#[cfg(target_os = "ferros")]
+pub fn finalize_nchannel(_ticket: SpoolTicket, _identity_seed: &[u8; 32]) -> Option<Kept> {
+    crate::log("WAVE: no opus decoder on ferros yet, the wave is not kept");
+    None
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn finalize_nchannel(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Option<Kept> {
     // Every way this returns None names its reason in the log (drain_records names its own); the caller's "not kept" line points back here.
     let records = drain_records(&ticket)?;
@@ -448,6 +458,13 @@ pub fn finalize_nchannel(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Optio
 }
 
 /// A GROUP wave's keep (docs/group-waves.md): one spool per link, each holding our side (the lead link's archive stream, our wire copies) and that link's far party on channel 1. The far parties become channels 1, 2, 3… in link order; our archive is channel 0 as in any keep, taken from whichever link was lead at the time.
+#[cfg(target_os = "ferros")]
+pub fn finalize_group(_tickets: Vec<SpoolTicket>, _identity_seed: &[u8; 32]) -> Option<Kept> {
+    crate::log("WAVE: no opus decoder on ferros yet, the group wave is not kept");
+    None
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn finalize_group(tickets: Vec<SpoolTicket>, identity_seed: &[u8; 32]) -> Option<Kept> {
     let mut sets: Vec<Vec<Record>> = Vec::new();
     for t in &tickets {
@@ -496,6 +513,13 @@ pub(crate) fn merge_group_records(sets: Vec<Vec<Record>>) -> Vec<Record> {
 }
 
 /// The keep core: drained spool records → a `PHCALL8` container (bytes). Split from [`finalize_nchannel`] so it's testable without the storage/vault layer. `None` = nothing recorded or a codec init failure.
+#[cfg(target_os = "ferros")]
+pub(crate) fn build_container(_records: &[Record]) -> Option<Transcoded> {
+    crate::log("WAVE: no opus decoder on ferros yet, no container");
+    None
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
     // THE ORDERING FIX (Nick 2026-09-12): channel 0 is the live ARCHIVE stream verbatim — the clean pre-duck encode made during the wave. THE VERBATIM KEEP (Nick 2026-09-17): every other channel is verbatim too — the wire packets on their 5 ms seq lattice, fills included, holes kept — so the keep encodes nothing and its one decode pass feeds the envelope. A legacy spool with no archive records carries channel 0 as its wire copies (sub 2) the same way.
     let arch: Vec<&Record> = records.iter().filter(|r| r.is_arch()).collect();
@@ -659,12 +683,14 @@ enum Inner {
     Multi {
         bytes: Vec<u8>,
         cur: usize,
+        #[cfg(not(target_os = "ferros"))]
         decs: Vec<opus::Decoder>,
         subs: Vec<u8>,
     },
     /// Live-spool grid (the Ended-screen PREVIEW path): 5ms input slots, slot-iterated + interleaved on the fly.
     Grid {
         grid: Vec<Vec<Option<Cell>>>,
+        #[cfg(not(target_os = "ferros"))]
         decs: Vec<opus::Decoder>,
         slot: usize,
     },
@@ -674,6 +700,7 @@ enum Inner {
 pub const RENDER_PROFILE_MAGIC: &[u8; 8] = b"PHPROF1\0";
 
 /// Fold the render records into the profile region: magic ‖ `[nslots u32 LE]` ‖ nslots × `[gain u16 LE (8.8)][holes u8]` ‖ nslots × `[len u16 LE][opus 10 ms]` ‖ `[block_len u32 LE]`. Nothing is written when no render record exists.
+#[cfg(not(target_os = "ferros"))]
 fn append_render_profile(profile: &mut Vec<u8>, render: &[&Record], base: i64, slots_out: usize) {
     if render.is_empty() {
         return;
@@ -773,6 +800,13 @@ pub fn open_render_profile(bytes: &[u8]) -> Option<RenderProfile> {
 }
 
 /// Open a kept-wave blob for playback — `PHWAVE9`, the one container that reads. Every PHCALL magic went with the 2026-09-23 flag day, no backwards compat — unknown magic is unknown magic. `None` on unknown magic or codec init failure.
+/// No libopus on ferros yet: a kept wave cannot be opened for playback there.
+#[cfg(target_os = "ferros")]
+pub fn open_blob(_bytes: &[u8]) -> Option<KeptStream> {
+    None
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn open_blob(bytes: &[u8]) -> Option<KeptStream> {
     if bytes.len() < 8 + 22 {
         return None;
@@ -821,6 +855,12 @@ pub fn open_blob(bytes: &[u8]) -> Option<KeptStream> {
 }
 
 /// Build a playable stream directly from drained spool records — the Ended-screen PREVIEW path, so Play works before Keep finalizes a blob.
+#[cfg(target_os = "ferros")]
+pub(crate) fn stream_from_records(_records: &[Record]) -> Option<KeptStream> {
+    None
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub(crate) fn stream_from_records(records: &[Record]) -> Option<KeptStream> {
     let (nchan, grid) = grid_from_records(records)?;
     Some(KeptStream {
@@ -862,6 +902,10 @@ impl KeptStream {
     }
 
     /// Position the stream at archive slot `slot` (clamped to the end): packets before the target are WALKED by their length prefix, never decoded — a two-hour seek is a byte scan, not a two-hour decode — then `SEEK_PRIME` frames prime the decoder. The tap-to-seek path.
+    #[cfg(target_os = "ferros")]
+    pub fn seek(&mut self, _slot: usize) {}
+
+    #[cfg(not(target_os = "ferros"))]
     pub fn seek(&mut self, slot: usize) {
         let slot = slot.min(self.total);
         // WHY/PROOF: a seek inside the first SEEK_PRIME slots primes from slot 0, the start — not from a wrapped slot past the end.
@@ -894,6 +938,12 @@ impl KeptStream {
     }
 
     /// The next interleaved `FRAME × nchan` i16 frame, or `None` at end of stream. A decode failure inside the stream yields silence for that frame rather than ending playback early.
+    #[cfg(target_os = "ferros")]
+    pub fn next_frame(&mut self) -> Option<Vec<i16>> {
+        None
+    }
+
+    #[cfg(not(target_os = "ferros"))]
     pub fn next_frame(&mut self) -> Option<Vec<i16>> {
         let nchan = self.nchan;
         match &mut self.inner {

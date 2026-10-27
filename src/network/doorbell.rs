@@ -30,6 +30,13 @@ fn signed_frame(
     Ok(signed)
 }
 
+/// The doorbell rings at fgtw.org; ferros does not speak to it.
+#[cfg(target_os = "ferros")]
+fn post(_vsf_bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    Err("no fgtw.org from ferros".to_string())
+}
+
+#[cfg(not(target_os = "ferros"))]
 fn post(vsf_bytes: Vec<u8>) -> Result<Vec<u8>, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(10))

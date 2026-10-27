@@ -158,6 +158,13 @@ pub fn fetch_manifest_blocking(channel: Channel) -> Result<Vec<ManifestRow>, Str
 }
 
 /// [`fetch_manifest_blocking`] plus the SIGNED header's creation stamp (eagle-time oscillations) — the `t` of the stamp window. 0 if the header carries no timestamp (treated as maximally stale by [`stamp_window`]).
+/// Updates come from the update server over HTTPS; a ferros capsule comes from the vault, so there is nothing to fetch or apply here.
+#[cfg(target_os = "ferros")]
+pub fn fetch_manifest_stamped_blocking(_channel: Channel) -> Result<(i64, Vec<ManifestRow>), String> {
+    Err("no update server from ferros".to_string())
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn fetch_manifest_stamped_blocking(
     channel: Channel,
 ) -> Result<(i64, Vec<ManifestRow>), String> {
@@ -184,6 +191,12 @@ pub fn fetch_manifest_stamped_blocking(
 pub const RELEASE_NOTES_URL: &str = "https://brobdingnagian.holdmyoscilloscope.com/photon/release-notes.md";
 
 /// Fetch the published release notes (cache-busted like the manifest). Errors are the caller's to log; the page simply shows nothing for a release it can't describe.
+#[cfg(target_os = "ferros")]
+pub fn fetch_release_notes_blocking() -> Result<String, String> {
+    Err("no update server from ferros".to_string())
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn fetch_release_notes_blocking() -> Result<String, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
@@ -297,6 +310,7 @@ pub fn our_row(rows: &[ManifestRow]) -> Option<ManifestRow> {
 }
 
 /// Download an artefact to `dest`, then gate it twice: BLAKE3 against the signed manifest's hash, and (for desktop binaries) the appended Ed25519 self-signature on disk. Nothing execs unless both pass. `progress(done, total)` fires as chunks stream in (total = 0 when the server sent no length) — the Updates page renders it as the download bar.
+#[cfg(not(target_os = "ferros"))]
 fn download_verified(
     row: &ManifestRow,
     dest: &PathBuf,
@@ -392,6 +406,12 @@ fn installed_exe_path() -> Result<PathBuf, String> {
 
 /// The canonical install copies for this platform, launch priority first — the updater writes ALL of them so the resilient-launch shim always has a good one (docs/resilient-launch.md). Kept in sync with the installers.
 #[cfg(not(target_os = "android"))]
+#[cfg(target_os = "ferros")]
+fn resilient_copies() -> Vec<PathBuf> {
+    Vec::new()
+}
+
+#[cfg(not(target_os = "ferros"))]
 fn resilient_copies() -> Vec<PathBuf> {
     #[allow(unused_variables)]
     let home = dirs::home_dir().unwrap_or_default();
@@ -422,6 +442,12 @@ fn resilient_copies() -> Vec<PathBuf> {
 
 /// The re-exec target after an update: the resilient-launch shim on Linux (so the relaunch takes the verify-and-fallback path), else None → re-exec the running copy directly. macOS re-execs the bundle so the TCC identity is preserved; Windows re-execs the .exe (its shim is a .cmd, spawned only by the Start-menu shortcut).
 #[cfg(target_os = "linux")]
+#[cfg(target_os = "ferros")]
+fn launch_shim() -> Option<PathBuf> {
+    None
+}
+
+#[cfg(not(target_os = "ferros"))]
 fn launch_shim() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".local/bin/photon-launch"))
 }
@@ -449,6 +475,12 @@ fn mirror_into(src: &std::path::Path, dest: &std::path::Path) -> Result<(), Stri
 
 /// Desktop one-click apply: download next to the current exe, verify (hash + appended signature), swap atomically, then mirror the verified binary into the OTHER install copies. Returns the re-exec target (the shim where present, else the swapped exe). Unix: rename() over the path is atomic and the running process keeps its open inode. Windows: the running exe is locked against overwrite but CAN be renamed aside — shuffle to .old (deleted on some future launch), place the new exe, done.
 #[cfg(not(target_os = "android"))]
+#[cfg(target_os = "ferros")]
+pub fn apply_desktop_blocking(_row: &ManifestRow, _progress: &dyn Fn(u64, u64)) -> Result<PathBuf, String> {
+    Err("no update server from ferros".to_string())
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn apply_desktop_blocking(
     row: &ManifestRow,
     progress: &dyn Fn(u64, u64),
@@ -529,6 +561,12 @@ pub fn sweep_old_binary() {
 
 /// Android: download + hash-verify the APK into the app's files dir and return its path — the caller hands it to the system installer (the second click). No appended-signature check: APKs are signed by the Android keystore and verified by the OS installer; integrity here = the BLAKE3 from the SIGNED manifest.
 #[cfg(target_os = "android")]
+#[cfg(target_os = "ferros")]
+pub fn download_apk_blocking(_row: &ManifestRow, _progress: &dyn Fn(u64, u64)) -> Result<PathBuf, String> {
+    Err("no update server from ferros".to_string())
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn download_apk_blocking(
     row: &ManifestRow,
     progress: &dyn Fn(u64, u64),

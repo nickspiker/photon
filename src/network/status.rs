@@ -18,7 +18,6 @@ use crate::types::DevicePubkey;
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::thread;
 use std::time::{Duration, Instant};
 
 #[cfg(not(target_os = "android"))]
@@ -913,13 +912,7 @@ impl StatusChecker {
             });
         };
 
-        {
-            use thread_priority::{ThreadBuilderExt, ThreadPriority};
-            thread::Builder::new()
-                .name("network-status".to_string())
-                .spawn_with_priority(ThreadPriority::Max, move |_| thread_body())
-                .expect("Failed to spawn network thread");
-        }
+        crate::platform::spawn_at("network-status", crate::platform::Priority::Max, thread_body);
 
         Ok(Self {
             needs_reflect,
@@ -1020,13 +1013,7 @@ impl StatusChecker {
             });
         };
 
-        {
-            use thread_priority::{ThreadBuilderExt, ThreadPriority};
-            thread::Builder::new()
-                .name("network-status".to_string())
-                .spawn_with_priority(ThreadPriority::Max, move |_| thread_body())
-                .expect("Failed to spawn network thread");
-        }
+        crate::platform::spawn_at("network-status", crate::platform::Priority::Max, thread_body);
 
         Ok(Self {
             needs_reflect,
@@ -1197,7 +1184,7 @@ pub const RELAY_ADDR: SocketAddr = SocketAddr::new(std::net::IpAddr::V4(Ipv4Addr
 /// Send a REPLY (pong, chat ACK, CLUTCH proof ACK) back to whoever sent us the message we're answering.
 /// If it arrived directly (`dst` is a real address) this is a plain UDP send. If it arrived over the relay pipe (`dst == RELAY_ADDR`), UDP would black-hole to 0.0.0.0:0 — so instead we relay the reply back to the sender's device key over their pipe. `reply_to_device` is the device key extracted from the inbound message (its signer). This is what makes the relay BIDIRECTIONAL: a pong/ACK returns the same way the message came, so presence flips online on both ends and chat ACKs clear the sender's retransmit.
 async fn relay_reply(
-    socket: &tokio::net::UdpSocket,
+    socket: &crate::network::udp::UdpSocket,
     keypair: &crate::network::fgtw::Keypair,
     dst: SocketAddr,
     reply_to_device: &[u8; 32],
@@ -1267,7 +1254,7 @@ async fn run_checker(
     peer_store: Arc<Mutex<crate::network::fgtw::PeerStore>>,
     needs_reflect: std::sync::Arc<std::sync::atomic::AtomicBool>,
 ) {
-    use tokio::net::UdpSocket as TokioUdpSocket;
+    use crate::network::udp::UdpSocket as TokioUdpSocket;
 
     // Raw device pubkey for the LAN-discovery paths: stamped into our outgoing beacon and compared against incoming ones, so a device never learns its own looped-back beacon as a peer address ([u8; 32] is Copy — each spawned listener grabs its own).
     let our_device_pk: [u8; 32] = keypair.public.to_bytes();
@@ -1305,7 +1292,7 @@ async fn run_checker(
     };
 
     // Start TCP listener for CLUTCH large payloads (same port as UDP) Try IPv6 first (dual-stack), fall back to IPv4 Skip on Android - tokio TcpListener has issues with accept() returning EINVAL
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "ferros")))]
     let tcp_listener = {
         let udp_port = std_socket
             .local_addr()
@@ -1316,7 +1303,7 @@ async fn run_checker(
             std::net::IpAddr::V6(std::net::Ipv6Addr::UNSPECIFIED),
             udp_port,
         );
-        match tokio::net::TcpListener::bind(tcp_addr_v6).await {
+        match crate::platform::net::TcpListener::bind(tcp_addr_v6).await {
             Ok(listener) => {
                 crate::logf!("Status: TCP listening on [::]:{}  (dual-stack)", udp_port);
                 Some(listener)
@@ -1325,7 +1312,7 @@ async fn run_checker(
                 // Fall back to IPv4 only
                 // No learned LAN address is a WILDCARD bind (0.0.0.0 = all interfaces) — the one place unspecified is a real meaning, stated here instead of minted upstream.
                 let tcp_addr_v4 = SocketAddr::new(std::net::IpAddr::V4(local_ip.unwrap_or(Ipv4Addr::UNSPECIFIED)), udp_port);
-                match tokio::net::TcpListener::bind(tcp_addr_v4).await {
+                match crate::platform::net::TcpListener::bind(tcp_addr_v4).await {
                     Ok(listener) => {
                         crate::logf!("Status: TCP listening on {} (IPv4 only)", tcp_addr_v4);
                         Some(listener)
@@ -1338,8 +1325,8 @@ async fn run_checker(
             }
         }
     };
-    #[cfg(target_os = "android")]
-    let tcp_listener: Option<tokio::net::TcpListener> = None;
+    #[cfg(any(target_os = "android", target_os = "ferros"))]
+    let tcp_listener: Option<crate::platform::net::TcpListener> = None;
 
     let pending: Arc<Mutex<Vec<PendingPing>>> = Arc::new(Mutex::new(Vec::new()));
 
@@ -1404,7 +1391,7 @@ async fn run_checker(
             }
 
             // Convert to tokio socket
-            let socket = match tokio::net::UdpSocket::from_std(socket) {
+            let socket = match crate::network::udp::UdpSocket::from_std(socket) {
                 Ok(s) => s,
                 Err(e) => {
                     crate::logf!("LAN: Failed to convert socket: {}", e);
@@ -1551,7 +1538,7 @@ async fn run_checker(
                 return;
             }
 
-            let socket = match tokio::net::UdpSocket::from_std(socket) {
+            let socket = match crate::network::udp::UdpSocket::from_std(socket) {
                 Ok(s) => s,
                 Err(e) => {
                     crate::logf!("LAN: Failed to convert IPv6 socket: {}", e);
@@ -1769,6 +1756,8 @@ async fn run_checker(
 
     // Spawn RELAY PIPE task — the live bridge for peers with NO direct path (asymmetric reachability: one end IPv6-only, the other IPv4-only). fgtw.org is dual-stack, so both reach it. We hold ONE WebSocket open to our own device's PipeHub (keyed by our device key); a sender's signed `relay` request is forwarded straight down it by the worker — no polling, no store-and-forward, no R2. Every frame received is fed into the inject channel, so it rides the receiver task's real dispatch tagged RELAY_ADDR (the app skips address-learning + marks reached_via_relay). Trust is applied downstream exactly as for a UDP packet (each parser verifies the signature; CLUTCH handlers gate on fold-respecting knows_device). This carries the WHOLE data plane, not just the ceremony — presence and chat ride it too.
     // Runs on EVERY platform including Android, which is the whole reason the relay exists: the peers that need it are on Android. tokio-tungstenite is not target-gated in Cargo and ring/rustls cross-compile under the NDK (the same precedent that un-gated nunc); unlike peer_updates' desktop-only WS, this runs in the JNI network runtime too. If a device build ever fails to hold the WS over cellular, that's the thing to chase — not a reason to gate it off, which would strand the exact peers it serves.
+    #[cfg(not(target_os = "ferros"))]
+    #[cfg(not(target_os = "ferros"))]
     {
         let our_dev_hex = hex::encode(our_device_pk);
         let inject_tx_pipe = inject_tx.clone();
@@ -5303,7 +5292,7 @@ async fn handle_pt_vsf_packet(
     msg_bytes: &[u8],
     src_addr: SocketAddr,
     pt: &Arc<Mutex<PTManager>>,
-    socket: &Arc<tokio::net::UdpSocket>,
+    socket: &Arc<crate::network::udp::UdpSocket>,
     _status_tx: &Sender<StatusUpdate>,
     _event_proxy: &OptionalEventProxy,
     contacts: &ContactPubkeys,

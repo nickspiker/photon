@@ -41,6 +41,7 @@ pub enum ClockCheckResult {
 
 /// Each precise observation as a TrueClock exchange on the boot clock. Only the sub-millisecond protocols count (NTP, NTS, Roughtime — HTTPS's Date header is whole-second), and only sources the consensus did not reject.
 /// The offset follows nunc's own convention (the server's mid-trip time against the local receipt less half the trip), and each receipt, read on the WALL clock, moves onto the boot clock by how long before the query returned it landed — both clocks read once, here, so a wall-clock step elsewhere cannot tear the batch.
+#[cfg(not(target_os = "ferros"))]
 fn exchanges_of(t: &nunc::NuncTime) -> Vec<crate::network::true_clock::Exchange> {
     let (boot_now, wall_now) = (crate::network::time_base::boot_now(), vsf::eagle_time_oscillations());
     t.raw
@@ -59,6 +60,11 @@ fn exchanges_of(t: &nunc::NuncTime) -> Vec<crate::network::true_clock::Exchange>
 /// Spawn the background clock check. Mirrors the avatar / clutch worker shape: own thread, own current-thread tokio runtime (nunc is async), result back over an `mpsc` channel, then wake the event loop so the next frame drains it. Never blocks the UI thread.
 ///
 /// Every platform. On Android the wake handle is `None` — its redraws come thru the JNI/Choreographer path, and `drain_clock_check` runs every tick regardless.
+/// ferros takes its clock from the kernel (the PMIC's, and GNSS when it has a fix): no time servers are asked.
+#[cfg(target_os = "ferros")]
+pub fn spawn_clock_check(_tx: std::sync::mpsc::Sender<ClockCheckResult>, _event_proxy: ClockWake) {}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn spawn_clock_check(
     tx: std::sync::mpsc::Sender<ClockCheckResult>,
     #[allow(unused_variables)] event_proxy: ClockWake,

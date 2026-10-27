@@ -53,6 +53,12 @@ pub fn export_to<W: std::io::Write + std::io::Seek>(blob: &[u8], fmt: ExportForm
     }
 }
 
+#[cfg(target_os = "ferros")]
+fn write_wav<W: std::io::Write + std::io::Seek>(_stream: &mut record::KeptStream, _rendered: Option<record::RenderProfile>, _f: &mut W) -> Result<u64, String> {
+    Err("no opus decoder on ferros yet: a wave cannot be exported as WAV".to_string())
+}
+
+#[cfg(not(target_os = "ferros"))]
 fn write_wav<W: std::io::Write + std::io::Seek>(stream: &mut record::KeptStream, rendered: Option<record::RenderProfile>, f: &mut W) -> Result<u64, String> {
     use std::io::{SeekFrom, Write};
     let wire = stream.nchan;

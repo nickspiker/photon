@@ -85,7 +85,9 @@ pub struct VaultStatsView {
 pub fn vault_volume_space() -> Option<(u64, u64)> {
     #[cfg(target_os = "android")]
     let dir = std::path::PathBuf::from(android_vault_dirs()?.0);
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_os = "ferros")]
+    let dir: std::path::PathBuf = return None;
+    #[cfg(not(any(target_os = "android", target_os = "ferros")))]
     let dir = dirs::config_dir()?;
     volume_space(&dir)
 }
@@ -254,7 +256,11 @@ fn census_sweep(device_secret: &[u8; 32]) {
 }
 
 /// The secondary (data-dir) photon dir — the vault mirror's home where the XDG split gives two roots. Honors the same dev/test override as [`photon_config_dir`] (the override points the whole instance at ONE dir; the census dedupes).
-#[cfg(not(target_os = "android"))]
+#[cfg(target_os = "ferros")]
+fn photon_data_dir() -> Option<std::path::PathBuf> {
+    None
+}
+#[cfg(not(any(target_os = "android", target_os = "ferros")))]
 fn photon_data_dir() -> Option<std::path::PathBuf> {
     #[cfg(any(feature = "development", test))]
     if let Ok(custom) = std::env::var("PHOTON_DATA_DIR") {
@@ -300,7 +306,11 @@ pub fn photon_config_dir() -> Result<std::path::PathBuf, std::io::Error> {
             std::io::Error::new(std::io::ErrorKind::NotFound, "Android data dir not set")
         })
     }
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_os = "ferros")]
+    {
+        Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "no config directory on ferros: Photon's state is the vault"))
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ferros")))]
     {
         // Dev-only override: PHOTON_DATA_DIR points a whole instance (vault + log + lock) at a separate dir, so a second instance can run isolated for two-party testing (pair with PHOTON_FINGERPRINT for a distinct device identity). Compiled out of release so production has no escape hatch from the single-instance lock. Also alive under cfg(test): the test-isolation helper routes EVERY disk write thru it so `cargo test` can never touch a real config dir again (the "eight vaults" mystery, 2026-08-20).
         #[cfg(any(feature = "development", test))]

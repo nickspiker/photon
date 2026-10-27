@@ -197,6 +197,12 @@ pub fn resume(path: &Path) -> io::Result<Option<(SpoolDesc, SpoolLayout, File)>>
 // The muts feed the WINDOWS arm's seek_write loop; unix's write_all_at never rebinds them, hence the allow.
 #[allow(unused_mut)]
 fn pwrite_all(f: &File, mut buf: &[u8], mut off: u64) -> io::Result<()> {
+    // No positional file writes where there are no files (ferros: the spool belongs in the vault).
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (f, &buf, off);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "no spool files on this target"))
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileExt;
@@ -215,6 +221,11 @@ fn pwrite_all(f: &File, mut buf: &[u8], mut off: u64) -> io::Result<()> {
 }
 
 fn pread_exact(f: &File, buf: &mut [u8], off: u64) -> io::Result<()> {
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = (f, &buf, off);
+        Err(io::Error::new(io::ErrorKind::Unsupported, "no spool files on this target"))
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::FileExt;

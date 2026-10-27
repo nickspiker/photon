@@ -36,6 +36,7 @@ fn try_parse_vsf_error(bytes: &[u8]) -> Option<String> {
 
 /// Turn an FGTW error response into a SHORT, plain message with no web-stack jargon (no status numbers, no "Bad Request"/"Internal Server Error" reason phrases, no URLs). FGTW signs its own error reasons; if one is present we surface that (it's ours and it's meaningful); otherwise the message is a plain "FGTW couldn't <step>" split only by whether the fault is on their side (5xx) or ours (4xx). The raw HTTP terminology is a transport detail the user can't act on.
 /// Body-from-bytes variant — used by the announce path where the body was already buffered for VSF-error parsing before falling thru here.
+#[cfg(not(target_os = "ferros"))]
 fn format_http_error_from_bytes(step: &str, status: reqwest::StatusCode, body: &[u8]) -> String {
     if let Some(msg) = try_parse_vsf_error(body) {
         return format!("FGTW: {msg}");
@@ -64,6 +65,13 @@ fn reason_error(step: &str, reason: &str, detail: &str) -> String {
 ///
 /// # Arguments
 /// * `device_key` - Device's Ed25519 keypair * `handle_proof` - Handle proof hash * `port` - Local P2P port * `identity_seed` - The owner's `ihi::handle_to_hash` root (for avatar keypair derivation; no handle string)
+/// The bootstrap is fgtw.org; ferros does not speak to it — its peers come from the LAN and the vault (PHOTON.md in the ferros repo).
+#[cfg(target_os = "ferros")]
+pub async fn load_bootstrap_peers(_device_key: &Keypair, _handle_proof: [u8; 32], _port: u16, _identity_seed: &[u8; 32]) -> BootstrapResult {
+    BootstrapResult { peers: Vec::new(), error: Some("no fgtw.org from ferros".to_string()), observed_addr: None, identity_count: 0 }
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub async fn load_bootstrap_peers(
     device_key: &Keypair,
     handle_proof: [u8; 32],
@@ -97,6 +105,7 @@ pub async fn load_bootstrap_peers(
 }
 
 /// Inner implementation that returns Result for easier error handling
+#[cfg(not(target_os = "ferros"))]
 async fn load_bootstrap_peers_inner(
     device_key: &Keypair,
     handle_proof: [u8; 32],

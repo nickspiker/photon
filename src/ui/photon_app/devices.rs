@@ -44,6 +44,7 @@ impl PhotonApp {
         std::thread::spawn(move || {
             // Hub subscription: a "request" event for OUR identity pokes the refetch the moment the new device posts/withdraws; the poll cadence carries when the socket is down. Best-effort accelerator, never load-bearing.
             let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
+            #[cfg(not(target_os = "ferros"))]
             {
                 let stop = stop.clone();
                 crate::network::http::runtime().spawn(async move {
@@ -898,6 +899,7 @@ impl PhotonApp {
         self.fleet_evt_stop = Some(stop.clone());
         let wake = self.event_proxy.clone();
         let _ = hp; // attest-gate only; we no longer filter by our own hp — tick routes by hp (ours vs a contact's)
+        #[cfg(not(target_os = "ferros"))]
         crate::network::http::runtime().spawn(async move {
             use futures::StreamExt;
             loop {
@@ -2781,6 +2783,7 @@ impl PhotonApp {
             let _beacon = crate::network::pairing_beacon::announce_guard(&hp, &me, offer_et);
 
             // Push subscription: the FGTW hub broadcasts `pair_evt` frames on registry changes ("request") and when the chain extends ("fleet"). Each one for OUR identity pokes `wake_tx`, and the poll loop's sleep below is a `recv_timeout` — so the ceremony reacts the moment the other device acts, with the poll cadence as the guarantee when the socket drops (best-effort accelerator, never load-bearing). The task dies with the socket or the stop flag; no reconnect — the poll still covers everything.
+            #[cfg(not(target_os = "ferros"))]
             {
                 let stop = stop.clone();
                 crate::network::http::runtime().spawn(async move {

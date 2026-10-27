@@ -740,7 +740,9 @@ impl PhotonApp {
         let who = self.contacts.get(sci).map(|c| c.display_name()).unwrap_or_default();
         #[cfg(target_os = "android")]
         let Some(dir) = crate::storage::photon_config_dir().ok().map(|d| d.join("staging")) else { return };
-        #[cfg(not(target_os = "android"))]
+        #[cfg(target_os = "ferros")]
+        let dir: std::path::PathBuf = return;
+        #[cfg(not(any(target_os = "android", target_os = "ferros")))]
         let Some(dir) = dirs::download_dir() else { return };
         let (tx, rx) = std::sync::mpsc::channel();
         let wake = self.event_proxy.clone();
@@ -800,7 +802,9 @@ impl PhotonApp {
         // Android: stage in the app's private dir, then hand the file to the PUBLIC Downloads/Photon (MediaStore) — the private dir was invisible to the user and every other app (Nick 2026-09-28: "somewhere sane and shared").
         #[cfg(target_os = "android")]
         let base = crate::storage::photon_config_dir().map_err(|_| SaveMiss::Failed)?.join("staging");
-        #[cfg(not(target_os = "android"))]
+        #[cfg(target_os = "ferros")]
+        let base: std::path::PathBuf = return Err(SaveMiss::Failed);
+        #[cfg(not(any(target_os = "android", target_os = "ferros")))]
         let base = dirs::download_dir().ok_or(SaveMiss::Failed)?;
         let _ = std::fs::create_dir_all(&base);
         let name = Self::attach_file_name(&seed, name, content_hash);
@@ -991,6 +995,9 @@ impl PhotonApp {
         // The press is the OS's now: its release never reaches us, so nothing of ours may wait on it.
         self.press_held = false;
         crate::logf!("attach: {}… dragged out of the window as {}", hex::encode(&hash[..4]), name);
+        #[cfg(target_os = "ferros")]
+        return None;
+        #[cfg(not(target_os = "ferros"))]
         fluor::host::file_drag::request(fluor::host::file_drag::DragFile { name, bytes: std::sync::Arc::new(move || crate::storage::blob_load_named(&hash)) });
         Some(fluor::host::EventResponse::StartFileDrag)
     }

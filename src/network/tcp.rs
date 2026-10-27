@@ -142,6 +142,12 @@ pub fn connect_and_send(addr: SocketAddr, data: &[u8]) -> std::io::Result<()> {
 }
 
 /// Async TCP send for PT fallback (fully async, no blocking) No external framing - VSF header contains L (file length)
+#[cfg(target_os = "ferros")]
+pub async fn send_tcp(_data: &[u8], _addr: SocketAddr) -> std::io::Result<()> {
+    Err(std::io::Error::new(std::io::ErrorKind::Unsupported, "no TCP on ferros yet"))
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub async fn send_tcp(data: &[u8], addr: SocketAddr) -> std::io::Result<()> {
     use tokio::io::AsyncWriteExt;
     use tokio::time::timeout;
@@ -193,12 +199,12 @@ pub fn parse_clutch_frame(data: &[u8]) -> Option<(u8, [u8; 32], Vec<u8>)> {
 }
 
 /// Async TCP listener wrapper for tokio
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ferros")))]
 pub struct TcpListener {
     inner: tokio::net::TcpListener,
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ferros")))]
 impl TcpListener {
     /// Bind to address
     pub async fn bind(addr: SocketAddr) -> std::io::Result<Self> {

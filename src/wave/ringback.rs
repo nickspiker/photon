@@ -83,6 +83,11 @@ pub fn start(digest: [u8; 32]) -> Option<RingbackGuard> {
     Some(RingbackGuard(stop))
 }
 
+/// No chime synthesis on ferros yet (chirp is desktop and Android).
+#[cfg(target_os = "ferros")]
+fn run(_digest: [u8; 32], _stop: Arc<AtomicBool>, _gen: u64) {}
+
+#[cfg(not(target_os = "ferros"))]
 fn run(digest: [u8; 32], stop: Arc<AtomicBool>, gen: u64) {
     use crate::platform::audio;
 

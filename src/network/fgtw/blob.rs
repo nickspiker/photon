@@ -61,6 +61,18 @@ fn build_signed_blob_vsf(
 /// - timestamp (e): Eagle Time oscillations
 /// - handle_proof (hP): 32-byte handle proof
 /// - data (v'e'): encrypted blob data
+// The blob store is fgtw.org; ferros does not speak to it, so every call below answers with a network error there, the way an unreachable server would.
+#[cfg(target_os = "ferros")]
+fn unreachable_from_ferros<T>() -> Result<T, BlobError> {
+    Err(BlobError::Network("no fgtw.org from ferros".to_string()))
+}
+
+#[cfg(target_os = "ferros")]
+pub async fn put_blob(_storage_key: &str, _data: &[u8], _device_keypair: &Keypair, _handle_proof: &[u8; 32]) -> Result<(), BlobError> {
+    unreachable_from_ferros()
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub async fn put_blob(
     storage_key: &str,
     data: &[u8],
@@ -129,6 +141,12 @@ pub async fn put_blob(
 ///
 /// Sends POST / with VSF section "blob_get" containing:
 /// - key (d): base64url storage key
+#[cfg(target_os = "ferros")]
+pub async fn get_blob(_storage_key: &str) -> Result<Option<Vec<u8>>, BlobError> {
+    unreachable_from_ferros()
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub async fn get_blob(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -196,6 +214,12 @@ pub async fn get_blob(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError> {
 }
 
 /// Upload a blob to FGTW storage (blocking version)
+#[cfg(target_os = "ferros")]
+pub fn put_blob_blocking(_storage_key: &str, _data: &[u8], _device_keypair: &Keypair, _handle_proof: &[u8; 32]) -> Result<(), BlobError> {
+    unreachable_from_ferros()
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn put_blob_blocking(
     storage_key: &str,
     data: &[u8],
@@ -274,6 +298,12 @@ pub fn put_blob_blocking(
 
 /// Submits the on-device diagnostic log to FGTW (the "press log → it lands where the dev can pull it" flow).
 /// Sends POST / with VSF section "log_put": the log bytes + optional note + handle_proof + timestamp, the whole frame canonically signed by the device key (worker verifies via `read_verified`, so the log bytes are authenticated, not just a detached key). Storing on FGTW instead of on-device is deliberate for now — an outbound HTTPS POST is NAT-immune, so it works exactly where the P2P path is failing, and it needs no USB pull. The worker keys each submission by timestamp, so this ADDS to a device's log history rather than overwriting.
+#[cfg(target_os = "ferros")]
+pub fn put_log_blocking(_log_bytes: &[u8], _note: &str, _device_keypair: &Keypair, _handle_proof: &[u8; 32], _identity_seed: &[u8; 32]) -> Result<(), BlobError> {
+    unreachable_from_ferros()
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn put_log_blocking(
     log_bytes: &[u8],
     note: &str,
@@ -358,6 +388,12 @@ pub fn put_log_blocking(
 /// List the submitted logs for a retrieval tag (the pull side of the capability).
 /// Sends `log_list { tag }`; the worker enumerates its `photon-logs/<tag>/` prefix and returns the object keys. Unsigned — presenting the tag (which only the seed-holder can derive) IS the capability, so no device signature is required. `tag` = [`crate::log_retrieval_tag`] of the target identity seed.
 /// `log_delete` — the LastRites sweep for submitted diagnostic logs: delete everything under this identity's retrieval tag (docs/lifecycle.md — the log keyspace is deliberately unlinkable to the handle_proof, so the fleet purge can't reach it; the departing client must). Tag = the capability, same as list/get. Idempotent.
+#[cfg(target_os = "ferros")]
+pub fn log_delete_blocking(_tag: &[u8; 32]) -> Result<(), BlobError> {
+    unreachable_from_ferros()
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn log_delete_blocking(tag: &[u8; 32]) -> Result<(), BlobError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -384,6 +420,12 @@ pub fn log_delete_blocking(tag: &[u8; 32]) -> Result<(), BlobError> {
     Ok(())
 }
 
+#[cfg(target_os = "ferros")]
+pub fn log_list_blocking(_tag: &[u8; 32]) -> Result<Vec<String>, BlobError> {
+    unreachable_from_ferros()
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn log_list_blocking(tag: &[u8; 32]) -> Result<Vec<String>, BlobError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -424,6 +466,12 @@ pub fn log_list_blocking(tag: &[u8; 32]) -> Result<Vec<String>, BlobError> {
 
 /// Fetch one submitted log blob (still ChaCha20-Poly1305 ciphertext) by its full storage key.
 /// Sends `log_get { key }`; the worker returns the stored bytes. The key contains the tag prefix, so possessing it is the capability. Caller decrypts with [`crate::log_encryption_key`] of the same seed.
+#[cfg(target_os = "ferros")]
+pub fn log_get_blocking(_key: &str) -> Result<Vec<u8>, BlobError> {
+    unreachable_from_ferros()
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn log_get_blocking(key: &str) -> Result<Vec<u8>, BlobError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(60))
@@ -470,6 +518,12 @@ pub struct FleetInboxEvent {
 
 /// Drain (and consume) this identity's pending fleet-inbox events.
 /// Sends `inbox_drain { hp }` signed by the device key; the worker verifies the device is a CURRENT member of that fleet before returning + deleting the events (so only our own devices read/clear our alerts). The response `events` field is concatenated complete VSF docs — each self-delimiting via its header file_length — which we split and parse here.
+#[cfg(target_os = "ferros")]
+pub fn inbox_drain_blocking(_device_keypair: &Keypair, _handle_proof: &[u8; 32]) -> Result<Vec<FleetInboxEvent>, BlobError> {
+    unreachable_from_ferros()
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn inbox_drain_blocking(
     device_keypair: &Keypair,
     handle_proof: &[u8; 32],
@@ -543,6 +597,12 @@ fn parse_inbox_events(blob: &[u8]) -> Vec<FleetInboxEvent> {
 }
 
 /// Download a blob from FGTW storage (blocking version)
+#[cfg(target_os = "ferros")]
+pub fn get_blob_blocking(_storage_key: &str) -> Result<Option<Vec<u8>>, BlobError> {
+    unreachable_from_ferros()
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn get_blob_blocking(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
@@ -613,6 +673,12 @@ pub fn get_blob_blocking(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError
 /// Blocking `blob_delete` — the LastRites sweep needs this from `clean_device_for_reuse`, which runs on the UI thread with no runtime to await on (the async twin below is unreachable from there).
 /// Uses the SHARED pooled client with a per-request deadline rather than building a private one: a fresh `Client` throws away the connection pool and the warm TLS session, which is most of a multi-second round trip on a slow uplink.
 /// Idempotent, exactly like the async twin: an already-absent blob is the goal state, so `not_found` is success.
+#[cfg(target_os = "ferros")]
+pub fn delete_blob_blocking(_storage_key: &str, _device_keypair: &Keypair) -> Result<(), BlobError> {
+    unreachable_from_ferros()
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn delete_blob_blocking(storage_key: &str, device_keypair: &Keypair) -> Result<(), BlobError> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
@@ -657,6 +723,12 @@ pub fn delete_blob_blocking(storage_key: &str, device_keypair: &Keypair) -> Resu
     Ok(())
 }
 
+#[cfg(target_os = "ferros")]
+pub async fn delete_blob(_storage_key: &str, _device_keypair: &Keypair) -> Result<(), BlobError> {
+    unreachable_from_ferros()
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub async fn delete_blob(storage_key: &str, device_keypair: &Keypair) -> Result<(), BlobError> {
     use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
 
@@ -743,6 +815,12 @@ mod log_capability_tests {
 
 // ============================================================================ Gripes — anonymous ideas and fixes (ui/photon_app/ideas.rs, docs/ideas.md) ==========
 
+#[cfg(target_os = "ferros")]
+fn gripe_post(_section: vsf::file_format::VsfSection, _what: &str) -> Result<Vec<u8>, BlobError> {
+    unreachable_from_ferros()
+}
+
+#[cfg(not(target_os = "ferros"))]
 fn gripe_post(section: vsf::file_format::VsfSection, what: &str) -> Result<Vec<u8>, BlobError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))

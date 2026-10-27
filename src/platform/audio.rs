@@ -772,7 +772,7 @@ pub fn render_frames_total() -> usize {
 pub fn rebuild_streams() {
     #[cfg(target_os = "android")]
     crate::platform::audio_aaudio::rebuild();
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "ferros")))]
     desktop::rebuild();
 }
 
@@ -1156,7 +1156,7 @@ fn clear_queues() {
 // Desktop: cpal capture + playback on a dedicated audio thread.
 // ---------------------------------------------------------------------------
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ferros")))]
 mod desktop {
     use super::*;
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -1564,11 +1564,58 @@ mod desktop {
     }
 }
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ferros")))]
 pub use desktop::{route, start, stop};
+#[cfg(target_os = "ferros")]
+pub use ferros::{route, start, stop};
 /// The wave screen's mic and speaker pickers (desktop: cpal's devices by name).
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ferros")))]
 pub use desktop::{has_render, input_names, opened, output_names, picks, set_mic_pick, set_picks, set_speaker_pick};
+#[cfg(target_os = "ferros")]
+pub use ferros::{has_render, input_names, opened, output_names, picks, set_mic_pick, set_picks, set_speaker_pick};
+
+// ferros: no audio devices are driven yet (the kernel has no sound path; drivers move to userspace in time), so there is nothing to open, pick or start.
+#[cfg(target_os = "ferros")]
+mod ferros {
+    use super::*;
+
+    pub fn route() -> AudioRoute {
+        AudioRoute::Unknown
+    }
+
+    pub fn input_names() -> Vec<String> {
+        Vec::new()
+    }
+
+    pub fn output_names() -> Vec<String> {
+        Vec::new()
+    }
+
+    pub fn picks() -> (Option<String>, Option<String>) {
+        (None, None)
+    }
+
+    pub fn set_picks(_mic: Option<String>, _speaker: Option<String>) {}
+
+    pub fn set_mic_pick(_pick: Option<String>) {}
+
+    pub fn set_speaker_pick(_pick: Option<String>) {}
+
+    pub fn opened() -> (Option<String>, Option<String>) {
+        (None, None)
+    }
+
+    pub fn has_render() -> bool {
+        false
+    }
+
+    pub fn start() -> bool {
+        crate::log("AUDIO: no devices on ferros yet");
+        false
+    }
+
+    pub fn stop() {}
+}
 
 /// Android renders thru AAudio for the life of the wave; its stall watchdog always has a stream to rebuild.
 #[cfg(target_os = "android")]

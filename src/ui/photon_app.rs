@@ -2231,7 +2231,7 @@ pub struct PhotonApp {
         )>,
     >,
     /// The ONE long-lived OS clipboard handle (desktop). X11/Wayland clipboards are OWNERSHIP-based: the copying app must stay alive serving the selection, and arboard's ownership dies with the instance — the old create-set-drop pattern lost ~48 of every 50 copies (field 2026-09-02, Nick pressing copy fifty times); the strays that landed were a clipboard manager snatching the selection inside the drop window. Lazily created, recreated once on a set/get failure.
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "ferros")))]
     clipboard: Option<arboard::Clipboard>,
     /// Count of durable writes queued-but-not-landed across the message + chains writers, with a condvar for the quit drain. The 2026-09-02 vanish: deliberate quit exits the process while a snapshot sits in the writer queue — the typed row dies with it (never-written, not written-then-lost). Every enqueue increments; the writer decrements per consumed item AFTER its write completes and notifies; `drain_durable_writers` blocks the quit edge until zero. Pure edges, no timers — a wedged vault holds the quit honestly rather than silently eating rows.
     durable_pending: std::sync::Arc<(std::sync::Mutex<usize>, std::sync::Condvar)>,
@@ -2852,7 +2852,7 @@ impl PhotonApp {
             registry_converged_fold: Vec::new(),
             peer_store_persisted_len: 0,
             zoom_saved_ru: 1.0,
-            #[cfg(not(target_os = "android"))]
+            #[cfg(not(any(target_os = "android", target_os = "ferros")))]
             clipboard: None,
             persist_tx: None,
             durable_pending: std::sync::Arc::new((
@@ -3627,8 +3627,7 @@ impl PhotonApp {
             .filter(|n| !n.is_empty());
         let wake = self.event_proxy.clone();
         std::thread::spawn(move || {
-            let _ =
-                thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Min);
+            crate::platform::lower_this_thread();
             let rgb_f32 = match crate::ui::avatar::image_to_avatar_rgb_f32(&image_bytes) {
                 Ok(p) => p,
                 Err(e) => {

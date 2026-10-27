@@ -12,16 +12,16 @@ use img_parts::ImageICC;
 use rav1e::prelude::*;
 use vsf::VsfType;
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ferros")))]
 use winit::event_loop::EventLoopProxy;
 
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ferros")))]
 use super::PhotonEvent;
 
 /// Type alias for optional EventLoopProxy - actual proxy on desktop, unit type on Android
-#[cfg(not(target_os = "android"))]
+#[cfg(not(any(target_os = "android", target_os = "ferros")))]
 pub type OptionalEventProxy = Option<EventLoopProxy<PhotonEvent>>;
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "ferros"))]
 pub type OptionalEventProxy = Option<()>;
 
 /// Tone Reproduction Curve from ICC profile
@@ -949,6 +949,13 @@ pub fn load_cached_avatar_pinned(
 }
 
 /// Cache-first → FGTW download for a PINNED contact (docs/identity-profile.md): everything keys off the 64-byte pin (AES key ‖ lookup hash) + the party id as the local cache scope — no handle, no seed.
+// The avatar wall is fgtw.org; ferros does not speak to it — avatars reach the phone inside the fleet and the conversation, not from the wall.
+#[cfg(target_os = "ferros")]
+pub fn download_avatar_pinned(_party_id: &[u8; 32], _avatar_pin: &[u8; 64], _storage: &std::sync::Arc<crate::storage::FlatStorage>) -> Option<(usize, Vec<u8>, Option<String>)> {
+    None
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn download_avatar_pinned(
     party_id: &[u8; 32],
     avatar_pin: &[u8; 64],
@@ -1013,6 +1020,12 @@ pub fn decode_avatar_av1_to_display(av1_data: &[u8]) -> Option<(usize, Vec<u8>)>
 ///
 /// The wall slot is addressed and keyed by the PIN (random since the pin stopped being seed-derived), while the vault copy is seed-keyed — so the old seed-addressed recovery looked in a slot nothing has written since that change and found nothing (live 2026-08-01: a device picked an avatar, then "No local avatar to serve"). Only an identity whose avatar predates the random pin still has anything in the seed slot, which is why one device recovered and the other didn't.
 /// Recovery therefore fetches by pin lookup, decrypts with the pin key, and rewrites the vault in its CANONICAL seed-keyed form — so serving to a friend, re-uploading, and the local cache all behave exactly as if the avatar had just been picked on this device.
+#[cfg(target_os = "ferros")]
+pub fn recover_own_avatar_from_wall(_identity_seed: &[u8; 32], _avatar_pin: &[u8; 64], _storage: &std::sync::Arc<crate::storage::FlatStorage>) -> (Option<Vec<u8>>, Option<String>) {
+    (None, None)
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn recover_own_avatar_from_wall(
     identity_seed: &[u8; 32],
     avatar_pin: &[u8; 64],
@@ -1740,6 +1753,12 @@ pub fn avatar_vsf_for_friend(
 }
 
 /// `upload_avatar` from the already-derived `identity_seed`. String-free owner path.
+#[cfg(target_os = "ferros")]
+pub fn upload_avatar_from_seed(_device_secret: &SigningKey, _identity_seed: &[u8; 32], _avatar_pin: &[u8; 64], _handle_proof: &[u8; 32], _preferred_name: Option<&str>, _storage: &std::sync::Arc<crate::storage::FlatStorage>) -> Result<String, String> {
+    Err("no avatar wall from ferros".to_string())
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn upload_avatar_from_seed(
     device_secret: &SigningKey,
     identity_seed: &[u8; 32],
@@ -1857,6 +1876,12 @@ pub fn download_avatar(
 }
 
 /// LastRites sweep: delete this identity's avatar blob from the wall (docs/lifecycle.md). The lookup — base64url(pin[32..]) — is unlinkable to the handle_proof BY DESIGN, so the fleet purge can't find it; the departing device, which holds the pin, deletes it itself, signing with the derived avatar keypair the `avatar_auth` slot expects (the signature covers the RAW 32 lookup bytes, matching the worker's verify). Best-effort: an already-absent blob is the goal state.
+#[cfg(target_os = "ferros")]
+pub fn delete_avatar_blocking(_device_secret: &SigningKey, _identity_seed: &[u8; 32], _avatar_pin: &[u8; 64]) -> Result<(), String> {
+    Err("no avatar wall from ferros".to_string())
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn delete_avatar_blocking(
     device_secret: &SigningKey,
     identity_seed: &[u8; 32],
@@ -1902,6 +1927,12 @@ pub fn delete_avatar_blocking(
     Ok(())
 }
 
+#[cfg(target_os = "ferros")]
+fn fetch_avatar_tail(_handle: &str, _storage: &std::sync::Arc<crate::storage::FlatStorage>) -> Option<(usize, Vec<u8>)> {
+    None
+}
+
+#[cfg(not(target_os = "ferros"))]
 fn fetch_avatar_tail(
     handle: &str,
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
@@ -1967,6 +1998,12 @@ fn fetch_avatar_tail(
 
 /// Download an avatar by IDENTITY SEED rather than handle string. Same cache-first → FGTW-fetch flow as [`download_avatar`], but keyed off the seed the caller already has (no handle string needed).
 /// Used to recover the DEVICE'S OWN avatar after a local clear: the vault is empty, but the avatar was published to FGTW under our own storage key, so we pull it back (and re-cache it locally).
+#[cfg(target_os = "ferros")]
+pub fn download_avatar_from_seed(_identity_seed: &[u8; 32], _storage: &std::sync::Arc<crate::storage::FlatStorage>) -> Option<(usize, Vec<u8>)> {
+    None
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn download_avatar_from_seed(
     identity_seed: &[u8; 32],
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
@@ -2050,6 +2087,13 @@ fn avatar_vsf_timestamp(vsf_data: &[u8]) -> Option<i64> {
 ///
 /// # Arguments
 /// * `device_secret` — the device's Ed25519 signing key (for uploading) * `identity_seed` — the seed derived once from the handle at the input boundary * `handle_proof` — the public proof, only needed when we upload
+/// The avatar wall is fgtw.org; ferros does not speak to it.
+#[cfg(target_os = "ferros")]
+pub fn sync_avatar_bidirectional_from_seed(_device_secret: &SigningKey, _identity_seed: &[u8; 32], _avatar_pin: &[u8; 64], _handle_proof: Option<&[u8; 32]>, _preferred_name: Option<&str>, _storage: &std::sync::Arc<crate::storage::FlatStorage>) -> AvatarSyncResult {
+    AvatarSyncResult::Error("no avatar wall on ferros: fgtw.org is not spoken to".to_string())
+}
+
+#[cfg(not(target_os = "ferros"))]
 pub fn sync_avatar_bidirectional_from_seed(
     device_secret: &SigningKey,
     identity_seed: &[u8; 32],
@@ -2270,7 +2314,7 @@ pub fn sync_avatar_background(
         });
 
         // Wake the event loop on desktop
-        #[cfg(not(target_os = "android"))]
+        #[cfg(not(any(target_os = "android", target_os = "ferros")))]
         if let Some(proxy) = event_proxy {
             let _ = proxy.send_event(PhotonEvent::NetworkUpdate);
         }

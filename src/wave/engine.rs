@@ -254,6 +254,13 @@ pub fn start(params: EngineParams) -> EngineHandle {
     handle
 }
 
+/// ferros has no audio devices yet and no libopus build: the engine does not run there; the wave ends as soon as it starts.
+#[cfg(target_os = "ferros")]
+fn run(_params: EngineParams, _stop: Arc<AtomicBool>, _muted: Arc<AtomicBool>, _sink_rx: std::sync::mpsc::Receiver<super::MediaIn>, _sink_gen: u64) {
+    crate::log("WAVE: no audio engine on ferros yet");
+}
+
+#[cfg(not(target_os = "ferros"))]
 fn run(
     params: EngineParams,
     stop: Arc<AtomicBool>,
@@ -1972,6 +1979,7 @@ fn serve_window(params: &EngineParams, reader: &mut Option<super::spool::SpoolRe
 }
 
 /// Plaid fills reconstruct from the ARCHIVE (whose wire copies never spool): a plaid window is exactly 2 frames = one 10ms archive record — decode it, split the halves, bundle at the RAW tier. Serve-time decode, and only on the pristine-path rung where losses are rare anyway.
+#[cfg(not(target_os = "ferros"))]
 fn serve_window_from_archive(params: &EngineParams, reader: &mut Option<super::spool::SpoolReader>, arch_index: &std::collections::VecDeque<(u32, u8, super::spool::RecordAt)>, dec: &mut Option<opus::Decoder>, seq: u32) -> Option<(u8, u32, Vec<u8>)> {
     let first = arch_index.partition_point(|(w, _, _)| *w < seq);
     if first >= arch_index.len() || arch_index[first].0 != seq {

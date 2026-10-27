@@ -34,6 +34,12 @@ use crate::network::http::SEED_HTTPS as FGTW_URL;
 /// Photon's HTTP reach to FGTW: POST via the shared pooled client, hand the crate back `{status, body}` so it owns the `error`-frame reason / success interpretation.
 struct PhotonTransport;
 impl FgtwTransport for PhotonTransport {
+    #[cfg(target_os = "ferros")]
+    fn post(&self, _body: Vec<u8>) -> Result<FgtwResponse, String> {
+        Err("no fgtw.org from ferros: the fleet is the peers".to_string())
+    }
+
+    #[cfg(not(target_os = "ferros"))]
     fn post(&self, body: Vec<u8>) -> Result<FgtwResponse, String> {
         let resp = crate::network::http::blocking()
             .post(FGTW_URL)

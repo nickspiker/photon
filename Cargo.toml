@@ -93,8 +93,6 @@ pqc_dilithium = "0.2.0"
 falcon-rust = "0.1.2"
 
 # Network
-tokio = { version = "1", features = ["full"] }
-tokio-tungstenite = { version = "0.28.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
 
 # Utilities
 thiserror = "2.0.17"
@@ -104,6 +102,9 @@ hex = "0.4.3"
 bincode = "2.0.1"
 # winit specified per-platform below
 pollster = "0.4.0"
+# The house image codec, every target: rav1d spells its types through libc, which has a ferros arm (scripts/ferros-cargo.toml).
+rav1e = { version = "0.7", default-features = false }
+rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8"] }
 rayon = "1.11.0"
 # softbuffer specified per-platform below
 # arboard specified per-platform below (pulls x11rb on Linux)
@@ -113,7 +114,6 @@ fgtw = { path = "../fgtw" }
 # fluor: CPU softbuffer compositor. Hosts the desktop event loop, owns chrome / paint primitives / text rendering / widget dispatch.
 # Path dep during the migration so Photon picks up local fluor changes without a republish cycle; flip to `version = "0.0.3+"` once the migration stabilizes (note: 0.0.2 was yanked).
 # Global = algorithm/geometry core only (no windowing backend). The desktop target block below adds `host-winit` so Cargo unions to {std, text, simd, rayon, host-winit} for desktop builds; the Android target stays at the default set so its dep graph excludes softbuffer/arboard/winit. This is the first step of the `host-android` plan — Android stays on the legacy compositor for now, but the fluor algorithm code is shared by both targets going forward.
-fluor = { path = "../fluor", default-features = false, features = ["std", "text", "simd", "rayon", "emoji"] }
 ihi = "0.0.48"
 # spirix: Nick's two's-complement float. THE numeral engine for Dozenal Metric Scaling — `lb` is the doubling count, and its formatter renders any base 2-16 straight into photon's own glyph block via the `{:#}` flag, so no ASCII transliteration pass stands between the maths and the screen.
 # Zero arrives answered: log2(0) is negative infinity, which spirix classes as an escape rather than a digit, so a count of none needs no per-scale word and no branch of ours.
@@ -129,8 +129,6 @@ kete = { path = "../kete" }
 rarangi = { path = "../rarangi" }
 voca = { version = "0.0.1", path = "../voca" }
 num-bigint = "0.4"
-rav1e = { version = "0.7", default-features = false }
-rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8"] }
 icc-profile = "0.0.2"
 # PDF first-page previews (pure Rust, CPU only, MIT/Apache) — 2026-10-07, Nick: "I'd like to be able to preview it on each device and export".
 hayro = { version = "0.8", default-features = false, features = ["embed-fonts", "embed-cmaps"] }
@@ -145,8 +143,6 @@ symphonia = { version = "0.5", default-features = false, features = ["mp3", "fla
 jxl-oxide = "0.12.6"
 img-parts = "0.4"
 chrono = "0.4.42"
-reqwest = { version = "0.12.24", default-features = false, features = ["rustls-tls", "blocking"] }
-dirs = "6.0.0"
 curve25519-dalek = "4"
 sha2 = "0.10.9"
 sha3 = "0.11.0-rc.3"
@@ -162,10 +158,7 @@ libc = "0.2.178"
 # Waves (docs/waves.md): fountain-coded loss repair over the media window — pure Rust RFC 6330. Redundancy is the loss dial; Opus in-band FEC/PLC stays OFF (restricted-lowdelay), raptor owns repair.
 raptorq = "2.0.1"
 # Opus via vendored libopus (audiopus_sys builds it with CMake — the NDK env exports in scripts/lib/android-env.sh exist for exactly this). RESTRICTED_LOWDELAY only: CELT, 2.5ms lookahead, no SILK prediction, no voip-mode weirdness.
-opus = "0.3.1"
-thread-priority = "1.2"
 # Trustworthy wall-clock via multi-source network consensus. Used as a one-shot startup + on-jump sanity check on the system clock — never a data timestamp source (eagle-time stamps stay on the local monotonic clock); a large offset raises the amber "clock off" banner, never a silent correction. Required on every platform because the update stamp-window check uses nunc consensus as its `now` (docs/updates.md) — a system-clock fallback would hand back the freeze/poisoning attacks the consensus closes.; ring cross-compiles to Android fine under the NDK env (android-env.sh already carries its clang symlinks) — the old desktop-only gating was untested caution.
-nunc-time = { path = "../nunc" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # BEAMS (docs/beams.md): the desktop H.264 codec — Cisco OpenH264 built from source by cc (C++; needs a C++ standard library at link). Desktop-only; the phones use MediaCodec.
@@ -234,7 +227,7 @@ fluor = { path = "../fluor", default-features = false, features = ["host-android
 chirp = { path = "../chirp", default-features = false }
 
 # Desktop platforms (not Android): default winit/softbuffer + if-watch + arboard, plus fluor's `host-winit` feature (Cargo unions features across target blocks, so the global `default-features = false` set is augmented here rather than overridden).
-[target.'cfg(not(target_os = "android"))'.dependencies]
+[target.'cfg(not(any(target_os = "android", target_os = "ferros")))'.dependencies]
 winit = "0.30.12"
 softbuffer = "0.4"
 if-watch = { version = "3.2.1", features = ["tokio"] }
@@ -297,3 +290,21 @@ opt-level = 3
 opt-level = 3
 [profile.dev.package.fn-dsa-comm]
 opt-level = 3
+
+# Everything but ferros: the full tokio (its net needs mio, socket2 and a libc), the HTTPS/WSS clients, the codecs with C or libc behind them, the OS directories, thread priorities. ferros has none of these yet; its sockets go through the ip server (STD-TARGET.md in the ferros repo).
+[target.'cfg(not(target_os = "ferros"))'.dependencies]
+# The time service: TLS over TCP to the time servers (rustls, tokio-rustls, and so tokio's net); ferros takes its clock from the kernel.
+nunc-time = { path = "../nunc" }
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.28.0", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+reqwest = { version = "0.12.24", default-features = false, features = ["rustls-tls", "blocking"] }
+opus = "0.3.1"
+thread-priority = "1.2"
+dirs = "6.0.0"
+fluor = { path = "../fluor", default-features = false, features = ["std", "text", "simd", "rayon", "emoji"] }
+
+# ferros: Photon as a process of the ferros kernel (STD-TARGET.md there): tokio without net, fluor's ferros host over the display's app surface and the touch server, getrandom through the kernel's entropy (ferros_rt defines the backend; 0.2 takes it by feature).
+[target.'cfg(target_os = "ferros")'.dependencies]
+tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
+fluor = { path = "../fluor", default-features = false, features = ["host-ferros", "simd", "emoji"] }
+getrandom02 = { package = "getrandom", version = "0.2", features = ["custom"] }
