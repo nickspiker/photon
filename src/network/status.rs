@@ -15,7 +15,8 @@ use crate::network::pt::{
     is_pt_data, PTAck, PTComplete, PTControl, PTData, PTManager, PTNak, PTSpec,
 };
 use crate::types::DevicePubkey;
-use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
+use crate::platform::net::StdUdpSocket as UdpSocket;
+use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -1367,7 +1368,7 @@ async fn run_checker(
             let multicast_port = crate::MULTICAST_PORT;
 
             // Create socket bound to multicast port
-            let socket = match std::net::UdpSocket::bind(format!("0.0.0.0:{}", multicast_port)) {
+            let socket = match UdpSocket::bind(format!("0.0.0.0:{}", multicast_port)) {
                 Ok(s) => s,
                 Err(e) => {
                     crate::logf!("LAN: Could not bind multicast socket: {}", e);
@@ -1519,7 +1520,7 @@ async fn run_checker(
             };
 
             #[cfg(not(unix))]
-            let socket = match std::net::UdpSocket::bind(format!("[::]:{}", multicast_port)) {
+            let socket = match UdpSocket::bind(format!("[::]:{}", multicast_port)) {
                 Ok(s) => s,
                 Err(e) => {
                     crate::logf!("LAN: Could not bind IPv6 multicast socket: {}", e);

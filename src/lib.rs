@@ -1091,7 +1091,7 @@ pub(crate) fn log_dir() -> Option<std::path::PathBuf> {
         return Some(std::path::PathBuf::from(d));
     }
     // Desktop logs are VOLATILE by choice (user ruling 2026-08-01): diagnostics rarely need to survive a reboot or a temp clean, so they live in the OS temp dir — tmpfs (RAM, zero disk wear) on most Linux, per-user OS-cleaned temp on macOS/Windows. Per-user suffix because Linux /tmp is shared. Falls back to the config dir if temp isn't writable.
-    #[cfg(not(target_os = "android"))]
+    #[cfg(not(any(target_os = "android", target_os = "ferros")))]
     {
         let user = std::env::var("USER")
             .or_else(|_| std::env::var("USERNAME"))
@@ -1277,6 +1277,31 @@ pub fn flush_log_buffer() {}
 #[cfg(feature = "logging")]
 fn append_log_record(level: LogLevel, msg: &str, vals: &[LogValue]) {
     use std::io::Write;
+    // ferros: the console is the log — there is no file there, and the vault log comes later — so the template goes out with its values filled in, each `{…}` taking the next value.
+    #[cfg(target_os = "ferros")]
+    {
+        let mut out = String::with_capacity(msg.len() + 32);
+        let mut vals_it = vals.iter();
+        let mut rest = msg;
+        while let Some(open) = rest.find('{') {
+            out.push_str(&rest[..open]);
+            let Some(close) = rest[open..].find('}') else { break };
+            match vals_it.next() {
+                Some(LogValue::U(n)) => out.push_str(&n.to_string()),
+                Some(LogValue::I(n)) => out.push_str(&n.to_string()),
+                Some(LogValue::F(n)) => out.push_str(&n.to_string()),
+                Some(LogValue::B(b)) => out.push_str(if *b { "true" } else { "false" }),
+                Some(LogValue::T(s)) => out.push_str(s),
+                Some(LogValue::Addr(a)) => out.push_str(&a.to_string()),
+                Some(LogValue::Z(n)) => out.push_str(&n.to_string()),
+                None => out.push_str(&rest[open..open + close + 1]),
+            }
+            rest = &rest[open + close + 1..];
+        }
+        out.push_str(rest);
+        println!("{}", out);
+        let _ = level;
+    }
     // Build first so a buffered record carries the stamp of when it was LOGGED, not when the sink finally opened. `msg` is the pure-text template; each captured value rides as its own TYPED `val` field, in slot order — a number never stringifies into the record (numbers-binary-at-rest).
     let mut section = vsf::VsfSection::new("log");
     section.add_field_multi("lvl", vec![vsf::VsfType::u(level as usize, false)]);

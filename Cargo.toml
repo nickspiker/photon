@@ -308,3 +308,7 @@ fluor = { path = "../fluor", default-features = false, features = ["std", "text"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 fluor = { path = "../fluor", default-features = false, features = ["host-ferros", "simd", "emoji"] }
 getrandom02 = { package = "getrandom", version = "0.2", features = ["custom"] }
+
+# target_os = "ferros" is the phone as a ferros process (a JSON target, STD-TARGET.md in the ferros repo): rustc does not know the name, so the cfg is declared here.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("ferros"))'] }

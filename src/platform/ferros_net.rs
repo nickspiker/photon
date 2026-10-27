@@ -76,9 +76,9 @@ impl UdpSocket {
         Ok(s)
     }
 
-    /// A std socket cannot be made on ferros, so nothing can be converted from one.
-    pub fn from_std(_s: std::net::UdpSocket) -> io::Result<Self> {
-        Err(io::Error::new(io::ErrorKind::Unsupported, "no std sockets on ferros: bind through platform::net::UdpSocket"))
+    /// The blocking socket's port becomes this async one's, as tokio's `from_std` takes a std socket over.
+    pub fn from_std(s: StdUdpSocket) -> io::Result<Self> {
+        Ok(UdpSocket { port: s.port, peer: Mutex::new(*s.peer.lock().unwrap()) })
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -97,23 +97,7 @@ impl UdpSocket {
     }
 
     pub async fn send_to(&self, data: &[u8], addr: SocketAddr) -> io::Result<usize> {
-        let (fam, ip) = family_and_bytes(addr.ip());
-        let mut req = Vec::with_capacity(22 + data.len());
-        req.push(1);
-        req.push(fam);
-        req.extend_from_slice(&ip);
-        req.extend_from_slice(&addr.port().to_be_bytes());
-        req.extend_from_slice(&self.port.to_be_bytes());
-        req.extend_from_slice(data);
-        let mut reply = [0u8; 16];
-        let n = call(&req, &mut reply)?;
-        match (n, reply[0]) {
-            (0, _) => Err(io::Error::new(io::ErrorKind::Other, "the ip server said nothing")),
-            (_, 0) => Ok(data.len()),
-            (_, 1) => Err(io::Error::new(io::ErrorKind::WouldBlock, "resolving the next hop")),
-            (_, 2) => Err(io::Error::new(io::ErrorKind::AddrNotAvailable, "no address yet")),
-            _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "the ip server refused the datagram")),
-        }
+        send_datagram(self.port, data, addr)
     }
 
     pub async fn send(&self, data: &[u8]) -> io::Result<usize> {
@@ -155,13 +139,7 @@ impl UdpSocket {
     }
 
     fn join(&self, group: IpAddr) -> io::Result<()> {
-        let (fam, ip) = family_and_bytes(group);
-        let mut req = Vec::with_capacity(18);
-        req.push(8);
-        req.push(fam);
-        req.extend_from_slice(&ip);
-        let mut reply = [0u8; 8];
-        call(&req, &mut reply).map(|_| ())
+        join_group(group)
     }
 }
 
@@ -194,4 +172,155 @@ impl TcpStream {
     pub fn into_std(self) -> io::Result<std::net::TcpStream> {
         match self {}
     }
+}
+
+/// The blocking shape of a UDP socket (std's), for the threads that talk without tokio: the query worker, the LAN announcer. The same port on the ip server as the async type; `UdpSocket::from_std` hands it over, as tokio's does.
+pub struct StdUdpSocket {
+    port: u16,
+    peer: Mutex<Option<SocketAddr>>,
+    read_timeout: Mutex<Option<std::time::Duration>>,
+}
+
+impl StdUdpSocket {
+    pub fn bind<A: std::net::ToSocketAddrs>(addr: A) -> io::Result<Self> {
+        let addr = addr.to_socket_addrs()?.next().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no address to bind"))?;
+        let port = if addr.port() == 0 { 49152 + (ferros_counter() % 16384) as u16 } else { addr.port() };
+        let mut reply = [0u8; 64];
+        call(&[2, (port >> 8) as u8, port as u8], &mut reply)?;
+        Ok(StdUdpSocket { port, peer: Mutex::new(None), read_timeout: Mutex::new(None) })
+    }
+
+    pub fn local_addr(&self) -> io::Result<SocketAddr> {
+        let mut r = [0u8; 64];
+        let n = call(&[3], &mut r)?;
+        if n < 55 {
+            return Err(io::Error::new(io::ErrorKind::Other, "the ip server's INFO reply is short"));
+        }
+        let ip = if r[54] & 1 != 0 { IpAddr::V4(Ipv4Addr::new(r[6], r[7], r[8], r[9])) } else { IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&r[22..38]).unwrap())) };
+        Ok(SocketAddr::new(ip, self.port))
+    }
+
+    pub fn try_clone(&self) -> io::Result<Self> {
+        Ok(StdUdpSocket { port: self.port, peer: Mutex::new(*self.peer.lock().unwrap()), read_timeout: Mutex::new(*self.read_timeout.lock().unwrap()) })
+    }
+
+    pub fn set_read_timeout(&self, t: Option<std::time::Duration>) -> io::Result<()> {
+        *self.read_timeout.lock().unwrap() = t;
+        Ok(())
+    }
+
+    pub fn set_write_timeout(&self, _t: Option<std::time::Duration>) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// Non-blocking is the ip server's only mode; a receive with no datagram waiting answers WouldBlock when this is set.
+    pub fn set_nonblocking(&self, on: bool) -> io::Result<()> {
+        if on {
+            *self.read_timeout.lock().unwrap() = Some(std::time::Duration::ZERO);
+        }
+        Ok(())
+    }
+
+    pub fn set_broadcast(&self, _on: bool) -> io::Result<()> {
+        Ok(())
+    }
+
+    /// The ip server sends multicast at its own hop limit and does not loop it back.
+    pub fn set_multicast_ttl_v4(&self, _ttl: u32) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub fn set_multicast_loop_v4(&self, _on: bool) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub fn set_multicast_loop_v6(&self, _on: bool) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub fn set_ttl(&self, _ttl: u32) -> io::Result<()> {
+        Ok(())
+    }
+
+    pub fn connect<A: std::net::ToSocketAddrs>(&self, addr: A) -> io::Result<()> {
+        *self.peer.lock().unwrap() = addr.to_socket_addrs()?.next();
+        Ok(())
+    }
+
+    pub fn send_to<A: std::net::ToSocketAddrs>(&self, data: &[u8], addr: A) -> io::Result<usize> {
+        let addr = addr.to_socket_addrs()?.next().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no address to send to"))?;
+        send_datagram(self.port, data, addr)
+    }
+
+    pub fn send(&self, data: &[u8]) -> io::Result<usize> {
+        let peer = self.peer.lock().unwrap().ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "no peer connected"))?;
+        send_datagram(self.port, data, peer)
+    }
+
+    /// The next datagram, waiting up to the read timeout (none set: as long as it takes), 2 ms between empty polls of the ip server.
+    pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        let timeout = *self.read_timeout.lock().unwrap();
+        let start = std::time::Instant::now();
+        let req = [2u8, (self.port >> 8) as u8, self.port as u8];
+        let mut reply = vec![0u8; 21 + buf.len().min(65536)];
+        loop {
+            let n = call(&req, &mut reply)?;
+            if n >= 21 {
+                let from = SocketAddr::new(ip_from(reply[0], &reply[1..17]), u16::from_be_bytes([reply[17], reply[18]]));
+                let len = (n - 21).min(buf.len());
+                buf[..len].copy_from_slice(&reply[21..21 + len]);
+                return Ok((len, from));
+            }
+            if let Some(t) = timeout {
+                if start.elapsed() >= t {
+                    return Err(io::Error::new(if t.is_zero() { io::ErrorKind::WouldBlock } else { io::ErrorKind::TimedOut }, "no datagram"));
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+    }
+
+    pub fn recv(&self, buf: &mut [u8]) -> io::Result<usize> {
+        self.recv_from(buf).map(|(n, _)| n)
+    }
+
+    pub fn join_multicast_v4(&self, group: &Ipv4Addr, _iface: &Ipv4Addr) -> io::Result<()> {
+        join_group(IpAddr::V4(*group))
+    }
+
+    pub fn join_multicast_v6(&self, group: &Ipv6Addr, _iface: u32) -> io::Result<()> {
+        join_group(IpAddr::V6(*group))
+    }
+}
+
+/// One datagram out through the ip server (op 1 SEND).
+fn send_datagram(from_port: u16, data: &[u8], addr: SocketAddr) -> io::Result<usize> {
+    let (fam, ip) = family_and_bytes(addr.ip());
+    let mut req = Vec::with_capacity(22 + data.len());
+    req.push(1);
+    req.push(fam);
+    req.extend_from_slice(&ip);
+    req.extend_from_slice(&addr.port().to_be_bytes());
+    req.extend_from_slice(&from_port.to_be_bytes());
+    req.extend_from_slice(data);
+    let mut reply = [0u8; 16];
+    let n = call(&req, &mut reply)?;
+    match (n, reply[0]) {
+        (0, _) => Err(io::Error::new(io::ErrorKind::Other, "the ip server said nothing")),
+        (_, 0) => Ok(data.len()),
+        (_, 1) => Err(io::Error::new(io::ErrorKind::WouldBlock, "resolving the next hop")),
+        (_, 2) => Err(io::Error::new(io::ErrorKind::AddrNotAvailable, "no address yet")),
+        _ => Err(io::Error::new(io::ErrorKind::InvalidInput, "the ip server refused the datagram")),
+    }
+}
+
+/// Join a multicast group at the ip server (op 8 JOIN): it reports the membership so a snooping access point forwards the group.
+fn join_group(group: IpAddr) -> io::Result<()> {
+    let (fam, ip) = family_and_bytes(group);
+    let mut req = Vec::with_capacity(18);
+    req.push(8);
+    req.push(fam);
+    req.extend_from_slice(&ip);
+    let mut reply = [0u8; 8];
+    call(&req, &mut reply).map(|_| ())
 }
