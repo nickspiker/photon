@@ -321,7 +321,7 @@ impl HandleQuery {
         let _ = online_tx.send(true);
     }
 
-    #[cfg(not(target_os = "ferros"))]
+    #[cfg(not(any(target_os = "android", target_os = "ferros")))]
     fn spawn_connectivity_worker(
         online_tx: Sender<bool>,
         event_proxy: Option<Arc<dyn WakeSender<PhotonEvent>>>,

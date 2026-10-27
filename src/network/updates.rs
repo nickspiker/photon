@@ -480,7 +480,7 @@ pub fn apply_desktop_blocking(_row: &ManifestRow, _progress: &dyn Fn(u64, u64)) 
     Err("no update server from ferros".to_string())
 }
 
-#[cfg(not(target_os = "ferros"))]
+#[cfg(not(any(target_os = "android", target_os = "ferros")))]
 pub fn apply_desktop_blocking(
     row: &ManifestRow,
     progress: &dyn Fn(u64, u64),
