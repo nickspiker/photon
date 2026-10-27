@@ -6,6 +6,8 @@ use super::*;
 impl PhotonApp {
     pub(super) fn open_add_device_flow(&mut self) {
         self.add_device_candidates.clear();
+        self.add_device_registry_reqs.clear();
+        self.add_device_lan_reqs.clear();
         self.add_device_bound = None;
         self.add_device_bind_ble = false;
         self.add_device_typo = None;
@@ -187,6 +189,134 @@ impl PhotonApp {
         self.add_join_handle = None;
         self.add_join_rx = None;
         self.add_join_words = None;
+        self.add_join_hp = None;
+        self.add_join_poke = None;
+        self.add_join_bind_req = None;
+        self.add_join_sent.clear();
+        self.add_join_sponsors.clear();
+        if let Ok(mut s) = self.add_join_chain.lock() {
+            *s = None;
+        }
+        if let Ok(mut s) = self.add_join_fanout.lock() {
+            *s = None;
+        }
+    }
+
+    /// The AddDevice candidate rows from both sources — the seed's registry list and the requests handed to us over the LAN — merged by device key (newest stamp wins), each with its precomputed word tokens and keyed name so the per-keystroke matcher is a plain string walk. Requests were signature-verified where they came in (bindreq_list / on_bind_req); the seed is in-session by definition on this screen. `heard_ble` / `heard_lan` mark proximity: the candidate's beacon heard right now over BLE (its keyed tag recomputed from its own pubkey + stamp) or over the LAN.
+    pub(super) fn rebuild_add_device_candidates(&mut self) {
+        use crate::network::fgtw::fleet;
+        let Some((seed, hp)) = self.session.as_ref().map(|s| (s.identity_seed, s.handle_proof)) else { return };
+        let mut reqs: Vec<fleet::BindRequest> = Vec::new();
+        for req in self.add_device_registry_reqs.iter().chain(self.add_device_lan_reqs.iter()) {
+            match reqs.iter_mut().find(|r| r.device_pubkey == req.device_pubkey) {
+                Some(have) => {
+                    if req.t > have.t {
+                        *have = req.clone();
+                    }
+                }
+                None => reqs.push(req.clone()),
+            }
+        }
+        let heard = crate::network::pairing_beacon::heard();
+        let now = std::time::Instant::now();
+        self.lan_heard.retain(|(_, t)| now.duration_since(*t) < LAN_HEARD_FRESH);
+        let lan_heard = self.lan_heard.clone();
+        self.add_device_candidates = reqs
+            .into_iter()
+            .map(|req| {
+                let words = fleet::masked_device_words(&req.device_pubkey, &seed);
+                AddCandidate {
+                    name: fleet::device_name_default(&req.device_pubkey, &seed),
+                    tokens: fleet::pair_word_list(&words),
+                    heard_ble: heard.iter().any(|b| fgtw::pair::beacon_matches(&b.uuid, &hp, &req.device_pubkey, req.t)),
+                    heard_lan: lan_heard.iter().any(|(k, _)| *k == req.device_pubkey),
+                    req,
+                }
+            })
+            .collect();
+        self.refresh_add_device_match();
+    }
+
+    /// A binding request handed to this sponsor directly (`bind_req`): verified exactly as a registry row is — both signatures under our fleet's identity key, the stamp fresh — then merged into the candidates; the device is marked heard on the LAN at the address it came from (the address its chain and fan-out will be handed to). Returns whether the candidate set changed.
+    pub(super) fn on_bind_req(&mut self, req: crate::network::fgtw::fleet::BindRequest, from: std::net::SocketAddr) -> bool {
+        use crate::network::fgtw::fleet;
+        let Some((seed, hp)) = self.session.as_ref().map(|s| (s.identity_seed, s.handle_proof)) else { return false };
+        let identity_pubkey = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key().to_bytes();
+        let now = vsf::eagle_time_oscillations();
+        if now.abs_diff(req.t) > fleet::BINDREQ_FRESH_OSC as u64 {
+            crate::logf!("JOIN: a binding request from {} at {} is stale — ignored", crate::fp(&req.device_pubkey), from);
+            return false;
+        }
+        if !req.verify(&hp, &identity_pubkey) {
+            crate::logf!("SECURITY: a binding request from {} at {} does not verify for our fleet — ignored", crate::fp(&req.device_pubkey), from);
+            return false;
+        }
+        let dk = req.device_pubkey;
+        match self.add_device_lan_reqs.iter_mut().find(|r| r.device_pubkey == dk) {
+            Some(have) if have.t >= req.t => return false,
+            Some(have) => *have = req,
+            None => {
+                crate::logf!("JOIN: device {} asks to join from {} — a candidate without the registry", crate::fp(&dk), from);
+                self.add_device_lan_reqs.push(req);
+            }
+        }
+        let now = std::time::Instant::now();
+        match self.lan_heard.iter_mut().find(|(k, _)| *k == dk) {
+            Some(e) => e.1 = now,
+            None => self.lan_heard.push((dk, now)),
+        }
+        match self.lan_heard_addr.iter_mut().find(|(k, _)| *k == dk) {
+            Some(e) => e.1 = from,
+            None => self.lan_heard_addr.push((dk, from)),
+        }
+        self.rebuild_add_device_candidates();
+        true
+    }
+
+    /// A fan-out handed to this device (`fanout_resp`). Joining: parked for the join thread (it holds the ira). Attested: a sibling's grow or rotation — opened with our own ira; a key we did not hold is cached (the rotation reaching us without the seed). Returns whether anything changed.
+    pub(super) fn on_fanout(&mut self, hp: [u8; 32], blob: &[u8], sender: [u8; 32]) -> bool {
+        if self.session.is_none() && self.add_join_hp == Some(hp) {
+            if let Ok(mut slot) = self.add_join_fanout.lock() {
+                *slot = Some(blob.to_vec());
+            }
+            if let Some(poke) = self.add_join_poke.as_ref() {
+                let _ = poke.send(());
+            }
+            crate::logf!("JOIN: a fan-out for the fleet we are joining arrived over the mesh ({} B)", blob.len());
+            return true;
+        }
+        let (Some(kp), Some(seed)) = (self.device_keypair.clone(), self.session.as_ref().map(|s| s.identity_seed)) else { return false };
+        match crate::network::fgtw::fleet::fanout_open_blob(&hp, blob, &kp, &seed) {
+            Ok(Some((revision, k))) => {
+                if self.fleet_key_cached() != Some(k) {
+                    crate::logf!("FANOUT: revision {} from {} over the mesh opens to a key we did not hold — adopting", revision, crate::fp(&sender));
+                    self.fleet_key_store(&k);
+                    self.reseed_pong_seal_keys();
+                    return true;
+                }
+                crate::logf!("FANOUT: revision {} from {} over the mesh — same key, held", revision, crate::fp(&sender));
+                false
+            }
+            Ok(None) => {
+                crate::logf!("FANOUT: a fan-out from {} over the mesh holds no wrap for us", crate::fp(&sender));
+                false
+            }
+            Err(e) => {
+                crate::logf!("SECURITY: a fan-out from {} over the mesh was refused — {}", crate::fp(&sender), e);
+                false
+            }
+        }
+    }
+
+    /// Hand a fan-out blob to every live sibling and to the extra (device, address) targets — the device just bound.
+    pub(super) fn fanout_push(&self, blob: &[u8], extra: &[([u8; 32], std::net::SocketAddr)]) {
+        let (Some(hp), Some(kp)) = (self.our_handle_proof(), self.device_keypair.as_ref()) else { return };
+        let Ok(frame) = crate::network::fgtw::protocol::build_fanout_resp_vsf(&hp, blob, &kp.public.to_bytes(), kp.secret.as_bytes()) else { return };
+        crate::logf!("FANOUT: pushing the fan-out ({} B) to the siblings and {} other device(s)", blob.len(), extra.len());
+        self.dispatch_frame_to_siblings(frame.clone());
+        for (dev, addr) in extra {
+            self.send_frame_direct(frame.clone(), *dev, *addr, None);
+        }
     }
 
     /// The fleet key from the local vault cache (fast, no network, no mint). `None` until a fan-out recover/establish has populated it (`spawn_fleet_key_sync`). Callers that seal/open fleet state read this; the background sync keeps it fresh so a rotation propagates.
@@ -875,7 +1005,7 @@ impl PhotonApp {
     }
 
     /// One signed frame to a device at an address, direct (no relay: the mesh path is the point here).
-    fn send_frame_direct(&self, frame: Vec<u8>, device: [u8; 32], addr: std::net::SocketAddr, alt: Option<std::net::SocketAddr>) {
+    pub(super) fn send_frame_direct(&self, frame: Vec<u8>, device: [u8; 32], addr: std::net::SocketAddr, alt: Option<std::net::SocketAddr>) {
         let Some(checker) = self.status_checker.as_ref() else { return };
         let _ = checker.history_dispatch().send(crate::network::status::HistorySendRequest {
             peer_addr: addr,
@@ -1780,14 +1910,15 @@ impl PhotonApp {
                         .filter(|m| !locked.contains(m))
                         .collect();
                     crate::logf!("ADD-DEVICE: confirm — sealing wraps for {} member(s)", members.len());
-                    fleet::grow_fleet_wraps(&hp, &kp, &held, &members, &identity_seed).map(|_| ())
+                    // Held-first: the grow is sealed here and handed over the mesh (the Rotated arm pushes it); the seed is mirrored when it answers.
+                    fleet::fanout_grow_held(&hp, &kp, &held, &members, &identity_seed).map(|(_, blob)| blob)
                 })();
                 match &r {
-                    Ok(()) => crate::log("ADD-DEVICE: confirm — fan-out grown, the new device can recover the fleet key"),
+                    Ok(_) => crate::log("ADD-DEVICE: confirm — fan-out grown, the new device can recover the fleet key"),
                     Err(e) => crate::logf!("ADD-DEVICE: confirm FAILED — {}", e),
                 }
                 let _ = tx.send(match r {
-                    Ok(()) => AddDeviceUpdate::Rotated,
+                    Ok(blob) => AddDeviceUpdate::Rotated(blob),
                     Err(e) => AddDeviceUpdate::Failed(e),
                 });
             });
@@ -2511,6 +2642,8 @@ impl PhotonApp {
             stop.store(true, std::sync::atomic::Ordering::Relaxed);
         }
         self.add_device_candidates.clear();
+        self.add_device_registry_reqs.clear();
+        self.add_device_lan_reqs.clear();
         self.add_device_bound = None;
         self.add_device_bind_ble = false;
         self.join_words_copied = false;
@@ -2557,6 +2690,17 @@ impl PhotonApp {
         self.add_join_rx = Some(rx);
         let stop = std::sync::Arc::new(AtomicBool::new(false));
         self.add_stop = Some(stop.clone());
+        // The mesh's two hand-offs to this joiner (a sponsor's chain push, its fan-out push) land in these slots from the UI thread; the thread below owns the identity roots that verify and open them.
+        let chain_slot = self.add_join_chain.clone();
+        let fanout_slot = self.add_join_fanout.clone();
+        if let Ok(mut s) = chain_slot.lock() {
+            *s = None;
+        }
+        if let Ok(mut s) = fanout_slot.lock() {
+            *s = None;
+        }
+        self.add_join_sent.clear();
+        self.add_join_sponsors.clear();
         // LAN visibility for the sponsor: the join loop announces this device on the local network (UDP discovery, same frame the fleet uses), so the sponsor's AddDevice screen shows a tappable "nearby" row instead of demanding the words. The words remain the remote/no-LAN fallback.
         let lan_tx = self
             .status_checker
@@ -2602,11 +2746,25 @@ impl PhotonApp {
                 s
             };
             let _nfc_serve = crate::network::pairing_nfc::serve_guard(&nfc_secret);
-            // The binding request: "I consent to join fleet hp", signed by the device key + co-signed by the identity key. THE registry entry the old device's matcher screens candidates from, and the consent egg the Add op will carry. Posted FIRST so its published eagle_time exists before we derive the proximity beacon from it.
-            let offer_et = match fleet::bindreq_put(&device_key, &identity_seed, &hp, &nfc_secret) {
+            // The wake channel: the seed's hub events, AND the UI thread's pokes when a chain or a fan-out for this fleet arrives over the mesh (JoinUpdate::Aimed hands the UI the sender).
+            let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
+            let poke_tx = wake_tx.clone();
+            // The binding request: "I consent to join fleet hp", signed by the device key + co-signed by the identity key — the consent egg the Add op will carry. Built ONCE and sent two ways with the same stamp (docs/pairing-v2.md over the mesh): to the seed's registry when it answers, and straight to every sponsor device heard on the LAN as a `bind_req` frame (the UI thread hands it out on each beacon). A seed that cannot be reached is logged, never fatal — the LAN carries the request; the seed's one-owner verdict (device_owned) still ends the ceremony.
+            let mint = |tx: &std::sync::mpsc::Sender<JoinUpdate>| -> Result<i64, String> {
+                let req = fleet::make_bind_request(&device_key, &identity_seed, &hp, &nfc_secret);
+                let frame = crate::network::fgtw::protocol::build_bind_req_vsf(&req, &hp, device_key.keypair().secret.as_bytes())?;
+                let _ = tx.send(JoinUpdate::Aimed { hp, bind_req: frame, poke: poke_tx.clone() });
+                match fleet::bindreq_post(&req, &hp) {
+                    Ok(()) => crate::log("JOIN: binding request posted to the seed's registry and armed for the LAN"),
+                    Err(e) if e.starts_with("device_owned") => return Err(e),
+                    Err(e) => crate::logf!("JOIN: the seed did not take the binding request ({}) — the LAN carries it", e),
+                }
+                Ok(req.t)
+            };
+            let offer_et = match mint(&tx) {
                 Ok(et) => et,
                 Err(e) => {
-                    let _ = tx.send(JoinUpdate::Failed(tr(Msg::RequestFailed(&e.to_string())).into_owned()));
+                    let _ = tx.send(JoinUpdate::Failed(tr(Msg::RequestFailed(&e)).into_owned()));
                     return;
                 }
             };
@@ -2614,7 +2772,6 @@ impl PhotonApp {
             let _beacon = crate::network::pairing_beacon::announce_guard(&hp, &me, offer_et);
 
             // Push subscription: the FGTW hub broadcasts `pair_evt` frames on registry changes ("request") and when the chain extends ("fleet"). Each one for OUR identity pokes `wake_tx`, and the poll loop's sleep below is a `recv_timeout` — so the ceremony reacts the moment the other device acts, with the poll cadence as the guarantee when the socket drops (best-effort accelerator, never load-bearing). The task dies with the socket or the stop flag; no reconnect — the poll still covers everything.
-            let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
             {
                 let stop = stop.clone();
                 crate::network::http::runtime().spawn(async move {
@@ -2658,6 +2815,18 @@ impl PhotonApp {
                     );
                 }
             };
+            // GREEN: this device folds into the fleet's chain. Leaving the words screen is what the far-side human confirms, so it happens NOW; the key follows — a fan-out handed over the mesh opens here at once, else the seed's, else the post-attest sync.
+            let green = |tx: &std::sync::mpsc::Sender<JoinUpdate>, how: &str| {
+                crate::logf!("JOIN: bound — this device is in the fleet chain ({})", how);
+                withdraw("green");
+                let pushed = fanout_slot.lock().ok().and_then(|mut s| s.take()).and_then(|blob| fleet::fanout_open_blob(&hp, &blob, device_key.keypair(), &identity_seed).ok().flatten().map(|(_, k)| k));
+                let fleet_key = pushed.or_else(|| fleet::recover_fleet_key(&hp, device_key.keypair(), &identity_seed).ok().flatten());
+                crate::logf!(
+                    "JOIN: fleet key {} — attesting",
+                    if fleet_key.is_some() { "recovered" } else { "follows the sponsor's confirm (event-synced)" }
+                );
+                let _ = tx.send(JoinUpdate::Joined(fleet_key, session));
+            };
             let mut last_repost = std::time::Instant::now();
             let ceremony_start = std::time::Instant::now();
             // Give-up backstop: a real ceremony binds in seconds-to-a-minute. Past this it's a forgotten or backgrounded screen — and Android keeps this raw thread alive after the Activity pauses (onPause emits no focus event), so without a cap it re-posts the registry every 3.5 min forever (observed: a backgrounded phone re-posting for 1.6h). Generous enough that a live pairing never hits it.
@@ -2683,25 +2852,29 @@ impl PhotonApp {
                         unicast: None,
                     });
                 }
+                // THE MESH FIRST: a chain a sponsor pushed to us. Verified exactly as a seed copy is — it claims this slot, its genesis is this identity's, it folds — and green iff it folds US in. A chain that does not name us yet is held (the sponsor may have pushed before the bind) and we wait on.
+                if let Some(bytes) = chain_slot.lock().ok().and_then(|mut s| s.take()) {
+                    match fleet::MembershipBlob::from_vsf_bytes(&bytes) {
+                        Ok(blob) if blob.genesis_handle_proof() == Some(hp) && blob.genesis_identity_matches(&identity_seed) => match blob.fold() {
+                            Ok(members) => {
+                                fleet::hold_chain(&blob);
+                                if members.contains(&me) {
+                                    green(&tx, "over the mesh");
+                                    return;
+                                }
+                                crate::log("JOIN: a chain for our fleet arrived over the mesh — not bound yet");
+                            }
+                            Err(e) => crate::logf!("SECURITY: a chain pushed to this joiner does not fold ({}) — ignored", format!("{:?}", e)),
+                        },
+                        Ok(_) => crate::log("SECURITY: a chain pushed to this joiner is not this identity's fleet — ignored"),
+                        Err(e) => crate::logf!("JOIN: a chain pushed to this joiner did not parse ({}) — ignored", e),
+                    }
+                }
                 // Genesis re-checked on EVERY fetch, not just the probe: a relay that served the real chain once must not be able to swap in a structurally-valid foreign chain mid-ceremony and have this loop adopt its members (the probe-time-only TOCTOU — docs/pairing-v2.md).
                 match fleet::current_members_verified(&hp) {
                     Ok(m) if m.contains(&me) => {
-                        // In the fleet — this is the green, and LEAVING THIS SCREEN is what the far-side human confirms, so it must happen NOW, not after the key. Withdraw our request (the author's exit act), try the fan-out once in case the sponsor already confirmed, and hand off — the key otherwise arrives via the post-attest fleet-event sync the moment the green-confirm rotation lands (the worker broadcasts "fleet" on fanout_put). Waiting here deadlocks the ceremony: the sponsor waits for our green before releasing the key this wait was for.
-                        crate::log("JOIN: bound — this device is in the fleet chain");
-                        withdraw("green");
-                        // The wrap opens with the ira keypair + identity seed alone (docs/fleet-key.md) — no vault, no pair secret, no ceremony. It succeeds the moment the sponsor's green-confirm GROW lands; before that there is no wrap for us and the key arrives via the post-attest fleet-event sync.
-                        let fleet_key = fleet::recover_fleet_key(&hp, device_key.keypair(), &identity_seed)
-                            .ok()
-                            .flatten();
-                        crate::logf!(
-                            "JOIN: fleet key {} — attesting",
-                            if fleet_key.is_some() {
-                                "recovered from fan-out"
-                            } else {
-                                "follows the sponsor's confirm (event-synced)"
-                            }
-                        );
-                        let _ = tx.send(JoinUpdate::Joined(fleet_key, session));
+                        // In the fleet by the seed's (or the held) copy — the green.
+                        green(&tx, "by the seed");
                         return;
                     }
                     Ok(_) => {} // not bound yet — keep the request fresh and wait
@@ -2718,10 +2891,8 @@ impl PhotonApp {
                         return;
                     }
                     Err(e) => {
-                        // A transient fetch failure (laptop sleep/wake, dropped wifi, a server blip) must NOT kill the ceremony — the user is still standing at the words screen, and a dead thread strands it there forever (observed: macbook stuck on its words after one failed fetch). Log, back off, retry; the stop flag (orb cancel) is the only exit.
-                        crate::logf!("JOIN: membership fetch failed ({}) — retrying", e);
-                        std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(15)));
-                        continue;
+                        // A transient fetch failure (laptop sleep/wake, dropped wifi, a server blip, or no seed at all) must NOT kill the ceremony — the user is still standing at the words screen, and a dead thread strands it there forever (observed: macbook stuck on its words after one failed fetch). Log and fall through to the wait below, where a mesh poke (the sponsor's chain push) wakes us at once; the stop flag (orb cancel) is the only exit.
+                        crate::logf!("JOIN: membership fetch failed ({}) — the mesh may answer first", e);
                     }
                 }
                 // Wait for a push, but re-poll membership on a SHORT cadence so the ceremony completes fast even when the hub WebSocket push never arrives (observed on macOS: the bind landed but the new device sat ~3.5 min on the old 210s timeout before its next `current_members` check). The request re-post stays on its protocol cadence (~3.5 min — the registry stamp lapses at 5), tracked separately so the frequent membership polls don't spam re-posts. A hub event still short-circuits instantly.
@@ -2731,10 +2902,8 @@ impl PhotonApp {
                     Ok(()) => {} // hub push — loop re-checks membership immediately
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                         if last_repost.elapsed() >= REPOST_EVERY {
-                            // Restamp the offer, then re-emit the beacon under the NEW eagle_time so the aired id keeps matching the list entry the sponsor now reads.
-                            if let Ok(et) =
-                                fleet::bindreq_put(&device_key, &identity_seed, &hp, &nfc_secret)
-                            {
+                            // Restamp the offer (registry + LAN, one stamp), then re-emit the beacon under the NEW eagle_time so the aired id keeps matching the entry the sponsor now reads.
+                            if let Ok(et) = mint(&tx) {
                                 crate::network::pairing_beacon::reannounce(&hp, &me, et);
                             }
                             last_repost = std::time::Instant::now();
@@ -2744,10 +2913,8 @@ impl PhotonApp {
                     Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
                         std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(8)));
                         if last_repost.elapsed() >= REPOST_EVERY {
-                            // Restamp the offer, then re-emit the beacon under the NEW eagle_time so the aired id keeps matching the list entry the sponsor now reads.
-                            if let Ok(et) =
-                                fleet::bindreq_put(&device_key, &identity_seed, &hp, &nfc_secret)
-                            {
+                            // Restamp the offer (registry + LAN, one stamp), then re-emit the beacon under the NEW eagle_time so the aired id keeps matching the entry the sponsor now reads.
+                            if let Ok(et) = mint(&tx) {
                                 crate::network::pairing_beacon::reannounce(&hp, &me, et);
                             }
                             last_repost = std::time::Instant::now();

@@ -2095,6 +2095,16 @@ pub struct PhotonApp {
     /// A membership chain handed to the JOINING device over the mesh (a sponsor's push after binding it), waiting for the join thread to check it against the identity it derived: shared slot + poke, since the thread owns the roots and the UI thread receives the frame.
     add_join_chain: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>,
     add_join_poke: Option<std::sync::mpsc::Sender<()>>,
+    /// The joining device's binding request as a signed `bind_req` frame, re-minted on each re-post; handed to every sponsor device heard beaconing under the joined handle.
+    add_join_bind_req: Option<Vec<u8>>,
+    /// Sponsor devices this request stamp has already been handed to (cleared on re-mint), and every sponsor heard with where it was heard.
+    add_join_sent: Vec<[u8; 32]>,
+    add_join_sponsors: Vec<([u8; 32], std::net::SocketAddr)>,
+    /// A fan-out handed to the joining device (the sponsor's grow), waiting for the join thread, which holds the ira that opens it.
+    add_join_fanout: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+    /// The AddDevice matcher's two candidate sources: the seed's registry (the watch thread's latest list) and requests handed to this device directly over the LAN. Merged by device key, newest stamp wins.
+    add_device_registry_reqs: Vec<crate::network::fgtw::fleet::BindRequest>,
+    add_device_lan_reqs: Vec<crate::network::fgtw::fleet::BindRequest>,
     /// Roots from the pre-attest probe, stashed so the permanence-confirm press claims WITHOUT re-deriving the ~1s proof. Set on a `Fresh` probe outcome; cleared on any handle edit (via clear_launch_error) or when the claim fires.
     probed_session: Option<tohu::SessionIdentity>,
     /// Canonical spelling of the handle `probed_session` was derived from — the confirm press fires the stashed roots ONLY when the box still canonicalizes to this, so stale roots can never attest a different identity than the one on screen.
@@ -3146,6 +3156,12 @@ impl PhotonApp {
             add_join_hp: None,
             add_join_chain: std::sync::Arc::new(std::sync::Mutex::new(None)),
             add_join_poke: None,
+            add_join_bind_req: None,
+            add_join_sent: Vec::new(),
+            add_join_sponsors: Vec::new(),
+            add_join_fanout: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            add_device_registry_reqs: Vec::new(),
+            add_device_lan_reqs: Vec::new(),
             probed_session: None,
             probed_handle: None,
             add_join_status: String::new(),
@@ -3847,8 +3863,8 @@ enum AddDeviceUpdate {
     Candidates(Vec<crate::network::fgtw::fleet::BindRequest>),
     /// The consent-carrying bind PUBLISHED — this device pubkey now awaits the human's green confirm (the rotation is held behind that press).
     Bound([u8; 32]),
-    /// The green-confirm rotation published — ceremony complete, the new device can recover the fleet key.
-    Rotated,
+    /// The green-confirm grow sealed and held (mirrored to the seed when it answered) — ceremony complete; carries the fan-out blob to hand the newcomer and the siblings over the mesh.
+    Rotated(Vec<u8>),
     /// An error to surface in the status line.
     Failed(String),
 }
@@ -3872,6 +3888,8 @@ enum CkptOutcome {
 enum JoinUpdate {
     /// The fleet-masked words this device displays for the user to type on an existing device.
     ShowWords(String),
+    /// The join thread has aimed this device at fleet `hp` and minted its binding request (the signed `bind_req` frame to hand sponsors on the LAN), and listens on `poke` for a chain or a fan-out the UI thread receives for it. Re-sent on every re-mint.
+    Aimed { hp: [u8; 32], bind_req: Vec<u8>, poke: std::sync::mpsc::Sender<()> },
     /// This device is now in the fleet — hand off to the normal attest. Carries the fleet key recovered from the fan-out (None = bound but the green-confirm rotation hasn't landed yet; the post-attest sync retries) plus the session roots derived ONCE at join start, so the attest skips the second ~1s memory-hard proof.
     Joined(Option<[u8; 32]>, tohu::SessionIdentity),
     /// An error to surface in the status line.

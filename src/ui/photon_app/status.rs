@@ -339,6 +339,8 @@ impl PhotonApp {
                 StatusUpdate::ChainPullMissReceived { .. } => "ChainPullMissReceived",
                 StatusUpdate::DepartReqReceived { .. } => "DepartReqReceived",
                 StatusUpdate::FleetChainAsked { .. } => "FleetChainAsked",
+                StatusUpdate::BindReqReceived { .. } => "BindReqReceived",
+                StatusUpdate::FanoutReceived { .. } => "FanoutReceived",
                 StatusUpdate::FleetChainReceived { .. } => "FleetChainReceived",
                 StatusUpdate::FocusClaimReceived { .. } => "FocusClaimReceived",
                 StatusUpdate::FriendKnockReceived { .. } => "FriendKnockReceived",
@@ -447,6 +449,9 @@ impl PhotonApp {
         // Membership chains over the mesh (docs/peers-are-fgtw.md), deferred past the checker borrow: asks to answer (handle, asker, where), and chains handed to us (handle, bytes, sender).
         let mut fleet_asks_after: Vec<([u8; 32], [u8; 32], std::net::SocketAddr)> = Vec::new();
         let mut fleet_chains_after: Vec<([u8; 32], Vec<u8>, [u8; 32])> = Vec::new();
+        // The join over the mesh, deferred likewise: binding requests handed to this sponsor (while its AddDevice screen is up), and fan-outs handed to this device.
+        let mut bind_reqs_after: Vec<(crate::network::fgtw::fleet::BindRequest, std::net::SocketAddr)> = Vec::new();
+        let mut fanouts_after: Vec<([u8; 32], Vec<u8>, [u8; 32])> = Vec::new();
         // Departure have-set frames (holdings.rs), handled after the drain: (kind, nonce, sealed, sender device, sender addr).
         let mut holdings_after: Vec<(crate::network::fgtw::protocol::HoldingsKind, [u8; 32], Vec<u8>, [u8; 32], std::net::SocketAddr)> = Vec::new();
         // Fetch edges (attach_none, an unreachable peer) wait for the loop to end: the fetch state is &mut self, and the loop holds the checker.
@@ -3073,6 +3078,23 @@ impl PhotonApp {
                             }
                         }
                     }
+                    // THE JOINER'S SIDE (docs/pairing-v2.md over the mesh): a beacon under the handle this device is joining is a sponsor on this network — hand it our binding request directly, once per sponsor per request stamp. The sponsor's screen then shows us as a nearby candidate without any registry.
+                    if self.session.is_none() && self.add_join_hp == Some(handle_proof) {
+                        if let (Some(dk), Some(frame)) = (device_pubkey, self.add_join_bind_req.clone()) {
+                            let me = self.device_keypair.as_ref().map(|kp| kp.public.to_bytes());
+                            let addr = std::net::SocketAddr::from((local_ip, port));
+                            if Some(dk) != me {
+                                if !self.add_join_sponsors.iter().any(|(k, _)| *k == dk) {
+                                    self.add_join_sponsors.push((dk, addr));
+                                }
+                                if !self.add_join_sent.contains(&dk) {
+                                    self.add_join_sent.push(dk);
+                                    crate::logf!("JOIN: sponsor device {} heard at {} — handing it our binding request", crate::fp(&dk), addr);
+                                    self.send_frame_direct(frame, dk, addr, None);
+                                }
+                            }
+                        }
+                    }
                     // WOODS ADD (docs/offgrid.md open house): a pending off-grid add whose derived proof matches this beacon — the beacon IS the registry record (hp in the provenance, device key in `ke`, address in the source). Create the contact and the normal machinery takes over: ping → pong → CLUTCH over the group.
                     if let Some((handle, want_hp)) = self.pending_woods_add.as_ref() {
                         if *want_hp == handle_proof
@@ -4271,6 +4293,20 @@ impl PhotonApp {
                     let ours = self.our_handle_proof() == Some(handle_proof) || self.add_join_hp == Some(handle_proof);
                     if ours || self.contacts.iter().any(|c| c.handle_proof == handle_proof) || self.molecule_party_for_proof(&handle_proof).is_some() {
                         fleet_chains_after.push((handle_proof, chain, sender_pubkey.key));
+                    }
+                }
+                // A joining device's request, only while THIS device's AddDevice screen is up for the fleet it names — the human at this screen is the gate, the words the selector.
+                StatusUpdate::BindReqReceived { handle_proof, req, sender_addr, .. } => {
+                    if matches!(self.state, AppState::AddDevice) && self.our_handle_proof() == Some(handle_proof) {
+                        bind_reqs_after.push((req, sender_addr));
+                    }
+                }
+                // A fan-out for our fleet (a sibling's grow or rotation), or for the fleet this device is joining (the sponsor's grow — its key).
+                StatusUpdate::FanoutReceived { handle_proof, blob, sender_pubkey, .. } => {
+                    let joining = self.session.is_none() && self.add_join_hp == Some(handle_proof);
+                    let ours = self.our_handle_proof() == Some(handle_proof) && self.contacts.iter().any(|c| c.is_sibling && c.knows_device(&sender_pubkey.key));
+                    if joining || ours {
+                        fanouts_after.push((handle_proof, blob, sender_pubkey.key));
                     }
                 }
                 StatusUpdate::DepartReqReceived {
@@ -5564,6 +5600,16 @@ impl PhotonApp {
         }
         for (hp, chain, sender) in fleet_chains_after {
             if self.adopt_peer_chain(hp, &chain, sender) {
+                changed = true;
+            }
+        }
+        for (req, addr) in bind_reqs_after {
+            if self.on_bind_req(req, addr) {
+                changed = true;
+            }
+        }
+        for (hp, blob, sender) in fanouts_after {
+            if self.on_fanout(hp, &blob, sender) {
                 changed = true;
             }
         }

@@ -16,7 +16,7 @@ Egg-lists, fan-out re-key, and braid-in are all per-sibling operations.
 |---|---|
 | New device | its fingerprint-deterministic device keypair; nothing else until enrolled |
 | Member device | device keypair, fleet key (current epoch), vault |
-| FGTW worker | verifies + stores; never holds a secret |
+| FGTW worker | verifies + stores; never holds a secret. Since 2026-10-26 a MIRROR for the chain, the request and the fan-out: every device holds its fleet's chain and hands it, the request and the fan-out over the mesh; the seed is asked last (docs/peers-are-fgtw.md Phase A′) |
 
 R2 slots (all under one identity's `handle_proof`): `fleet/v1/` (membership chain, the authority), `pair/req/` (pairing request inbox), `pair/ack/` (matched flag), `fanout/` + `fanout_ep/` (per-member sealed fleet-key wraps + epoch), `fstate/` + `fstate_ts/` (fleet-key-sealed roster), `peers.vsf` (routing rows, gated on membership).
 

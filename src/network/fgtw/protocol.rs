@@ -2447,6 +2447,101 @@ pub fn parse_fleet_resp_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], Vec<u8>, [u8;
     Ok((hp, chain, sender_pubkey))
 }
 
+/// Build a `bind_req` — the JOINING device's binding request handed straight to a sponsor device it heard on the LAN (docs/pairing-v2.md over the mesh): the registry entry's fields (dk, t, ds consent eggs, is identity co-sign, kb bundle, nh NFC commitment) for fleet `hp`, in an envelope signed by the same device key. The sponsor verifies the request exactly as it verifies a registry row (`BindRequest::verify` + freshness) and screens it with the words as always.
+pub fn build_bind_req_vsf(req: &crate::network::fgtw::fleet::BindRequest, handle_proof: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+    let mut section = VsfSection::new("bind_req");
+    section.add_field("hp", VsfType::hP(handle_proof.to_vec()));
+    section.add_field("dk", VsfType::ke(req.device_pubkey.to_vec()));
+    section.add_field("t", VsfType::e(vsf::types::EtType::e6(req.t)));
+    section.add_field("ds", VsfType::ge(crate::network::fgtw::fleet::eggs_to_bytes(&req.device_sig)));
+    section.add_field("is", VsfType::ge(req.identity_sig.clone()));
+    if let Some(b) = &req.bundle {
+        section.add_field("kb", VsfType::ge(b.to_bytes()));
+    }
+    section.add_field("nh", VsfType::hb(req.nfc_hash.to_vec()));
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signed_only_eggs(VsfType::ke(req.device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(&req.device_pubkey))
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build bind_req VSF: {}", e))?;
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, &req.device_pubkey, device_secret)
+}
+
+/// Parse + verify a `bind_req` envelope. Returns (handle proof, the request, sender device pubkey). The request's own signatures are checked by the receiver (`BindRequest::verify` needs the identity pubkey); the envelope signer must be the request's device.
+pub fn parse_bind_req_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], crate::network::fgtw::fleet::BindRequest, [u8; 32]), String> {
+    use crate::network::fgtw::fleet::{eggs_from_bytes, BindRequest, KeyBundle};
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("bind_req verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "bind_req" {
+        return Err(format!("Expected 'bind_req' section, got '{}'", section_name));
+    }
+    let hp = field_handle_proof(&section.fields, "hp").ok_or("bind_req missing hp")?;
+    let first = |name: &str| section.get_field(name).and_then(|f| f.values.first());
+    let device_pubkey: [u8; 32] = match first("dk") {
+        Some(VsfType::ke(b)) if b.len() == 32 => b.as_slice().try_into().unwrap(),
+        _ => return Err("bind_req missing dk".into()),
+    };
+    if device_pubkey != sender_pubkey {
+        return Err("bind_req envelope signer is not the request's device".into());
+    }
+    let t = section.eagle("t").ok_or("bind_req missing t")?;
+    let device_sig = match first("ds") {
+        Some(VsfType::ge(b)) => eggs_from_bytes(b)?,
+        _ => return Err("bind_req missing ds".into()),
+    };
+    let identity_sig = match first("is") {
+        Some(VsfType::ge(b)) => b.clone(),
+        _ => return Err("bind_req missing is".into()),
+    };
+    let bundle = match first("kb") {
+        Some(VsfType::ge(b)) => Some(KeyBundle::from_bytes(b)?),
+        _ => None,
+    };
+    let nfc_hash: [u8; 32] = match first("nh") {
+        Some(VsfType::hb(h)) if h.len() == 32 => h.as_slice().try_into().unwrap(),
+        _ => [0u8; 32],
+    };
+    Ok((hp, BindRequest { device_pubkey, t, device_sig, bundle, identity_sig, nfc_hash }, sender_pubkey))
+}
+
+/// Build a `fanout_resp` — a fan-out blob (`fanout_to_bytes`) for fleet `hp`, handed by the device that sealed it to the newcomer it was grown for and to the siblings. The receiver opens it with its own ira; nothing in it is secret to anyone else, and a header the recovered key does not reproduce is refused.
+pub fn build_fanout_resp_vsf(handle_proof: &[u8; 32], blob: &[u8], device_pubkey: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+    let mut section = VsfSection::new("fanout_resp");
+    section.add_field("hp", VsfType::hP(handle_proof.to_vec()));
+    section.add_field("bl", VsfType::ge(blob.to_vec()));
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build fanout_resp VSF: {}", e))?;
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
+}
+
+/// Parse + verify a `fanout_resp`. Returns (handle proof, blob bytes, sender device pubkey).
+pub fn parse_fanout_resp_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], Vec<u8>, [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("fanout_resp verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "fanout_resp" {
+        return Err(format!("Expected 'fanout_resp' section, got '{}'", section_name));
+    }
+    let hp = field_handle_proof(&section.fields, "hp").ok_or("fanout_resp missing hp")?;
+    let blob = match section.get_field("bl").and_then(|f| f.values.first()) {
+        Some(VsfType::ge(b)) => b.clone(),
+        _ => return Err("fanout_resp missing bl".into()),
+    };
+    Ok((hp, blob, sender_pubkey))
+}
+
 /// A 32-byte handle proof field (`hP`, the fgtw sections' type for it; `hp`/`hb` accepted too).
 fn field_handle_proof(fields: &[vsf::file_format::VsfField], name: &str) -> Option<[u8; 32]> {
     fields
@@ -4513,6 +4608,29 @@ mod pong_seal_tests {
     }
 
     /// The fold-freshness tip: e6 signed round-trip (a negative osc survives — eagle times are signed, and the ek trap taught us width-typed reads die), and absence reads None (legacy sender = no verdict, never a zero sentinel).
+    #[test]
+    fn bind_req_and_fanout_resp_round_trip() {
+        use crate::network::fgtw::fleet::{BindRequest, Egg};
+        let kp = fgtw::keys::Keypair::from_seed(&[0x55u8; 32]);
+        let hp = [0x66u8; 32];
+        let req = BindRequest {
+            device_pubkey: kp.public.to_bytes(),
+            t: 123_456,
+            device_sig: vec![Egg { scheme: fgtw::fleet::scheme::ED25519, sig: vec![9u8; 64] }],
+            bundle: None,
+            identity_sig: vec![8u8; 64],
+            nfc_hash: [7u8; 32],
+        };
+        let frame = build_bind_req_vsf(&req, &hp, kp.secret.as_bytes()).unwrap();
+        let (h, back, pk) = parse_bind_req_vsf(&frame).unwrap();
+        assert_eq!((h, pk), (hp, kp.public.to_bytes()));
+        assert_eq!(back, req, "the request must come back field for field");
+        let blob = vec![0xCDu8; 3000];
+        let f = build_fanout_resp_vsf(&hp, &blob, &kp.public.to_bytes(), kp.secret.as_bytes()).unwrap();
+        let (h, b, pk) = parse_fanout_resp_vsf(&f).unwrap();
+        assert_eq!((h, b, pk), (hp, blob, kp.public.to_bytes()));
+    }
+
     #[test]
     fn fleet_req_and_resp_round_trip() {
         let kp = fgtw::keys::Keypair::from_seed(&[0x33u8; 32]);

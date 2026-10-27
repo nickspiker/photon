@@ -355,41 +355,9 @@ impl PhotonApp {
         for update in add_updates {
             match update {
                 AddDeviceUpdate::Candidates(reqs) => {
-                    // Precompute each candidate's expected word tokens + keyed name once per refresh, so the per-keystroke matcher is a plain string walk. Requests were already signature-verified in bindreq_list; the seed is in-session by definition on this screen. `heard_ble` marks candidates whose beacon we're hearing right now (proximity) — resolved by matching each heard service UUID's keyed tag to the candidate's pubkey under our fleet key.
-                    if let Some((seed, hp)) = self
-                        .session
-                        .as_ref()
-                        .map(|s| (s.identity_seed, s.handle_proof))
-                    {
-                        use crate::network::fgtw::fleet;
-                        let heard = crate::network::pairing_beacon::heard();
-                        let now = std::time::Instant::now();
-                        self.lan_heard.retain(|(_, t)| now.duration_since(*t) < LAN_HEARD_FRESH);
-                        let lan_heard = self.lan_heard.clone();
-                        self.add_device_candidates = reqs
-                            .into_iter()
-                            .map(|req| {
-                                let words = fleet::masked_device_words(&req.device_pubkey, &seed);
-                                AddCandidate {
-                                    name: fleet::device_name_default(&req.device_pubkey, &seed),
-                                    tokens: fleet::pair_word_list(&words),
-                                    // Recompute this candidate's beacon id from its OWN published (pubkey, eagle_time) under our handle key; a heard match = proximity.
-                                    heard_ble: heard.iter().any(|b| {
-                                        fgtw::pair::beacon_matches(
-                                            &b.uuid,
-                                            &hp,
-                                            &req.device_pubkey,
-                                            req.t,
-                                        )
-                                    }),
-                                    // LAN proximity: the candidate's own pubkey heard broadcasting under our handle on this network.
-                                    heard_lan: lan_heard.iter().any(|(k, _)| *k == req.device_pubkey),
-                                    req,
-                                }
-                            })
-                            .collect();
-                        self.refresh_add_device_match();
-                    }
+                    // The seed's latest registry list; merged with the requests handed to us over the LAN, then the candidate rows are rebuilt.
+                    self.add_device_registry_reqs = reqs;
+                    self.rebuild_add_device_candidates();
                 }
                 AddDeviceUpdate::Bound(pk) => {
                     self.add_device_checking = false;
@@ -414,8 +382,11 @@ impl PhotonApp {
                         self.spawn_confirm_add();
                     }
                 }
-                AddDeviceUpdate::Rotated => {
+                AddDeviceUpdate::Rotated(blob) => {
                     self.add_device_checking = false;
+                    // The grown fan-out goes to the newcomer (at its LAN beacon's address — its key) and to every sibling over the mesh; the seed's copy, if the mirror took, is the fallback.
+                    let newcomer: Vec<([u8; 32], std::net::SocketAddr)> = self.add_device_bound.into_iter().flat_map(|pk| self.lan_heard_addr.iter().filter(move |(k, _)| *k == pk).copied()).collect();
+                    self.fanout_push(&blob, &newcomer);
                     // Ceremony complete — back to the Fleet page it was launched from (the new device's row is the confirmation), instead of stranding the user on a finished words screen.
                     self.end_add_device_flow();
                     self.refresh_fleet_retired();
@@ -751,6 +722,18 @@ impl PhotonApp {
                     self.add_join_words = Some(words);
                     self.add_join_status = tr(Msg::AddFromSignedIn).into_owned();
                 }
+                JoinUpdate::Aimed { hp, bind_req, poke } => {
+                    // A fresh request stamp: every sponsor heard so far gets it now, and the LAN arm hands it to each sponsor heard from here on.
+                    self.add_join_hp = Some(hp);
+                    self.add_join_poke = Some(poke);
+                    self.add_join_sent.clear();
+                    let sponsors = self.add_join_sponsors.clone();
+                    for (dk, addr) in sponsors {
+                        self.add_join_sent.push(dk);
+                        self.send_frame_direct(bind_req.clone(), dk, addr, None);
+                    }
+                    self.add_join_bind_req = Some(bind_req);
+                }
                 JoinUpdate::Joined(fleet_key, session) => {
                     if fleet_key.is_none() {
                         // JOINER SELECTED (docs/lifecycle.md): bound into the chain but the sponsor's human hasn't confirmed — THIS screen going green IS what they're being asked to verify. Flood green, say "Selected!", and HOLD; sign-in fires when the confirm rotation releases the fleet key. The poller re-emits Joined(Some(key)) thru a fresh channel, so the Some-branch below is the single sign-in path.
@@ -766,16 +749,28 @@ impl PhotonApp {
                         let hp = session.handle_proof;
                         let kp = self.device_keypair.clone();
                         let wake = self.event_proxy.clone();
+                        let fanout_slot = self.add_join_fanout.clone();
                         std::thread::spawn(move || {
                             let Some(kp) = kp else { return };
                             // ~15 min of 2s polls — the sponsor is a human mid-tap, not a batch job; past this the ceremony is abandoned and a relaunch re-joins cleanly.
                             for _ in 0..(15 * 30) {
                                 std::thread::sleep(std::time::Duration::from_secs(2));
-                                if let Ok(Some(k)) = crate::network::fgtw::fleet::recover_fleet_key(
-                                    &hp,
-                                    &kp,
-                                    &session.identity_seed,
-                                ) {
+                                // The sponsor's grow handed to us over the mesh opens first; the seed's fan-out is the fallback.
+                                let pushed = fanout_slot.lock().ok().and_then(|mut s| s.take()).and_then(|blob| {
+                                    match crate::network::fgtw::fleet::fanout_open_blob(&hp, &blob, &kp, &session.identity_seed) {
+                                        Ok(Some((_, k))) => Some(k),
+                                        Ok(None) => {
+                                            crate::log("JOIN: a fan-out arrived over the mesh with no wrap for us yet");
+                                            None
+                                        }
+                                        Err(e) => {
+                                            crate::logf!("JOIN: a fan-out arrived over the mesh and was refused — {}", e);
+                                            None
+                                        }
+                                    }
+                                });
+                                let seed = || crate::network::fgtw::fleet::recover_fleet_key(&hp, &kp, &session.identity_seed).ok().flatten();
+                                if let Some(k) = pushed.or_else(seed) {
                                     if tx.send(JoinUpdate::Joined(Some(k), session)).is_err() {
                                         return; // screen left — nobody waiting
                                     }

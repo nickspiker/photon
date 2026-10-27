@@ -13,6 +13,7 @@ Canonical: docs/peers-are-fgtw.md (direction set 2026-06-28).
 **Notification order (2026-07-03):** state changes go to peers FIRST (siblings + live friends, at mirrored addresses), FGTW LAST as the straggler-catcher (docs/fleet-sync.md §6).
 **Next phases:** persist + share the phonebook peer to peer; move announce/search + live push off fgtw.org; real Kademlia (node.rs scaffolding is dead today) only past the scale threshold.
 2026-10-17: Nick restated FGTW as "the address book" — the bind request moves device to device ([[project_bindreq_peer_to_peer]]).
+2026-10-26: BUILT — the membership chain, the bind request and the fan-out travel device to device; every device holds its fleet's chain; the seed is a mirror asked last ([[project_fleet_over_mesh]], docs/peers-are-fgtw.md Phase A′).
 
 **Why:** a central server is a dependency, a failure point and a trust surface; the commons should run on its peers.
 **How to apply:** anything that would store state on fgtw.org beyond where-a-device-is needs a reason; peer-first, server-last.

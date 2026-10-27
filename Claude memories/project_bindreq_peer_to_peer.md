@@ -11,6 +11,7 @@ Nick, asked why the server is in the path at all: "We're just using that for the
 The registry design (docs/pairing-v2.md, July 2026) predates the peers-are-FGTW doctrine ([[project_peers_are_fgtw]]): the worker stores and verifies the request; words/BLE/NFC only select.
 
 **Why:** FGTW's job is resolving where a device is; anything it stores beyond that is a server dependency, a size/availability failure point and a trust surface (this outage was exactly that).
+**BUILT 2026-10-26** ([[project_fleet_over_mesh]]): the request goes joiner → sponsor as a `bind_req` frame over the LAN (the registry kept as a mirror), the chain and the fan-out come back over the mesh; the bindreq routes are not yet retired from the worker.
 **How to apply:** the selector (words/BLE/NFC) yields the candidate device key → the old device resolves its address in the phonebook → pulls consent + bundle straight from the candidate over PT/relay and verifies there; retire bindreq_put/list/withdraw from the worker. Until then the worker cap must fit a MASK_ALL request.
 
 **Second wall, same day (green confirm never finished):** after the cap fix every "Yes, green — finish" tap came back Failed, unlogged.

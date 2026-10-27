@@ -271,6 +271,126 @@ impl FleetSigner for DeviceSigner {
     }
 }
 
+// ── The join over the mesh (docs/pairing-v2.md; Nick 2026-10-26). The binding request is BUILT here, once, and goes two ways with the same stamp: to the seed's registry when it answers (`bindreq_post`), and straight to every sponsor device heard on the LAN as a `bind_req` frame (protocol.rs). The fan-out likewise: a grow is sealed here, handed to the newcomer and the siblings as a `fanout_resp` frame, and mirrored to the seed when it answers. ──
+
+/// This device's binding request for fleet `handle_proof`: "I consent to join", signed by the device key with one egg per scheme it holds (its bundle rides along), co-signed by `Ed25519(identity_seed)` (the registry's handle-knowledge gate), stamped now. The same bytes the seed's `bindreq_put` would mint — built here so the LAN copy and the registry copy are ONE request with one `t` (the Add's `consent_t`, and the BLE beacon's stamp).
+pub fn make_bind_request(device_key: &impl FleetSigner, identity_seed: &[u8; 32], handle_proof: &[u8; 32], nfc_secret: &[u8; 32]) -> BindRequest {
+    use ed25519_dalek::Signer;
+    let now = vsf::eagle_time_oscillations();
+    let me = device_key.keypair().public.to_bytes();
+    let nfc_hash = if *nfc_secret == [0u8; 32] { [0u8; 32] } else { fgtw::pair::nfc_secret_hash(nfc_secret, &me, now) };
+    let msg = bindreq_signing_bytes(handle_proof, &me, now);
+    let bundle = device_key.bundle();
+    let mask = bundle.as_ref().map(|b| b.mask()).unwrap_or(scheme::MASK_BASE);
+    let identity_key = ed25519_dalek::SigningKey::from_bytes(identity_seed);
+    BindRequest {
+        device_pubkey: me,
+        t: now,
+        device_sig: device_key.eggs(&msg, mask),
+        bundle,
+        identity_sig: identity_key.sign(&msg).to_bytes().to_vec(),
+        nfc_hash,
+    }
+}
+
+/// Post an already-built binding request to the seed's registry (the `bindreq_put` body, field for field). `Err("device_owned…")` is the seed's one-owner verdict and stays a verdict; any other error is the seed being unreachable — the LAN copy carries the request regardless.
+pub fn bindreq_post(req: &BindRequest, handle_proof: &[u8; 32]) -> Result<(), String> {
+    let mut section = vsf::VsfSection::new("bindreq_put");
+    section.add_field("hp", vsf::VsfType::hP(handle_proof.to_vec()));
+    section.add_field("dk", vsf::VsfType::ke(req.device_pubkey.to_vec()));
+    section.add_field("t", vsf::VsfType::e(vsf::types::EtType::e6(req.t)));
+    section.add_field("ds", vsf::VsfType::ge(eggs_to_bytes(&req.device_sig)));
+    section.add_field("is", vsf::VsfType::ge(req.identity_sig.clone()));
+    if let Some(b) = &req.bundle {
+        section.add_field("kb", vsf::VsfType::ge(b.to_bytes()));
+    }
+    section.add_field("nh", vsf::VsfType::hb(req.nfc_hash.to_vec()));
+    let body = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("bindreq_put build: {e}"))?;
+    let resp = PhotonTransport.post(body)?;
+    if fgtw::client::is_error(&resp.body, "device_owned") {
+        return Err("device_owned: this device is still enrolled in another identity's fleet — wipe it (Settings → Security), or remove it from that fleet, before joining a different one".to_string());
+    }
+    if let Some((reason, detail)) = fgtw::client::error_frame(&resp.body) {
+        return Err(format!("fgtw bindreq_put {reason}: {detail}"));
+    }
+    if !(200..300).contains(&resp.status) {
+        return Err(format!("FGTW transport {}", resp.status));
+    }
+    Ok(())
+}
+
+/// The fan-out blobs this device holds, by handle: (handle proof, revision, blob bytes) — the newest grow or mint it sealed or was handed. A revision floor for the next grow when the seed is unreachable, and the copy a sibling's `fanout_resp` is compared against.
+static HELD_FANOUT: std::sync::Mutex<Vec<([u8; 32], u64, Vec<u8>)>> = std::sync::Mutex::new(Vec::new());
+
+/// Keep a fan-out blob as the held copy for `handle_proof` if its revision is at least the held one's.
+pub fn hold_fanout(handle_proof: &[u8; 32], revision: u64, blob: &[u8]) {
+    let Ok(mut held) = HELD_FANOUT.lock() else { return };
+    match held.iter_mut().find(|(h, _, _)| h == handle_proof) {
+        Some(e) => {
+            if revision >= e.1 {
+                e.1 = revision;
+                e.2 = blob.to_vec();
+            }
+        }
+        None => held.push((*handle_proof, revision, blob.to_vec())),
+    }
+}
+
+/// The held fan-out's revision for `handle_proof` (0 = none held).
+fn held_fanout_revision(handle_proof: &[u8; 32]) -> u64 {
+    HELD_FANOUT.lock().ok().and_then(|h| h.iter().find(|(hp, _, _)| hp == handle_proof).map(|e| e.1)).unwrap_or(0)
+}
+
+/// GROW the fan-out HELD-FIRST: seal the current key to `members` at the next revision (the seed's revision + 1 when it answers, else the held one + 1), hold the blob, mirror it to the seed as a best effort, and return (revision, blob) for the caller to hand to the newcomer and the siblings as a `fanout_resp`. Never a mint. A seed that holds a DIFFERENT key fingerprint is a rotation this device missed: the grow is refused, since sealing a stale key to the newcomer would hand it a dead key.
+pub fn fanout_grow_held(
+    handle_proof: &[u8; 32],
+    device_key: &Keypair,
+    held_key: &[u8; 32],
+    members: &[[u8; 32]],
+    identity_seed: &[u8; 32],
+) -> Result<(u64, Vec<u8>), String> {
+    let kfp = fgtw::fanout::fleet_key_fingerprint(held_key);
+    let seed = match fetch_fanout(handle_proof) {
+        Ok(Some((revision, seed_kfp, _, _))) => {
+            if seed_kfp != kfp {
+                return Err("fanout: held key is not the published key — grow refused (a rotation this device missed)".into());
+            }
+            Some(revision)
+        }
+        Ok(None) => None,
+        Err(e) => {
+            crate::logf!("FANOUT: seed unreachable for the grow ({}) — growing from the held revision", e);
+            None
+        }
+    };
+    let revision = seed.unwrap_or(0).max(held_fanout_revision(handle_proof)) + 1;
+    let wraps = fanout_seal(handle_proof, held_key, members, identity_seed)?;
+    let me = device_key.public.to_bytes();
+    let epoch_pub = fgtw::pq::epoch_bundle(held_key).public();
+    let blob = fanout_to_bytes(revision, &kfp, &me, &epoch_pub, &wraps);
+    hold_fanout(handle_proof, revision, &blob);
+    match fgtw::client::post_fanout(&PhotonTransport, handle_proof, &signer_for(device_key), revision, held_key, &wraps) {
+        Ok(()) => crate::logf!("FANOUT: grew to revision {} ({} ira(s) wrapped) — held and mirrored to the seed", revision, members.len()),
+        Err(e) => crate::logf!("FANOUT: grew to revision {} ({} ira(s) wrapped) — held; the seed mirror failed ({}), the fan-out reaches the fleet over the mesh", revision, members.len(), e),
+    }
+    Ok((revision, blob))
+}
+
+/// Open a fan-out blob handed to us (a `fanout_resp`) with this device's ira keypair + the identity seed: `Ok(Some((revision, key)))` when it holds a wrap for us and its header's epoch bundle is the one the key derives (a header we cannot reproduce is refused), `Ok(None)` when no wrap is ours, `Err` when the blob does not parse. A blob that opens is held.
+pub fn fanout_open_blob(handle_proof: &[u8; 32], blob: &[u8], device_key: &Keypair, identity_seed: &[u8; 32]) -> Result<Option<(u64, [u8; 32])>, String> {
+    let f = fgtw::fanout::fanout_from_bytes_full(blob)?;
+    let Some(k) = fanout_open(handle_proof, &f.kfp, &f.wraps, device_key, identity_seed) else { return Ok(None) };
+    if fgtw::pq::epoch_bundle(&k).public() != f.epoch_pub {
+        return Err("fanout: header epoch bundle does not match the fleet key — tampered header".into());
+    }
+    hold_fanout(handle_proof, f.revision, blob);
+    Ok(Some((f.revision, k)))
+}
+
 /// Existing-device side of device-ADD: bind the device a verified binding request names, carrying its consent into the Add op.
 pub fn bind_device(
     member_key: &impl FleetSigner,

@@ -40,6 +40,20 @@ To make it peer-shareable + enumerable:
 PeerRecord today = `{handle_proof, device_pubkey, ip, local_ip, last_seen}` (`protocol.rs:104-112`), per-device, multiple devices per handle.
 Adequate for the phonebook; no schema change needed for Phase A.
 
+### Phase A′ — The membership chain over the mesh — ✅ BUILT 2026-10-26
+The phonebook was never the only thing the seed held: a fleet's MEMBERSHIP CHAIN (which device keys are this handle's) lived on fgtw.org alone, and two flows depended on that copy — a friend learning of our new device fetched our chain from the seed on the pong tail's `ftip` tripwire, and a joiner could only be bound through the seed's bind-request registry.
+Nick, 2026-10-26: "I'm not sure why we have to rely on this fgtw.org unless everyone on our list does not respond."
+So the chain now travels like the address records do:
+- **Held on the device.** `fleet.rs` keeps every chain that folds (ours persisted to the vault as `fleet_chain`, reloaded at attest); `fetch()` asks the seed and serves the held copy when the seed is down or behind.
+  Forks (two members appending with no seed to serialise them) are ordered the same way on every holder: longest valid chain, then newest tip, then lower head hash.
+- **Two sibling frames.** `fleet_req` asks a device for a handle's chain (answered only to a device some fold knows — the chain is public, a 10–50 KB answer to anyone is amplification bait); `fleet_resp` carries it, as the answer or as a sponsor's unasked PUSH to its siblings and to the device it just bound.
+  The carrier earns no trust: the receiver folds, checks the slot and the genesis pin, and adopts only a newer tip — the same drain a seed copy goes through.
+- **Peers first, seed last.** A contact's fold refresh asks its own devices first; the seed is asked only for a contact with no reachable device, or one whose earlier ask is still unanswered when a refresh fires again (an edge, no wall clock).
+- **The join over the mesh** (docs/pairing-v2.md): the joiner builds its binding request once and sends it two ways with one stamp — to the seed's registry when it answers, and straight to every sponsor device whose beacon it hears on the LAN (`bind_req`).
+  The sponsor's matcher screens it exactly like a registry row; the bind lands in the held chain and is pushed to the newcomer and the siblings; the grow is sealed locally and pushed likewise (`fanout_resp`), the seed mirrored when it answers.
+  A seed that cannot be reached no longer fails an add.
+Still on the seed: the attest's announce (the phonebook write — this phase's next step is the attest degrading to the held chain when the seed is down), the device→owner index and first-come genesis (no peer equivalent; they only ever bound users of the seed), relay/pipe, doorbell, inbox, avatars.
+
 ### Phase B — Reduce server dependence
 fgtw.org is hardcoded in 4 files (`bootstrap.rs:6`, `blob.rs:5`, `relay.rs:9`, `avatar.rs:932`) + seed pubkeys (`bootstrap.rs:16-25`).
 Operations to move off the server, once the phonebook gossips:

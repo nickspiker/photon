@@ -96,6 +96,19 @@ The ceremony is a **candidate-set + selector** machine: the registry authenticat
   **PROXIMITY POPULATES THE TAP LIST, NEVER THE REGISTRY.** The old device's AddDevice screen shows a tappable row ONLY for a device it is currently HEARING over the BLE announce beacon (later: an NFC tap). The WAN binding-request registry is *sync only* — it carries the consent signature a tap binds with, but it must NOT populate the selectable list, because a remote attacker who holds the handle can FLOOD the (identity-gated) registry with binding requests; listing registry entries as tap targets would fill the user's finger-reach with decoys. Proximity is the one thing a remote attacker can't fake — they can't broadcast BLE / present an NFC tag in your room. So: heard-nearby → tappable; not-heard → doesn't appear, you type its words (reading them off the physical screen IS the proximity check).
   A tap binds using that device's registry request (consent). Because a name-pick isn't a typed-key match, the tap/proximity path takes the TWO-PHASE gate: bind (keyless) → new device folds + goes green → old device asks "did it turn green?" → confirm → rotate. Wrong pick → your device stays red → don't confirm → keyless entry, no key leaked. The lock word + `word_mac` proof (single-valid-proof abort) remains an OPTIONAL hardening on top of proximity, not required for the MVP. The milestone-A shadow beacon is the radio path (src/network/pairing_beacon.rs: Android advertises + scans; Linux advertises + scans via bluer; macOS/Windows scan via btleplug with native advertise next; a device whose platform has no courier is added by words).
 
+## The ceremony over the mesh (2026-10-26)
+
+The registry is no longer the only road for the request, nor the seed the only road for the chain and the key (docs/peers-are-fgtw.md Phase A′):
+
+1. The joiner builds its binding request ONCE (`fleet::make_bind_request`) and sends the same bytes, same stamp, two ways: `bindreq_post` to the seed when it answers, and a signed `bind_req` frame straight to every sponsor device whose LAN beacon it hears under the joined handle (the joiner is already beaconing; the sponsor beacons too, as every fleet device does).
+   A seed that cannot be reached is logged and the LAN carries the request; the seed's one-owner verdict (`device_owned`) still ends the ceremony.
+2. The sponsor's AddDevice screen merges two candidate sources — the seed's registry list and the requests handed to it directly — by device key, newest stamp wins; a direct request is verified exactly as a registry row (`BindRequest::verify` + freshness) and marks the device heard on the LAN.
+   The words select, as always.
+3. The bind lands in the chain the sponsor HOLDS (`bind_device_held`), is mirrored to the seed when it answers, and is pushed as a `fleet_resp` to every sibling and to the newcomer at its beacon's address.
+4. The joiner goes GREEN from the pushed chain the moment it folds the joiner in (slot + genesis + fold checked against its own roots), or from the seed's copy — whichever arrives first.
+5. The sponsor's grow is sealed locally (`fanout_grow_held`), pushed as a `fanout_resp` to the newcomer and the siblings, and mirrored to the seed; the joiner opens it with its own ira (and refuses a header its recovered key does not reproduce).
+6. Attest still announces through the seed; with the seed down the joiner holds the chain and the key and waits on the attest — the next step is the attest degrading to the held chain.
+
 ## What retires (flag-day)
 
 - Worker: pair/pack slots, `PAIR_FRESH_OSC`, hub `matched` kind.

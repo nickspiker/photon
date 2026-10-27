@@ -473,6 +473,20 @@ pub enum StatusUpdate {
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
     },
+    /// A joining device's binding request, handed to us directly (`bind_req`, docs/pairing-v2.md over the mesh) — the UI verifies it like a registry row and adds it to the AddDevice matcher's candidates.
+    BindReqReceived {
+        handle_proof: [u8; 32],
+        req: crate::network::fgtw::fleet::BindRequest,
+        sender_pubkey: DevicePubkey,
+        sender_addr: SocketAddr,
+    },
+    /// A fan-out blob handed to us (`fanout_resp`): the sponsor's grow for a device it just bound, or a sibling's rotation. The UI opens it with this device's own ira.
+    FanoutReceived {
+        handle_proof: [u8; 32],
+        blob: Vec<u8>,
+        sender_pubkey: DevicePubkey,
+        sender_addr: SocketAddr,
+    },
     /// A sibling requesting its own removal from the fleet (bilateral removal): consent stamp + its signature over the departure request. This device's user approves; then this device countersigns and publishes the consented Remove.
     DepartReqReceived {
         consent_t: i64,
@@ -723,6 +737,8 @@ impl StatusUpdate {
                 Some(sender_pubkey.as_bytes())
             }
             StatusUpdate::FleetChainAsked { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::BindReqReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::FanoutReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FleetChainReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FocusClaimReceived { sender_pubkey, .. } => {
                 Some(sender_pubkey.as_bytes())
@@ -2787,6 +2803,47 @@ async fn run_checker(
                                     StatusUpdate::FleetChainReceived {
                                         handle_proof,
                                         chain,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                        sender_addr: src_addr,
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            // The join over the mesh: a binding request handed to a sponsor, and a fan-out handed to a newcomer or a sibling. Same mandatory packet-ack.
+                            if let Ok((handle_proof, req, sender_pubkey)) = crate::network::fgtw::protocol::parse_bind_req_vsf(msg_bytes) {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::BindReqReceived {
+                                        handle_proof,
+                                        req,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                        sender_addr: src_addr,
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            if let Ok((handle_proof, blob, sender_pubkey)) = crate::network::fgtw::protocol::parse_fanout_resp_vsf(msg_bytes) {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::FanoutReceived {
+                                        handle_proof,
+                                        blob,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                         sender_addr: src_addr,
                                     },

@@ -52,7 +52,8 @@
 - [Backfill dings](project_backfill_dings.md) — 2026-10-21 re-serve rang per old photon
 - [Hotplug abort](project_hotplug_abort.md) — 0-px avatar SIGABRT; fixed
 - [Redox dropped](project_redox_dropped.md) — 2026-10-15 target removed everywhere; ferros is the next…
-- [Bindreq peer-to-peer](project_bindreq_peer_to_peer.md) — FGTW = phonebook only; bind request goes device to device
+- [Bindreq peer-to-peer](project_bindreq_peer_to_peer.md) — FGTW = phonebook only; bind request goes device to device (BUILT 2026-10-26)
+- [Fleet over the mesh](project_fleet_over_mesh.md) — 2026-10-26 BUILT: chain/bind request/fan-out device to device (fleet_req/resp, bind_req, fanout_resp), chain held on device, seed = mirror asked last; next: attest degrades to the held chain; field test pending
 - [Beams](project_beams.md) — H.264 beams BUILT (desktop + phone); g2t stream planned
 - [Wave fishtank on cellular](project_wave_fishtank_cellular.md) — 2026-10-02 L rule; BUILT
 - [opsin byte order + async loads](project_opsin_android_byte_order_async_loads.md) — 2026-10-05: pixels pack thru fluor::theme::fmt; loads off-thread

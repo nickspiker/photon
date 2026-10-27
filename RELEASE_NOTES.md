@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Adding a device no longer needs fgtw.org.** A new device on the same network hands its request straight to your other device, and that device hands back the fleet's device list and the key; fgtw.org is told afterwards when it can be reached. Friends learn about your new device from your devices rather than from fgtw.org too.
 - **You are no longer in your own People list.** Your notes are now a conversation like any other and live under Atoms; type your own handle to open them, and your other devices keep them in step as before.
 - **One way to send, at any size.** Photons to one friend, to a molecule, or to yourself now go out, retry, and count as delivered the same way, so fixes reach every conversation at once.
 - **Pictures open in molecules.** Tapping a picture in a molecule (or in your notes) opens it in the viewer; before, the viewer stayed empty.
