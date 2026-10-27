@@ -1,5 +1,7 @@
 # Conversations convergence — the inventory (2026-10-24)
 
+**Status 2026-10-26 (step E stage 5 on main):** the send, ACK, retransmit and held-flush entries below are converged — `send_row` / `PendingSend` / `drain_pending_sends` / `conversation_transmit` replace `send_molecule_message`, `pending_chain_sends` and `drain_pending_chain_sends`; `process_ack_by` replaces `process_ack` and `process_group_ack`; `routes_for_conversation` replaces `routes_for_molecule`; `Contact::molecule_view`, `molecule` and `molecule_remote` are deleted; the self contact is retired (notes is an atom). Line numbers below are from the original mapping.
+
 Every consumer of a friendship's pair chains/identity, classified BOND / CONVERSATION / both, mapped at commit 8e775d76 on branch `conversations` (line numbers drift as the work lands). The work map for docs/conversations.md §7; risk 1 (the token codec) is fixed by the stored token.
 
 

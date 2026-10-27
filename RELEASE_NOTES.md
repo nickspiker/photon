@@ -6,6 +6,11 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **You are no longer in your own People list.** Your notes are now a conversation like any other and live under Atoms; type your own handle to open them, and your other devices keep them in step as before.
+- **One way to send, at any size.** Photons to one friend, to a molecule, or to yourself now go out, retry, and count as delivered the same way, so fixes reach every conversation at once.
+- **Pictures open in molecules.** Tapping a picture in a molecule (or in your notes) opens it in the viewer; before, the viewer stayed empty.
+- **Missed molecule photons alert once.** When all your devices were offline, a molecule's missed photons now give one summary alert when they catch up, as a friend's do; a muted molecule stays quiet.
+- **Opening a molecule wakes everyone in it.** Opening a molecule checks right away whether each friend in it is there, as opening one friend does.
 
 ## v131
 - **Molecule members you have never met.** If you bind a friend into a molecule and they bind someone you do not know, your photons, waves and beams with that person now work like anyone else's; before, their photons never showed for you.

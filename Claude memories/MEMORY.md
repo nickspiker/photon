@@ -77,7 +77,7 @@
 - [Group waves](project_group_waves.md) — 2026-10-26 waves+beams in molecules BUILT (mesh, beam fan, roll, recorded, reconnect, express, never-friended members); field test pending
 - [Beam settings + g2t](project_beam_settings.md) — 2026-10-26 BUILT: Beam page (per-device keys, follow-fleet toggle, 5 live controls, test patterns) + HLG10→g2t HDR beams; field test pending
 - [File drag-out](project_file_drag_out.md) — 2026-10-26 BUILT unverified: drag files out (mac promise / Win virtual file / X11 staged move) + mac Save panel; no share sheet
-- [One conversation model](project_conversation_convergence.md) — docs/conversations.md; phase 0 BUILT, phase 1 UI next
+- [One conversation model](project_conversation_convergence.md) — docs/conversations.md; step E stage 5 BUILT 2026-10-26, NOT deployed (Nick rolls); F next
 - [project-molecules-build.md](project-molecules-build.md) — MOLECULES phase 1 BUILT 2026-09-15; join-by-replay SCOPED…
 - [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — 2026-09-18 sibling churn CONVICTED + fixed; ghost 1be949c1…
 - [project_fluor_busy_loop.md](project_fluor_busy_loop.md) — 2026-10-21 FIXED: fluor sticky WaitUntil
