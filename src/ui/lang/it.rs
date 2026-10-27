@@ -336,6 +336,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondWillInvite => "sarà invitato".into(),
         Msg::BondWillWithdraw => "invito ritirato".into(),
         Msg::NewAtom => "Nuovo atomo".into(),
+        Msg::CreateAtom => "Crea atomo".into(),
+        Msg::CreateMolecule => "Crea molecola".into(),
         Msg::HistoryFromGenesis => "I nuovi vedono tutto".into(),
         Msg::HistoryFromJoin => "I nuovi vedono da quando si legano".into(),
         Msg::JoiningStatus => "legame in corso\u{2026}".into(),

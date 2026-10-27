@@ -206,7 +206,7 @@ impl PhotonApp {
         }
     }
 
-    /// NEW ATOM (docs/molecules.md §0): the typed name founds an atom — you alone in it — and opens it.
+    /// NEW ATOM (docs/molecules.md §0): the typed name founds an atom — you alone in it — invites the friends picked in the member picker, and opens it.
     /// Every atom has a name (Nick 2026-10-27: "we said no empty atom names … could be a line return, tab, space, something"): byte-precise, never trimmed, and an empty box founds nothing — Enter included, as the hidden plus already says.
     pub(super) fn submit_new_atom(&mut self) {
         let title: String = self.contacts_textbox.as_ref().map(|tb| tb.chars.iter().collect::<String>()).unwrap_or_default();
@@ -214,7 +214,13 @@ impl PhotonApp {
             return;
         }
         let from_genesis = self.molecule_default_from_genesis();
-        if self.found_atom_alone(&title, from_genesis).is_some() {
+        if let Some(gid) = self.found_atom_alone(&title, from_genesis) {
+            // The friends picked while naming are invited as it is founded (Nick 2026-10-27: "so that way they can invite people when they create, not just on the settings screen after") — each joins by their own consent, as from the Bonds page.
+            for party in std::mem::take(&mut self.atom_picks) {
+                if let Some(ci) = self.contacts.iter().position(|c| c.handle_hash == party && !c.is_sibling) {
+                    self.send_bond_offer(gid, ci);
+                }
+            }
             self.atom_naming = false;
             if let Some(tb) = self.contacts_textbox.as_mut() {
                 tb.clear();
@@ -896,6 +902,7 @@ impl PhotonApp {
             *g = None; // the OLD identity's fleet key must not serve the next session's pages
         }
         self.device_avatar_pixels = None;
+        self.own_avatar_row = None;
         self.device_avatar_scaled = None;
         self.device_avatar_scaled_diameter = 0;
         self.avatar_set_rx = None; // an in-flight avatar pick must not install under the next identity

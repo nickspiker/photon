@@ -72,6 +72,7 @@ impl PhotonApp {
         if let Some(rx) = self.avatar_set_rx.as_ref() {
             if let Ok(px) = rx.try_recv() {
                 self.device_avatar_pixels = Some(px);
+                self.own_avatar_row = None;
                 self.device_avatar_scaled = None;
                 self.device_avatar_scaled_diameter = 0;
                 self.scene_dirty = true;

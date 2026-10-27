@@ -2353,6 +2353,11 @@ pub struct PhotonApp {
     ready_filter_base: HitId,
     /// NEW ATOM mode on the Ready screen: the search box is the title box, the plus founds the atom instead of searching a handle.
     atom_naming: bool,
+    /// While naming a new atom the list is a member picker (Nick 2026-10-27): the friends checked so far, by party id — invited as the atom is founded. Cleared whenever naming starts or ends.
+    atom_picks: Vec<[u8; 32]>,
+    /// Our own row at the top of the picker, always checked: its wrapped name (refreshed on the Ready pre-pass) and our avatar at the row diameter.
+    me_row_lines: Vec<String>,
+    own_avatar_row: Option<(usize, Vec<u8>)>,
     /// The filter strip's measured height in pixels (it WRAPS on a narrow screen — Nick 2026-09-15: "when the buttons wrap, it needs to push down the top contact"); fed back from the render's flow, one frame late, settles like sel_meta_h. Zero until first drawn = one row.
     ready_strip_h: f32,
     /// Hit ID for the "← Contacts" back button on the Conversation screen.
@@ -3244,6 +3249,9 @@ impl PhotonApp {
             ready_filter: ReadyFilter::All,
             ready_filter_base: HIT_NONE,
             atom_naming: false,
+            atom_picks: Vec::new(),
+            me_row_lines: Vec::new(),
+            own_avatar_row: None,
             ready_strip_h: 0.0,
             back_btn_hit_id: HIT_NONE,
             join_startfresh_hit_id: HIT_NONE,

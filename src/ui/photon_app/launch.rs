@@ -183,6 +183,7 @@ impl PhotonApp {
                 if let Some(vsf_rgb) = &data.avatar_pixels {
                     self.device_avatar_pixels =
                         Some(crate::ui::colour_convert::vsf_rgb_to_bt2020(vsf_rgb));
+                    self.own_avatar_row = None;
                     self.device_avatar_scaled = None;
                     self.device_avatar_scaled_diameter = 0;
                 }

@@ -3248,6 +3248,7 @@ impl PhotonApp {
             // `owner: None` = our OWN avatar (boot vault decode, or recovered from FGTW after a local clear). Install it as the device avatar and invalidate the scaled cache so the Ready screen repaints it.
             let Some(owner_hp) = result.owner else {
                 self.device_avatar_pixels = Some(display);
+                self.own_avatar_row = None;
                 self.device_avatar_scaled = None;
                 self.device_avatar_scaled_diameter = 0;
                 crate::log("Avatar: own avatar installed (async vault load / recovery)");

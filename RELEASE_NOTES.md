@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Pick people while you create.** Tap New atom and the list becomes a picker: you are at the top, already checked, and a tap checks any friend. Your picture turns into a Create atom button, or Create molecule once you have picked someone, and everyone you picked is invited the moment it is created.
+- **Atom names are kept exactly as typed.** A name can be anything, even a space or a line break, and an empty box no longer creates a nameless atom.
 - **Your conversation with yourself is an atom like any other.** If you have sent yourself photons, that conversation now shows under Atoms every time, named after you like any untitled atom, and you can rename it, add people to it or leave it the same way; every photon in it stays. Typing your own handle in the add box now just says "That's you".
 
 ## v132

@@ -246,7 +246,9 @@ impl PhotonApp {
             // Wrap every listed contact's name at the row's text width (measured at the hover weight, so a hovered row never re-wraps) and sum the resulting row heights — one line = the layout row, each extra line adds a line step. The row walk below reads the same lines.
             let avatar_r = rl.contact_avatar_diameter as f32 * 0.5;
             let text_x = rl.rows.x0 as f32 + avatar_r * 3.0;
-            let name_w = (rl.rows.x1 as f32 - text_x - avatar_r * 0.5).max(row_h as f32);
+            // While picking members the row's right edge holds a checkbox, so names wrap short of it.
+            let pick_room = if self.atom_naming { row_h as f32 } else { 0.0 };
+            let name_w = (rl.rows.x1 as f32 - text_x - avatar_r * 0.5 - pick_room).max(row_h as f32);
             let text_size = row_h as f32 * 0.5;
             let wrap_style = TextStyle::new(text_size, 0).weight(700).font("Oxanium");
             let seed = self.session.as_ref().map(|se| se.identity_seed);
@@ -301,11 +303,18 @@ impl PhotonApp {
                 lines.push(String::new());
                 lines_by_oi.push(lines);
             }
+            // THE MEMBER PICKER'S OWN ROW (Nick 2026-10-27): our name, at the top of the list while naming a new atom.
+            let own_name = self.fleet_settings.as_ref().and_then(|fs| fs.effective("profile.name")).and_then(crate::storage::fleet_settings::as_text).filter(|n| !n.is_empty()).unwrap_or_else(|| tr(Msg::PendingMember).into_owned());
+            let mut me_lines = wrap_text_lines(ctx.text, &own_name, &wrap_style, name_w);
+            if me_lines.is_empty() {
+                me_lines.push(String::new());
+            }
             // An Invitations view with nothing left in it (the last one answered) falls back to All.
             if self.ready_filter == ReadyFilter::Invitations && !self.bond_offers.iter().any(|o| !o.accepted) {
                 self.ready_filter = ReadyFilter::All;
             }
-            let rf = self.ready_filter;
+            // While naming a new atom the list is the member picker: us, then the people — no conversations, no invitations.
+            let rf = if self.atom_naming { ReadyFilter::People } else { self.ready_filter };
             let us_pid = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
             // The strip's height as last measured (wrapped pills push the first row down), one row until first drawn.
             let strip_h: isize = if self.ready_strip_h > 0.0 { self.ready_strip_h.ceil() as isize } else { row_h };
@@ -325,14 +334,16 @@ impl PhotonApp {
                     .molecule_rosters
                     .iter()
                     .enumerate()
-                    .filter(|(_, (g, r))| !self.molecule_is_left(g) && super::ready_admits_group(rf, r.standing().len()) && (filter.is_empty() || self.atom_naming || r.display_title().to_lowercase().contains(&filter)))
+                    .filter(|(_, (g, r))| !self.atom_naming && !self.molecule_is_left(g) && super::ready_admits_group(rf, r.standing().len()) && (filter.is_empty() || r.display_title().to_lowercase().contains(&filter)))
                     .map(|(gi, _)| contact_row_height(row_h, lines_by_gi[gi].len()))
                     .sum::<isize>()
                 // Invitations show under All and alone under Invitations — never among the people.
-                + if !matches!(rf, ReadyFilter::All | ReadyFilter::Invitations) { 0 } else { lines_by_oi.iter().filter(|l| !l.is_empty()).map(|l| contact_row_height(row_h, l.len())).sum::<isize>() };
+                + if self.atom_naming || !matches!(rf, ReadyFilter::All | ReadyFilter::Invitations) { 0 } else { lines_by_oi.iter().filter(|l| !l.is_empty()).map(|l| contact_row_height(row_h, l.len())).sum::<isize>() }
+                + if self.atom_naming { contact_row_height(row_h, me_lines.len()) } else { 0 };
             self.contact_row_lines = lines_by_ci;
             self.molecule_row_lines = lines_by_gi;
             self.offer_row_lines = lines_by_oi;
+            self.me_row_lines = me_lines;
             let block_bottom_at_zero = rl.rows.y0 as isize + block_h;
             // The version footer rides the block one row-height past the last row; extend the scroll extent past it (footer gap + a row-height of bottom margin) so the user can scroll the version fully into view instead of the bottom edge swallowing it.
             let block_end = block_bottom_at_zero + row_h * 2;
@@ -1877,6 +1888,14 @@ impl PhotonApp {
 
             let (cx, cy_natural, radius) = ready_layout.avatar_center_radius();
             let cy = cy_natural - scroll;
+            // NAMING A NEW ATOM (Nick 2026-10-27): our avatar gives way to the create pill — "Create atom" alone, "Create molecule" once a friend is picked — live once the box holds a name. It claims the avatar's hit id, so a tap founds instead of picking a picture.
+            if self.atom_naming {
+                let named = self.contacts_textbox.as_ref().is_some_and(|t| !t.chars.is_empty());
+                let label = if self.atom_picks.is_empty() { tr(Msg::CreateAtom) } else { tr(Msg::CreateMolecule) };
+                let (pw, ph) = ((radius * 3.6).min(buf_w as f32 * 0.8), radius * 0.9);
+                let pill = fluor::region::Region::new(cx - pw * 0.5, cy - ph * 0.5, pw, ph);
+                draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill, &label, self.avatar_hit_id, ctx.pressed_hit, named, named.then_some(*theme::PILL_GREEN), "Oxanium");
+            } else {
             // The avatar's hit circle, stamped BEFORE it paints and only where nothing opaque (the chrome) already sits — the stamp rides the paint decision (see stamp_hit_rect_under).
             stamp_hit_circle_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, cx, cy, radius, self.avatar_hit_id);
             // 0xFFC5C5C5 in fluor's α+darkness format = α 0xFF, darkness 0xC5 each channel = visible RGB(0x3A, 0x3A, 0x3A) ≈ 22% brightness. Standalone constant (no theme.rs entry yet) — promote when Ready chrome gets a proper palette pass.
@@ -1921,9 +1940,10 @@ impl PhotonApp {
                     None,
                 );
             }
+            }
             // Avatar update hint below the circle — DESKTOP ONLY, shown on hover. On Android, tapping the grey circle to pick an image is self-evident.
             #[cfg(not(target_os = "android"))]
-            if self.avatar_hovered {
+            if self.avatar_hovered && !self.atom_naming {
                 // Anchored directly below the avatar circle (not the hint slot), at half the hint slot's text size.
                 let size = (ready_layout.hint.y1 - ready_layout.hint.y0) as f32 * 0.3;
                 let hcy = cy + radius + size;
@@ -2109,29 +2129,26 @@ impl PhotonApp {
                 .unwrap_or_default();
             // NEW ATOM mode: the box holds a title, not a search — the list stays whole.
             let filter = if self.atom_naming { String::new() } else { filter };
-            let rf = self.ready_filter;
+            // …and it is the member picker: us, then the people (the pre-pass sized exactly these).
+            let rf = if self.atom_naming { ReadyFilter::People } else { self.ready_filter };
             let us_pid = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
             let mut matching: Vec<ReadyRow> = self
-                .contacts
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| {
-                    // Conversations under All, people under People (docs/conversations.md D8); fleet siblings are infrastructure, never listed.
-                    super::ready_admits_contact(rf, c, &us_pid)
-                        && (filter.is_empty() || c.display_name().to_lowercase().contains(&filter))
-                })
-                .map(|(i, _)| ReadyRow::Contact(i))
+                .atom_naming
+                .then_some(ReadyRow::Me)
+                .into_iter()
+                // Conversations under All, people under People (docs/conversations.md D8); fleet siblings are infrastructure, never listed.
+                .chain(self.contacts.iter().enumerate().filter(|(_, c)| super::ready_admits_contact(rf, c, &us_pid) && (filter.is_empty() || c.display_name().to_lowercase().contains(&filter))).map(|(i, _)| ReadyRow::Contact(i)))
                 // ATOM and MOLECULE rows (docs/molecules.md §10.5): one list with the friends, sorted by the same key, narrowed by the strip.
                 .chain(
                     self.molecule_rosters
                         .iter()
                         .enumerate()
                         // A molecule we LEFT is off the list (its records stay on disk, read-only). Read the field, not the method: the chrome borrow is live here.
-                        .filter(|(_, (g, r))| !self.molecule_locals.iter().any(|(lg, l)| lg == g && l.phase == crate::storage::molecule::MoleculePhase::Left) && super::ready_admits_group(rf, r.standing().len()) && (filter.is_empty() || r.display_title().to_lowercase().contains(&filter)))
+                        .filter(|(_, (g, r))| !self.atom_naming && !self.molecule_locals.iter().any(|(lg, l)| lg == g && l.phase == crate::storage::molecule::MoleculePhase::Left) && super::ready_admits_group(rf, r.standing().len()) && (filter.is_empty() || r.display_title().to_lowercase().contains(&filter)))
                         .map(|(gi, _)| ReadyRow::Group(gi)),
                 )
                 // INVITATIONS (docs/conversations.md): every open offer, under All and alone under Invitations — the pre-pass sized exactly these.
-                .chain(self.offer_row_lines.iter().enumerate().filter(|(_, l)| !l.is_empty() && matches!(rf, ReadyFilter::All | ReadyFilter::Invitations)).map(|(oi, _)| ReadyRow::Offer(oi)))
+                .chain(self.offer_row_lines.iter().enumerate().filter(|(_, l)| !self.atom_naming && !l.is_empty() && matches!(rf, ReadyFilter::All | ReadyFilter::Invitations)).map(|(oi, _)| ReadyRow::Offer(oi)))
                 .collect();
             // ORDER: unread conversations float to the top, then everyone sorts by MOST-RECENT activity (last message either way — a fresh reply or a fresh receipt lifts the contact). `matching` is the ONE place display order exists — the row loop draws from it AND stamps each row's hit id with the TRUE contact index it holds, so the tap handler resolves taps with no knowledge of the permutation. The key is (unread-first, newest-activity-first); i64::MIN for a contact with no messages sinks it below any conversation.
             let our_handle_hash = self
@@ -2141,6 +2158,8 @@ impl PhotonApp {
                 .unwrap_or([0u8; 32]);
             matching.sort_by_key(|row| {
                 let conv = match *row {
+                    // Our own row heads the member picker.
+                    ReadyRow::Me => return (0u8, std::cmp::Reverse(i64::MAX)),
                     ReadyRow::Contact(ci) => dm_conversation(&self.conversations, &our_handle_hash, &self.contacts[ci]),
                     ReadyRow::Group(gi) => self.conversations.iter().find(|v| v.id().as_bytes() == &self.molecule_rosters[gi].0 .0),
                     // An invitation waits on us: it sits above everything, newest offer first.
@@ -2169,6 +2188,7 @@ impl PhotonApp {
                         ReadyRow::Contact(ci) => contact_row_height(row_h, self.contact_row_lines.get(ci).map_or(1, |l| l.len())), // WHY/PROOF: the name-wrap cache is from the last layout — a contact added since has no entry yet
                         ReadyRow::Group(gi) => contact_row_height(row_h, self.molecule_row_lines.get(gi).map_or(1, |l| l.len())), // (stale wrap cache — see above)
                         ReadyRow::Offer(oi) => contact_row_height(row_h, self.offer_row_lines.get(oi).map_or(1, |l| l.len())), // (stale wrap cache — see above)
+                        ReadyRow::Me => contact_row_height(row_h, self.me_row_lines.len()),
                     })
                     .sum::<isize>();
             let block_bottom_at_zero = rows.y0 as isize + block_h;
@@ -2239,6 +2259,7 @@ impl PhotonApp {
                     ReadyRow::Contact(ci) => RowView::of_contact(&rctx, ci, &our_handle_hash),
                     ReadyRow::Group(gi) => RowView::of_group(&rctx, gi, &our_handle_hash),
                     ReadyRow::Offer(oi) => RowView::of_offer(&rctx, oi, &our_handle_hash),
+                    ReadyRow::Me => RowView::of_me(&self.me_row_lines, self.session.as_ref().map_or([0u8; 32], |s| s.handle_proof)),
                 };
                 let name_lines: Vec<String> = view.name_lines.clone();
                 let rh = contact_row_height(row_h, name_lines.len()); // contact_row_height already reads an empty name as one row
@@ -2280,8 +2301,17 @@ impl PhotonApp {
                     }
                 }
 
+                // Our face at the row diameter, for our own row in the member picker.
+                if matches!(*row, ReadyRow::Me) && self.own_avatar_row.as_ref().is_none_or(|(d, _)| *d != diam) {
+                    if let Some(base) = self.device_avatar_pixels.as_ref() {
+                        self.own_avatar_row = Some((diam, crate::ui::avatar_render::update_avatar_scaled(base, crate::ui::avatar::AVATAR_SIZE, diam)));
+                    }
+                }
                 // Avatar (or placeholder) is topmost; the presence ring paints UNDER it so only the rim shows.
                 match (*row, view.pie.as_ref()) {
+                    (ReadyRow::Me, None) if self.own_avatar_row.is_some() => {
+                        crate::ui::avatar_render::draw_avatar(&mut canvas, avatar_cx, cy, avatar_r, &self.own_avatar_row.as_ref().unwrap().1, diam, Some(rows_clip));
+                    }
                     (ReadyRow::Contact(ci), None) if self.contacts[ci].avatar_scaled.is_some() => {
                         crate::ui::avatar_render::draw_avatar(
                             &mut canvas,
@@ -2363,6 +2393,20 @@ impl PhotonApp {
                         Some(rows_clip),
                         None,
                     );
+                }
+                // THE MEMBER PICKER'S CHECKBOX (Nick 2026-10-27) at the row's right edge: ours always checked (no tap — we are in every atom we found), a friend's as picked. The row's own hit is the toggle, so the box stamps nothing.
+                if self.atom_naming {
+                    let picked = match *row {
+                        ReadyRow::Me => Some(true),
+                        ReadyRow::Contact(ci) => Some(self.atom_picks.contains(&self.contacts[ci].handle_hash)),
+                        _ => None,
+                    };
+                    if let Some(checked) = picked {
+                        let side = row_h as f32 * 0.45;
+                        let mut id_slot = HIT_NONE;
+                        let mut cb = fluor::widgets::checkbox::Checkbox::new(&mut id_slot, "", rows.x1 as f32 - side * 1.5, cy, side, side, text_size, checked);
+                        cb.render_content_into(&mut canvas, ctx.text, Some(rows_clip), None);
+                    }
                 }
                 // An INVITATION's verbs on its last line (docs/conversations.md): Bind — the consent — and Decline — the undo, as if it was never sent. Drawn only while the band sits wholly inside the list, so a row scrolling under the strip never leaves a live pill over it.
                 // WHY/PROOF: the row's lines come from a wrap cache that can be stale and empty for a frame (`unwrap_or_default` in the view) — no last line, no verbs, rather than a wrapped line index.
@@ -7572,6 +7616,8 @@ fn rows_n(r: fluor::region::Region, n: usize) -> Vec<fluor::region::Region> {
 enum ReadyRow {
     Contact(usize),
     Group(usize),
+    /// Our own row, at the top of the member picker while naming a new atom — always checked, never a tap target.
+    Me,
     /// An index into `bond_offers` — an open offer, not yet answered.
     Offer(usize),
 }
@@ -7604,6 +7650,20 @@ struct ReadyCtx<'a> {
 }
 
 impl RowView {
+    /// OUR OWN ROW in the member picker: our name in our own colour, our face (drawn from the row-diameter cache) or our gradient; no ring tier, no tap — we are always in the atom we found.
+    fn of_me(lines: &[String], own_proof: [u8; 32]) -> Self {
+        RowView {
+            has_real_name: lines.first().is_some_and(|l| !l.is_empty() && *l != tr(Msg::PendingMember)),
+            name_lines: lines.to_vec(),
+            colour: self_colour(),
+            unread: false,
+            ring: ring_colour_of(ConnTier::Lan),
+            hit: HIT_NONE,
+            pie: None,
+            gradient_seed: proof_gradient_seed(&own_proof),
+        }
+    }
+
     /// An INVITATION row (docs/conversations.md): the offered conversation's title and who invited us, sheared like any name not yet ours, its members' pie as the avatar; the row body takes no tap — its Join and Not now pills do.
     fn of_offer(app: &ReadyCtx, oi: usize, our_handle_hash: &[u8; 32]) -> Self {
         let o = &app.bond_offers[oi];

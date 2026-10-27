@@ -334,6 +334,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondWillInvite => "ka pōhiritia".into(),
         Msg::BondWillWithdraw => "ka unuhia te pōhiri".into(),
         Msg::NewAtom => "Ngota hou".into(),
+        Msg::CreateAtom => "Hangaia te ngota".into(),
+        Msg::CreateMolecule => "Hangaia te ngota-rahi".into(),
         Msg::HistoryFromGenesis => "Ka kite ngā mema hou i ngā mea katoa".into(),
         Msg::HistoryFromJoin => "Ka kite ngā mema hou mai i tō rātou herenga".into(),
         Msg::JoiningStatus => "e here ana\u{2026}".into(),

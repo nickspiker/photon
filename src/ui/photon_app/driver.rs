@@ -712,6 +712,12 @@ impl FluorApp for PhotonApp {
             && matches!(self.state, AppState::Ready)
             && self.avatar_hit_id != HIT_NONE
         {
+            // Naming a new atom, the avatar is the create pill (render.rs): its tap founds the atom with the picked friends.
+            if self.atom_naming {
+                self.submit_new_atom();
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
             self.change_focus(None);
             // Android: a tap opens the system image picker directly (the picker IS the update mechanism — tapping the grey circle is self-evident, so no on-screen prompt). Desktop: no picker — the avatar updates by drag/drop — the tap is swallowed here.
             #[cfg(target_os = "android")]
@@ -1367,6 +1373,7 @@ impl FluorApp for PhotonApp {
                 _ => {
                     // NEW ATOM: the search box becomes the title box; the plus (or Enter) founds it. Tapping again cancels.
                     self.atom_naming = !self.atom_naming;
+                    self.atom_picks.clear();
                     if let Some(tb) = self.contacts_textbox.as_mut() {
                         tb.clear();
                     }
@@ -1405,6 +1412,19 @@ impl FluorApp for PhotonApp {
         {
             let ci = (hit_id - self.contact_hit_base) as usize;
             if ci < self.contacts.len() {
+                // Naming a new atom the list is the member picker: a tap checks or unchecks the friend, opening nothing.
+                if self.atom_naming {
+                    let party = self.contacts[ci].handle_hash;
+                    match self.atom_picks.iter().position(|p| *p == party) {
+                        Some(i) => {
+                            self.atom_picks.remove(i);
+                        }
+                        None => self.atom_picks.push(party),
+                    }
+                    self.scene_dirty = true;
+                    ctx.window.request_redraw();
+                    return EventResponse::Handled;
+                }
                 crate::logf!(
                     "contact-tap: opening conversation with '{}'",
                     self.contacts[ci].display_name()
@@ -3928,6 +3948,9 @@ impl FluorApp for PhotonApp {
         if hit == self.back_btn_hit_id && self.back_btn_hit_id != HIT_NONE {
             return CursorIcon::Pointer;
         }
+        if self.atom_naming && hit == self.avatar_hit_id && self.avatar_hit_id != HIT_NONE {
+            return CursorIcon::Pointer;
+        }
         match chrome::get_resize_edge(ctx.viewport, x, y) {
             ResizeEdge::Top | ResizeEdge::Bottom => CursorIcon::NsResize,
             ResizeEdge::Left | ResizeEdge::Right => CursorIcon::EwResize,
@@ -3974,6 +3997,8 @@ impl PhotonApp {
                     && hit >= self.contact_hit_base
                     && hit < (self.contact_hit_base + 256))
                     || (self.back_btn_hit_id != HIT_NONE && hit == self.back_btn_hit_id)
+                    // The member picker's create pill sits on the avatar's id: a stub pill, brightened in the content pass.
+                    || (self.atom_naming && self.avatar_hit_id != HIT_NONE && hit == self.avatar_hit_id)
                     // Settings pill band: stub pills brighten and the About passless.org link BOLDS on hover — all CONTENT-pass paint (not overlay deltas), so entering/leaving needs the full frame (the link's bold didn't appear until something else forced a redraw, field 2026-09-02).
                     || (self.settings_btn_base != HIT_NONE
                         && hit >= self.settings_btn_base

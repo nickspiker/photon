@@ -575,6 +575,9 @@ pub enum Msg<'a> {
     BondWillWithdraw,
     /// The picker's "start a new group" row.
     NewAtom,
+    /// The Ready screen's create pill while naming a new atom: alone it founds an atom, with friends picked a molecule (they are invited as it is founded).
+    CreateAtom,
+    CreateMolecule,
     /// History policy pills, fixed at birth (D5).
     HistoryFromGenesis,
     HistoryFromJoin,
