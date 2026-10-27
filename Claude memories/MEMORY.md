@@ -75,6 +75,7 @@
 - [Hit wipe inside damage](project_hit_wipe_damage.md) — 2026-10-24: per-frame HIT_NONE wipes stay inside…
 - [Member relay](project_member_relay.md) — 2026-10-25 grp_relay: members hand ORIGINAL signed group…
 - [Sibling group pages](project_sibling_group_pages.md) — 2026-10-25 FIXED: sibling molecule pages dropped at dispatch; sibling pongs rotated friend lanes
+- [Sticky catching up](project_sticky_catching_up.md) — 2026-10-27 Petunia: CatchingUp set by any unreadable frame, cleared only by cutover; Brittany on an era nobody holds
 - [Group waves](project_group_waves.md) — 2026-10-26 waves+beams in molecules BUILT (mesh, beam fan, roll, recorded, reconnect, express, never-friended members); field test pending
 - [Beam settings + g2t](project_beam_settings.md) — 2026-10-26 BUILT: Beam page (per-device keys, follow-fleet toggle, 5 live controls, test patterns) + HLG10→g2t HDR beams; field test pending
 - [File drag-out](project_file_drag_out.md) — 2026-10-26 BUILT unverified: drag files out (mac promise / Win virtual file / X11 staged move) + mac Save panel; no share sheet
