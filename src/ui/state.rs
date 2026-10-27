@@ -57,7 +57,7 @@ pub enum SettingsPage {
     Diagnostics,
     /// Ideas & fixes: anonymous feedback to the developer, with the sender's own list and each one's status (docs/ideas.md).
     Ideas,
-    /// The device vault's physique — capacity, odometer, live set, health (read-only, refresh on demand).
+    /// The device vault's physique — capacity, odometer, live set, health (read-only, refresh on demand). On ferros the vault is the kernel's and this lives in the OS, not here (`ALL`).
     Vault,
     /// THE WAVE PAGE (Nick 2026-09-16, "a wave config screen"): this device's hearing (the earpiece trim in stops, the route, the rocker), its voice (the per-mic calibration profiles, forget / measure now), the last wave's stats, and the wave preferences (ring, vibrate, hold every wave, plaid off-LAN).
     Wave,
@@ -95,9 +95,9 @@ impl SettingsPage {
         SettingsPage::About,
     ];
 
-    /// On ferros the person's identity is the OS's, not Photon's (2026-10-27, the owner via the ferros session: "Photon is the comms app; the identity/fleet/You surfaces belong to the OS"): You, Fleet, Security and Recovery live in `ahau`, the OS capsule, there, so the rail shows the messenger's pages alone. Their render arms and the logic behind them stay compiled — the pages are unreachable, not removed — so ahau can take the logic over.
+    /// On ferros the person's identity is the OS's, not Photon's (2026-10-27, the owner via the ferros session: "Photon is the comms app; the identity/fleet/You surfaces belong to the OS"): You, Fleet, Security and Recovery live in `ahau`, the OS capsule, there, so the rail shows the messenger's pages alone. The Vault page goes too: the device vault is the kernel's there (kete's ferros backend answers no stats), so device storage health lives in the OS. Their render arms and the logic behind them stay compiled — the pages are unreachable, not removed — so ahau can take the logic over.
     #[cfg(target_os = "ferros")]
-    pub const ALL: [SettingsPage; 11] = [
+    pub const ALL: [SettingsPage; 10] = [
         SettingsPage::Conversations,
         SettingsPage::Wave,
         SettingsPage::Beam,
@@ -105,7 +105,6 @@ impl SettingsPage {
         SettingsPage::Updates,
         SettingsPage::Diagnostics,
         SettingsPage::Ideas,
-        SettingsPage::Vault,
         SettingsPage::Language,
         SettingsPage::Dozenal,
         SettingsPage::About,
