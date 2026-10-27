@@ -127,7 +127,7 @@ manifestus = { path = "../manifestus" }
 kete = { path = "../kete" }
 # Conversation database over the kete vault — rows + catalog + content-addressed blobs. Messages (and later attachments/recordings) are stored here as rows in a byte-keyed table addressed by friendship_id, keyed by a monotonic per-message counter.
 rarangi = { path = "../rarangi" }
-voca = "0.0.0"
+voca = { version = "0.0.1", path = "../voca" }
 num-bigint = "0.4"
 rav1e = { version = "0.7", default-features = false }
 rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8"] }

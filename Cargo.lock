@@ -7866,9 +7866,7 @@ checksum = "051eb1abcf10076295e815102942cc58f9d5e3b4560e46e53c21e8ff6f3af7b1"
 
 [[package]]
 name = "voca"
-version = "0.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e8d8f24210692b23219676beb53b7a9a24062db6b1e0e5d1795919d861be0e8"
+version = "0.0.1"
 dependencies = [
  "num-bigint",
  "num-integer",
