@@ -117,6 +117,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotFound => "không tìm thấy".into(),
         Msg::SearchError(e) => format!("lỗi: {e}").into(),
         Msg::AlreadyInContacts => "Đã có trong danh bạ của bạn".into(),
+        Msg::ThatsYou => "Đó là bạn".into(),
         Msg::Attesting => "Đang chứng thực\u{2026}".into(),
         Msg::RevokedByFleet => "đội của bạn đã THU HỒI thiết bị này \u{2014} nó không còn hành động thay bạn được nữa. Hãy khôi phục nó từ một thiết bị khác của bạn để dùng lại.".into(),
         Msg::IdentityCarriedHint => "thiết bị này đã mang sẵn một danh tính".into(),

@@ -117,6 +117,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotFound => "hindi nakita".into(),
         Msg::SearchError(e) => format!("error: {e}").into(),
         Msg::AlreadyInContacts => "Nasa mga kontak mo na".into(),
+        Msg::ThatsYou => "Ikaw iyan".into(),
         Msg::Attesting => "Nagpapatotoo\u{2026}".into(),
         Msg::RevokedByFleet => "BINAWI ng armada mo ang device na ito \u{2014} hindi na ito puwedeng kumilos bilang ikaw. Ibalik ito mula sa isa pang device mo para magamit ulit.".into(),
         Msg::IdentityCarriedHint => "may dala nang pagkakakilanlan ang device na ito".into(),

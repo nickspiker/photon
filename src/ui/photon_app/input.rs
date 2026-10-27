@@ -248,27 +248,13 @@ impl PhotonApp {
             self.ready_toast = Some(tr(Msg::AlreadyInContacts).into_owned());
             return;
         }
-        // OUR OWN HANDLE opens our notes atom (docs/conversations.md Phase 2 — there is no self contact: "I should be able to unfriend myself").
+        // OUR OWN HANDLE: we are no contact of ours ("I should be able to unfriend myself"), and our atoms are found under Atoms like any other — the add box says so instead of a silent no-op.
         let is_self = self.session.as_ref().map_or(false, |s| {
             crate::storage::contacts::derive_identity_seed(&handle) == s.identity_seed
         });
         if is_self {
-            if let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
-                let nid = crate::types::Conversation::new([us]).id();
-                if !self.conversations.iter().any(|v| v.id() == nid) {
-                    let mut nc = crate::types::Conversation::new([us]);
-                    if let Some(storage) = self.storage.as_ref() {
-                        let _ = crate::storage::contacts::load_messages(&mut nc, storage);
-                    }
-                    self.conversations.push(nc);
-                }
-                self.notes_opened = true;
-                if let Some(tb) = self.contacts_textbox.as_mut() {
-                    tb.clear();
-                }
-                crate::log("add-friend: our own handle — opening our notes atom");
-                self.enter_conversation(nid);
-            }
+            crate::log("add-friend: our own handle — no contact of ours");
+            self.ready_toast = Some(tr(Msg::ThatsYou).into_owned());
             return;
         }
 
@@ -909,8 +895,6 @@ impl PhotonApp {
         }
         self.device_avatar_pixels = None;
         self.device_avatar_scaled = None;
-        self.own_avatar_header = None;
-        self.own_avatar_row = None;
         self.device_avatar_scaled_diameter = 0;
         self.avatar_set_rx = None; // an in-flight avatar pick must not install under the next identity
         self.pending_fleet_key = None;

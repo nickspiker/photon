@@ -118,6 +118,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotFound => "bulunamadı".into(),
         Msg::SearchError(e) => format!("hata: {e}").into(),
         Msg::AlreadyInContacts => "Zaten kişilerinde".into(),
+        Msg::ThatsYou => "Bu sensin".into(),
         Msg::Attesting => "Tasdikleniyor\u{2026}".into(),
         Msg::RevokedByFleet => "filon bu cihazı YASAKLADI \u{2014} artık senin adına hareket edemez. Tekrar kullanmak için başka bir cihazından yasağı kaldır.".into(),
         Msg::IdentityCarriedHint => "bu cihaz zaten bir kimlik taşıyor".into(),

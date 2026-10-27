@@ -192,15 +192,11 @@ impl PhotonApp {
         if self.roster_id_of(id).is_some() {
             return self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
         }
-        if let Some(ci) = self.pair_contact_of(id) {
-            return self.our_party_id(&self.contacts[ci]);
-        }
-        // A conversation no contact stands behind (our notes atom): ours when our identity is in it.
-        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))?;
-        self.conv_by_id(id).filter(|v| v.participants().contains(&us)).map(|_| us)
+        let ci = self.pair_contact_of(id)?;
+        self.our_party_id(&self.contacts[ci])
     }
 
-    /// THE ONE SEND, any size (docs/conversations.md Phase 2): the row lands at once (its bubble shows before anything else happens), and its wire half rides the next frame (`drain_pending_sends`). A conversation with nobody else in it — our notes — is delivered by its durable write, which is what delivery to an empty set means. `bridge` stamps a fleet terminal row's own wire truth on it.
+    /// THE ONE SEND, any size (docs/conversations.md Phase 2): the row lands at once (its bubble shows before anything else happens), and its wire half rides the next frame (`drain_pending_sends`). A conversation with nobody else in it is delivered by its durable write, which is what delivery to an empty set means. `bridge` stamps a fleet terminal row's own wire truth on it.
     pub(super) fn send_row(&mut self, id: crate::types::ConversationId, text: &str, reference: Option<(crate::types::RefKind, i64)>, bridge: Option<crate::network::message_package::BridgeWire>) -> bool {
         // A derived conversation materializes on its first touch.
         if self.conv_by_id(id).is_none() {

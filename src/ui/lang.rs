@@ -301,6 +301,8 @@ pub enum Msg<'a> {
     NotFound,
     SearchError(&'a str),
     AlreadyInContacts,
+    /// The add box was given our own handle: we are no contact of ours.
+    ThatsYou,
     Attesting,
     RevokedByFleet,
     IdentityCarriedHint,

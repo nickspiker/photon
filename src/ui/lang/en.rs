@@ -95,6 +95,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotFound => "not found".into(),
         Msg::SearchError(e) => format!("error: {e}").into(),
         Msg::AlreadyInContacts => "Already in your contacts".into(),
+        Msg::ThatsYou => "That's you".into(),
         Msg::Attesting => "Attesting\u{2026}".into(),
         Msg::RevokedByFleet => "your fleet has REVOKED this device \u{2014} it can no longer act as you. Reinstate it from another of your devices to use it again.".into(),
         Msg::IdentityCarriedHint => "this device already carries an identity".into(),

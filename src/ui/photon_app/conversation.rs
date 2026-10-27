@@ -410,33 +410,7 @@ impl PhotonApp {
                 online: members.iter().any(|c| c.is_online),
             });
         }
-        let Some(ci) = self.pair_contact_of(id) else {
-            // A conversation no contact stands behind — our notes atom: our own name and face, the fleet's ring (the best tier over our own devices, LAN on a one-device fleet).
-            let us = self.our_pid_in(id)?;
-            let remote = self.members_of(id).iter().filter(|p| **p != us).count();
-            let name = self.fleet_settings.as_ref().and_then(|fs| fs.effective("profile.name")).and_then(crate::storage::fleet_settings::as_text).unwrap_or_default();
-            let tier = self.contacts.iter().filter(|s| s.is_sibling && !s.locked_out).map(super::contact_conn_tier).min().unwrap_or(super::ConnTier::Lan);
-            return Some(super::ConvHeader {
-                ci: None,
-                conv_id: id,
-                remote,
-                has_real_name: !name.is_empty(),
-                title: if name.is_empty() { tr(Msg::PendingMember).into_owned() } else { name },
-                seed: self.session.as_ref().map(|s| s.handle_proof).unwrap_or(us),
-                colour_party: None,
-                woven: true,
-                owner_woven: true,
-                superseded: false,
-                ended: false,
-                clutch_complete: true,
-                clutch_line: String::new(),
-                roster: false,
-                sibling: false,
-                device_key: None,
-                ring: super::ring_colour_of(tier),
-                online: true,
-            });
-        };
+        let ci = self.pair_contact_of(id)?;
         let c = &self.contacts[ci];
         let us = self.our_party_id(c)?;
         let remote = c.remote_count(&us);
@@ -482,7 +456,7 @@ impl PhotonApp {
         self.enter_conversation(id)
     }
 
-    /// Materialize a conversation we hold by id: a group's from its roster, a contact's pair conversation (loading its rows), our notes atom (always held). False = no such conversation.
+    /// Materialize a conversation we hold by id: a group's from its roster, a contact's pair conversation (loading its rows). False = no such conversation.
     fn ensure_conversation(&mut self, id: crate::types::ConversationId) -> bool {
         if self.conv_by_id(id).is_some() {
             return true;
@@ -544,7 +518,7 @@ impl PhotonApp {
         true
     }
 
-    /// Everyone in a conversation we hold a contact for, any size, ourselves left out — a pair's one friend, a group's friended members, our siblings in our fleet's own, nobody in notes.
+    /// Everyone in a conversation we hold a contact for, any size, ourselves left out — a pair's one friend, a group's friended members, our siblings in our fleet's own, nobody in an atom we are alone in.
     pub(super) fn people_of(&self, id: crate::types::ConversationId) -> Vec<usize> {
         let us = self.our_pid_in(id);
         self.members_of(id).iter().filter(|p| Some(**p) != us).filter_map(|p| self.contacts.iter().position(|c| c.handle_hash == *p)).collect()
@@ -724,11 +698,6 @@ impl PhotonApp {
             let fid = crate::types::FriendshipId::from_bytes(gid.0);
             let phase = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
             return matches!(phase, crate::storage::molecule::MoleculePhase::Standing | crate::storage::molecule::MoleculePhase::CatchingUp) && self.friendship_chains.iter().any(|(id, c)| *id == fid && c.lane_capable());
-        }
-        // A conversation with nobody else in it (notes) is delivered by its durable write — always composable.
-        if let Some(id) = self.active_conversation.filter(|id| self.pair_contact_of(*id).is_none()) {
-            let us = self.our_pid_in(id);
-            return us.is_some() && self.members_of(id).iter().all(|p| Some(*p) == us);
         }
         let Some(ci) = self.active_contact() else {
             return false;
@@ -2703,9 +2672,7 @@ impl PhotonApp {
             // …or from a MEMBER of the group, friend or not (docs/conversations.md Phase 2): the same merge, its rows re-expressed from our side (merge_molecule_page_rows' member view), our fleet's own records and wave rows taken from siblings alone.
             let group = self.molecule_rosters.iter().find(|(g, _)| g.token() == conversation_token).map(|(g, _)| *g);
             let member_from = if from_sibling { None } else { group.and_then(|gid| super::molecules::group_member_of(&self.contacts, &self.molecule_peers, &self.molecule_rosters, &gid, &sender_pubkey.key)).map(|(p, _)| p) };
-            // …and our own device's page for a conversation no contact stands behind (our notes atom): the same verbatim merge by its id, without the group's records and wave edges.
-            let bare = if group.is_none() && from_sibling && self.contact_idx_for_conversation_token(&conversation_token).is_none() { self.conversation_for_token(&conversation_token) } else { None };
-            let target = group.map(|g| (crate::types::FriendshipId::from_bytes(g.0), Some(g))).or(bare.map(|id| (id, None)));
+            let target = group.map(|g| (crate::types::FriendshipId::from_bytes(g.0), Some(g)));
             if from_sibling || member_from.is_some() {
                 if let Some((fid, group)) = target {
                     // A page WE asked for (the walk's own request) moves the walk; a live push never fast-forwards it.
@@ -2735,7 +2702,7 @@ impl PhotonApp {
                             self.on_group_wave_row_merged(ts);
                         }
                         let fresh = self.merge_molecule_page_rows(conv_pos, &page.rows, member_from.map(|m| (our_pid, m)));
-                        // The catch-up summary, any size: a sibling batch nobody flagged alerts once, a finished walk flushes its batch (notes holds only our own rows, so it never alerts).
+                        // The catch-up summary, any size: a sibling batch nobody flagged alerts once, a finished walk flushes its batch.
                         let flagged = group.is_some() && self.catch_up_alert(conv_pos, &fresh, from_sibling);
                         // Cursor + completion, the pair walk's rule (molecules walk since docs/conversations.md Phase 2).
                         if rid_matches {
@@ -3282,8 +3249,6 @@ impl PhotonApp {
             let Some(owner_hp) = result.owner else {
                 self.device_avatar_pixels = Some(display);
                 self.device_avatar_scaled = None;
-                self.own_avatar_header = None;
-                self.own_avatar_row = None;
                 self.device_avatar_scaled_diameter = 0;
                 crate::log("Avatar: own avatar installed (async vault load / recovery)");
                 continue;

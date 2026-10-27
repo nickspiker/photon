@@ -443,8 +443,7 @@ impl PhotonApp {
             crate::logf!("attach: {}… already asked of device {}, which is not quiet — waiting on it", hex::encode(&content_hash[..4]), crate::fp(&dev));
             return;
         }
-        // Token: the friendship token when one exists; else (self-conversation — no chains) the handle hash. Sibling exchanges seal under the FLEET key regardless of token, so the fallback only ever reaches sibling responders, where it's a plain discriminator.
-        // The conversation's own wire token (stored with its keys; your own conversation's is the [us, us] derivation). Sibling exchanges seal under the FLEET key regardless of token, so for a conversation with nobody else in it the token only ever reaches sibling responders, where it is a plain discriminator.
+        // The conversation's own wire token (stored with its keys). Sibling exchanges seal under the FLEET key regardless of token, so for a conversation with nobody else in it the token only ever reaches sibling responders, where it is a plain discriminator.
         let Some(token) = self.conversation_token_of(id) else {
             return;
         };

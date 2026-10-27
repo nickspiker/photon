@@ -1733,7 +1733,7 @@ impl PhotonApp {
                 .as_ref()
                 .map(|s| (s.handle_proof, s.identity_seed))
             {
-                // Our own identity is never a contact: under a foreign key it is self-stub debris, under our own the retired self row (notes is an atom of one — an older device still pushes it).
+                // Our own identity is never a contact: under a foreign key it is self-stub debris, under our own the retired self row (the conversation with only us in it is an atom now — an older device still pushes it).
                 if e.handle_proof == our_proof {
                     if e.handle_hash != crate::crypto::clutch::identity_party_id(&our_seed) {
                         crate::logf!("FLEET: roster entry claims OUR identity under a foreign key ({}…) — refused (self-stub debris)", hex::encode(&e.handle_hash[..4]));

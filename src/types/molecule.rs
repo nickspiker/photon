@@ -985,6 +985,18 @@ mod tests {
         assert_eq!(held.standing(), want);
     }
 
+    #[test]
+    fn the_conversation_with_only_us_in_it_is_its_own_derived_atom() {
+        // found_self_atom founds the old self conversation IN PLACE: a derived genesis for [us] must name exactly the id (and so the table) that conversation already had.
+        let us = [0x5A; 32];
+        let genesis = GenesisRecord::derived(&[us]);
+        assert_eq!(genesis.molecule_id.0, *crate::types::Conversation::new([us]).id().as_bytes());
+        assert!(genesis.self_certifies());
+        let mut r = Roster::default();
+        r.merge_genesis(genesis);
+        assert_eq!(r.standing(), vec![us], "we stand in it alone, with no vouch");
+    }
+
     /// A pair's conversation (docs/conversations.md §7): both founders stand on the genesis alone, a third party stands once a founder vouches, a founder leaves like anyone, and a genesis naming founders its id does not derive from is refused.
     #[test]
     fn a_derived_genesis_seats_its_founders_and_grows_like_any_conversation() {

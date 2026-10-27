@@ -1080,6 +1080,72 @@ impl PhotonApp {
         Some(gid)
     }
 
+    /// Boot: the old self conversation (`Conversation::new([us])`, its own table) becomes an atom in place when it holds a photon and is no atom yet; an empty one is never founded. Runs after the atoms load, so a device that converted earlier finds its atom already held.
+    pub(super) fn adopt_old_self_conversation(&mut self, storage: &crate::storage::FlatStorage) {
+        let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+            return;
+        };
+        let mut legacy = crate::types::Conversation::new([us]);
+        if self.molecule_rosters.iter().any(|(g, _)| g.0 == *legacy.id().as_bytes()) {
+            return;
+        }
+        crate::storage::contacts::load_conversation_state(&mut legacy, &us, storage);
+        match crate::storage::contacts::load_messages(&mut legacy, storage) {
+            Ok(_) if legacy.messages.iter().any(|m| !m.is_control()) => {
+                self.found_self_atom(legacy);
+            }
+            Ok(_) => {}
+            Err(e) => crate::logf!("MOLECULE: the old self conversation failed to load: {}", e),
+        }
+    }
+
+    /// THE CONVERSATION WITH ONLY US IN IT BECOMES AN ATOM (Nick 2026-10-27: "You still keep baking weird shit into self conversations that don't behave like the others"): the old self conversation — `Conversation::new([us])`, no roster, its own hidden-until-opened rule — is founded IN PLACE as an atom like any other, listed under Atoms, renamable, bindable, leavable.
+    /// In place: a DERIVED genesis for founders [us] names exactly the id the old conversation already had, so its table and its rows stay where they are.
+    /// The same atom on every device of ours with no race: the era-0 root and history key derive from our identity seed (which only our devices hold, one-way), the genesis certifies itself, and each device adds its own member grant and bundle the way any member device does.
+    /// Called only when the old conversation holds a photon; an empty one is simply never founded.
+    pub(super) fn found_self_atom(&mut self, legacy: crate::types::Conversation) -> Option<MoleculeId> {
+        let (Some(identity_seed), Some(hp), Some(seed)) = (self.session.as_ref().map(|s| s.identity_seed), self.session.as_ref().map(|s| s.handle_proof), self.device_seed()) else {
+            return None;
+        };
+        let us = crate::crypto::clutch::identity_party_id(&identity_seed);
+        let gid = MoleculeId(*legacy.id().as_bytes());
+        if self.molecule_rosters.iter().any(|(g, _)| *g == gid) {
+            return Some(gid);
+        }
+        let genesis = crate::types::molecule::GenesisRecord::derived(&[us]);
+        if genesis.molecule_id != gid {
+            crate::logf!("MOLECULE: the self conversation {} is not the derivation of [us] — left as it is", hex::encode(&gid.0[..4]));
+            return None;
+        }
+        let (name, avatar) = self.own_name_grant();
+        let eph = crate::crypto::era::era_keygen(0, 0, crate::crypto::era::KEM_SET_DEFAULT);
+        let mut roster = Roster::default();
+        roster.merge_genesis(genesis);
+        roster.merge_member(crate::types::molecule::join_record(us, hp, &name, avatar, us, &seed));
+        roster.merge_bundle(crate::types::molecule::bundle_record(us, 0, &eph, &seed));
+        let root = blake3::derive_key("photon 2026-10-27 self atom era 0 root", &identity_seed);
+        let history_key = blake3::derive_key("photon 2026-10-27 self atom era 0 history key", &identity_seed);
+        let mut chains = crate::types::FriendshipChains::from_molecule_root(gid, &roster.standing(), root, history_key, 0, crate::crypto::clutch::era_lineage(&root));
+        chains.push_molecule_kem(eph.export_decaps(0));
+        let fid = *chains.id();
+        if !self.friendship_chains.iter().any(|(id, _)| *id == fid) {
+            self.friendship_chains.push((fid, chains));
+        }
+        let mut conv = crate::types::Conversation::new_molecule(gid, roster.standing());
+        conv.messages = legacy.messages;
+        conv.unread_count = legacy.unread_count;
+        conv.hydrated = legacy.hydrated;
+        let rows = conv.messages.len();
+        self.conversations.retain(|v| v.id() != fid);
+        self.conversations.push(conv);
+        self.molecule_rosters.push((gid, roster));
+        self.set_molecule_local(&gid, |l| l.phase = MoleculePhase::Standing);
+        self.persist_molecule(&gid);
+        self.persist_chains_of(&fid);
+        crate::logf!("MOLECULE: the conversation with only us in it is an atom now ({}) — {} row(s) kept in place", hex::encode(&gid.0[..4]), rows);
+        Some(gid)
+    }
+
     /// The default newcomer-history policy for groups this identity founds (Settings → Conversations; a linked fleet setting). Absent = from join (D5).
     pub(super) fn molecule_default_from_genesis(&self) -> bool {
         self.fleet_settings.as_ref().and_then(|fs| fs.effective("molecule.history_from_genesis")).and_then(|v| v.as_u64()).map_or(false, |v| v != 0)

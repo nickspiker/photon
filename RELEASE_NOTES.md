@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Your conversation with yourself is an atom like any other.** If you have sent yourself photons, that conversation now shows under Atoms every time, named after you like any untitled atom, and you can rename it, add people to it or leave it the same way; every photon in it stays. Typing your own handle in the add box now just says "That's you".
 
 ## v132
 - **Adding a device no longer needs fgtw.org.** A new device on the same network hands its request straight to your other device, and that device hands back the fleet's device list and the key; fgtw.org is told afterwards when it can be reached. Friends learn about your new device from your devices rather than from fgtw.org too.

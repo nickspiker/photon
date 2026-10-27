@@ -116,6 +116,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotFound => "kāore i kitea".into(),
         Msg::SearchError(e) => format!("hapa: {e}").into(),
         Msg::AlreadyInContacts => "Kei roto kē i ō hoa".into(),
+        Msg::ThatsYou => "Ko koe tēnā".into(),
         Msg::Attesting => "E whakaū ana\u{2026}".into(),
         Msg::RevokedByFleet => "kua TANGOHIA e tō kāhui te mana o tēnei pūrere \u{2014} kāore e taea e ia te mahi hei a koe. Whakahokia mai i tētahi atu o ō pūrere kia whakamahia anō.".into(),
         Msg::IdentityCarriedHint => "kei tēnei pūrere kē tētahi tuakiri".into(),

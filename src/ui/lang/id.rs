@@ -116,6 +116,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotFound => "tidak ditemukan".into(),
         Msg::SearchError(e) => format!("galat: {e}").into(),
         Msg::AlreadyInContacts => "Sudah ada di kontakmu".into(),
+        Msg::ThatsYou => "Itu kamu".into(),
         Msg::Attesting => "Mengesahkan\u{2026}".into(),
         Msg::RevokedByFleet => "armadamu telah MENCABUT perangkat ini \u{2014} ia tidak bisa lagi bertindak sebagai kamu. Pulihkan dari perangkatmu yang lain untuk memakainya kembali.".into(),
         Msg::IdentityCarriedHint => "perangkat ini sudah membawa sebuah identitas".into(),

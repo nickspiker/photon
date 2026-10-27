@@ -130,6 +130,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotFound => "не знайдено".into(),
         Msg::SearchError(e) => format!("помилка: {e}").into(),
         Msg::AlreadyInContacts => "Уже у твоїх контактах".into(),
+        Msg::ThatsYou => "Це ти".into(),
         Msg::Attesting => "Засвідчую\u{2026}".into(),
         Msg::RevokedByFleet => "твій флот ВІДКЛИКАВ цей пристрій \u{2014} він більше не може діяти як ти. Понови його з іншого свого пристрою, щоб знову ним користуватися.".into(),
         Msg::IdentityCarriedHint => "цей пристрій уже несе ідентичність".into(),

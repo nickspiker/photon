@@ -118,6 +118,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotFound => "नहीं मिला".into(),
         Msg::SearchError(e) => format!("एरर: {e}").into(),
         Msg::AlreadyInContacts => "पहले से तुम्हारे कॉन्टैक्ट में है".into(),
+        Msg::ThatsYou => "यह तुम हो".into(),
         Msg::Attesting => "अटेस्ट हो रहा है\u{2026}".into(),
         Msg::RevokedByFleet => "तुम्हारे बेड़े ने इस डिवाइस को रद्द कर दिया है \u{2014} अब यह तुम्हारी तरफ़ से कुछ नहीं कर सकता। दोबारा इस्तेमाल करने के लिए अपने किसी और डिवाइस से इसे बहाल करो।".into(),
         Msg::IdentityCarriedHint => "इस डिवाइस पर पहले से एक पहचान है".into(),

@@ -184,8 +184,6 @@ impl PhotonApp {
                     self.device_avatar_pixels =
                         Some(crate::ui::colour_convert::vsf_rgb_to_bt2020(vsf_rgb));
                     self.device_avatar_scaled = None;
-                    self.own_avatar_header = None;
-                    self.own_avatar_row = None;
                     self.device_avatar_scaled_diameter = 0;
                 }
                 // Initialize local encrypted storage from the session's vault_seed + device secret. open_session_vault: on a resume this returns the SAME engine the resume path already opened (and the attest worker holds) — a second independent engine on the live vault is the corruption class, not a refresh.
@@ -226,7 +224,7 @@ impl PhotonApp {
                 let mut added = 0usize;
                 let mut merged_ids: Vec<(ContactId, [u8; 32])> = Vec::new();
                 for incoming in &data.contacts {
-                    // The retired self row never comes back from the cloud: notes is an atom of one.
+                    // The retired self row never comes back from the cloud: the conversation with only us in it is an atom.
                     if !incoming.is_sibling && self.session.as_ref().is_some_and(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed) == incoming.handle_hash) {
                         continue;
                     }
@@ -291,6 +289,16 @@ impl PhotonApp {
                     }
                     if !self.molecule_rosters.iter().any(|(g, _)| *g == gid) {
                         self.molecule_rosters.push((gid, roster));
+                    }
+                }
+                // The old self conversation the worker handed over (it holds a photon and is no atom yet): founded in place as one, after the atoms (found_self_atom).
+                if let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+                    let nid = crate::types::Conversation::new([us]).id();
+                    if let Some(pos) = self.conversations.iter().position(|v| v.id() == nid && !v.is_molecule()) {
+                        let legacy = self.conversations.remove(pos);
+                        if legacy.messages.iter().any(|m| !m.is_control()) {
+                            self.found_self_atom(legacy);
+                        }
                     }
                 }
                 // The booted ledger rides in with the contacts, so the first roster merge already knows who must stay gone.

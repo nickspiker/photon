@@ -1006,7 +1006,7 @@ impl PhotonApp {
     }
 
     /// Resolve a conversation token to the FRIEND (or self) contact it belongs to by DERIVING each contact's token from the participant party ids — no chain needed, so a fresh device can serve/merge fleet history before any CLUTCH completes. The self notes conversation derives from [our_pid, our_pid]. Chains, when they exist, derive the identical token (same participant set), so this agrees with the chain-bound friend route.
-    /// The conversation a wire token names, any size (docs/conversations.md Phase 2): a friend's pair conversation by derivation (it may not be materialized yet), else any conversation we hold by its own token — a roster conversation, our notes atom, which no contact stands behind.
+    /// The conversation a wire token names, any size (docs/conversations.md Phase 2): a friend's pair conversation by derivation (it may not be materialized yet), else any conversation we hold by its own token (a roster conversation).
     pub(super) fn conversation_for_token(&self, token: &[u8; 32]) -> Option<crate::types::ConversationId> {
         if let Some(ci) = self.contact_idx_for_conversation_token(token) {
             let c = &self.contacts[ci];
@@ -1243,7 +1243,7 @@ impl PhotonApp {
         }
     }
 
-    /// The wire token of any conversation (docs/conversations.md §7): the token its keys carry as data; a group's from its id; one with no keys yet (your own) the token its participants derive — `[us, us]` for a conversation of one, the exact bytes it has always used.
+    /// The wire token of any conversation (docs/conversations.md §7): the token its keys carry as data; a group's from its id; one with no keys yet the token its participants derive.
     pub(super) fn conversation_token_of(&self, conv_id: crate::types::ConversationId) -> Option<[u8; 32]> {
         if let Some((_, chains)) = self.friendship_chains.iter().find(|(id, _)| *id == conv_id) {
             return Some(chains.conversation_token);
@@ -1252,11 +1252,7 @@ impl PhotonApp {
         if conv.is_molecule() {
             return Some(crate::types::molecule::MoleculeId(*conv_id.as_bytes()).token());
         }
-        let parties = conv.participants();
-        Some(match parties {
-            [only] => crate::crypto::clutch::derive_conversation_token(&[*only, *only]),
-            _ => crate::crypto::clutch::derive_conversation_token(parties),
-        })
+        Some(crate::crypto::clutch::derive_conversation_token(conv.participants()))
     }
 
     /// Push rows of any conversation to our siblings under its own token — the conversation-keyed door every caller converges on.
@@ -1611,9 +1607,6 @@ impl PhotonApp {
             }
         }
         ids.extend(self.molecule_rosters.iter().map(|(g, _)| crate::types::FriendshipId::from_bytes(g.0)).filter(|id| self.conversations.iter().any(|v| v.id() == *id)));
-        // …and every conversation no contact or roster stands behind (our notes atom): our own devices hold its rows.
-        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
-        ids.extend(self.conversations.iter().filter(|v| !v.is_molecule() && !v.is_bond() && us.is_some_and(|us| v.participants() == [us])).map(|v| v.id()).filter(|id| self.pair_contact_of(*id).is_none()));
         for id in ids {
             let Some(conv) = self.conv_by_id_mut(id) else {
                 continue;
@@ -1793,17 +1786,6 @@ impl PhotonApp {
                 ))
             })
             .collect();
-        // OUR NOTES ATOM walks too, by the fleet route under its own [us, us] token — no contact stands behind it any more.
-        if let (Some(us), Some((primary, alt, pk, relay))) = (our_pid, sibling_target.clone()) {
-            for v in self.conversations.iter().filter(|v| !v.is_molecule() && !v.is_bond() && v.participants() == [us] && v.history_recovery.as_ref().is_some_and(|r| !r.complete)) {
-                if self.pair_contact_of(v.id()).is_some() {
-                    continue;
-                }
-                if let Some(token) = self.conversation_token_of(v.id()) {
-                    candidates.push((v.id(), None, token, primary, alt, pk, relay.clone()));
-                }
-            }
-        }
         // ROSTER CONVERSATIONS walk too (docs/conversations.md Phase 2 — the walk used to be contacts-only, so a molecule's missing rows waited on live re-sends alone): the group's token and history key; asked of an online friend member at their direct path, else any member's device at its phonebook addresses or the relay alone, else our own fleet under the fleet key.
         for (gid, roster) in &self.molecule_rosters {
             let fid = crate::types::FriendshipId::from_bytes(gid.0);

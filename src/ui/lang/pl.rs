@@ -118,6 +118,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotFound => "nie znaleziono".into(),
         Msg::SearchError(e) => format!("błąd: {e}").into(),
         Msg::AlreadyInContacts => "Już jest w twoich kontaktach".into(),
+        Msg::ThatsYou => "To ty".into(),
         Msg::Attesting => "Poświadczanie\u{2026}".into(),
         Msg::RevokedByFleet => "twoja flota UNIEWAŻNIŁA to urządzenie \u{2014} nie może już działać w twoim imieniu. Przywróć je z innego swojego urządzenia, by znów z niego korzystać.".into(),
         Msg::IdentityCarriedHint => "to urządzenie nosi już tożsamość".into(),

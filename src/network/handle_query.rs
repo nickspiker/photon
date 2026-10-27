@@ -894,6 +894,16 @@ impl HandleQuery {
                             let local = crate::storage::molecule::load_molecule_local(&gid, &storage).unwrap_or_default();
                             groups.push((gid, roster, local));
                         }
+                        // The old self conversation, when it holds a photon and is no atom yet: the UI founds it in place as one (found_self_atom).
+                        {
+                            let mut legacy = crate::types::Conversation::new([our_pid]);
+                            if !groups.iter().any(|(g, _, _)| g.0 == *legacy.id().as_bytes()) && !conversations.iter().any(|v| v.id() == legacy.id()) {
+                                crate::storage::contacts::load_conversation_state(&mut legacy, &our_pid, &storage);
+                                if crate::storage::contacts::load_messages(&mut legacy, &storage).is_ok() && legacy.messages.iter().any(|m| !m.is_control()) {
+                                    conversations.push(legacy);
+                                }
+                            }
+                        }
                         let bond_offers = crate::storage::molecule::load_all_offers(&storage);
                         crate::log("Network: Background loading complete");
 
