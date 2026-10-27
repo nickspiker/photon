@@ -314,7 +314,6 @@ impl HandleQuery {
     }
 
     /// Spawn connectivity monitoring thread (desktop - with if-watch)
-    #[cfg(not(target_os = "android"))]
     /// ferros: the LAN is the network; there is no fgtw.org to ask whether we are online, so online it is.
     #[cfg(target_os = "ferros")]
     fn spawn_connectivity_worker(online_tx: Sender<bool>, _event_proxy: Option<Arc<dyn WakeSender<PhotonEvent>>>) {

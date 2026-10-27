@@ -405,13 +405,12 @@ fn installed_exe_path() -> Result<PathBuf, String> {
 }
 
 /// The canonical install copies for this platform, launch priority first — the updater writes ALL of them so the resilient-launch shim always has a good one (docs/resilient-launch.md). Kept in sync with the installers.
-#[cfg(not(target_os = "android"))]
 #[cfg(target_os = "ferros")]
 fn resilient_copies() -> Vec<PathBuf> {
     Vec::new()
 }
 
-#[cfg(not(target_os = "ferros"))]
+#[cfg(not(any(target_os = "android", target_os = "ferros")))]
 fn resilient_copies() -> Vec<PathBuf> {
     #[allow(unused_variables)]
     let home = dirs::home_dir().unwrap_or_default();
@@ -468,7 +467,6 @@ fn mirror_into(src: &std::path::Path, dest: &std::path::Path) -> Result<(), Stri
 }
 
 /// Desktop one-click apply: download next to the current exe, verify (hash + appended signature), swap atomically, then mirror the verified binary into the OTHER install copies. Returns the re-exec target (the shim where present, else the swapped exe). Unix: rename() over the path is atomic and the running process keeps its open inode. Windows: the running exe is locked against overwrite but CAN be renamed aside — shuffle to .old (deleted on some future launch), place the new exe, done.
-#[cfg(not(target_os = "android"))]
 #[cfg(target_os = "ferros")]
 pub fn apply_desktop_blocking(_row: &ManifestRow, _progress: &dyn Fn(u64, u64)) -> Result<PathBuf, String> {
     Err("no update server from ferros".to_string())
@@ -555,12 +553,6 @@ pub fn sweep_old_binary() {
 
 /// Android: download + hash-verify the APK into the app's files dir and return its path — the caller hands it to the system installer (the second click). No appended-signature check: APKs are signed by the Android keystore and verified by the OS installer; integrity here = the BLAKE3 from the SIGNED manifest.
 #[cfg(target_os = "android")]
-#[cfg(target_os = "ferros")]
-pub fn download_apk_blocking(_row: &ManifestRow, _progress: &dyn Fn(u64, u64)) -> Result<PathBuf, String> {
-    Err("no update server from ferros".to_string())
-}
-
-#[cfg(not(target_os = "ferros"))]
 pub fn download_apk_blocking(
     row: &ManifestRow,
     progress: &dyn Fn(u64, u64),
