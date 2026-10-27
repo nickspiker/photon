@@ -513,7 +513,15 @@ impl PhotonApp {
         if self.session.is_some() {
             &SettingsPage::ALL
         } else {
-            &[SettingsPage::About, SettingsPage::Updates, SettingsPage::Security]
+            // Wipe is the identity's, and on ferros the identity is `ahau`'s, the OS capsule (`SettingsPage::ALL`).
+            #[cfg(not(target_os = "ferros"))]
+            {
+                &[SettingsPage::About, SettingsPage::Updates, SettingsPage::Security]
+            }
+            #[cfg(target_os = "ferros")]
+            {
+                &[SettingsPage::About, SettingsPage::Updates]
+            }
         }
     }
 
@@ -523,7 +531,8 @@ impl PhotonApp {
                 self.change_focus(None);
                 // Reload the profile field boxes from settings on open.
                 self.you_fields_loaded = false;
-                self.state = AppState::Settings(SettingsPage::You);
+                // The rail's first page: You here, the messenger's first page on ferros, where You lives in `ahau`, the OS capsule.
+                self.state = AppState::Settings(SettingsPage::ALL[0]);
                 true
             }
             // Pre-attest: the orb ALSO opens the panel, but `settings_pages` narrows it to About + Updates. Land on About. (Editing the handle already cancels the permanence interstitial, so opening settings from Launch is safe.)

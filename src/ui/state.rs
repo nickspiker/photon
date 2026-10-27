@@ -39,13 +39,13 @@ impl Default for AppState {
 /// The nine top-level pages of the settings panel — the value carried by [`AppState::Settings`] naming the page whose body is currently drawn. The left nav rail lists all nine; clicking one swaps this value. Order here is the render order in the rail.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettingsPage {
-    /// Handle / avatar / pubkey — the identity read-out page.
+    /// Handle / avatar / pubkey — the identity read-out page. On ferros it lives in `ahau`, the OS capsule, not here (`ALL`).
     You,
-    /// Bound-device list + add / rename / retire — the multi-device page.
+    /// Bound-device list + add / rename / retire — the multi-device page. On ferros it lives in `ahau`, the OS capsule, not here (`ALL`).
     Fleet,
-    /// Lock / retire / shred — the destructive-actions page.
+    /// Lock / retire / shred — the destructive-actions page. On ferros it lives in `ahau`, the OS capsule, not here (`ALL`).
     Security,
-    /// Custodian opt-in + identity backup — the getting-back-in page.
+    /// Custodian opt-in + identity backup — the getting-back-in page. On ferros it lives in `ahau`, the OS capsule, not here (`ALL`).
     Recovery,
     /// Theme / party colours / zoom / calibration.
     Appearance,
@@ -75,12 +75,29 @@ pub enum SettingsPage {
 
 impl SettingsPage {
     /// All pages in rail order — the nav rail and the tab-cycle iterate this. Appearance is COMMENTED OUT of the rail (Nick 2026-09-01) — the variant + its render arm stay compiled so restoring it is a one-line uncomment; the dozenal (base-twelve) toggle lives on About. The Wave calibration page is GONE (2026-09-07): the v-chirp connect probe measures every route at every wave start, so there is no ritual for a page to hold.
+    #[cfg(not(target_os = "ferros"))]
     pub const ALL: [SettingsPage; 15] = [
         SettingsPage::You,
         SettingsPage::Fleet,
         SettingsPage::Security,
         SettingsPage::Recovery,
         // SettingsPage::Appearance,
+        SettingsPage::Conversations,
+        SettingsPage::Wave,
+        SettingsPage::Beam,
+        SettingsPage::Notifications,
+        SettingsPage::Updates,
+        SettingsPage::Diagnostics,
+        SettingsPage::Ideas,
+        SettingsPage::Vault,
+        SettingsPage::Language,
+        SettingsPage::Dozenal,
+        SettingsPage::About,
+    ];
+
+    /// On ferros the person's identity is the OS's, not Photon's (2026-10-27, the owner via the ferros session: "Photon is the comms app; the identity/fleet/You surfaces belong to the OS"): You, Fleet, Security and Recovery live in `ahau`, the OS capsule, there, so the rail shows the messenger's pages alone. Their render arms and the logic behind them stay compiled — the pages are unreachable, not removed — so ahau can take the logic over.
+    #[cfg(target_os = "ferros")]
+    pub const ALL: [SettingsPage; 11] = [
         SettingsPage::Conversations,
         SettingsPage::Wave,
         SettingsPage::Beam,
