@@ -1519,7 +1519,7 @@ impl PhotonApp {
 
     /// RENAME (D7): a title record signed by us, merged here and posted into the group; newest wins everywhere.
     pub(super) fn rename_molecule(&mut self, gid: MoleculeId, title: &str) -> bool {
-        let title = title.trim();
+        // A name is byte-precise (Nick 2026-10-27: "could be a line return, tab, space, something"): never trimmed, only an empty one refused.
         if title.is_empty() {
             return false;
         }

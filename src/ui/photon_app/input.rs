@@ -206,11 +206,13 @@ impl PhotonApp {
         }
     }
 
-    /// NEW ATOM (docs/molecules.md §0): the typed title founds an atom — you alone in it — and opens it.
-    /// A blank title founds an untitled atom, which reads as its members' names; naming mode is entered on purpose, so its submit is the deliberate act.
+    /// NEW ATOM (docs/molecules.md §0): the typed name founds an atom — you alone in it — and opens it.
+    /// Every atom has a name (Nick 2026-10-27: "we said no empty atom names … could be a line return, tab, space, something"): byte-precise, never trimmed, and an empty box founds nothing — Enter included, as the hidden plus already says.
     pub(super) fn submit_new_atom(&mut self) {
         let title: String = self.contacts_textbox.as_ref().map(|tb| tb.chars.iter().collect::<String>()).unwrap_or_default();
-        let title = title.trim().to_string();
+        if title.is_empty() {
+            return;
+        }
         let from_genesis = self.molecule_default_from_genesis();
         if self.found_atom_alone(&title, from_genesis).is_some() {
             self.atom_naming = false;
