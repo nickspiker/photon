@@ -442,12 +442,6 @@ fn resilient_copies() -> Vec<PathBuf> {
 
 /// The re-exec target after an update: the resilient-launch shim on Linux (so the relaunch takes the verify-and-fallback path), else None → re-exec the running copy directly. macOS re-execs the bundle so the TCC identity is preserved; Windows re-execs the .exe (its shim is a .cmd, spawned only by the Start-menu shortcut).
 #[cfg(target_os = "linux")]
-#[cfg(target_os = "ferros")]
-fn launch_shim() -> Option<PathBuf> {
-    None
-}
-
-#[cfg(not(target_os = "ferros"))]
 fn launch_shim() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join(".local/bin/photon-launch"))
 }
