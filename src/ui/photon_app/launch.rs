@@ -184,6 +184,8 @@ impl PhotonApp {
                     self.device_avatar_pixels =
                         Some(crate::ui::colour_convert::vsf_rgb_to_bt2020(vsf_rgb));
                     self.device_avatar_scaled = None;
+                    self.own_avatar_header = None;
+                    self.own_avatar_row = None;
                     self.device_avatar_scaled_diameter = 0;
                 }
                 // Initialize local encrypted storage from the session's vault_seed + device secret. open_session_vault: on a resume this returns the SAME engine the resume path already opened (and the attest worker holds) — a second independent engine on the live vault is the corruption class, not a refresh.
@@ -224,6 +226,10 @@ impl PhotonApp {
                 let mut added = 0usize;
                 let mut merged_ids: Vec<(ContactId, [u8; 32])> = Vec::new();
                 for incoming in &data.contacts {
+                    // The retired self row never comes back from the cloud: notes is an atom of one.
+                    if !incoming.is_sibling && self.session.as_ref().is_some_and(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed) == incoming.handle_hash) {
+                        continue;
+                    }
                     let dominated = self
                         .contacts
                         .iter()

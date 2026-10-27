@@ -305,6 +305,17 @@ impl PhotonApp {
                 lines.push(String::new());
                 lines_by_oi.push(lines);
             }
+            // ATOMS no contact or roster stands behind (our notes atom, docs/conversations.md Phase 2): their rows wear our own name.
+            let our_pid = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+            let bare_atoms: Vec<crate::types::ConversationId> = self.conversations.iter().filter(|v| !v.is_molecule() && !v.is_bond() && our_pid.is_some_and(|us| v.participants() == [us]) && (self.notes_opened || v.messages.iter().any(|m| !m.is_control()))).map(|v| v.id()).filter(|id| self.pair_contact_of(*id).is_none()).take(4).collect();
+            let own_name = self.fleet_settings.as_ref().and_then(|fs| fs.effective("profile.name")).and_then(crate::storage::fleet_settings::as_text).filter(|n| !n.is_empty()).unwrap_or_else(|| tr(Msg::PendingMember).into_owned());
+            let lines_by_ai: Vec<Vec<String>> = bare_atoms.iter().map(|_| {
+                let mut l = wrap_text_lines(ctx.text, &own_name, &wrap_style, name_w);
+                if l.is_empty() {
+                    l.push(String::new());
+                }
+                l
+            }).collect();
             // An Invitations view with nothing left in it (the last one answered) falls back to All.
             if self.ready_filter == ReadyFilter::Invitations && !self.bond_offers.iter().any(|o| !o.accepted) {
                 self.ready_filter = ReadyFilter::All;
@@ -332,11 +343,14 @@ impl PhotonApp {
                     .filter(|(_, (g, r))| !self.molecule_is_left(g) && super::ready_admits_group(rf, r.standing().len()) && (filter.is_empty() || self.atom_naming || r.display_title().to_lowercase().contains(&filter)))
                     .map(|(gi, _)| contact_row_height(row_h, lines_by_gi[gi].len()))
                     .sum::<isize>()
+                + if matches!(rf, ReadyFilter::All | ReadyFilter::Atoms) && (filter.is_empty() || self.atom_naming || own_name.to_lowercase().contains(&filter)) { lines_by_ai.iter().map(|l| contact_row_height(row_h, l.len())).sum::<isize>() } else { 0 }
                 // Invitations show under All and alone under Invitations — never among the people.
                 + if !matches!(rf, ReadyFilter::All | ReadyFilter::Invitations) { 0 } else { lines_by_oi.iter().filter(|l| !l.is_empty()).map(|l| contact_row_height(row_h, l.len())).sum::<isize>() };
             self.contact_row_lines = lines_by_ci;
             self.molecule_row_lines = lines_by_gi;
             self.offer_row_lines = lines_by_oi;
+            self.bare_atoms = bare_atoms;
+            self.atom_row_lines = lines_by_ai;
             let block_bottom_at_zero = rl.rows.y0 as isize + block_h;
             // The version footer rides the block one row-height past the last row; extend the scroll extent past it (footer gap + a row-height of bottom margin) so the user can scroll the version fully into view instead of the bottom edge swallowing it.
             let block_end = block_bottom_at_zero + row_h * 2;
@@ -2134,6 +2148,8 @@ impl PhotonApp {
                         .filter(|(_, (g, r))| !self.molecule_locals.iter().any(|(lg, l)| lg == g && l.phase == crate::storage::molecule::MoleculePhase::Left) && super::ready_admits_group(rf, r.standing().len()) && (filter.is_empty() || r.display_title().to_lowercase().contains(&filter)))
                         .map(|(gi, _)| ReadyRow::Group(gi)),
                 )
+                // ATOMS no contact or roster stands behind (our notes atom): under All and Atoms, matched on our own name.
+                .chain(self.atom_row_lines.iter().enumerate().filter(|(_, l)| matches!(rf, ReadyFilter::All | ReadyFilter::Atoms) && (filter.is_empty() || l.join(" ").to_lowercase().contains(&filter))).map(|(ai, _)| ReadyRow::Atom(ai)))
                 // INVITATIONS (docs/conversations.md): every open offer, under All and alone under Invitations — the pre-pass sized exactly these.
                 .chain(self.offer_row_lines.iter().enumerate().filter(|(_, l)| !l.is_empty() && matches!(rf, ReadyFilter::All | ReadyFilter::Invitations)).map(|(oi, _)| ReadyRow::Offer(oi)))
                 .collect();
@@ -2147,6 +2163,7 @@ impl PhotonApp {
                 let conv = match *row {
                     ReadyRow::Contact(ci) => dm_conversation(&self.conversations, &our_handle_hash, &self.contacts[ci]),
                     ReadyRow::Group(gi) => self.conversations.iter().find(|v| v.id().as_bytes() == &self.molecule_rosters[gi].0 .0),
+                    ReadyRow::Atom(ai) => self.bare_atoms.get(ai).and_then(|id| self.conversations.iter().find(|v| v.id() == *id)),
                     // An invitation waits on us: it sits above everything, newest offer first.
                     ReadyRow::Offer(oi) => return (0u8, std::cmp::Reverse(self.bond_offers.get(oi).map_or(i64::MIN, |o| o.row_osc))),
                 };
@@ -2173,6 +2190,7 @@ impl PhotonApp {
                         ReadyRow::Contact(ci) => contact_row_height(row_h, self.contact_row_lines.get(ci).map_or(1, |l| l.len())), // WHY/PROOF: the name-wrap cache is from the last layout — a contact added since has no entry yet
                         ReadyRow::Group(gi) => contact_row_height(row_h, self.molecule_row_lines.get(gi).map_or(1, |l| l.len())), // (stale wrap cache — see above)
                         ReadyRow::Offer(oi) => contact_row_height(row_h, self.offer_row_lines.get(oi).map_or(1, |l| l.len())), // (stale wrap cache — see above)
+                        ReadyRow::Atom(ai) => contact_row_height(row_h, self.atom_row_lines.get(ai).map_or(1, |l| l.len())), // (stale wrap cache — see above)
                     })
                     .sum::<isize>();
             let block_bottom_at_zero = rows.y0 as isize + block_h;
@@ -2238,11 +2256,15 @@ impl PhotonApp {
                     offer_row_lines: &self.offer_row_lines,
                     contact_hit_base: self.contact_hit_base,
                     molecule_hit_base: self.molecule_hit_base,
+                    atom_row_lines: &self.atom_row_lines,
+                    atom_hit_base: self.atom_hit_base,
+                    own_proof: self.session.as_ref().map_or([0u8; 32], |s| s.handle_proof),
                 };
                 let view: RowView = match *row {
                     ReadyRow::Contact(ci) => RowView::of_contact(&rctx, ci, &our_handle_hash),
                     ReadyRow::Group(gi) => RowView::of_group(&rctx, gi, &our_handle_hash),
                     ReadyRow::Offer(oi) => RowView::of_offer(&rctx, oi, &our_handle_hash),
+                    ReadyRow::Atom(ai) => RowView::of_atom(&rctx, ai),
                 };
                 let name_lines: Vec<String> = view.name_lines.clone();
                 let rh = contact_row_height(row_h, name_lines.len()); // contact_row_height already reads an empty name as one row
@@ -2266,6 +2288,12 @@ impl PhotonApp {
                     stamp_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, rows.x0 as isize, row_top, rows.x1 as isize, row_top + rh, view.hit);
                 }
 
+                // Our own face at the row diameter, for an atom row.
+                if matches!(*row, ReadyRow::Atom(_)) && self.own_avatar_row.as_ref().is_none_or(|(d, _)| *d != diam) {
+                    if let Some(base) = self.device_avatar_pixels.as_ref() {
+                        self.own_avatar_row = Some((diam, crate::ui::avatar_render::update_avatar_scaled(base, crate::ui::avatar::AVATAR_SIZE, diam)));
+                    }
+                }
                 // Build/refresh a contact's scaled-avatar cache at the row diameter (a group's pie is computed per frame — a few thousand pixels, no cache).
                 if let ReadyRow::Contact(ci) = *row {
                     let has_avatar = self.contacts[ci].avatar_pixels.is_some();
@@ -2286,6 +2314,9 @@ impl PhotonApp {
 
                 // Avatar (or placeholder) is topmost; the presence ring paints UNDER it so only the rim shows.
                 match (*row, view.pie.as_ref()) {
+                    (ReadyRow::Atom(_), None) if self.own_avatar_row.is_some() => {
+                        crate::ui::avatar_render::draw_avatar(&mut canvas, avatar_cx, cy, avatar_r, &self.own_avatar_row.as_ref().unwrap().1, diam, Some(rows_clip));
+                    }
                     (ReadyRow::Contact(ci), None) if self.contacts[ci].avatar_scaled.is_some() => {
                         crate::ui::avatar_render::draw_avatar(
                             &mut canvas,
@@ -2946,6 +2977,12 @@ impl PhotonApp {
                             self.contacts[ci].avatar_scaled = Some(scaled);
                             self.contacts[ci].avatar_scaled_diameter = header_diam;
                         }
+                        // A conversation with nobody but us in it (our notes atom) wears OUR face.
+                        if hdr.ci.is_none() && hdr.remote == 0 && !hdr.roster && self.own_avatar_header.as_ref().is_none_or(|(d, _)| *d != header_diam) {
+                            if let Some(base) = self.device_avatar_pixels.as_ref() {
+                                self.own_avatar_header = Some((header_diam, crate::ui::avatar_render::update_avatar_scaled(base, crate::ui::avatar::AVATAR_SIZE, header_diam)));
+                            }
+                        }
                     }
                     // The person this conversation is with, when it is with one (their picture); everything else reads the header.
                     let peer: Option<&crate::types::Contact> = hdr.ci.map(|ci| &self.contacts[ci]);
@@ -3090,7 +3127,8 @@ impl PhotonApp {
                     // Stamp the avatar disc + tier ring at a given centre-y — stream entry #0's avatar. Clip rides in as a parameter and the caller passes the LIST clip: the avatar obeys exactly the same boundary as every message (a hardcoded None once let it paint thru the top edge onto its own visual layer).
                     let draw_conv_avatar =
                         |canvas: &mut Canvas, cy: f32, clip: Option<fluor::paint::Clip>| {
-                            if let Some(scaled) = peer.and_then(|c| c.avatar_scaled.as_ref()) {
+                            let own = (hdr.ci.is_none() && hdr.remote == 0 && !hdr.roster).then(|| self.own_avatar_header.as_ref().map(|(_, px)| px)).flatten();
+                            if let Some(scaled) = peer.and_then(|c| c.avatar_scaled.as_ref()).or(own) {
                                 crate::ui::avatar_render::draw_avatar(
                                     canvas,
                                     avatar_cx,
@@ -7577,6 +7615,8 @@ fn rows_n(r: fluor::region::Region, n: usize) -> Vec<fluor::region::Region> {
 enum ReadyRow {
     Contact(usize),
     Group(usize),
+    /// An index into `bare_atoms` — a conversation no contact or roster stands behind (our notes atom).
+    Atom(usize),
     /// An index into `bond_offers` — an open offer, not yet answered.
     Offer(usize),
 }
@@ -7606,9 +7646,28 @@ struct ReadyCtx<'a> {
     offer_row_lines: &'a [Vec<String>],
     contact_hit_base: HitId,
     molecule_hit_base: HitId,
+    atom_row_lines: &'a [Vec<String>],
+    atom_hit_base: HitId,
+    own_proof: [u8; 32],
 }
 
 impl RowView {
+    /// An ATOM row no contact or roster stands behind (our notes atom, docs/conversations.md Phase 2): our own name in our own colour, unread from its conversation, the ring = the best tier over our own devices (LAN on a one-device fleet), our face or our gradient.
+    fn of_atom(app: &ReadyCtx, ai: usize) -> Self {
+        let lines = app.atom_row_lines.get(ai).cloned().unwrap_or_default(); // (stale wrap cache — see above)
+        let tier = app.contacts.iter().filter(|s| s.is_sibling && !s.locked_out).map(contact_conn_tier).min().unwrap_or(ConnTier::Lan);
+        RowView {
+            has_real_name: lines.first().is_some_and(|l| !l.is_empty() && *l != tr(Msg::PendingMember)),
+            name_lines: lines,
+            colour: self_colour(),
+            unread: false,
+            ring: ring_colour_of(tier),
+            hit: if ai < 4 { app.atom_hit_base + ai as HitId } else { HIT_NONE },
+            pie: None,
+            gradient_seed: proof_gradient_seed(&app.own_proof),
+        }
+    }
+
     /// An INVITATION row (docs/conversations.md): the offered conversation's title and who invited us, sheared like any name not yet ours, its members' pie as the avatar; the row body takes no tap — its Join and Not now pills do.
     fn of_offer(app: &ReadyCtx, oi: usize, our_handle_hash: &[u8; 32]) -> Self {
         let o = &app.bond_offers[oi];

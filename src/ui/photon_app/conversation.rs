@@ -372,20 +372,9 @@ impl PhotonApp {
 
     /// Open a group conversation (docs/molecules.md §10.5) — the same reset `open_conversation_with` does for a contact, keyed on the group's stable id.
     pub(super) fn open_molecule_conversation(&mut self, gi: usize) {
-        let Some((gid, _)) = self.molecule_rosters.get(gi) else {
-            return;
-        };
-        let id = crate::types::FriendshipId::from_bytes(gid.0);
-        if !self.conversations.iter().any(|v| v.id() == id) {
-            let standing = self.molecule_rosters[gi].1.standing();
-            self.conversations.push(crate::types::Conversation::new_molecule(*gid, standing));
+        if let Some(gid) = self.molecule_rosters.get(gi).map(|(g, _)| *g) {
+            self.open_conversation(crate::types::FriendshipId::from_bytes(gid.0));
         }
-        self.wave_playback = None;
-        self.wave_playback_hash = None;
-        self.set_active_conversation(Some(id));
-        self.conv_filter = ChatFilter::All;
-        self.wave_scrub = None;
-        // Focus claims are a friendship-token affair today (the token derives from the pair); a group claim rides the group token once the fleet notification design lands for groups.
     }
 
     /// The open conversation's header (docs/conversations.md Phase 2): one view at any size, computed before the chrome borrow.
@@ -421,7 +410,33 @@ impl PhotonApp {
                 online: members.iter().any(|c| c.is_online),
             });
         }
-        let ci = self.pair_contact_of(id)?;
+        let Some(ci) = self.pair_contact_of(id) else {
+            // A conversation no contact stands behind — our notes atom: our own name and face, the fleet's ring (the best tier over our own devices, LAN on a one-device fleet).
+            let us = self.our_pid_in(id)?;
+            let remote = self.members_of(id).iter().filter(|p| **p != us).count();
+            let name = self.fleet_settings.as_ref().and_then(|fs| fs.effective("profile.name")).and_then(crate::storage::fleet_settings::as_text).unwrap_or_default();
+            let tier = self.contacts.iter().filter(|s| s.is_sibling && !s.locked_out).map(super::contact_conn_tier).min().unwrap_or(super::ConnTier::Lan);
+            return Some(super::ConvHeader {
+                ci: None,
+                conv_id: id,
+                remote,
+                has_real_name: !name.is_empty(),
+                title: if name.is_empty() { tr(Msg::PendingMember).into_owned() } else { name },
+                seed: self.session.as_ref().map(|s| s.handle_proof).unwrap_or(us),
+                colour_party: None,
+                woven: true,
+                owner_woven: true,
+                superseded: false,
+                ended: false,
+                clutch_complete: true,
+                clutch_line: String::new(),
+                roster: false,
+                sibling: false,
+                device_key: None,
+                ring: super::ring_colour_of(tier),
+                online: true,
+            });
+        };
         let c = &self.contacts[ci];
         let us = self.our_party_id(c)?;
         let remote = c.remote_count(&us);
@@ -450,71 +465,90 @@ impl PhotonApp {
     /// Open the conversation this contact row stands for.
     /// ENTER a group's conversation: the screen, the scroll chrome, the unread clear — the group-row tap and a notification tap both land here.
     pub(super) fn enter_molecule(&mut self, gi: usize) {
-        self.open_molecule_conversation(gi);
-        self.state = AppState::Conversation;
-        self.conv_topbar_off = 0.0;
-        self.conv_blind_h = [0.0; 3];
-        self.conv_blind_edge = f32::MAX;
-        self.clear_molecule_unread(gi);
-        self.change_focus(None);
-        self.scene_dirty = true;
+        if let Some(gid) = self.molecule_rosters.get(gi).map(|(g, _)| *g) {
+            self.enter_conversation(crate::types::FriendshipId::from_bytes(gid.0));
+        }
     }
 
     /// ENTER a pair's conversation with contact `ci`: the screen, unread clear, a fresh presence probe and the header avatar — the People tap and a notification tap both land here.
     pub(super) fn enter_pair_conversation(&mut self, ci: usize) {
-        self.open_conversation_with(ci);
-        self.state = AppState::Conversation;
-        self.reset_contact_ping_backoff();
-        self.conv_topbar_off = 0.0;
-        self.conv_blind_h = [0.0; 3];
-        self.conv_blind_edge = f32::MAX;
-        // Opening the conversation is the interaction that clears unread (ring + float drop away on the next contacts-list frame).
-        self.clear_unread(ci);
-        self.change_focus(None);
-        // Refresh this contact's presence on conversation-enter so the header reflects reality promptly — and arm the one-second verdict (presence_probe_tick).
-        self.ping_contact(ci);
-        self.presence_probe = self.contacts.get(ci).map(|c| (c.id, std::time::Instant::now()));
-        // Fetch the peer's avatar (once/session) so the conversation header shows it instead of the grey placeholder. Cache-first, network on miss; off-thread. Keyed by the pin-set (hp + party id + avatar key) — no handle.
-        self.spawn_avatar_download(ci);
-        self.scene_dirty = true;
+        if let Some(id) = self.contacts.get(ci).and_then(|c| self.our_party_id(c).map(|us| c.conversation(&us).id())) {
+            self.enter_conversation(id);
+        }
     }
 
     /// ENTER any conversation by its id, at any size (a notification tap): a roster-backed one as a group, a pair's thru its contact. Returns whether one was found.
     pub(super) fn enter_conversation_id(&mut self, id: crate::types::ConversationId) -> bool {
-        if let Some(gi) = self.molecule_rosters.iter().position(|(g, _)| g.0 == *id.as_bytes()) {
-            if self.conv_by_id(id).is_some_and(|v| v.is_molecule()) {
-                self.enter_molecule(gi);
-                return true;
-            }
+        self.enter_conversation(id)
+    }
+
+    /// Materialize a conversation we hold by id: a group's from its roster, a contact's pair conversation (loading its rows), our notes atom (always held). False = no such conversation.
+    fn ensure_conversation(&mut self, id: crate::types::ConversationId) -> bool {
+        if self.conv_by_id(id).is_some() {
+            return true;
+        }
+        if let Some((gid, roster)) = self.molecule_rosters.iter().find(|(g, _)| g.0 == *id.as_bytes()) {
+            let c = crate::types::Conversation::new_molecule(*gid, roster.standing());
+            self.conversations.push(c);
+            return true;
         }
         match self.pair_contact_of(id) {
-            Some(ci) => {
-                self.enter_pair_conversation(ci);
-                true
-            }
+            Some(ci) => self.conv_mut_of(ci).is_some(),
             None => false,
         }
     }
 
-    pub(super) fn open_conversation_with(&mut self, ci: usize) {
-        // Switching conversations stops a wave that was playing in the one we leave.
+    /// OPEN a conversation, any size (docs/conversations.md Phase 2): it becomes the active one — the compose bar (and any armed reply/edit/react) travels with the conversation it was typed in, the stream filter, a waveform scrub and the manual selection belong to the screen they were made on (Nick 2026-10-01: a selection left pointing at another conversation's row left the new one with NO strip at all), a wave playing in the one we leave stops — and the open is the fleet-wide claim edge.
+    pub(super) fn open_conversation(&mut self, id: crate::types::ConversationId) -> bool {
+        if !self.ensure_conversation(id) {
+            return false;
+        }
         self.wave_playback = None;
         self.wave_playback_hash = None;
-        let next = self
-            .contacts
-            .get(ci)
-            .and_then(|c| self.our_party_id(c).map(|us| c.conversation(&us).id()));
-        // The compose bar (and any armed reply/edit/react) travels with the conversation it was typed in — the funnel stashes it and restores the next one's.
-        self.set_active_conversation(next);
-        // The stream filter and any waveform scrub belong to the conversation they were set in.
+        self.set_active_conversation(Some(id));
         self.conv_filter = ChatFilter::All;
         self.wave_scrub = None;
-        // THE MANUAL SELECTION belongs to the screen it was made on (Nick 2026-10-01): leaving a conversation drops it, so the next one opens with its newest row's strip up unasked. A selection left pointing at another conversation's row used to leave the new one with NO strip at all — the explicit selection blocked the newest-row fallback without matching anything.
         self.selected_msg = None;
         self.selected_msg_copied = false;
         self.strip_dismissed = None;
-        // The open IS the fleet-wide claim edge: this device is now the conversation's active clearer, and every sibling learns it before the next friend message can ding them.
+        // The open IS the fleet-wide claim edge: this device is now the conversation's active clearer, and every sibling learns it before the next message can ding them.
         self.broadcast_focus_claim(true);
+        true
+    }
+
+    /// ENTER a conversation, any size: open it on the conversation screen, clear its unread, and wake the presence of everyone in it we hold a contact for — the ping (with the one-second verdict for a conversation with one person), their avatar fetch.
+    pub(super) fn enter_conversation(&mut self, id: crate::types::ConversationId) -> bool {
+        if !self.open_conversation(id) {
+            return false;
+        }
+        self.state = AppState::Conversation;
+        self.conv_topbar_off = 0.0;
+        self.conv_blind_h = [0.0; 3];
+        self.conv_blind_edge = f32::MAX;
+        // Opening the conversation is the interaction that clears unread (ring + float drop away on the next list frame).
+        self.clear_unread_of(id);
+        self.change_focus(None);
+        let us = self.our_pid_in(id);
+        let people: Vec<usize> = self.members_of(id).iter().filter(|p| Some(**p) != us).filter_map(|p| self.contacts.iter().position(|c| c.handle_hash == *p)).collect();
+        for &ci in &people {
+            // Looking at someone is the clearest signal their presence matters now: the backoff collapses, the ping is due at once.
+            self.contacts[ci].ping_backoff = 0;
+            self.contacts[ci].last_pinged = None;
+            self.ping_contact(ci);
+            // Their picture (once a session): cache-first, network on miss, off-thread.
+            self.spawn_avatar_download(ci);
+        }
+        if let [ci] = people[..] {
+            self.presence_probe = Some((self.contacts[ci].id, std::time::Instant::now()));
+        }
+        self.scene_dirty = true;
+        true
+    }
+
+    pub(super) fn open_conversation_with(&mut self, ci: usize) {
+        if let Some(id) = self.contacts.get(ci).and_then(|c| self.our_party_id(c).map(|us| c.conversation(&us).id())) {
+            self.open_conversation(id);
+        }
     }
 
     /// Broadcast our ACTIVE-CLEARER claim (`active = true`) or its retraction for the OPEN conversation (notification design 2026-07-23). One frame to every sibling on the edge — open/focus-gain claims, close/focus-loss retracts — plus local adoption first, so our own ding gate agrees with what the fleet is about to hear. Newest osc wins everywhere: a claim from a device the user just sat down at displaces the old holder even if that window still sits OS-focused. Sibling/self screens never claim (their rows never ding). No-op pre-attest or with no conversation open.
@@ -522,21 +556,17 @@ impl PhotonApp {
         let Some(kp) = self.device_keypair.clone() else {
             return;
         };
+        // Any conversation that dings can be claimed (docs/conversations.md Phase 2 — a group claims by its own token now): never our fleet's terminal, never one with nobody else in it (its rows never ding).
         let token = (|| {
             let id = self.active_conversation?;
-            let c = self.contacts.iter().find(|c| {
-                self.our_party_id(c)
-                    .map(|us| c.conversation(&us).id() == id)
-                    .unwrap_or(false)
-            })?;
-            if c.is_sibling {
+            if self.pair_contact_of(id).is_some_and(|ci| self.contacts[ci].is_sibling) {
                 return None;
             }
-            let us = self.our_party_id(c)?;
-            Some(crate::crypto::clutch::derive_conversation_token(&[
-                us,
-                c.handle_hash,
-            ]))
+            let us = self.our_pid_in(id)?;
+            if !self.members_of(id).iter().any(|p| *p != us) {
+                return None;
+            }
+            self.conversation_token_of(id)
         })();
         let Some(token) = token else { return };
         // Lamport bump over BOTH slots: a fresh claim must outrank whatever claim AND attention osc the fleet has seen, or a clock-skewed sibling's stale slot could outrank the human's actual fingers forever (receivers require strictly-newer).
@@ -1280,30 +1310,22 @@ impl PhotonApp {
 
     /// The group twin of `clear_unread`: opening a group conversation clears its ring.
     pub(super) fn clear_molecule_unread(&mut self, gi: usize) {
-        let Some((gid, _)) = self.molecule_rosters.get(gi) else {
-            return;
-        };
-        let id = crate::types::FriendshipId::from_bytes(gid.0);
-        if let Some(pos) = self.conversations.iter().position(|v| v.id() == id) {
-            if self.conversations[pos].unread_count > 0 {
-                self.conversations[pos].unread_count = 0;
-                self.persist_conv_state_async(pos);
-            }
+        if let Some(gid) = self.molecule_rosters.get(gi).map(|(g, _)| *g) {
+            self.clear_unread_of(crate::types::FriendshipId::from_bytes(gid.0));
         }
     }
 
     pub(super) fn clear_unread(&mut self, ci: usize) {
-        let dirty_id = match self.conv_mut_of(ci) {
-            Some(conv) if conv.unread_count > 0 => {
-                conv.unread_count = 0;
-                Some(conv.id())
-            }
-            _ => None,
-        };
-        if let Some(id) = dirty_id {
-            if let Some(pos) = self.conversations.iter().position(|v| v.id() == id) {
-                self.persist_conv_state_async(pos);
-            }
+        if let Some(id) = self.conv_mut_of(ci).map(|v| v.id()) {
+            self.clear_unread_of(id);
+        }
+    }
+
+    /// Clear a conversation's unread, any size, and persist its state.
+    pub(super) fn clear_unread_of(&mut self, id: crate::types::ConversationId) {
+        if let Some(pos) = self.conversations.iter().position(|v| v.id() == id && v.unread_count > 0) {
+            self.conversations[pos].unread_count = 0;
+            self.persist_conv_state_async(pos);
         }
     }
 
@@ -2675,30 +2697,35 @@ impl PhotonApp {
             // …or from a MEMBER of the group, friend or not (docs/conversations.md Phase 2): the same merge, its rows re-expressed from our side (merge_molecule_page_rows' member view), our fleet's own records and wave rows taken from siblings alone.
             let group = self.molecule_rosters.iter().find(|(g, _)| g.token() == conversation_token).map(|(g, _)| *g);
             let member_from = if from_sibling { None } else { group.and_then(|gid| super::molecules::group_member_of(&self.contacts, &self.molecule_peers, &self.molecule_rosters, &gid, &sender_pubkey.key)).map(|(p, _)| p) };
+            // …and our own device's page for a conversation no contact stands behind (our notes atom): the same verbatim merge by its id, without the group's records and wave edges.
+            let bare = if group.is_none() && from_sibling && self.contact_idx_for_conversation_token(&conversation_token).is_none() { self.conversation_for_token(&conversation_token) } else { None };
+            let target = group.map(|g| (crate::types::FriendshipId::from_bytes(g.0), Some(g))).or(bare.map(|id| (id, None)));
             if from_sibling || member_from.is_some() {
-                if let Some(gid) = group {
+                if let Some((fid, group)) = target {
                     // A page WE asked for (the walk's own request) moves the walk; a live push never fast-forwards it.
                     let rid_matches = self.hist_rid_map.remove(&request_id).is_some();
                     if let Some(page) = page {
                         // Records one of our devices handed over directly (our own leave, made there): merged like a replicated roster, so this device leaves too even if the group's keys never synced to it.
-                        let records: Vec<Vec<u8>> = if from_sibling { page.rows.iter().filter(|r| !r.gpl.is_empty() && matches!(r.control, Some(crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Records)))).map(|r| r.gpl.clone()).collect() } else { Vec::new() };
-                        for blob in records {
-                            self.adopt_replicated_molecule(gid, &blob);
+                        if let Some(gid) = group.filter(|_| from_sibling) {
+                            let records: Vec<Vec<u8>> = page.rows.iter().filter(|r| !r.gpl.is_empty() && matches!(r.control, Some(crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Records)))).map(|r| r.gpl.clone()).collect();
+                            for blob in records {
+                                self.adopt_replicated_molecule(gid, &blob);
+                            }
                         }
-                        let fid = crate::types::FriendshipId::from_bytes(gid.0);
                         let conv_pos = match self.conversations.iter().position(|v| v.id() == fid) {
                             Some(p) => p,
                             None => {
+                                let Some(gid) = group else { continue };
                                 self.conversations.push(crate::types::Conversation::new_molecule(gid, std::iter::empty()));
                                 self.conversations.len() - 1
                             }
                         };
                         // Our fleet's wave rows in this group (docs/group-waves.md): a sibling's join stops this device's ring for the same wave.
-                        for sig in page.rows.iter().filter(|r| from_sibling && r.sender_outgoing).filter_map(|r| r.control.as_ref().and_then(|c| c.wave()).copied()) {
+                        for sig in page.rows.iter().filter(|r| group.is_some() && from_sibling && r.sender_outgoing).filter_map(|r| r.control.as_ref().and_then(|c| c.wave()).copied()) {
                             self.on_group_wave_merge(sig);
                         }
                         // A wave row our fleet minted (a decline, a reject, a wave lived on another device) ends this device's ring for the same offer.
-                        for ts in page.rows.iter().filter(|r| from_sibling && r.wave.is_some()).map(|r| r.timestamp) {
+                        for ts in page.rows.iter().filter(|r| group.is_some() && from_sibling && r.wave.is_some()).map(|r| r.timestamp) {
                             self.on_group_wave_row_merged(ts);
                         }
                         let fresh = self.merge_molecule_page_rows(conv_pos, &page.rows, member_from.map(|m| (our_pid, m)));
@@ -2723,7 +2750,7 @@ impl PhotonApp {
                         }
                         if !fresh.is_empty() {
                             self.persist_conversation_async(fid);
-                            self.push_conversation_rows_to_siblings(crate::types::FriendshipId::from_bytes(gid.0), &fresh, Some(sender_pubkey.key));
+                            self.push_conversation_rows_to_siblings(fid, &fresh, Some(sender_pubkey.key));
                         }
                     }
                     continue;
@@ -3289,9 +3316,10 @@ impl PhotonApp {
             let Some(owner_hp) = result.owner else {
                 self.device_avatar_pixels = Some(display);
                 self.device_avatar_scaled = None;
+                self.own_avatar_header = None;
+                self.own_avatar_row = None;
                 self.device_avatar_scaled_diameter = 0;
                 crate::log("Avatar: own avatar installed (async vault load / recovery)");
-                self.refresh_self_row_avatar();
                 continue;
             };
             if let Some(contact) = self

@@ -192,8 +192,12 @@ impl PhotonApp {
         if self.roster_id_of(id).is_some() {
             return self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
         }
-        let ci = self.pair_contact_of(id)?;
-        self.our_party_id(&self.contacts[ci])
+        if let Some(ci) = self.pair_contact_of(id) {
+            return self.our_party_id(&self.contacts[ci]);
+        }
+        // A conversation no contact stands behind (our notes atom): ours when our identity is in it.
+        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))?;
+        self.conv_by_id(id).filter(|v| v.participants().contains(&us)).map(|_| us)
     }
 
     /// THE ONE SEND, any size (docs/conversations.md Phase 2): the row lands at once (its bubble shows before anything else happens), and its wire half rides the next frame (`drain_pending_sends`). A conversation with nobody else in it — our notes — is delivered by its durable write, which is what delivery to an empty set means. `bridge` stamps a fleet terminal row's own wire truth on it.
@@ -479,17 +483,10 @@ impl PhotonApp {
                 continue;
             }
             self.scene_dirty = true;
-            let ci = (0..self.contacts.len()).find(|&i| {
-                let c = &self.contacts[i];
-                self.our_party_id(c)
-                    .is_some_and(|us| c.conversation(&us).id() == verdict.conv_id)
-            });
-            if let Some(ci) = ci {
-                // The sibling push releases HERE, after durability — a copy this device never durably owned must never replicate out (the fleet-amplification half of the erasure).
-                self.push_rows_to_siblings(ci, &bright, None);
-                // Record the bright state — un-signalled: nothing waits on the flag write, and a lost one re-converges at the next ACK-shaped persist.
-                self.persist_messages_async(ci);
-            }
+            // The sibling push releases HERE, after durability — a copy this device never durably owned must never replicate out (the fleet-amplification half of the erasure). By conversation id: our notes atom has no contact behind it.
+            self.push_conversation_rows_to_siblings(verdict.conv_id, &bright, None);
+            // Record the bright state — un-signalled: nothing waits on the flag write, and a lost one re-converges at the next ACK-shaped persist.
+            self.persist_conversation_async(verdict.conv_id);
         }
     }
 

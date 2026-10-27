@@ -310,17 +310,12 @@ impl PhotonApp {
 
         self.tick_prof_add("proto: clutch drains (timed)", __r.elapsed().as_secs_f32() * 1000.0);
         let __r = Instant::now();
-        // Keep any notes-to-self row showing OUR name and avatar — a profile edit or a fresh avatar must reach it, and nothing else ever will (no peer pongs us).
-        self.settle_self_display();
-
         // A sibling pair just became egged — a consent edge worth a GROW so its wrap exists without waiting for the sponsor's confirm path (docs/fleet-key.md: growth never mints). Edge-driven off the ceremony drain, never polled.
         if std::mem::take(&mut self.fanout_grow_pending) {
             crate::log("FANOUT: newly egged sibling — growing so it gets a wrap");
             self.spawn_fleet_key_grow();
         }
 
-        self.tick_prof_add("proto: settle_self_display", __r.elapsed().as_secs_f32() * 1000.0);
-        let __r = Instant::now();
         // Drain handle_query results. `try_recv` is non-blocking; we collect into local Vecs so the immutable borrow on `handle_query` ends before the `&mut self` handlers run. Three channels feed in: attestation results, connectivity changes, handle searches.
         let mut drained: Vec<QueryResult> = Vec::new();
         let mut drained_searches: Vec<crate::ui::state::SearchResult> = Vec::new();

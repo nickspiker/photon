@@ -248,41 +248,26 @@ impl PhotonApp {
             self.ready_toast = Some(tr(Msg::AlreadyInContacts).into_owned());
             return;
         }
-        // Self-contact: if the handle matches our own identity, create the contact directly — FGTW won't return our own record as a search result.
+        // OUR OWN HANDLE opens our notes atom (docs/conversations.md Phase 2 — there is no self contact: "I should be able to unfriend myself").
         let is_self = self.session.as_ref().map_or(false, |s| {
             crate::storage::contacts::derive_identity_seed(&handle) == s.identity_seed
         });
         if is_self {
-            if let Some(session) = &self.session {
-                let handle_text = crate::types::HandleText::new(&handle);
-                let device_pubkey = self
-                    .device_keypair
-                    .as_ref()
-                    .map(|kp| crate::types::DevicePubkey::from_bytes(*kp.public.as_bytes()))
-                    .unwrap_or_else(|| crate::types::DevicePubkey::from_bytes([0u8; 32]));
-                let contact =
-                    crate::types::Contact::new(handle_text, session.handle_proof, device_pubkey);
-                // No forced state: a conversation with zero remote participants is reachable and keyed BY DEFINITION, and every gate now derives that from the participant set rather than reading fields nobody maintains.
-                crate::log("add-friend: self-contact created (zero remote participants — nothing to exchange)");
-                // A booted notes row can be started again: lift the boot first, or the ledger tombstones it on the next push (the friend-add path does the same).
-                self.forget_booted(&contact.handle_proof);
-                self.contacts.push(contact);
-                if let Some(storage) = self.storage.as_ref() {
-                    if let Some(c) = self.contacts.last() {
-                        if let Err(e) = crate::storage::contacts::save_contact(c, storage) {
-                            crate::logf!("Failed to save contact: {}", e);
-                        }
+            if let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+                let nid = crate::types::Conversation::new([us]).id();
+                if !self.conversations.iter().any(|v| v.id() == nid) {
+                    let mut nc = crate::types::Conversation::new([us]);
+                    if let Some(storage) = self.storage.as_ref() {
+                        let _ = crate::storage::contacts::load_messages(&mut nc, storage);
                     }
+                    self.conversations.push(nc);
                 }
-                self.search_status = Some((
-                    tr(Msg::AddedHandle(&handle)).into_owned(),
-                    (*theme::SEARCH_FOUND_COLOUR),
-                ));
+                self.notes_opened = true;
                 if let Some(tb) = self.contacts_textbox.as_mut() {
                     tb.clear();
                 }
-                // Propagate to the rest of the fleet on the ADD edge — the same push the friend-add path fires. This was the one add that never pushed, so notes-to-self appeared only on the device that typed it until some unrelated pull's reconcile noticed (field, 2026-08-02).
-                self.spawn_roster_push();
+                crate::log("add-friend: our own handle — opening our notes atom");
+                self.enter_conversation(nid);
             }
             return;
         }
@@ -924,6 +909,8 @@ impl PhotonApp {
         }
         self.device_avatar_pixels = None;
         self.device_avatar_scaled = None;
+        self.own_avatar_header = None;
+        self.own_avatar_row = None;
         self.device_avatar_scaled_diameter = 0;
         self.avatar_set_rx = None; // an in-flight avatar pick must not install under the next identity
         self.pending_fleet_key = None;

@@ -57,11 +57,11 @@ impl PhotonApp {
         self.change_focus(None);
         self.disarm_conversation_panel();
         self.state = AppState::Conversation;
-        if let Some(gi) = self.active_molecule() {
-            self.clear_molecule_unread(gi);
-        } else if let Some(ci) = self.active_contact() {
+        if let Some(id) = self.active_conversation {
+            self.clear_unread_of(id);
+        }
+        if self.active_contact().is_some() {
             self.reset_contact_ping_backoff();
-            self.clear_unread(ci);
         }
     }
 

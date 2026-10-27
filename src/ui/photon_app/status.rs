@@ -77,7 +77,9 @@ impl PhotonApp {
                 self.scene_dirty = true;
                 self.avatar_set_rx = None;
                 crate::log("avatar picker: display pixels installed");
-                self.refresh_self_row_avatar();
+                // Our notes atom wears our face: its header copy re-scales from the new pixels.
+                self.own_avatar_header = None;
+                self.own_avatar_row = None;
             }
         }
 
@@ -3338,11 +3340,7 @@ impl PhotonApp {
                             // The table: a roster conversation's own id, else the conversation the token derives for a contact (notes, a pair, a conversation the sibling knows only from the roster).
                             let table = match self.friendship_chains.iter().find(|(_, c)| c.conversation_token == conversation_token && c.molecule) {
                                 Some((fid, _)) => *fid.as_bytes(),
-                                None => {
-                                    let idx = self.contact_idx_for_conversation_token(&conversation_token)?;
-                                    let c = &self.contacts[idx];
-                                    *c.conversation(&self.our_party_id(c)?).id().as_bytes()
-                                }
+                                None => *self.conversation_for_token(&conversation_token)?.as_bytes(),
                             };
                             Some((table, key, Some(k)))
                         });
@@ -4508,6 +4506,8 @@ impl PhotonApp {
                     // …and a page from a MEMBER of the group, friend or not (docs/conversations.md Phase 2: history recovery reaches molecules), merged from their side in drain_history_pages.
                     let group = self.molecule_rosters.iter().find(|(g, _)| g.token() == conversation_token).map(|(g, _)| *g);
                     let molecule_page = group.is_some_and(|gid| from_sibling || super::molecules::group_member_of(&self.contacts, &self.molecule_peers, &self.molecule_rosters, &gid, &sender_pubkey.key).is_some());
+                    // …and our own device's page for a conversation no contact stands behind (our notes atom), merged by its id.
+                    let molecule_page = molecule_page || (from_sibling && contact_idx.is_none() && self.conversation_for_token(&conversation_token).is_some());
                     let routable = contact_idx.is_some() || molecule_page;
                     if key.is_none() || !routable {
                         // Torch the drop: a page dying here is indistinguishable from "sync doesn't work" in the field ("fleet sync with self is not working", 2026-07-26 — every drop in this arm was silent).

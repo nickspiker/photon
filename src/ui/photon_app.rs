@@ -2282,6 +2282,8 @@ pub struct PhotonApp {
     roster_pull_exhausted: bool,
     /// This device's avatar in BT.2020 γ=2.0 u8 RGB, sized `crate::avatar::AVATAR_SIZE × AVATAR_SIZE × 3`. `None` until `on_query_result` pulls one from local storage (no saved avatar = stays `None`, Ready screen falls back to the grey placeholder).
     device_avatar_pixels: Option<Vec<u8>>,
+    /// Our own avatar at the conversation-header diameter, for a conversation with nobody but us in it (our notes atom): (diameter, pixels).
+    own_avatar_header: Option<(usize, Vec<u8>)>,
     /// Cached Mitchell resize of `device_avatar_pixels` at the current Ready-screen circle diameter. Rebuilt on diameter change (resize / zoom).
     device_avatar_scaled: Option<Vec<u8>>,
     /// Diameter (in pixels) of `device_avatar_scaled`. `0` means no cache built yet.
@@ -2317,6 +2319,14 @@ pub struct PhotonApp {
     molecule_hit_base: HitId,
     /// Wrapped title lines per group row (index = position in `molecule_rosters`), refreshed on the Ready pre-pass like `contact_row_lines`.
     molecule_row_lines: Vec<Vec<String>>,
+    /// Conversations no contact stands behind and no roster names — our notes atom (docs/conversations.md Phase 2) — listed as Ready rows, their wrapped names, and the hit ids [atom_hit_base, +4) that index them. Rebuilt by the Ready pre-pass.
+    bare_atoms: Vec<crate::types::ConversationId>,
+    atom_row_lines: Vec<Vec<String>>,
+    atom_hit_base: HitId,
+    /// Our own avatar at the Ready-row diameter, for those rows: (diameter, pixels).
+    own_avatar_row: Option<(usize, Vec<u8>)>,
+    /// Our notes atom is listed while it holds rows — or once it was opened this session (an empty notes atom, typed into from the add box) or carried over from the retired self row.
+    notes_opened: bool,
     /// Wrapped lines per INVITATION row (index = position in `bond_offers`; empty for an answered offer), refreshed on the Ready pre-pass like `molecule_row_lines`. The last line is the band the Bind and Decline pills sit on.
     offer_row_lines: Vec<Vec<String>>,
     /// Invitation rows' pills: [invite_hit_base, +32) — row k's Bind at 2k, its Decline at 2k + 1 (16 open invitations drawn).
@@ -3186,6 +3196,7 @@ impl PhotonApp {
             roster_pull_parked_under: None,
             roster_pull_exhausted: false,
             device_avatar_pixels: None,
+            own_avatar_header: None,
             device_avatar_scaled: None,
             device_avatar_scaled_diameter: 0,
             avatar_hit_id: HIT_NONE,
@@ -3201,6 +3212,11 @@ impl PhotonApp {
             contact_hit_base: HIT_NONE,
             molecule_hit_base: HIT_NONE,
             molecule_row_lines: Vec::new(),
+            bare_atoms: Vec::new(),
+            atom_row_lines: Vec::new(),
+            atom_hit_base: HIT_NONE,
+            own_avatar_row: None,
+            notes_opened: false,
             offer_row_lines: Vec::new(),
             invite_hit_base: HIT_NONE,
             molecule_title_textbox: None,
@@ -4397,10 +4413,7 @@ fn contact_status_line(
     }
     // THE CONSENT GATE, shown honestly (Nick 2026-10-01, "stuck on clutch: 0/12 making keys"): nothing is being made while our add awaits theirs — the keygen queue holds until their knock or offer.
     if !c.is_sibling && !c.chain_woven && !c.consent_mutual && c.clutch_our_keypairs.is_none() && c.clutch_state != crate::types::ClutchState::Complete {
-        let is_self = identity_seed.is_some_and(|seed| c.remote_count(&crate::crypto::clutch::identity_party_id(seed)) == 0);
-        if !is_self {
-            return tr(Msg::ClutchWaitingTheirAdd).into_owned();
-        }
+        return tr(Msg::ClutchWaitingTheirAdd).into_owned();
     }
     c.clutch_status_detail()
 }

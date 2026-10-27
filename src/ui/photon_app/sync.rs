@@ -119,91 +119,6 @@ impl PhotonApp {
         }
     }
 
-    /// A NEW own avatar just landed (picked, or recovered after a wipe): push it onto every zero-remote row NOW. Edge-driven — `settle_self_display` only fills an EMPTY slot, deliberately, because noticing staleness there would mean comparing full pixel buffers every pass; the install edge is the one place that KNOWS the picture changed (live 2026-08-02: a new avatar picked, notes-to-self kept the old face).
-    pub(super) fn refresh_self_row_avatar(&mut self) {
-        let Some(our_pid) = self
-            .session
-            .as_ref()
-            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
-        else {
-            return;
-        };
-        let ours = self.device_avatar_pixels.clone();
-        for c in self
-            .contacts
-            .iter_mut()
-            .filter(|c| !c.is_sibling && c.remote_count(&our_pid) == 0)
-        {
-            c.avatar_pixels = ours.clone();
-            c.avatar_scaled = None;
-            c.avatar_scaled_diameter = 0;
-        }
-    }
-
-    /// A notes-to-self row displays OUR OWN name and avatar, because there is no peer to pong them: `published_name` and `avatar_pin` are populated by a friend answering our ping, and we never ping ourselves. Left alone the row reads "Pending…" with a placeholder picture forever — the identity you are logged in as, rendered as a stranger.
-    pub(super) fn settle_self_display(&mut self) {
-        let (Some(our_pid), Some(name)) = (
-            self.session
-                .as_ref()
-                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)),
-            self.fleet_settings
-                .as_ref()
-                .and_then(|fs| fs.effective("profile.name"))
-                .and_then(crate::storage::fleet_settings::as_text),
-        ) else {
-            return;
-        };
-        if name.is_empty() {
-            return;
-        }
-        let ours = self.device_avatar_pixels.clone();
-        for c in self
-            .contacts
-            .iter_mut()
-            .filter(|c| !c.is_sibling && c.remote_count(&our_pid) == 0)
-        {
-            if c.published_name != name {
-                c.published_name = name.clone();
-            }
-            // Our own avatar pixels, already decoded for the profile header — no fetch, no pin, no slot: it is the same image one struct field away.
-            if c.avatar_pixels.is_none() {
-                if let Some(px) = ours.clone() {
-                    c.avatar_pixels = Some(px);
-                    c.avatar_scaled = None;
-                }
-            }
-        }
-    }
-
-    /// A conversation with zero remote participants can hold NO ceremony — nothing to exchange, nobody to offer at. Yet the field found the notes row Pending with a sent offer (the ContactId collision routed a sibling's keygen onto it, 2026-08-13), which rings the parked-ceremony doorbell every ~5min and re-arms 573KB offers at our own fleet on every path-up edge. Scrub round debris off zero-remote rows and settle them Complete (zero-remote is keyed-on-arrival by doctrine).
-    pub(super) fn scrub_zero_remote_rounds(&mut self) {
-        for ci in 0..self.contacts.len() {
-            let c = &self.contacts[ci];
-            if !self.is_zero_remote(c) {
-                continue;
-            }
-            let has_round = c.clutch_state != crate::types::ClutchState::Complete
-                || c.clutch_our_keypairs.is_some()
-                || !c.clutch_slots.is_empty()
-                || c.ceremony_id.is_some()
-                || c.clutch_offer_sent
-                || c.clutch_round_started.is_some();
-            if !has_round {
-                continue;
-            }
-            crate::logf!(
-                "CLUTCH: scrubbed a parked round off zero-remote conversation {} — settled Complete",
-                crate::fp(&self.contacts[ci].handle_proof).as_str()
-            );
-            let c = &mut self.contacts[ci];
-            c.discard_clutch_round();
-            c.clutch_state = crate::types::ClutchState::Complete;
-            if let Some(storage) = self.storage.as_ref() {
-                let _ = crate::storage::contacts::save_contact(&self.contacts[ci], storage);
-            }
-        }
-    }
-
     /// Collapse the ACTIVE contact's presence backoff — called when its conversation opens. Looking at someone is the clearest possible signal that their presence matters now, and it is the escape hatch that makes an hour-long backoff safe to have at all.
     /// The conversation-enter verdict: the open-ping had one second to draw a pong. Unanswered, the header goes offline NOW instead of after the presence sweep's three strikes (a pong landing later flips it straight back thru the ordinary Online arm — the verdict is a fast first word, never the last).
     pub(super) fn presence_probe_tick(&mut self, now: std::time::Instant) -> bool {
@@ -1090,6 +1005,15 @@ impl PhotonApp {
     }
 
     /// Resolve a conversation token to the FRIEND (or self) contact it belongs to by DERIVING each contact's token from the participant party ids — no chain needed, so a fresh device can serve/merge fleet history before any CLUTCH completes. The self notes conversation derives from [our_pid, our_pid]. Chains, when they exist, derive the identical token (same participant set), so this agrees with the chain-bound friend route.
+    /// The conversation a wire token names, any size (docs/conversations.md Phase 2): a friend's pair conversation by derivation (it may not be materialized yet), else any conversation we hold by its own token — a roster conversation, our notes atom, which no contact stands behind.
+    pub(super) fn conversation_for_token(&self, token: &[u8; 32]) -> Option<crate::types::ConversationId> {
+        if let Some(ci) = self.contact_idx_for_conversation_token(token) {
+            let c = &self.contacts[ci];
+            return Some(c.conversation(&self.our_party_id(c)?).id());
+        }
+        self.conversations.iter().map(|v| v.id()).find(|id| self.conversation_token_of(*id) == Some(*token))
+    }
+
     pub(super) fn contact_idx_for_conversation_token(&self, token: &[u8; 32]) -> Option<usize> {
         let our_pid =
             crate::crypto::clutch::identity_party_id(&self.session.as_ref()?.identity_seed);
@@ -1686,6 +1610,9 @@ impl PhotonApp {
             }
         }
         ids.extend(self.molecule_rosters.iter().map(|(g, _)| crate::types::FriendshipId::from_bytes(g.0)).filter(|id| self.conversations.iter().any(|v| v.id() == *id)));
+        // …and every conversation no contact or roster stands behind (our notes atom): our own devices hold its rows.
+        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        ids.extend(self.conversations.iter().filter(|v| !v.is_molecule() && !v.is_bond() && us.is_some_and(|us| v.participants() == [us])).map(|v| v.id()).filter(|id| self.pair_contact_of(*id).is_none()));
         for id in ids {
             let Some(conv) = self.conv_by_id_mut(id) else {
                 continue;
@@ -1865,6 +1792,17 @@ impl PhotonApp {
                 ))
             })
             .collect();
+        // OUR NOTES ATOM walks too, by the fleet route under its own [us, us] token — no contact stands behind it any more.
+        if let (Some(us), Some((primary, alt, pk, relay))) = (our_pid, sibling_target.clone()) {
+            for v in self.conversations.iter().filter(|v| !v.is_molecule() && !v.is_bond() && v.participants() == [us] && v.history_recovery.as_ref().is_some_and(|r| !r.complete)) {
+                if self.pair_contact_of(v.id()).is_some() {
+                    continue;
+                }
+                if let Some(token) = self.conversation_token_of(v.id()) {
+                    candidates.push((v.id(), None, token, primary, alt, pk, relay.clone()));
+                }
+            }
+        }
         // ROSTER CONVERSATIONS walk too (docs/conversations.md Phase 2 — the walk used to be contacts-only, so a molecule's missing rows waited on live re-sends alone): the group's token and history key; asked of an online friend member at their direct path, else any member's device at its phonebook addresses or the relay alone, else our own fleet under the fleet key.
         for (gid, roster) in &self.molecule_rosters {
             let fid = crate::types::FriendshipId::from_bytes(gid.0);

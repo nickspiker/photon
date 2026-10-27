@@ -368,6 +368,9 @@ impl FluorApp for PhotonApp {
         reserve_hits(&mut self.hit_counter, 64);
         self.ready_filter_base = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 2); // the filter (cycles) / New atom
+        // ATOMS no contact or roster stands behind (our notes atom, docs/conversations.md Phase 2): their Ready rows.
+        self.atom_hit_base = self.hit_counter;
+        reserve_hits(&mut self.hit_counter, 4);
         self.invite_hit_base = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 32); // invitation rows: Bind + Decline for 16 open invitations
         // Wave controls (docs/waves.md) — retained Buttons with placeholder geometry; real rect/label/font-size land each frame in the render overlay block (phase-dependent). Registered cross-screen in `visit_app_widgets`, so hover/press/dispatch ride the same walk as every other Button. Construction order fixes the contiguous-id contract: status / start / action / decline. "Open Sans" matches the old hand-rolled pills' face.
@@ -1380,6 +1383,16 @@ impl FluorApp for PhotonApp {
             self.scene_dirty = true;
             ctx.window.request_redraw();
             return EventResponse::Handled;
+        }
+
+        // An ATOM row no contact or roster stands behind (our notes atom) — hit IDs in [atom_hit_base, atom_hit_base + 4).
+        if matches!(self.state, AppState::Ready) && self.atom_hit_base != HIT_NONE && hit_id >= self.atom_hit_base && hit_id < self.atom_hit_base + 4 {
+            if let Some(id) = self.bare_atoms.get((hit_id - self.atom_hit_base) as usize).copied() {
+                crate::logf!("atom-tap: opening {}", hex::encode(&id.as_bytes()[..4]));
+                self.enter_conversation(id);
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
         }
 
         // Group row tap (docs/molecules.md §10.5) — hit IDs in [molecule_hit_base, molecule_hit_base + 64).
@@ -3982,6 +3995,7 @@ impl PhotonApp {
                     || (self.conv_panel_btn_base != HIT_NONE && hit >= self.conv_panel_btn_base && hit < self.conv_panel_btn_base + super::conv_panel::CONV_PANEL_SLOTS)
                     || (self.conv_nav_base != HIT_NONE && hit >= self.conv_nav_base && hit < self.conv_nav_base + crate::ui::state::ConversationPage::RAIL.len() as HitId)
                     || (self.molecule_hit_base != HIT_NONE && hit >= self.molecule_hit_base && hit < self.molecule_hit_base + 64)
+                    || (self.atom_hit_base != HIT_NONE && hit >= self.atom_hit_base && hit < self.atom_hit_base + 4)
                     || (self.ready_filter_base != HIT_NONE && hit >= self.ready_filter_base && hit < self.ready_filter_base + 2)
                     || (self.invite_hit_base != HIT_NONE && hit >= self.invite_hit_base && hit < self.invite_hit_base + 32)
             };
@@ -4598,6 +4612,18 @@ impl PhotonApp {
                                 self.conversations.push(bc);
                             }
                         }
+                        // OUR NOTES ATOM (docs/conversations.md Phase 2): a conversation of one that no contact stands behind — loaded from its own table (the one the retired self row used), so its rows, its siblings' pages and its sends all find it by id and by its [us, us] token.
+                        if let Some(us) = self.session.as_ref().map(|se| crate::crypto::clutch::identity_party_id(&se.identity_seed)) {
+                            let nid = crate::types::Conversation::new([us]).id();
+                            if !self.conversations.iter().any(|v| v.id() == nid) {
+                                let mut nc = crate::types::Conversation::new([us]);
+                                crate::storage::contacts::load_conversation_state(&mut nc, &us, &s);
+                                if let Err(e) = crate::storage::contacts::load_messages(&mut nc, &s) {
+                                    crate::logf!("UI: resume failed to load our notes: {}", e);
+                                }
+                                self.conversations.push(nc);
+                            }
+                        }
                         let ms_messages = t_phase.elapsed().as_millis();
                         crate::logf!(
                             "UI: loaded {} contact(s) from local vault on resume",
@@ -4636,6 +4662,19 @@ impl PhotonApp {
                             }
                             for (fp, table, rows, detail) in &census {
                                 crate::logf!("STORAGE: census — {} table {} holds {} row(s) in RAM after load{}", fp, hex::encode(&table[..4]), rows, detail);
+                            }
+                            // THE SELF ROW RETIRES (docs/conversations.md Phase 2; Nick 2026-10-26: "You should drop out of your own people list. As Jeff said 'I should be able to unfriend myself'"): notes is an atom of one now, held by its own id and table, so the contact that used to stand for it goes — from the list, the vault and the index. Its rows are untouched (the notes atom above already holds them).
+                            if let Some(us) = self.session.as_ref().map(|se| crate::crypto::clutch::identity_party_id(&se.identity_seed)) {
+                                if self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == us) {
+                                    crate::log("STORAGE: the self row retires — notes is an atom of one, its rows stay in its own table");
+                                    let _ = crate::storage::contacts::delete_contact(&us, &s);
+                                    self.contacts.retain(|c| c.is_sibling || c.handle_hash != us);
+                                    let index: Vec<crate::storage::contacts::ContactIdentity> = self.contacts.iter().filter(|c| !c.is_sibling).map(|c| crate::storage::contacts::ContactIdentity { handle_proof: c.handle_proof, party_id: c.handle_hash, avatar_pin: c.avatar_pin }).collect();
+                                    if let Err(e) = crate::storage::contacts::save_contact_list(&index, &s) {
+                                        crate::logf!("STORAGE: self-row retirement index rewrite failed: {}", e);
+                                    }
+                                    self.notes_opened = true;
+                                }
                             }
                             // The reference values the census hashes are read against — without these in the same log, "is that hash our pid or debris?" needs a second device round-trip.
                             if let (Some(sess), Some(sib_pid)) =
@@ -4840,9 +4879,6 @@ impl PhotonApp {
                                 }
                             }
                         }
-                        // Notes-to-self is NOT bootstrapped (Nick 2026-08-01): an empty conversation with yourself is not a contact you asked for, and it sat at the top of the list looking broken because it has no peer to pong a name or avatar. Add yourself deliberately and it appears; until then the list holds only people you chose.
-                        self.settle_self_display();
-                        self.scrub_zero_remote_rounds();
                         // Re-key Pending contacts that still lack keypairs after the rehydrate — but ONE AT A TIME (spawn_next_pending_keygen, repeated each tick), never all at once: parallel McEliece keygens on launch starved the UI thread.
                         self.spawn_next_pending_keygen();
                         crate::logf!(
