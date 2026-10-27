@@ -94,7 +94,6 @@
 - [Braid v2](project_braid_v2.md) — 2026-09-27 BUILT: per-strand S, agreed per era at CLUTCH;…
 - [Audio picker + levels](project_audio_picker_levels.md) — 2026-09-28: wave FIELD BUILT (ripples from avatars,…
 - [project_log_sweep_eats_fresh.md](project_log_sweep_eats_fresh.md) — 2026-08-21 log vanish never convicted; sweep ages by the…
-- [project_party_colour_perceptual.md](project_party_colour_perceptual.md) — CLOSED 2026-10-06: Y=0.5 physical; uniform-by-area draw
 - [project_arabic_indexing_fixits.md](project_arabic_indexing_fixits.md) — FIX-IT: decimal-indexed VSF names → multi-value fields
 - [project_zero_sentinel_purge.md](project_zero_sentinel_purge.md) — sentinel purge shipped; convert stragglers when touched
 - [project_rekey_attack_surface.md](project_rekey_attack_surface.md) — rekey threat model (docs/rekey-threat-model.md); first-met…
@@ -174,7 +173,7 @@
 
 ## Closed incidents (conviction hooks)
 - Fixed (hooks): [address ports](project_address_ports.md) · [hotplug abort](project_hotplug_abort.md) · [pigeon fetch reach](project_pigeon_fetch_reach.md) · [early-stop blindness](project_history_early_stop_blindness.md)
-- Fixed (hooks): [fluor busy loop](project_fluor_busy_loop.md) · [macOS resize cursor](project_macos_resize_cursor.md)
+- Fixed (hooks): [fluor busy loop](project_fluor_busy_loop.md) · [macOS resize cursor](project_macos_resize_cursor.md) · [party colour](project_party_colour_perceptual.md)
 - Perf: [ANR-at-launch](project_android_hang_nag.md) · [idle-CPU](project_idle_tick_cost.md) · [render lag](project_render_storm_lag.md)
 - Vault: [seal failures](project_vault_seal_failures.md) · [plow refusal](project_manifestus_plow_reloc_refusal.md) · [tombstone](project_manifestus_tombstone_bug.md)
 - CLUTCH/braid: [desync class](project_chain_advance_desync.md) · [offer deadlock](project_clutch_offer_deadlock.md) · [UI-thread hitch](project_clutch_ui_thread_hitch.md)
