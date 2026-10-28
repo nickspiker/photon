@@ -562,6 +562,26 @@ impl PhotonApp {
     }
 
     /// Send a message to the currently selected contact Returns true if message was sent successfully
+    /// Drop the selection in every text box but `keep` (the one being typed in), the compose box included; true when one was cleared. See the typing arm at the top of `on_event`.
+    pub(super) fn clear_other_selections(&mut self, keep: Option<HitId>) -> bool {
+        let mut cleared = false;
+        for (_, tb) in self.textboxes_mut() {
+            if Some(tb.hit_id()) != keep && tb.selection_anchor.is_some() {
+                tb.selection_anchor = None;
+                tb.invalidate_cache();
+                cleared = true;
+            }
+        }
+        if let Some(tb) = self.message_textbox.as_mut() {
+            if Some(tb.hit_id()) != keep && tb.selection_anchor.is_some() {
+                tb.selection_anchor = None;
+                tb.invalidate_cache();
+                cleared = true;
+            }
+        }
+        cleared
+    }
+
     pub(super) fn textboxes_mut(&mut self) -> impl Iterator<Item = (TextboxRole, &mut Textbox)> {
         [
             self.textbox

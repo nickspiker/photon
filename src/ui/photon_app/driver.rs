@@ -1927,6 +1927,17 @@ impl FluorApp for PhotonApp {
             self.last_poke = Some(Instant::now());
             self.take_fleet_attention();
         }
+        // TYPING CLEARS EVERY OTHER SELECTION (Nick 2026-10-28: "If something is selected, regardless of where it is, it should clear if you type … all textboxes"): the box being typed in replaces its own selection in its edit, and a selection left in any other box drops here, so nothing stays highlighted that the keystroke did not touch. Chorded keys (copy, paste, zoom) and caret moves are not typing.
+        let typing = !ctx.modifiers.control_key()
+            && !ctx.modifiers.super_key()
+            && match event {
+                Event::Ime(Ime::Commit(_)) => true,
+                Event::KeyboardInput { event: kev, .. } => kev.state == ElementState::Pressed && matches!(&kev.logical_key, Key::Character(_) | Key::Named(NamedKey::Backspace) | Key::Named(NamedKey::Delete) | Key::Named(NamedKey::Enter) | Key::Named(NamedKey::Space)),
+                _ => false,
+            };
+        if typing && self.clear_other_selections(self.focused) {
+            self.scene_dirty = true;
+        }
         // Live shift mirror for `on_close_requested` (which has no Context): a shift-held close — the chrome ✕, Alt-F4, anything — means the REAL exit, not the resident hide. Refreshed on every event so the click that lands on the close button has already stamped it.
         self.shift_held = ctx.modifiers.shift_key();
         // Every event except cursor movement may move immediate-mode content, so it claims a full-viewport frame. CursorMoved's effects are all narrow-tracked: hover tints live in the host overlay pass, drag-select is the textbox's own damage, and the one content-flavoured hover (the Ready avatar hint) sets `scene_dirty` at its flip site.
