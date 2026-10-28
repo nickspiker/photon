@@ -487,43 +487,31 @@ impl HandleQuery {
                         });
                         continue;
                     }
-                    let outcome = match crate::network::fgtw::fleet::fetch(&handle_proof) {
-                        Ok(None) => ProbeOutcome::Fresh,
-                        Ok(Some(blob)) => {
-                            let me = keypair.public.to_bytes();
-                            // Match fold() explicitly: a FoldError must NOT be swallowed into a false "Taken" with an unverified genesis compare. An unfoldable chain is indeterminate (corrupt / partial / KV read-lag) — surface an error and let the next cycle retry, never brand the handle taken.
-                            match blob.fold() {
-                                Ok(members) => {
-                                    if members.contains(&me) {
-                                        ProbeOutcome::Member
-                                    } else if blob.genesis_handle_proof() == Some(handle_proof) {
-                                        // The chain sits at the slot we queried → ours to attest/join (actual enrolment still needs a sponsor). Identity is handle-derived, so it cannot be proven owned; the slot match is the honest signal. BEHAVIOR NOTE (docs/fleet-identity-remediation.md): the old `genesis_identity_matches` branded a squatter's NON-canonical-key chain as Taken; that near-vacuous case now reads JoinOurs. A competent squatter used the canonical key and already read JoinOurs, and you are locked out of an occupied slot either way — the security outcome is unchanged.
-                                        ProbeOutcome::JoinOurs
-                                    } else {
-                                        // Genesis handle_proof ≠ the slot we fetched by — a relay served a chain from a different slot (anomaly), not a normal "someone else holds this handle".
-                                        ProbeOutcome::Taken
-                                    }
-                                }
-                                // An EMPTY chain is not corruption — it's "no one holds this handle" (a blob with zero ops folds to Empty, e.g. after a wipe left the slot allocated but unwritten). Same classification as Ok(None).
-                                Err(crate::network::fgtw::fleet::FoldError::Empty) => {
-                                    ProbeOutcome::Fresh
-                                }
-                                Err(fold_err) => {
-                                    crate::logf!(
-                                        "Network: probe fold failed (indeterminate, not taken): {}",
-                                        format!("{:?}", fold_err)
-                                    );
-                                    let _ = tx.send(QueryResult::Error(format!(
-                                        "chain unverifiable: {fold_err:?}"
-                                    )));
-                                    continue;
-                                }
-                            }
+                    // THE ATTEST VERDICT is fgtw's one pure function (fgtw::attest), so Photon and ferros's bare-metal client decide identically from the same evidence. Photon hands it the seed's answer alone for now — no held or peer chains — which is exactly the decision this probe made by hand before.
+                    let fetched = crate::network::fgtw::fleet::fetch(&handle_proof);
+                    let me = keypair.public.to_bytes();
+                    let seed = match &fetched {
+                        Ok(None) => fgtw::attest::SeedAnswer::NotFound,
+                        Ok(Some(blob)) => fgtw::attest::SeedAnswer::Chain(blob),
+                        Err(_) => fgtw::attest::SeedAnswer::Unreachable,
+                    };
+                    let outcome = match fgtw::attest::attest_verdict(&handle_proof, &me, None, &[], seed) {
+                        fgtw::attest::AttestVerdict::Fresh => ProbeOutcome::Fresh,
+                        fgtw::attest::AttestVerdict::Member => ProbeOutcome::Member,
+                        // The chain sits at the slot we queried → ours to attest/join (actual enrolment still needs a sponsor).
+                        fgtw::attest::AttestVerdict::JoinOurs => ProbeOutcome::JoinOurs,
+                        // Genesis handle_proof ≠ the slot we fetched by — a relay served a chain from a different slot (anomaly), not a normal "someone else holds this handle".
+                        fgtw::attest::AttestVerdict::WrongFleet => ProbeOutcome::Taken,
+                        // An unfoldable chain is indeterminate (corrupt / partial / KV read-lag): surface an error and let the next cycle retry, never brand the handle taken.
+                        fgtw::attest::AttestVerdict::Unverifiable(fold_err) => {
+                            crate::logf!("Network: probe fold failed (indeterminate, not taken): {}", format!("{:?}", fold_err));
+                            let _ = tx.send(QueryResult::Error(format!("chain unverifiable: {fold_err:?}")));
+                            continue;
                         }
-                        Err(e) => {
-                            // Network unreachable — can't classify. Surface as an error; claiming needs the network anyway.
+                        // Network unreachable — can't classify, and claiming needs the network anyway. The fleet client's message is already short and plain (e.g. "No connection to FGTW"), surfaced verbatim.
+                        fgtw::attest::AttestVerdict::Unreachable => {
+                            let e = fetched.err().unwrap_or_default();
                             crate::logf!("Network: probe fetch failed: {}", e);
-                            // `e` is already a short, plain message from the fleet client (e.g. "No connection to FGTW"). Surface it verbatim — no "can't reach the network to check:" prefix stacking web-stack context the user can't use.
                             let _ = tx.send(QueryResult::Error(e));
                             continue;
                         }
