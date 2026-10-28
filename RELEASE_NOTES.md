@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Pictures stop getting stuck on "fetching".** A picture could wait forever on one of your devices if its "I don't have it" reply was lost; that reply now also travels by the relay, and a device that keeps answering but never replies about the file is passed over for the next one.
+- **A cleaner picture preview.** While a picture is still arriving, its Back and Save buttons no longer sit under the conversation header, the Beam and Wave buttons stay out of the viewer, the preview fits between the buttons and the caption, and a long file name shrinks to fit instead of running off the edge.
 - **The picture viewer reads at every zoom.** Its side panel now sizes to what it holds, button labels fit their buttons, and nothing runs off the bottom when you zoom Photon in or the window is small; zoomed out, the controls shrink with everything else.
 - **Selected text in the chat box is replaced as you type.** Dragging or double-clicking to select text in the compose box and then typing, or pressing Backspace or Delete, now replaces the selection; before, the selection was quietly dropped when you let go of the mouse. Typing in any box also clears a selection left in another box.
 - **Type your new name twice.** When you create a new identity, the box clears after the warning and you type the name a second time; if the two don't match you're told so and your first entry comes back to fix. Signing in with a name you already have still takes it once, and the name is never hidden as you type.

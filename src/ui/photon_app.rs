@@ -754,6 +754,8 @@ struct FetchAsk {
     progressed: bool,
     /// The asked device answered "not held", or the transport gave up reaching it: this ask is over, the next goes elsewhere.
     ended: bool,
+    /// Pongs the asked device has sent since the ask with nothing of the blob from it: its answer was lost (2026-10-28: two "not held" answers lost right after a restart stranded a fetch on a live device), so the second ends the ask.
+    pongs_since: u8,
 }
 
 struct AttachInstalled {
@@ -3977,7 +3979,7 @@ impl PhotonApp {
                 }
                 _ => {}
             }
-        } else if matches!(self.state, AppState::Conversation) {
+        } else if matches!(self.state, AppState::Conversation) && self.viewer.is_none() && self.reader.is_none() {
             let callable = self
                 .active_contact()
                 .and_then(|ci| self.contacts.get(ci))

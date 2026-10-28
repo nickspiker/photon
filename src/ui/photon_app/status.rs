@@ -456,6 +456,7 @@ impl PhotonApp {
         let mut holdings_after: Vec<(crate::network::fgtw::protocol::HoldingsKind, [u8; 32], Vec<u8>, [u8; 32], std::net::SocketAddr)> = Vec::new();
         // Fetch edges (attach_none, an unreachable peer) wait for the loop to end: the fetch state is &mut self, and the loop holds the checker.
         let mut fetch_none_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
+        let mut fetch_pongs_after: Vec<[u8; 32]> = Vec::new();
         let mut fetch_unreachable_after: Vec<(Option<std::net::SocketAddr>, Option<[u8; 32]>)> = Vec::new();
         // Friend folds proven stale by a ForeignResponder (an unknown device answered for one of their devices): refreshed after the drain.
         let mut stale_folds_after: Vec<[u8; 32]> = Vec::new();
@@ -507,6 +508,10 @@ impl PhotonApp {
                     fleet_tip,
                     braid,
                 } => {
+                    // A pong is the edge a fetch aimed at this device moves on at when its answer was lost (fetch_pong_from, applied after the batch).
+                    if is_online {
+                        fetch_pongs_after.push(peer_pubkey.key);
+                    }
                     // Stall recovery (runs EVERY ping that carries sync records, not just the offline→online edge): each record advertises the peer's contiguous head. Re-arm any pending of ours newer than the head for OUR lane AND already given up (exhausted attempts) — so a gap-filler the sender abandoned gets resent and a receiver stuck behind a permanently-lost message un-sticks. The staleness gate stays (a fresh send is left to normal backoff; only a given-up one is revived), which keeps a pong that merely raced ahead of the ACK from double-sending. collect_due_retransmits (the tick path) then actually sends the revived messages.
                     let now_osc = vsf::eagle_time_oscillations();
                     // Lanes rotated by the wedge heal below — flushed AFTER the record loop (the loop holds the chains borrow; resend_held_messages needs &mut self).
@@ -3922,7 +3927,8 @@ impl PhotonApp {
                                             alt_addr: None,
                                             recipient_pubkey: sender_pubkey.key,
                                             vsf_bytes,
-                                            relay_to: if relay_needed { vec![sender_pubkey.key] } else { Vec::new() },
+                                            // The one answer the asker's fetch waits on rides the relay too, whatever the path: a few hundred bytes, and a lost direct copy stranded the fetch (2026-10-28, right after a restart).
+                                            relay_to: vec![sender_pubkey.key],
                                             tag: None,
                                         });
                                     }
@@ -3939,7 +3945,8 @@ impl PhotonApp {
                                         alt_addr: None,
                                         recipient_pubkey: sender_pubkey.key,
                                         vsf_bytes,
-                                        relay_to: if relay_needed { vec![sender_pubkey.key] } else { Vec::new() },
+                                        // The one answer the asker's fetch waits on rides the relay too, whatever the path: a few hundred bytes, and a lost direct copy stranded the fetch (2026-10-28, right after a restart).
+                                        relay_to: vec![sender_pubkey.key],
                                         tag: None,
                                     });
                                 }
@@ -5584,6 +5591,9 @@ impl PhotonApp {
 
         for (hash, from) in fetch_none_after {
             self.fetch_answered_none(&hash, &from);
+        }
+        for dev in fetch_pongs_after {
+            self.fetch_pong_from(&dev);
         }
         for (addr, device) in fetch_unreachable_after {
             self.fetch_peer_unreachable(addr, device);

@@ -1357,7 +1357,7 @@ impl PhotonApp {
                         b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                     }
                 }
-            } else if matches!(self.state, AppState::Conversation) && wave_pill_show {
+            } else if matches!(self.state, AppState::Conversation) && wave_pill_show && self.viewer.is_none() && self.reader.is_none() {
                 // The Wave / Beam pills — top-right of the conversation, HALF the old size (Nick 2026-09-15: "2x too big"), and one pill height ABOVE the "‹ Contacts" line so the two never overlap on a narrow screen; on desktop the chrome strip is the floor. They slide up-under with the message scroll (`conv_topbar_off`) like the back arrow.
                 let pill_h = unit;
                 let pill_font = wave_font * 0.5;
@@ -2882,7 +2882,10 @@ impl PhotonApp {
                     let area_top = if cfg!(target_os = "android") { crate::ui::safe_top_px() as f32 } else { fluor::host::chrome::strip_height(ctx.viewport) };
                     let pill_h = line_h * 1.4;
                     let pw = ((buf_w as f32 - pad_x * 2.0) * 0.28).max(msg_size * 3.0);
-                    let py = area_top + unit * 0.4;
+                    // Below the orb as well as the strip: on the desktop the orb (and the title beside it) hangs below the strip into this area, and the pills sat under it (Nick 2026-10-28: "the preview screen tho, that needs some work too").
+                    // The lower of the two edges, not a clamp: whichever chrome reaches further down is what the pills must clear.
+                    let chrome_bottom = orb_bbox.map_or(area_top, |b| area_top.max(b.y1 as f32));
+                    let py = chrome_bottom + unit * 0.4;
                     let prects = [
                         fluor::region::Region::new(pad_x, py, pw, pill_h * 0.9),
                         fluor::region::Region::new(pad_x + pw + line_h * 0.5, py, pw, pill_h * 0.9),
@@ -2906,13 +2909,18 @@ impl PhotonApp {
                             }
                             None => {
                                 // The decode is on its way (or the original is still being fetched): the preview blob / micro thumb fitted in the area, the name and the state underneath.
-                                let small = TextStyle::new(msg_size * 0.85, *theme::LABEL_COLOUR).weight(500).font("Oxanium");
                                 let state: Option<std::borrow::Cow<'_, str>> = if v.failed { None } else if held { Some(tr(Msg::ViewerDecoding)) } else { Some(tr(Msg::FetchingFromDevices)) };
                                 let caption = match (v.name.is_empty(), state) {
                                     (true, Some(s)) => s.into_owned(),
                                     (false, Some(s)) => format!("{} \u{00B7} {}", v.name, s),
                                     (_, None) => v.name.clone(),
                                 };
+                                // The caption FITS the width — a long file name shrinks rather than running off the window (fluor's pill fit rule: never grown, floored by nothing).
+                                let cap_size = msg_size * 0.85;
+                                let avail = buf_w as f32 - pad_x * 2.0;
+                                let cap_w = ctx.text.measure_text(&caption, &TextStyle::new(cap_size, 0).weight(500).font("Oxanium"));
+                                let cap_size = if cap_w > avail { cap_size * avail / cap_w } else { cap_size };
+                                let small = TextStyle::new(cap_size, *theme::LABEL_COLOUR).weight(500).font("Oxanium");
                                 ctx.text.draw_text_left(&mut canvas, &caption, pad_x, buf_h as f32 - line_h * 0.4, &small, None, None);
                                 // THE BAR (Nick 2026-10-05, "right now it just looks like a big UI hang"): the fetch's chunk count while the original is still arriving, the decode's reported stage once it is here. Fill first, then the track — fluor is under-blend, first paint wins. Drawn only while something is actually moving; a failed decode leaves the caption alone.
                                 let frac: Option<f32> = if v.failed {
@@ -2934,11 +2942,17 @@ impl PhotonApp {
                                 }
                                 let msgs: &[crate::types::ChatMessage] = self.conversations.iter().find(|v| v.id() == open_id).map(|c| c.messages.as_slice()).unwrap_or(&[]);
                                 if let Some((w, h, px)) = super::viewer::viewer_pixels_of(v, &self.img_cache, msgs) {
-                                    let ah = buf_h as f32 - area_top;
+                                    // The preview sits BETWEEN the pills and the caption — it no longer slides under either (the pill band above, the progress bar and caption below).
+                                    let img_top = py + pill_h * 0.9 + unit * 0.4;
+                                    let img_bottom = buf_h as f32 - line_h * 1.35 - unit * 0.4;
+                                    let ah = img_bottom - img_top;
                                     // WHY/PROOF: w and h are an image's claimed dimensions (a peer's metadata or a decoder's header) — a 0 would divide into infinity and size the view to nothing.
-                                    let fit = (buf_w as f32 / w.max(1) as f32).min(ah / h.max(1) as f32);
+                                    let fit = ((buf_w as f32 - pad_x * 2.0) / w.max(1) as f32).min(ah / h.max(1) as f32);
                                     let (dw, dh) = (w as f32 * fit, h as f32 * fit);
-                                    paint::draw_image(&mut canvas, &px, w, h, buf_w as f32 * 0.5, area_top + ah * 0.5, dw, dh, None);
+                                    // A window shorter than the two bands leaves no room for the preview at all (ah ≤ 0 would size it negative).
+                                    if ah > 0. {
+                                        paint::draw_image(&mut canvas, &px, w, h, buf_w as f32 * 0.5, img_top + ah * 0.5, dw, dh, None);
+                                    }
                                 }
                             }
                         }
