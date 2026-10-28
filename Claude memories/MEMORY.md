@@ -6,7 +6,7 @@
 - [feedback-one-build-per-check.md](feedback-one-build-per-check.md) — never build twice to read one result: capture once to scratchpad, grep the capture
 - [feedback_test_discipline.md](feedback_test_discipline.md) — publish IS the compile gate; ONE full cargo test per batch (never --lib alone: skips tests/)
 - [feedback_render_never_touches_vault.md](feedback_render_never_touches_vault.md) — HARD: the UI/render thread makes NO vault call (2026-09-18 ANR); presence = cache + worker probe
-- [feedback_reload_mid_ceremony.md](feedback_reload_mid_ceremony.md) — HARD: never dev.sh/deploy reload mid-CLUTCH; check log for a round in flight, batch fixes
+- [feedback_reload_mid_ceremony.md](feedback_reload_mid_ceremony.md) — HARD: never dev.sh/deploy reload mid-CLUTCH or mid-WAVE; check the log for both, batch fixes
 - [Commit trailer](commit-trailer-built-with.md) — end commits "Built with Claude <model>"; never Co-Authored-By, never the PR "Generated with" line
 - [Nick publishes](nick-publishes.md) — Nick INITIATES; when asked, run deploy/publish and push WITH build notes (RELEASE_NOTES.md → Updates panel + site); never unasked
 - [Push after landing](push-after-landing.md) — memories live in 'Claude memories/' of the public photon repo: commit+push memory writes WITH photon
