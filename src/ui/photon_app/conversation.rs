@@ -1304,6 +1304,24 @@ impl PhotonApp {
         }
     }
 
+    /// A REPLY READS (Nick 2026-10-28: "when I send someone a photon or a pigeon, all my other devices show an unread status for that conversation"): a row our fleet wrote after the newest photon from anyone else proves the human read the conversation where they wrote it, so the unread left here from that photon clears.
+    /// Any source counts — a sibling's push, a walk page, a member's page — because the proof is the stamp order, not who carried the row.
+    pub(super) fn clear_unread_on_reply(&mut self, conv_pos: usize, fresh: &[ChatMessage]) {
+        let conv = &self.conversations[conv_pos];
+        if conv.unread_count == 0 {
+            return;
+        }
+        let Some(reply) = fresh.iter().filter(|m| m.is_outgoing && !m.is_control()).map(|m| m.timestamp).max() else {
+            return;
+        };
+        let newest_in = conv.messages.iter().filter(|m| !m.is_outgoing && !m.is_control()).map(|m| m.timestamp).max();
+        if newest_in.is_none_or(|t| reply > t) {
+            crate::logf!("UNREAD: our fleet replied in {} after its newest incoming photon — read elsewhere, cleared", hex::encode(&conv.id().as_bytes()[..4]));
+            let id = conv.id();
+            self.clear_unread_of(id);
+        }
+    }
+
     /// half of the avatar feature — the self avatar loads from the local vault; peers fetch by handle.
     pub(super) fn spawn_avatar_download(&mut self, ci: usize) {
         let Some(c) = self.contacts.get(ci) else {
@@ -2249,7 +2267,8 @@ impl PhotonApp {
                         self.attach_expect_pushes.push((h, conv.id(), sender_pubkey.key));
                     }
                 }
-                if !contact_is_sibling && !looking && !is_edit_row && is_new_row && !molecule_muted && !behind_held {
+                // A sibling holding the live clearer claim is where the human reads it — the unread ring here would outlive that reading (nothing tells this device), so it is never raised.
+                if !contact_is_sibling && !looking && !claimed_elsewhere && !is_edit_row && is_new_row && !molecule_muted && !behind_held {
                     // A real friend message landed while nobody was looking — bump the persistent unread counter (contacts-list inner ring + float-to-top; cleared at conversation-open). Written after the loop via the coalescing conv-state writer.
                     conv.unread_count += 1;
                     conv_state_pos = Some(conv_pos);
@@ -2704,6 +2723,7 @@ impl PhotonApp {
                         let fresh = self.merge_molecule_page_rows(conv_pos, &page.rows, member_from.map(|m| (our_pid, m)));
                         // The catch-up summary, any size: a sibling batch nobody flagged alerts once, a finished walk flushes its batch.
                         let flagged = group.is_some() && self.catch_up_alert(conv_pos, &fresh, from_sibling);
+                        self.clear_unread_on_reply(conv_pos, &fresh);
                         // Cursor + completion, the pair walk's rule (molecules walk since docs/conversations.md Phase 2).
                         if rid_matches {
                             let conv = &mut self.conversations[conv_pos];
@@ -3038,6 +3058,7 @@ impl PhotonApp {
             // The catch-up summary for a sibling batch, and the flush for a walk this page finished, whoever sent it (catch_up_alert); our fleet's own terminal never alerts.
             if !self.contacts[idx].is_sibling {
                 let _ = self.catch_up_alert(conv_pos, &fresh, from_sibling);
+                self.clear_unread_on_reply(conv_pos, &fresh);
             }
             // WAVE signals via sibling merge are STOP edges ONLY (docs/waves.md): our sibling's answer/decline row stops this device's ring; replayed catch-up signals correctly ring nothing (a ring requires the DIRECT offer decrypt — which is also what kills the stale-offer-rings-days-later class).
             if from_sibling {

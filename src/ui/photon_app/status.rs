@@ -242,6 +242,8 @@ impl PhotonApp {
         let mut attn_adopt: Option<([u8; 32], i64)> = None;
         let mut attn_void: Option<[u8; 32]> = None;
         let mut claim_sweeps: Vec<([u8; 32], i64)> = Vec::new();
+        // Conversations a sibling just opened (its clearer claim): read there, so their unread clears here after the loop.
+        let mut claim_reads: Vec<[u8; 32]> = Vec::new();
         let mut heal_due = false;
         // Conversations whose message table changed in an arm below — persisted AFTER the loop via the async writer (the arms hold a &mut contact borrow; the inline save_messages here was the named 600ms-5.7s UI stall).
         let mut persist_hashes: Vec<[u8; 32]> = Vec::new();
@@ -4230,6 +4232,8 @@ impl PhotonApp {
                             if a_newer {
                                 attn_adopt = Some((sender_pubkey.key, osc));
                             }
+                            // The claim is the open edge THERE: the human is reading this conversation on that device, and nothing else would ever clear the unread this device raised for it.
+                            claim_reads.push(conversation_token);
                         } else if !active {
                             if let Some((t, d, cur)) = self.fleet_focus_claim {
                                 if t == conversation_token && d == sender_pubkey.key && osc >= cur {
@@ -5820,6 +5824,11 @@ impl PhotonApp {
         }
         for (tok, min_osc) in claim_sweeps {
             self.sweep_undischarged(tok, min_osc);
+        }
+        for tok in claim_reads {
+            if let Some(id) = self.conversation_for_token(&tok) {
+                self.clear_unread_of(id);
+            }
         }
         if heal_due {
             self.reannounce_attention_state();
