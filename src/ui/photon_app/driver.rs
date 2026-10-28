@@ -1901,8 +1901,8 @@ impl FluorApp for PhotonApp {
             }
         }
 
-        // A textbox release is ALREADY fully handled by the press/drag/release path in `on_event` (focus + caret + selection — see `textbox_press`). So skip `dispatch_release` for it: fluor's on_click would re-place the caret at the release column and wipe a drag selection. `textbox_by_hit_mut` is the single registry — every box (incl. `you_fields`) is covered with no hand-list.
-        if self.textbox_by_hit_mut(hit_id).is_some() {
+        // A textbox release is ALREADY fully handled by the press/drag/release path in `on_event` (focus + caret + selection — see `textbox_press`). So skip `dispatch_release` for it: fluor's on_click would re-place the caret at the release column and wipe a drag selection. `textbox_by_hit_mut` is the single registry — every box (incl. `you_fields`) is covered with no hand-list. The multi-line compose box lives OUTSIDE that registry, so it is named here too (Nick 2026-10-28: typing, Backspace and Delete over a drag-selection in the chat box acted at the caret instead — the release had already wiped the selection).
+        if self.textbox_by_hit_mut(hit_id).is_some() || self.message_textbox.as_ref().is_some_and(|t| t.hit_id() == hit_id) {
             ctx.window.request_redraw();
             return EventResponse::Handled;
         }

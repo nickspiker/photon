@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Selected text in the chat box is replaced as you type.** Dragging or double-clicking to select text in the compose box and then typing, or pressing Backspace or Delete, now replaces the selection; before, the selection was quietly dropped when you let go of the mouse.
 - **Type your new name twice.** When you create a new identity, the box clears after the warning and you type the name a second time; if the two don't match you're told so and your first entry comes back to fix. Signing in with a name you already have still takes it once, and the name is never hidden as you type.
 - **Beams back off on a choked connection.** When a connection filled up and stayed full, or went silent for a moment, beams could keep sending at full size and fall seconds behind; they now step down as soon as the delay stays high or the connection goes quiet.
 - **Pick people while you create.** Tap New atom and the list becomes a picker: you are at the top, already checked, and a tap checks any friend. Your picture turns into a Create atom button, or Create molecule once you have picked someone, and everyone you picked is invited the moment it is created.
