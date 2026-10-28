@@ -98,6 +98,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- launch / handle / join ----
         Msg::YesForever => "Evet — sonsuza dek".into(),
         Msg::HandleTaken => "bu ada zaten biri cevap veriyor \u{2014} başka bir ad seç".into(),
+        Msg::HandlesDontMatch => "ikisi eşleşmiyor \u{2014} adı düzelt ve tekrar dene".into(),
         Msg::HandleAttestedElsewhere(words) => format!("bu handle başka bir cihazca tasdiklenmiş (açık anahtar {words})").into(),
         Msg::IdentityResumeHint => "bu cihaz zaten bir kimlik taşıyor".into(),
         Msg::IdentityOccupied => "bu cihaz zaten bir kimlik taşıyor".into(),
@@ -122,7 +123,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Attesting => "Tasdikleniyor\u{2026}".into(),
         Msg::RevokedByFleet => "filon bu cihazı YASAKLADI \u{2014} artık senin adına hareket edemez. Tekrar kullanmak için başka bir cihazından yasağı kaldır.".into(),
         Msg::IdentityCarriedHint => "bu cihaz zaten bir kimlik taşıyor".into(),
-        Msg::PermanenceWarning => "Bu, kalıcı bir kimlik basar.\nParola yok. Sıfırlama yok. Kurtarma yok.\nTasdikleyen ilk insan onun sahibidir.\nCihazlar değiştirilebilir. Kimlik değiştirilemez.\nCiddiysen tekrar bas.".into(),
+        Msg::PermanenceWarning => "Bu, kalıcı bir kimlik basar.\nParola yok. Sıfırlama yok. Kurtarma yok.\nTasdikleyen ilk insan onun sahibidir.\nCihazlar değiştirilebilir. Kimlik değiştirilemez.\nAdı tekrar yaz, ciddiysen bas.".into(),
         Msg::KnownHandleWarning => "Bu ada zaten biri cevap veriyor.".into(),
         Msg::PickAnotherName => "Ben değilim \u{2014} başka bir ad seç".into(),
         Msg::ItsMineShowWords => "Benim \u{2014} bu cihazı ekle".into(),

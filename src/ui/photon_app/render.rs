@@ -71,6 +71,12 @@ impl PhotonApp {
     pub(super) fn render_frame(&mut self, target: &mut [u32], ctx: &mut Context) {
         // The scene is about to be painted in full: clear the dirty flag NOW, so a flag raised DURING this render (a first-frame measurement that moved the rows) survives to claim the next frame instead of being wiped at the end of this one (field 2026-10-01: the contacts sat under the wrapped filter strip's second line until a scroll forced another frame — the correction frame was asked for and then forgotten).
         self.scene_dirty = false;
+        // A launch-box refill waiting on the text renderer (the minting retype puts the first entry back on a mismatch or a cancel).
+        if let Some(s) = self.launch_refill.take() {
+            if let Some(tb) = self.textbox.as_mut() {
+                tb.set_text(&s, ctx.text);
+            }
+        }
         // Standing render probe (born in the 2026-08-08 typing-lag hunt, kept for regressions). A Drop guard so it fires on every return path. The bar is a MISSED 60fps FRAME: the phone's healthy full-viewport render is 9-16ms, and the hunt's original 8ms bar logged every one of those — 3,326 lines in a 15-minute field log, the single biggest log-volume source (2026-08-09).
         // Stage marks ride the guard (the render-pass sub-profiler, TICKETS 2026-08-21: 5.8/8.3/8.8s single renders named no stage): each `mark` stamps the elapsed ms at a boundary, and a pass past ONE SECOND logs them — bg+chrome, the screen body, and the tail (overlays, extent, chrome finalize) fall out by subtraction.
         struct RenderTimer(std::time::Instant, &'static str, Vec<(&'static str, u128)>, bool);
@@ -1489,7 +1495,7 @@ impl PhotonApp {
                 }
             }
 
-            // Permanence warning block (`LaunchState::Confirm`) — drawn in the empty 6-unit band BELOW the attest button, sized with the same ru-scaled math as the join-words rows. The headline takes the error colour for gravity; the detail lines stay in status grey. The button above now reads "Yes — forever"; editing the handle cancels back to Fresh.
+            // Permanence warning block (`LaunchState::Confirm`) — drawn in the empty 6-unit band BELOW the attest button, sized with the same ru-scaled math as the join-words rows. The headline takes the error colour for gravity; the detail lines stay in status grey. The button above now reads "Yes — forever" and the emptied box takes the handle a second time; a press elsewhere cancels back to Fresh.
             if matches!(launch_state, LaunchState::Confirm) && !self.launch_add_mode {
                 let tb_h = (attest.textbox.y1 - attest.textbox.y0) as f32;
                 let line_h = (tb_h * 0.45).min(buf_w as f32 / 22.0);

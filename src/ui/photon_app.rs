@@ -2113,6 +2113,10 @@ pub struct PhotonApp {
     probed_session: Option<tohu::SessionIdentity>,
     /// Canonical spelling of the handle `probed_session` was derived from — the confirm press fires the stashed roots ONLY when the box still canonicalizes to this, so stale roots can never attest a different identity than the one on screen.
     probed_handle: Option<String>,
+    /// MINTING RETYPE (the owner via the ferros session, 2026-10-27: "upon minting an identity to have the user type it again … you only do that once"): the first entry of a handle the probe found fresh, as typed — the box clears for the second entry, and a mismatch or a cancel puts this back to fix. Never masked: a handle is not a password.
+    mint_first_entry: Option<String>,
+    /// Text waiting to go back into the launch box (it needs the text renderer, which the next render has).
+    launch_refill: Option<String>,
     /// Join flow: status line on the add-mode launch screen.
     add_join_status: String,
     /// Join flow: the fixed-width fleet-masked words (this device's own pubkey under the identity mask) displayed for the user to type on an existing device. `Some` = the words screen is up. The screen stays up until membership folds (green = leaving this screen) or the user cancels.
@@ -3165,6 +3169,8 @@ impl PhotonApp {
             add_device_lan_reqs: Vec::new(),
             probed_session: None,
             probed_handle: None,
+            mint_first_entry: None,
+            launch_refill: None,
             add_join_status: String::new(),
             add_join_words: None,
             add_join_rx: None,

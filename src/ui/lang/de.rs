@@ -96,6 +96,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- launch / handle / join ----
         Msg::YesForever => "Ja — für immer".into(),
         Msg::HandleTaken => "auf diesen Namen hört schon jemand \u{2014} nimm einen anderen".into(),
+        Msg::HandlesDontMatch => "die beiden stimmen nicht überein \u{2014} korrigiere den Namen und versuch es nochmal".into(),
         Msg::HandleAttestedElsewhere(words) => format!("dieses Handle wurde schon von einem anderen Gerät bezeugt (öffentlicher Schlüssel {words})").into(),
         Msg::IdentityResumeHint => "dieses Gerät trägt bereits eine Identität".into(),
         Msg::IdentityOccupied => "dieses Gerät trägt bereits eine Identität".into(),
@@ -120,7 +121,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Attesting => "Bezeuge\u{2026}".into(),
         Msg::RevokedByFleet => "deine Flotte hat dieses Gerät WIDERRUFEN \u{2014} es kann nicht mehr als du handeln. Lass es von einem anderen deiner Geräte wieder zu, um es erneut zu nutzen.".into(),
         Msg::IdentityCarriedHint => "dieses Gerät trägt bereits eine Identität".into(),
-        Msg::PermanenceWarning => "Das prägt eine dauerhafte Identität.\nKein Passwort. Kein Zurücksetzen. Keine Wiederherstellung.\nDer erste Mensch, der sie bezeugt, besitzt sie.\nGeräte lassen sich ersetzen. Die Identität nicht.\nDrücke nochmal, wenn du es ernst meinst.".into(),
+        Msg::PermanenceWarning => "Das prägt eine dauerhafte Identität.\nKein Passwort. Kein Zurücksetzen. Keine Wiederherstellung.\nDer erste Mensch, der sie bezeugt, besitzt sie.\nGeräte lassen sich ersetzen. Die Identität nicht.\nTippe den Namen noch einmal, dann drücke, wenn du es ernst meinst.".into(),
         Msg::KnownHandleWarning => "Auf diesen Namen hört schon jemand.".into(),
         Msg::PickAnotherName => "Nicht ich \u{2014} anderen wählen".into(),
         Msg::ItsMineShowWords => "Das bin ich \u{2014} dieses Gerät hinzufügen".into(),

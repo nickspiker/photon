@@ -97,6 +97,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- launch / handle / join ----
         Msg::YesForever => "Đồng ý — mãi mãi".into(),
         Msg::HandleTaken => "đã có người nhận cái tên này \u{2014} hãy chọn tên khác".into(),
+        Msg::HandlesDontMatch => "hai lần không khớp \u{2014} sửa tên rồi thử lại".into(),
         Msg::HandleAttestedElsewhere(words) => format!("handle này đã được một thiết bị khác chứng thực (khóa công khai {words})").into(),
         Msg::IdentityResumeHint => "thiết bị này đã mang sẵn một danh tính".into(),
         Msg::IdentityOccupied => "thiết bị này đã mang sẵn một danh tính".into(),
@@ -121,7 +122,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Attesting => "Đang chứng thực\u{2026}".into(),
         Msg::RevokedByFleet => "đội của bạn đã THU HỒI thiết bị này \u{2014} nó không còn hành động thay bạn được nữa. Hãy khôi phục nó từ một thiết bị khác của bạn để dùng lại.".into(),
         Msg::IdentityCarriedHint => "thiết bị này đã mang sẵn một danh tính".into(),
-        Msg::PermanenceWarning => "Việc này đúc ra một danh tính vĩnh viễn.\nKhông mật khẩu. Không đặt lại. Không khôi phục.\nNgười đầu tiên chứng thực là chủ của nó.\nThiết bị thì thay được. Danh tính thì không.\nNhấn lần nữa nếu bạn thật sự muốn.".into(),
+        Msg::PermanenceWarning => "Việc này đúc ra một danh tính vĩnh viễn.\nKhông mật khẩu. Không đặt lại. Không khôi phục.\nNgười đầu tiên chứng thực là chủ của nó.\nThiết bị thì thay được. Danh tính thì không.\nGõ lại cái tên, rồi nhấn nếu bạn thật sự muốn.".into(),
         Msg::KnownHandleWarning => "Đã có người nhận cái tên này.".into(),
         Msg::PickAnotherName => "Không phải tôi \u{2014} chọn tên khác".into(),
         Msg::ItsMineShowWords => "Đúng là tôi \u{2014} thêm thiết bị này".into(),

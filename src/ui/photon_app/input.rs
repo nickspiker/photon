@@ -485,9 +485,16 @@ impl PhotonApp {
             _ => {}
         }
         if edited && on_launch {
-            self.clear_launch_error();
+            self.on_launch_edit();
         }
         EventResponse::Handled
+    }
+
+    /// A keystroke in the launch box: while the minting retype is open it IS the second entry (the confirm press compares it), so nothing is torn down; everywhere else an edit cancels as [`Self::clear_launch_error`] says.
+    pub(super) fn on_launch_edit(&mut self) {
+        if !matches!(self.state, AppState::Launch(LaunchState::Confirm)) {
+            self.clear_launch_error();
+        }
     }
 
     /// A launch-handle edit invalidates any prior attestation error OR an armed permanence confirmation — drop `Error`/`Confirm` back to `Fresh` so the message clears and the user can resubmit. Editing the handle IS the cancel gesture for the Confirm interstitial. No-op off the launch screen or in other states.
@@ -498,6 +505,11 @@ impl PhotonApp {
                 | AppState::Launch(LaunchState::Confirm)
                 | AppState::Launch(LaunchState::KnownHandle)
         ) {
+            // A cancelled minting retype puts the first entry back to edit.
+            if matches!(self.state, AppState::Launch(LaunchState::Confirm)) {
+                self.launch_refill = self.mint_first_entry.take();
+            }
+            self.mint_first_entry = None;
             self.state = AppState::Launch(LaunchState::Fresh);
             self.probed_session = None;
             self.probed_handle = None;

@@ -97,6 +97,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- launch / handle / join ----
         Msg::YesForever => "Oo — habambuhay".into(),
         Msg::HandleTaken => "may sumasagot na sa pangalang ito \u{2014} pumili ng iba".into(),
+        Msg::HandlesDontMatch => "hindi magkatugma ang dalawa \u{2014} ayusin ang pangalan at subukan ulit".into(),
         Msg::HandleAttestedElsewhere(words) => format!("pinatotohanan na ng ibang device ang handle na ito (pampublikong susi {words})").into(),
         Msg::IdentityResumeHint => "may dala nang pagkakakilanlan ang device na ito".into(),
         Msg::IdentityOccupied => "may dala nang pagkakakilanlan ang device na ito".into(),
@@ -121,7 +122,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Attesting => "Nagpapatotoo\u{2026}".into(),
         Msg::RevokedByFleet => "BINAWI ng armada mo ang device na ito \u{2014} hindi na ito puwedeng kumilos bilang ikaw. Ibalik ito mula sa isa pang device mo para magamit ulit.".into(),
         Msg::IdentityCarriedHint => "may dala nang pagkakakilanlan ang device na ito".into(),
-        Msg::PermanenceWarning => "Bumubuo ito ng permanenteng pagkakakilanlan.\nWalang password. Walang reset. Walang pagbabalik.\nSa unang taong magpapatotoo ito mapupunta.\nMapapalitan ang mga device. Ang pagkakakilanlan, hindi.\nPindutin ulit kung totoo ang loob mo.".into(),
+        Msg::PermanenceWarning => "Bumubuo ito ng permanenteng pagkakakilanlan.\nWalang password. Walang reset. Walang pagbabalik.\nSa unang taong magpapatotoo ito mapupunta.\nMapapalitan ang mga device. Ang pagkakakilanlan, hindi.\nI-type ulit ang pangalan, saka pindutin kung totoo ang loob mo.".into(),
         Msg::KnownHandleWarning => "May sumasagot na sa pangalang ito.".into(),
         Msg::PickAnotherName => "Hindi ako \u{2014} pumili ng iba".into(),
         Msg::ItsMineShowWords => "Ako iyan \u{2014} idagdag ang device na ito".into(),

@@ -281,6 +281,8 @@ pub enum Msg<'a> {
     // ---- launch / handle / join ----
     YesForever,
     HandleTaken,
+    /// Minting: the retyped handle differs from the first entry (the first comes back to fix).
+    HandlesDontMatch,
     HandleAttestedElsewhere(&'a str),
     IdentityResumeHint,
     IdentityOccupied,

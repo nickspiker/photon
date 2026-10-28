@@ -98,6 +98,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- launch / handle / join ----
         Msg::YesForever => "Ndiyo — milele".into(),
         Msg::HandleTaken => "tayari kuna mtu anayeitikia jina hili \u{2014} chagua lingine".into(),
+        Msg::HandlesDontMatch => "hayo mawili hayalingani \u{2014} sahihisha jina na ujaribu tena".into(),
         Msg::HandleAttestedElsewhere(words) => format!("handle tayari imethibitishwa na kifaa kingine (ufunguo wa umma {words})").into(),
         Msg::IdentityResumeHint => "kifaa hiki tayari kina utambulisho".into(),
         Msg::IdentityOccupied => "kifaa hiki tayari kina utambulisho".into(),
@@ -122,7 +123,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Attesting => "Inathibitisha\u{2026}".into(),
         Msg::RevokedByFleet => "kundi lako LIMEBATILISHA kifaa hiki \u{2014} hakiwezi tena kutenda kwa niaba yako. Kirejeshe kutoka kifaa kingine chako ili kukitumia tena.".into(),
         Msg::IdentityCarriedHint => "kifaa hiki tayari kina utambulisho".into(),
-        Msg::PermanenceWarning => "Hii huzalisha utambulisho wa kudumu.\nHakuna nywila. Hakuna kuanza upya. Hakuna urejeshaji.\nMtu wa kwanza kuthibitisha ndiye mwenyewe.\nVifaa vinaweza kubadilishwa. Utambulisho hauwezi.\nBonyeza tena kama unamaanisha.".into(),
+        Msg::PermanenceWarning => "Hii huzalisha utambulisho wa kudumu.\nHakuna nywila. Hakuna kuanza upya. Hakuna urejeshaji.\nMtu wa kwanza kuthibitisha ndiye mwenyewe.\nVifaa vinaweza kubadilishwa. Utambulisho hauwezi.\nAndika jina tena, kisha bonyeza kama unamaanisha.".into(),
         Msg::KnownHandleWarning => "Tayari kuna mtu anayeitikia jina hili.".into(),
         Msg::PickAnotherName => "Si mimi \u{2014} chagua lingine".into(),
         Msg::ItsMineShowWords => "Ni mimi \u{2014} ongeza kifaa hiki".into(),

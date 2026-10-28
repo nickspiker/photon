@@ -75,6 +75,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- launch / handle / join ----
         Msg::YesForever => "Yes — forever".into(),
         Msg::HandleTaken => "someone already answers to this name \u{2014} pick another".into(),
+        Msg::HandlesDontMatch => "the two don't match \u{2014} fix the name and try again".into(),
         Msg::HandleAttestedElsewhere(words) => format!("handle already attested by another device (pubkey {words})").into(),
         Msg::IdentityResumeHint => "this device already carries an identity".into(),
         Msg::IdentityOccupied => "this device already carries an identity".into(),
@@ -99,7 +100,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Attesting => "Attesting\u{2026}".into(),
         Msg::RevokedByFleet => "your fleet has REVOKED this device \u{2014} it can no longer act as you. Reinstate it from another of your devices to use it again.".into(),
         Msg::IdentityCarriedHint => "this device already carries an identity".into(),
-        Msg::PermanenceWarning => "This mints a permanent identity.\nNo password. No reset. No recovery.\nThe first human to attest owns it.\nDevices can be replaced. The identity can't.\nPress again if you mean it.".into(),
+        Msg::PermanenceWarning => "This mints a permanent identity.\nNo password. No reset. No recovery.\nThe first human to attest owns it.\nDevices can be replaced. The identity can't.\nType the name again, then press if you mean it.".into(),
         Msg::KnownHandleWarning => "Someone already answers to this name.".into(),
         Msg::PickAnotherName => "Not me \u{2014} pick another".into(),
         Msg::ItsMineShowWords => "That's me \u{2014} add this device".into(),

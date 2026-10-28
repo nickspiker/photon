@@ -97,6 +97,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- launch / handle / join ----
         Msg::YesForever => "Sim — para sempre".into(),
         Msg::HandleTaken => "alguém já atende por este nome \u{2014} escolha outro".into(),
+        Msg::HandlesDontMatch => "os dois não batem \u{2014} corrija o nome e tente de novo".into(),
         Msg::HandleAttestedElsewhere(words) => format!("este handle já foi atestado por outro dispositivo (chave pública {words})").into(),
         Msg::IdentityResumeHint => "este dispositivo já carrega uma identidade".into(),
         Msg::IdentityOccupied => "este dispositivo já carrega uma identidade".into(),
@@ -121,7 +122,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Attesting => "Atestando\u{2026}".into(),
         Msg::RevokedByFleet => "sua frota REVOGOU este dispositivo \u{2014} ele não pode mais agir como você. Reintegre-o a partir de outro dos seus dispositivos para voltar a usá-lo.".into(),
         Msg::IdentityCarriedHint => "este dispositivo já carrega uma identidade".into(),
-        Msg::PermanenceWarning => "Isto cunha uma identidade permanente.\nSem senha. Sem redefinição. Sem recuperação.\nO primeiro humano a atestá-la é o dono dela.\nDispositivos podem ser trocados. A identidade não.\nPressione de novo se for isso mesmo.".into(),
+        Msg::PermanenceWarning => "Isto cunha uma identidade permanente.\nSem senha. Sem redefinição. Sem recuperação.\nO primeiro humano a atestá-la é o dono dela.\nDispositivos podem ser trocados. A identidade não.\nDigite o nome de novo e pressione se for isso mesmo.".into(),
         Msg::KnownHandleWarning => "Alguém já atende por este nome.".into(),
         Msg::PickAnotherName => "Não sou eu \u{2014} escolher outro".into(),
         Msg::ItsMineShowWords => "Sou eu \u{2014} adicionar este dispositivo".into(),

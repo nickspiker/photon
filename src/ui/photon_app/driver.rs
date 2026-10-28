@@ -2274,7 +2274,9 @@ impl FluorApp for PhotonApp {
                         .as_ref()
                         .map(|b| b.hit_id())
                         .unwrap_or(HIT_NONE);
-                    if hit_id != attest_hit {
+                    // The handle box is where the minting retype is typed, so a press on it never cancels.
+                    let field_hit = self.textbox.as_ref().map(|t| t.hit_id()).unwrap_or(HIT_NONE);
+                    if hit_id != attest_hit && hit_id != field_hit {
                         self.clear_launch_error();
                         ctx.window.request_redraw();
                     }
@@ -2819,7 +2821,7 @@ impl FluorApp for PhotonApp {
                                 widget::dispatch_key(self, focus_id, kev, ctx.modifiers, ctx.text);
                             if let Some(before) = launch_text_before {
                                 if self.textbox.as_ref().map(|tb| &tb.chars) != Some(&before) {
-                                    self.clear_launch_error();
+                                    self.on_launch_edit();
                                 }
                             }
                             if matches!(resp, EventResponse::Handled) {
@@ -2876,7 +2878,7 @@ impl FluorApp for PhotonApp {
                 if handled {
                     // Soft-IME edits are edits: tear down the Error/Confirm interstitial exactly like physical keystrokes, so Android can't re-arm stale probed roots either.
                     if matches!(self.state, AppState::Launch(_)) {
-                        self.clear_launch_error();
+                        self.on_launch_edit();
                     }
                     self.blink_timer.start(Instant::now());
                     ctx.window.request_redraw();

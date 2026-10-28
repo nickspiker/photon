@@ -23,7 +23,8 @@ impl PhotonApp {
             return;
         }
         // ONE IDENTITY PER DEVICE (docs/lifecycle.md D2) is decided in the probe worker now, AFTER the memory-hard proof — the cheap pre-proof compare that used to live here made the binding marker a fast offline handle oracle (2026-08-23 ticket). The wrong-handle refusal arrives as ProbeOutcome::DeviceBusy below; the right handle pays nothing it wasn't already paying to resume.
-        // A press FROM the Confirm interstitial is the deliberate second act: claim the (probed-Fresh) handle with the roots the probe already derived — no second proof, no permanence warning re-shown. GUARD: fire the stashed roots ONLY if the box still holds the handle they were derived from. Every edit path tears Confirm down, but this is the invariant that survives a missed one — firing stale roots attests a DIFFERENT identity than the box shows (observed: probe handle A, retype to taken handle B, press → attested as A, user believes they claimed B). On mismatch the press falls thru to a fresh probe of the current text.
+        // A press FROM the Confirm interstitial is the deliberate second act: the handle typed a SECOND time (the box cleared for it — minting is the one moment it is entered twice, never masked: a handle is not a password) must canonicalize to the first, and only then do the roots the probe already derived claim it — no second proof, no permanence warning re-shown. GUARD: the stashed roots fire ONLY for the handle they were derived from, so stale roots can never attest a different identity than the one on screen.
+        // A mismatch says so plainly and goes back to the first entry, its text on screen to fix.
         if matches!(self.state, AppState::Launch(LaunchState::Confirm)) {
             if let Some(btn) = self.attest_btn.as_mut() {
                 btn.set_label(tr(Msg::Attest));
@@ -32,13 +33,20 @@ impl PhotonApp {
                 == Some(crate::types::Handle::canonical(&handle).as_str());
             let session = self.probed_session.take();
             self.probed_handle = None;
-            if let (Some(session), true) = (session, matches_probe) {
-                self.fire_attest_query_with_roots(session);
+            let first = self.mint_first_entry.take();
+            if matches_probe {
+                if let Some(session) = session {
+                    self.fire_attest_query_with_roots(session);
+                    return;
+                }
+            } else {
+                crate::log("attest: the retyped handle does not match the first entry — back to it");
+                self.launch_refill = first;
+                self.state = AppState::Launch(LaunchState::Error(tr(Msg::HandlesDontMatch).into_owned()));
+                let field = self.textbox.as_ref().map(|t| t.hit_id());
+                self.change_focus(field);
                 return;
             }
-            crate::log(
-                "attest: confirm-press text no longer matches the probed handle — re-probing",
-            );
         }
         // First press: PROBE the handle against the network before deciding anything. The ~1s proof runs here (once); the branch (permanence warning / add-this-device / resume / taken) is chosen in `on_query_result` from the probe outcome, so "forever" is never shown for a handle that already has a fleet.
         if let Some(hq) = self.handle_query.as_ref() {
@@ -73,11 +81,17 @@ impl PhotonApp {
                 match outcome {
                     ProbeOutcome::Fresh => {
                         // Genuine fresh claim — NOW show the permanence warning, stashing the probed roots (and the canonical handle they belong to) so the confirm press claims without re-deriving the proof.
+                        // MINTING RETYPE: the box clears for the handle a second time (a typo in the first is never simply copied), and the confirm press compares the two; the first entry is kept to come back on a mismatch or a cancel.
+                        let first: String = self.textbox.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
                         self.probed_session = Some(session);
-                        self.probed_handle = self.textbox.as_ref().map(|tb| {
-                            crate::types::Handle::canonical(&tb.chars.iter().collect::<String>())
-                        });
+                        self.probed_handle = Some(crate::types::Handle::canonical(&first));
+                        self.mint_first_entry = Some(first);
+                        if let Some(tb) = self.textbox.as_mut() {
+                            tb.clear();
+                        }
                         self.state = AppState::Launch(LaunchState::Confirm);
+                        let field = self.textbox.as_ref().map(|t| t.hit_id());
+                        self.change_focus(field);
                         if let Some(btn) = self.attest_btn.as_mut() {
                             btn.set_label(tr(Msg::YesForever));
                         }

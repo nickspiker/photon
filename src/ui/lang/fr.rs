@@ -109,6 +109,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- launch / handle / join ----
         Msg::YesForever => "Oui — pour toujours".into(),
         Msg::HandleTaken => "quelqu\u{2019}un répond déjà à ce nom \u{2014} choisis-en un autre".into(),
+        Msg::HandlesDontMatch => "les deux ne correspondent pas \u{2014} corrige le nom et réessaie".into(),
         Msg::HandleAttestedElsewhere(words) => format!("ce handle est déjà attesté par un autre appareil (clé publique {words})").into(),
         Msg::IdentityResumeHint => "cet appareil porte déjà une identité".into(),
         Msg::IdentityOccupied => "cet appareil porte déjà une identité".into(),
@@ -133,7 +134,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Attesting => "Attestation\u{2026}".into(),
         Msg::RevokedByFleet => "ta flotte a RÉVOQUÉ cet appareil \u{2014} il ne peut plus agir en ton nom. Réintègre-le depuis un autre de tes appareils pour t\u{2019}en resservir.".into(),
         Msg::IdentityCarriedHint => "cet appareil porte déjà une identité".into(),
-        Msg::PermanenceWarning => "Ceci frappe une identité permanente.\nPas de mot de passe. Pas de réinitialisation. Pas de récupération.\nLe premier humain qui l\u{2019}atteste en est le propriétaire.\nLes appareils se remplacent. L\u{2019}identité, non.\nAppuie encore si tu le penses vraiment.".into(),
+        Msg::PermanenceWarning => "Ceci frappe une identité permanente.\nPas de mot de passe. Pas de réinitialisation. Pas de récupération.\nLe premier humain qui l\u{2019}atteste en est le propriétaire.\nLes appareils se remplacent. L\u{2019}identité, non.\nRetape le nom, puis appuie si tu le penses vraiment.".into(),
         Msg::KnownHandleWarning => "Quelqu\u{2019}un répond déjà à ce nom.".into(),
         Msg::PickAnotherName => "Ce n\u{2019}est pas moi \u{2014} en choisir un autre".into(),
         Msg::ItsMineShowWords => "C\u{2019}est bien moi \u{2014} ajouter cet appareil".into(),

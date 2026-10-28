@@ -99,6 +99,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- launch / handle / join ----
         Msg::YesForever => "Sì — per sempre".into(),
         Msg::HandleTaken => "qualcuno risponde già a questo nome \u{2014} scegline un altro".into(),
+        Msg::HandlesDontMatch => "i due non corrispondono \u{2014} correggi il nome e riprova".into(),
         Msg::HandleAttestedElsewhere(words) => format!("questo handle è già attestato da un altro dispositivo (chiave pubblica {words})").into(),
         Msg::IdentityResumeHint => "questo dispositivo porta già un’identità".into(),
         Msg::IdentityOccupied => "questo dispositivo porta già un’identità".into(),
@@ -123,7 +124,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Attesting => "Attestazione\u{2026}".into(),
         Msg::RevokedByFleet => "la tua flotta ha REVOCATO questo dispositivo \u{2014} non può più agire come te. Ripristinalo da un altro dei tuoi dispositivi per tornare a usarlo.".into(),
         Msg::IdentityCarriedHint => "questo dispositivo porta già un’identità".into(),
-        Msg::PermanenceWarning => "Questo conia un’identità permanente.\nNessuna password. Nessun reset. Nessun recupero.\nLa prima persona che la attesta ne è il proprietario.\nI dispositivi si possono sostituire. L’identità no.\nPremi di nuovo se lo intendi davvero.".into(),
+        Msg::PermanenceWarning => "Questo conia un’identità permanente.\nNessuna password. Nessun reset. Nessun recupero.\nLa prima persona che la attesta ne è il proprietario.\nI dispositivi si possono sostituire. L’identità no.\nRiscrivi il nome, poi premi se lo intendi davvero.".into(),
         Msg::KnownHandleWarning => "Qualcuno risponde già a questo nome.".into(),
         Msg::PickAnotherName => "Non sono io \u{2014} ne scelgo un altro".into(),
         Msg::ItsMineShowWords => "Sono io \u{2014} aggiungi questo dispositivo".into(),

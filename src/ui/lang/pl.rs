@@ -98,6 +98,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- launch / handle / join ----
         Msg::YesForever => "Tak — na zawsze".into(),
         Msg::HandleTaken => "ktoś już odpowiada na tę nazwę \u{2014} wybierz inną".into(),
+        Msg::HandlesDontMatch => "te dwie się nie zgadzają \u{2014} popraw nazwę i spróbuj ponownie".into(),
         Msg::HandleAttestedElsewhere(words) => format!("ten handle poświadczyło już inne urządzenie (klucz publiczny {words})").into(),
         Msg::IdentityResumeHint => "to urządzenie nosi już tożsamość".into(),
         Msg::IdentityOccupied => "to urządzenie nosi już tożsamość".into(),
@@ -122,7 +123,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Attesting => "Poświadczanie\u{2026}".into(),
         Msg::RevokedByFleet => "twoja flota UNIEWAŻNIŁA to urządzenie \u{2014} nie może już działać w twoim imieniu. Przywróć je z innego swojego urządzenia, by znów z niego korzystać.".into(),
         Msg::IdentityCarriedHint => "to urządzenie nosi już tożsamość".into(),
-        Msg::PermanenceWarning => "To powołuje trwałą tożsamość.\nBez hasła. Bez resetu. Bez odzyskiwania.\nPierwszy człowiek, który ją poświadczy, jest jej właścicielem.\nUrządzenia można wymienić. Tożsamości nie.\nNaciśnij jeszcze raz, jeśli mówisz serio.".into(),
+        Msg::PermanenceWarning => "To powołuje trwałą tożsamość.\nBez hasła. Bez resetu. Bez odzyskiwania.\nPierwszy człowiek, który ją poświadczy, jest jej właścicielem.\nUrządzenia można wymienić. Tożsamości nie.\nWpisz nazwę jeszcze raz, potem naciśnij, jeśli mówisz serio.".into(),
         Msg::KnownHandleWarning => "Ktoś już odpowiada na tę nazwę.".into(),
         Msg::PickAnotherName => "To nie ja \u{2014} wybierz inną".into(),
         Msg::ItsMineShowWords => "To ja \u{2014} dodaj to urządzenie".into(),

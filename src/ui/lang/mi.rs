@@ -96,6 +96,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- launch / handle / join ----
         Msg::YesForever => "Āe — mō ake tonu".into(),
         Msg::HandleTaken => "kei te whakautu kē tētahi ki tēnei ingoa \u{2014} kōwhiria he ingoa kē".into(),
+        Msg::HandlesDontMatch => "kāore e ōrite ana ngā mea e rua \u{2014} whakatikahia te ingoa ka ngana anō".into(),
         Msg::HandleAttestedElsewhere(words) => format!("kua whakaūngia kētia te handle e tētahi atu pūrere (pubkey {words})").into(),
         Msg::IdentityResumeHint => "kei tēnei pūrere kē tētahi tuakiri".into(),
         Msg::IdentityOccupied => "kei tēnei pūrere kē tētahi tuakiri".into(),
@@ -120,7 +121,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Attesting => "E whakaū ana\u{2026}".into(),
         Msg::RevokedByFleet => "kua TANGOHIA e tō kāhui te mana o tēnei pūrere \u{2014} kāore e taea e ia te mahi hei a koe. Whakahokia mai i tētahi atu o ō pūrere kia whakamahia anō.".into(),
         Msg::IdentityCarriedHint => "kei tēnei pūrere kē tētahi tuakiri".into(),
-        Msg::PermanenceWarning => "Ka whānau mai i konei he tuakiri pūmau.\nKāore he kupuhipa. Kāore he tautuhi anō. Kāore he whakaoranga.\nMā te tangata tuatahi ka whakaū, ka riro.\nKa taea ngā pūrere te whakakapi. Kāore te tuakiri.\nPāwhiritia anō mehemea e tino hiahia ana koe.".into(),
+        Msg::PermanenceWarning => "Ka whānau mai i konei he tuakiri pūmau.\nKāore he kupuhipa. Kāore he tautuhi anō. Kāore he whakaoranga.\nMā te tangata tuatahi ka whakaū, ka riro.\nKa taea ngā pūrere te whakakapi. Kāore te tuakiri.\nPatohia anō te ingoa, kātahi ka pāwhiri mehemea e tino hiahia ana koe.".into(),
         Msg::KnownHandleWarning => "Kei te whakautu kē tētahi ki tēnei ingoa.".into(),
         Msg::PickAnotherName => "Ehara i a au \u{2014} kōwhiria he ingoa kē".into(),
         Msg::ItsMineShowWords => "Ko au tērā \u{2014} tāpirihia tēnei pūrere".into(),

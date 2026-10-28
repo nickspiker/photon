@@ -96,6 +96,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- launch / handle / join ----
         Msg::YesForever => "Ya — selamanya".into(),
         Msg::HandleTaken => "sudah ada yang menyahut nama ini \u{2014} pilih yang lain".into(),
+        Msg::HandlesDontMatch => "keduanya tidak cocok \u{2014} perbaiki namanya dan coba lagi".into(),
         Msg::HandleAttestedElsewhere(words) => format!("handle ini sudah disahkan perangkat lain (kunci publik {words})").into(),
         Msg::IdentityResumeHint => "perangkat ini sudah membawa sebuah identitas".into(),
         Msg::IdentityOccupied => "perangkat ini sudah membawa sebuah identitas".into(),
@@ -120,7 +121,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Attesting => "Mengesahkan\u{2026}".into(),
         Msg::RevokedByFleet => "armadamu telah MENCABUT perangkat ini \u{2014} ia tidak bisa lagi bertindak sebagai kamu. Pulihkan dari perangkatmu yang lain untuk memakainya kembali.".into(),
         Msg::IdentityCarriedHint => "perangkat ini sudah membawa sebuah identitas".into(),
-        Msg::PermanenceWarning => "Ini mencetak identitas yang permanen.\nTanpa kata sandi. Tanpa reset. Tanpa pemulihan.\nManusia pertama yang mengesahkannya adalah pemiliknya.\nPerangkat bisa diganti. Identitas tidak.\nTekan sekali lagi kalau kamu sungguh-sungguh.".into(),
+        Msg::PermanenceWarning => "Ini mencetak identitas yang permanen.\nTanpa kata sandi. Tanpa reset. Tanpa pemulihan.\nManusia pertama yang mengesahkannya adalah pemiliknya.\nPerangkat bisa diganti. Identitas tidak.\nKetik namanya sekali lagi, lalu tekan kalau kamu sungguh-sungguh.".into(),
         Msg::KnownHandleWarning => "Sudah ada yang menyahut nama ini.".into(),
         Msg::PickAnotherName => "Bukan aku \u{2014} pilih yang lain".into(),
         Msg::ItsMineShowWords => "Itu aku \u{2014} tambahkan perangkat ini".into(),
