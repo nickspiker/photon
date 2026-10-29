@@ -416,6 +416,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ClutchWaitingTheirAdd => "waiting for them to add you".into(),
         Msg::SiblingSignsItselfOut => "a fleet device leaves by its own request \u{2014} see Settings \u{2192} Fleet".into(),
         Msg::BootPill { armed } => if armed { "Tap again \u{2014} boot them" } else { "Boot" }.into(),
+        Msg::MessagePill => "Message".into(),
         Msg::FilterAll => "All".into(),
         Msg::FilterInvitations => "Invitations".into(),
         Msg::FilterPeople => "People".into(),

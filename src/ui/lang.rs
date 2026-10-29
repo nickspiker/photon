@@ -558,6 +558,8 @@ pub enum Msg<'a> {
     ClutchWaitingTheirAdd,
     SiblingSignsItselfOut,
     BootPill { armed: bool },
+    /// Person page: open (or found) the conversation of exactly the two of you.
+    MessagePill,
     // ---- groups (docs/molecules.md §10.5) ----
     /// The Ready list's filter strip (FilterAll is the stream filter's, shared).
     /// The Ready strip pill for group invitations waiting on us (a count follows it).

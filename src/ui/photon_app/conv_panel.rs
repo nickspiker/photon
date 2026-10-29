@@ -10,6 +10,7 @@ const SLOT_RENAME: HitId = 2;
 const SLOT_BOOT: HitId = 3;
 const SLOT_CLEAR_WAVES: HitId = 4;
 const SLOT_CLEAR_ALL: HitId = 5;
+const SLOT_MESSAGE: HitId = 6;
 const SLOT_BONDS: HitId = 8;
 /// The slot span reserved in init: the pills, then 40 Bonds rows.
 pub(super) const CONV_PANEL_SLOTS: HitId = 48;
@@ -42,14 +43,44 @@ impl PhotonApp {
 
     /// Show one page of the panel, fresh from its top (the settings rule).
     fn goto_conversation_page(&mut self, page: ConversationPage) {
+        // Every page change inside the panel belongs to the conversation; only open_person_page marks a Person page as reached from People.
+        self.person_from_ready = false;
         self.change_focus(None);
         self.disarm_conversation_panel();
         self.settings_content_scroll = 0.0;
         self.state = AppState::ConversationPanel(page);
     }
 
-    /// Back / Escape: a Person page returns to Bonds; any other page returns to the conversation, which is front-of-eyes again (clear any unread that slipped in).
+    /// THE PERSON, from the People list (docs/conversations.md D8, revised 2026-10-29: "people shows atoms and molecules"): their page — who they are, what they share, Message, Boot — instead of the conversation itself.
+    /// The page draws inside the panel, which reads the active conversation, so the pair conversation is held active WITHOUT the open's side effects: no clearer claim, no unread cleared — looking at a person is not reading your conversation with them.
+    pub(super) fn open_person_page(&mut self, ci: usize) {
+        let Some(id) = self.contacts.get(ci).and_then(|c| self.our_party_id(c).map(|us| c.conversation(&us).id())) else {
+            return;
+        };
+        if !self.ensure_conversation(id) {
+            return;
+        }
+        self.set_active_conversation(Some(id));
+        // Looking at someone makes their presence matter now, as entering a conversation does.
+        self.contacts[ci].ping_backoff = 0;
+        self.contacts[ci].last_pinged = None;
+        self.ping_contact(ci);
+        self.spawn_avatar_download(ci);
+        let party = self.contacts[ci].handle_hash;
+        self.goto_conversation_page(ConversationPage::Person(party));
+        self.person_from_ready = true;
+    }
+
+    /// Back / Escape: a Person page reached from People returns to Ready, one reached from Bonds returns to Bonds; any other page returns to the conversation, which is front-of-eyes again (clear any unread that slipped in).
     pub(super) fn leave_conversation_panel(&mut self) {
+        if self.person_from_ready && matches!(self.state, AppState::ConversationPanel(ConversationPage::Person(_))) {
+            self.person_from_ready = false;
+            self.change_focus(None);
+            self.disarm_conversation_panel();
+            self.state = AppState::Ready;
+            self.set_active_conversation(None);
+            return;
+        }
         if matches!(self.state, AppState::ConversationPanel(ConversationPage::Person(_))) {
             self.goto_conversation_page(ConversationPage::Bonds);
             return;
@@ -124,6 +155,20 @@ impl PhotonApp {
                     let title: String = self.molecule_title_textbox.as_ref().map(|t| t.chars.iter().collect()).unwrap_or_default();
                     self.rename_molecule(gid, &title);
                     self.change_focus(None);
+                }
+            }
+            SLOT_MESSAGE => {
+                // Message: the conversation of exactly the two of you, founded over the bond when there is none yet (the tap a person row used to make).
+                let ConversationPage::Person(party) = page else {
+                    return true;
+                };
+                if let Some(ci) = self.contacts.iter().position(|c| c.handle_hash == party && !c.is_sibling) {
+                    self.person_from_ready = false;
+                    self.disarm_conversation_panel();
+                    if self.contacts[ci].friendship_id.is_none() {
+                        self.found_pair_conversation(ci);
+                    }
+                    self.enter_pair_conversation(ci);
                 }
             }
             SLOT_BOOT => {

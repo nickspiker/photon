@@ -457,7 +457,7 @@ impl PhotonApp {
     }
 
     /// Materialize a conversation we hold by id: a group's from its roster, a contact's pair conversation (loading its rows). False = no such conversation.
-    fn ensure_conversation(&mut self, id: crate::types::ConversationId) -> bool {
+    pub(super) fn ensure_conversation(&mut self, id: crate::types::ConversationId) -> bool {
         if self.conv_by_id(id).is_some() {
             return true;
         }

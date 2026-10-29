@@ -2142,7 +2142,7 @@ impl PhotonApp {
                 .atom_naming
                 .then_some(ReadyRow::Me)
                 .into_iter()
-                // Conversations under All, people under People (docs/conversations.md D8); fleet siblings are infrastructure, never listed.
+                // Everyone under All, people alone under People (docs/conversations.md D8, revised 2026-10-29); fleet siblings are infrastructure, never listed.
                 .chain(self.contacts.iter().enumerate().filter(|(_, c)| super::ready_admits_contact(rf, c, &us_pid) && (filter.is_empty() || c.display_name().to_lowercase().contains(&filter))).map(|(i, _)| ReadyRow::Contact(i)))
                 // ATOM and MOLECULE rows (docs/molecules.md §10.5): one list with the friends, sorted by the same key, narrowed by the strip.
                 .chain(
@@ -2261,12 +2261,15 @@ impl PhotonApp {
                     contact_hit_base: self.contact_hit_base,
                     molecule_hit_base: self.molecule_hit_base,
                 };
+                // Under People a row is the PERSON, not the conversation of the two of you (Nick 2026-10-29): it carries no unread cue — that belongs to the conversation, under All and Molecules.
+                let people_view = rf == ReadyFilter::People;
                 let view: RowView = match *row {
                     ReadyRow::Contact(ci) => RowView::of_contact(&rctx, ci, &our_handle_hash),
                     ReadyRow::Group(gi) => RowView::of_group(&rctx, gi, &our_handle_hash),
                     ReadyRow::Offer(oi) => RowView::of_offer(&rctx, oi, &our_handle_hash),
                     ReadyRow::Me => RowView::of_me(&self.me_row_lines, self.session.as_ref().map_or([0u8; 32], |s| s.handle_proof)),
                 };
+                let view = RowView { unread: view.unread && !(people_view && matches!(*row, ReadyRow::Contact(_))), ..view };
                 let name_lines: Vec<String> = view.name_lines.clone();
                 let rh = contact_row_height(row_h, name_lines.len()); // contact_row_height already reads an empty name as one row
                 let row_top_at_zero = row_cursor;
@@ -2833,12 +2836,16 @@ impl PhotonApp {
                         }
                         let name = member_name(&party, person_ci, &granted);
                         settings_line(&mut canvas, ctx.text, rows[5], &name, tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                        // Message (docs/conversations.md D8): the person's own action — open the conversation of exactly the two of you, founding it when there is none.
+                        if contact.is_some() {
+                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[6], 0.5), &tr(Msg::MessagePill), btn + 6, ctx.pressed_hit, true, Some(*theme::PILL_GREEN), "Oxanium");
+                        }
                         if let Some(c) = contact {
                             let shared_name = if c.published_name.is_empty() { tr(Msg::NameNotShared) } else { tr(Msg::NameShared(&c.published_name)) };
                             let shared_avatar = if c.avatar_pin == [0u8; 64] { tr(Msg::AvatarNotShared) } else { tr(Msg::AvatarShared) };
-                            settings_line(&mut canvas, ctx.text, rows[6], &tr(Msg::WhatTheyShare), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
-                            settings_line(&mut canvas, ctx.text, rows[7], &shared_name, hspan2, *theme::LABEL_COLOUR, 400);
-                            settings_line(&mut canvas, ctx.text, rows[8], &shared_avatar, hspan2, *theme::LABEL_COLOUR, 400);
+                            settings_line(&mut canvas, ctx.text, rows[7], &tr(Msg::WhatTheyShare), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                            settings_line(&mut canvas, ctx.text, rows[8], &shared_name, hspan2, *theme::LABEL_COLOUR, 400);
+                            settings_line(&mut canvas, ctx.text, rows[9], &shared_avatar, hspan2, *theme::LABEL_COLOUR, 400);
                         }
                         let identity_line = match contact {
                             Some(c) if c.identity_superseded => tr(Msg::ReclaimedStranger),
@@ -2851,15 +2858,15 @@ impl PhotonApp {
                                 _ => tr(Msg::IdentityNotFolded),
                             },
                         };
-                        settings_line(&mut canvas, ctx.text, rows[9], &tr(Msg::YouIdentity), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
-                        settings_line(&mut canvas, ctx.text, rows[10], &identity_line, hspan2, *theme::LABEL_COLOUR, 400);
+                        settings_line(&mut canvas, ctx.text, rows[10], &tr(Msg::YouIdentity), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                        settings_line(&mut canvas, ctx.text, rows[11], &identity_line, hspan2, *theme::LABEL_COLOUR, 400);
                         // The deterministic two-word voca pseudonym, always shown even when a published name renders elsewhere: it derives from the party id, so it's the one name that can't be changed or spoofed — the human-checkable identity anchor (compare it out-of-band and you've verified the person).
-                        settings_line(&mut canvas, ctx.text, rows[11], &tr(Msg::PublishedNameExplainer(&crate::network::fgtw::fleet::keyed_pseudonym(&party))), hspan2, *theme::LABEL_COLOUR, 400);
+                        settings_line(&mut canvas, ctx.text, rows[12], &tr(Msg::PublishedNameExplainer(&crate::network::fgtw::fleet::keyed_pseudonym(&party))), hspan2, *theme::LABEL_COLOUR, 400);
                         // The friendship's own action: Boot (two-tap) — ostracism, not erasure.
                         if contact.is_some() {
-                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[12], 0.5), &tr(Msg::BootPill { armed: self.contact_boot_armed }), btn + 3, ctx.pressed_hit);
-                            settings_line(&mut canvas, ctx.text, rows[13], &tr(Msg::BootRemovesEverywhere), hspan2, *theme::LABEL_COLOUR, 400);
-                            settings_line(&mut canvas, ctx.text, rows[14], &tr(Msg::BootOstracism), hspan2, *theme::LABEL_COLOUR, 400);
+                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[13], 0.5), &tr(Msg::BootPill { armed: self.contact_boot_armed }), btn + 3, ctx.pressed_hit);
+                            settings_line(&mut canvas, ctx.text, rows[14], &tr(Msg::BootRemovesEverywhere), hspan2, *theme::LABEL_COLOUR, 400);
+                            settings_line(&mut canvas, ctx.text, rows[15], &tr(Msg::BootOstracism), hspan2, *theme::LABEL_COLOUR, 400);
                         }
                     }
                 }

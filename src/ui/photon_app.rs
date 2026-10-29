@@ -1059,14 +1059,14 @@ impl ReadyFilter {
     }
 }
 
-/// Does the Ready list show contact `c` under `rf` (docs/conversations.md D8)? All lists conversations — your own, and a friend's two-member one once it exists; People lists the people you have added; Atoms your own; Molecules the two-member ones. A fleet sibling is never listed.
+/// Does the Ready list show contact `c` under `rf` (docs/conversations.md D8, revised 2026-10-29)? All lists EVERYTHING — every person you have added, whether or not the two of you have talked yet, beside every atom, molecule and invitation, each once; People the people alone (their rows open the person, not the conversation); Atoms your own; Molecules the two-member conversations that exist.
 fn ready_admits_contact(rf: ReadyFilter, c: &crate::types::Contact, us: &[u8; 32]) -> bool {
     if c.is_sibling {
         return false;
     }
     let alone = c.remote_count(us) == 0;
     match rf {
-        ReadyFilter::All => alone || c.friendship_id.is_some(),
+        ReadyFilter::All => true,
         ReadyFilter::People => !alone,
         ReadyFilter::Atoms => alone,
         ReadyFilter::Molecules => !alone && c.friendship_id.is_some(),
@@ -2420,6 +2420,8 @@ pub struct PhotonApp {
     conv_nav_base: HitId,
     /// Boot two-tap arm (event-shown, interaction-cleared — any other press on the panel disarms).
     contact_boot_armed: bool,
+    /// The Person page was opened from the People list (docs/conversations.md D8, revised 2026-10-29): Back returns to Ready, not to a conversation's Bonds.
+    person_from_ready: bool,
     /// One-shot residency bypass: Shift+Escape sets it so the next close-requested actually exits instead of hiding.
     exit_requested: bool,
     /// Live shift-key mirror (refreshed each `on_event`) so `on_close_requested` — which gets no Context — can honor "shift+close = real exit".
@@ -3300,6 +3302,7 @@ impl PhotonApp {
             conv_panel_btn_base: HIT_NONE,
             conv_nav_base: HIT_NONE,
             contact_boot_armed: false,
+            person_from_ready: false,
             exit_requested: false,
             shift_held: false,
             msg_hit_base: HIT_NONE,
@@ -4296,7 +4299,7 @@ fn conversation_page_rows(page: crate::ui::state::ConversationPage, bond_rows: u
         ConversationPage::Bonds => 3 + bond_rows,
         ConversationPage::Stats => 9,
         ConversationPage::Manage => 9,
-        ConversationPage::Person(_) => 15,
+        ConversationPage::Person(_) => 16,
     }
 }
 

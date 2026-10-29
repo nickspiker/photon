@@ -1438,11 +1438,18 @@ impl FluorApp for PhotonApp {
                     ctx.window.request_redraw();
                     return EventResponse::Handled;
                 }
+                // PEOPLE lists people, not conversations (Nick 2026-10-29: "people shows atoms and molecules"): a person tapped there opens their page, where Message opens the two of you.
+                if self.ready_filter == ReadyFilter::People {
+                    crate::logf!("contact-tap: opening the person page of '{}'", self.contacts[ci].display_name());
+                    self.open_person_page(ci);
+                    ctx.window.request_redraw();
+                    return EventResponse::Handled;
+                }
                 crate::logf!(
                     "contact-tap: opening conversation with '{}'",
                     self.contacts[ci].display_name()
                 );
-                // MESSAGE (docs/conversations.md D8): a person tapped in People opens the conversation of exactly the two of you, founding it over the bond when there is none yet.
+                // Everywhere else a contact row IS the conversation of exactly the two of you: open it, founding it over the bond when there is none yet.
                 if self.contacts[ci].friendship_id.is_none() {
                     self.found_pair_conversation(ci);
                 }
