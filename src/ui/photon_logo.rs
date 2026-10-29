@@ -10,7 +10,9 @@
 //!
 //! Font: Oxanium 800 (ExtraBold). Sized via harmonic mean of region-width-by-aspect and region-height so it fits inside the layout's `photon_text` rect smoothly across viewport sizes.
 
-use fluor::canvas::{Canvas, PixelRect};
+use fluor::canvas::PixelRect;
+use fluor::canvas::Canvas;
+use fluor::pixel::{Argb8, Pixel};
 use fluor::text::TextRenderer;
 
 /// Grayscale weight written into the glow scratch — soft halo source.
@@ -26,15 +28,15 @@ const TEXT_ASPECT: f32 = 6.;
 const FONT: &str = "Oxanium";
 const WEIGHT: u16 = 800;
 
-pub fn paint_photon_logo(canvas: &mut Canvas, text: &mut TextRenderer, rect: PixelRect) {
+pub fn paint_photon_logo<P: Pixel>(canvas: &mut Canvas<P>, text: &mut TextRenderer, rect: PixelRect) {
     let h = canvas.height;
     paint_photon_logo_clipped(canvas, text, rect.x0, rect.x1, rect.y0 as isize, rect.y1 - rect.y0, 0, h);
 }
 
 /// CROP-not-shrink variant (the About slab, 2026-09-02): the wordmark is laid out at its FULL logical band (`top` may be negative once scrolled past the pane top) and only rows inside `clip_y0..clip_y1` (∩ the buffer) composite. The old path re-sized the text to a shrunken rect (the logo "scaling" with scroll) and its unsigned scratch-span math underflowed on a scrolled rect (the vanished wordmark).
 #[allow(clippy::too_many_arguments)]
-pub fn paint_photon_logo_clipped(
-    canvas: &mut Canvas,
+pub fn paint_photon_logo_clipped<P: Pixel>(
+    canvas: &mut Canvas<P>,
     text: &mut TextRenderer,
     x0: usize,
     x1: usize,
@@ -227,15 +229,15 @@ pub(crate) fn blur_vertical_soft(buf: &mut [u8], buf_w: usize, virtual_height: u
 
 /// Wrap-add each scratch byte into the canvas pixel's visible RGB (legacy compose op for glow + highlight). Read pixel → XOR to visible → wrap-add grey per channel → XOR back to darkness → preserve α. Wrap-around (not saturating) is intentional: produces Photon's characteristic chromatic-interaction look where bright bg pixels wrap dark.
 /// Glow: a WHITE light layer (diffuse white, `fluor::theme::WHITE`) composited UNDER whatever's there, α = the blurred coverage byte. `under()` of a white pixel brightens the destination toward white by α — an additive-white halo that soft-clamps at 255 (no wrap artifacts). A proper fluor layer, so it needs nothing opaque beneath it and the logo can draw first/topmost.
-pub(crate) fn composite_glow_white(
-    pixels: &mut [u32],
+pub(crate) fn composite_glow_white<P: Pixel>(
+    pixels: &mut [P],
     buf_w: usize,
     start_row: isize,
     clip_y0: usize,
     clip_y1: usize,
     scratch: &[u8],
 ) {
-    use fluor::pixel::{Blend, BlendMode};
+    use fluor::pixel::BlendMode;
     for (i, &grey) in scratch.iter().enumerate() {
         if grey == 0 {
             continue;
@@ -247,14 +249,14 @@ pub(crate) fn composite_glow_white(
         }
         let pixel_idx = i % buf_w + row as usize * buf_w;
         // Diffuse white (fluor::theme::WHITE — darkness 0 is the 9.7× top code, a glow on HDR), α = coverage.
-        let src = fluor::theme::white_at(grey as u32);
+        let src = P::from_g2t8(fluor::theme::white_at(grey as u32));
         pixels[pixel_idx] = pixels[pixel_idx].under(src, BlendMode::Normal);
     }
 }
 
 /// Body: a fully-DARK layer (darkness = 0xFFFFFF, i.e. visible black) composited UNDER what's there, α = the glyph coverage byte. `under()` of a full-darkness pixel drives the destination toward black by α — bit-identical to the legacy `visible_bg × (255 − cov) / 255` darken, with AA edges feathering via partial α. A proper fluor layer (needs no opaque base).
-fn composite_body_black(pixels: &mut [u32], buf_w: usize, start_row: isize, clip_y0: usize, clip_y1: usize, scratch: &[u8]) {
-    use fluor::pixel::{Blend, BlendMode};
+fn composite_body_black<P: Pixel>(pixels: &mut [P], buf_w: usize, start_row: isize, clip_y0: usize, clip_y1: usize, scratch: &[u8]) {
+    use fluor::pixel::BlendMode;
     for (i, &cov) in scratch.iter().enumerate() {
         if cov == 0 {
             continue;
@@ -264,8 +266,8 @@ fn composite_body_black(pixels: &mut [u32], buf_w: usize, start_row: isize, clip
             continue;
         }
         let pixel_idx = i % buf_w + row as usize * buf_w;
-        // darkness = 0x00FFFFFF (black), α = coverage.
-        let src = ((cov as u32) << 24) | 0x00FF_FFFF;
+        // Darkness full in every channel (black), α = coverage (an 8-bit byte, widened as any authored colour is).
+        let src = P::from_g2t8(Argb8::from_channels(cov as u32, [Argb8::ONE; 3]));
         pixels[pixel_idx] = pixels[pixel_idx].under(src, BlendMode::Normal);
     }
 }

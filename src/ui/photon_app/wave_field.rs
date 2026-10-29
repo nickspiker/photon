@@ -251,35 +251,57 @@ fn frame_lin(e: &FrameEnv) -> [u16; 3] {
 /// Linear Q12 → γ2-encoded byte (√): the visible level a linear light displays as.
 static ENC: std::sync::LazyLock<Vec<u32>> = std::sync::LazyLock::new(|| (0..Q).map(|v| ((v as f32 / (Q - 1) as f32).sqrt() * 255.0).round() as u32).collect());
 
+/// The 16-bit twins of [`ENC`] and of its `g2t` step, per Q12 level: α the γ2 code of the light in 16 bits, and the premultiplied channel the 16-bit `g2t` code of the light itself (vsf's encoder), straight from the linear level with no 8-bit code in between.
+/// WHY the min: tanh x ≤ x, so a light's `g2t` code is never above its γ2 code, but the two encoders' rounding (γ2 rounds, g2t truncates near tanh x ≈ x) can put it one step over at the darkest levels; the premultiplied darkness α − code would then underflow. The min restores the inequality the maths guarantees.
+static ENC16: std::sync::LazyLock<Vec<(u32, u32)>> = std::sync::LazyLock::new(|| {
+    (0..Q)
+        .map(|v| {
+            let l = v as f32 / (Q - 1) as f32;
+            let a = (l.sqrt() * 65535.0).round() as u32;
+            (a, (vsf::colour::convert::delinearize_gamma2tanh_u16_f32(l) as u32).min(a))
+        })
+        .collect()
+});
+
 /// One field pixel as a fluor layer (Nick 2026-09-28): the colour at FULL brightness with its darkness premultiplied by α, and α = the brightest channel γ-encoded.
 /// PROOF of the shortcut: full-brightness hue byte = √(c/m)·255 and α = √m·255, so the premultiplied visible level hue·α/255 = √c·255 = ENC[c], and premultiplied darkness = α − ENC[c] — no division per pixel, and ENC[c] ≤ ENC[m] = α keeps every channel's darkness within its opacity.
+/// At 16 bits the same layer from [`ENC16`]: the Q12 light keeps its precision instead of stepping thru 8-bit codes.
 #[inline]
-fn field_pixel(enc: &[u32], r: u16, g: u16, b: u16) -> u32 {
-    let a = enc[r.max(g).max(b) as usize];
-    // Premultiplied: α stays the brightest channel's γ2 code; each channel's premultiplied value takes the `g2t` code of its light, which is never above its γ2 code, so it stays ≤ α.
-    let g2t = |c: u16| fluor::theme::GAMMA2_TO_G2T[enc[c as usize] as usize] as u32;
-    let dark = ((a - g2t(r)) << 16) | ((a - g2t(g)) << 8) | (a - g2t(b));
-    (a << 24) | (fluor::theme::fmt(dark) & 0x00FF_FFFF)
+fn field_pixel<P: Pixel>(r: u16, g: u16, b: u16) -> P {
+    let m = r.max(g).max(b) as usize;
+    let (a, codes) = if P::DEPTH == 8 {
+        let enc = &*ENC;
+        // Premultiplied: α stays the brightest channel's γ2 code; each channel's premultiplied value takes the `g2t` code of its light, which is never above its γ2 code, so it stays ≤ α.
+        let g2t = |c: u16| fluor::theme::GAMMA2_TO_G2T[enc[c as usize] as usize] as u32;
+        (enc[m], [g2t(r), g2t(g), g2t(b)])
+    } else {
+        let enc = &*ENC16;
+        (enc[m].0, [enc[r as usize].1, enc[g as usize].1, enc[b as usize].1])
+    };
+    // PROOF: every code ≤ its γ2 code ≤ the brightest channel's = α (ENC16 holds the first by its min), so each darkness stays in 0..=α.
+    let dark = codes.map(|c| a - c);
+    P::from_channels(a, crate::ui::depth::ORDER.map(|i| dark[i]))
 }
 
-/// A premultiplied layer composited under the partial composite `top`: each byte gains the layer's byte scaled by the opacity still open above it. PROOF: every byte of `bot` ≤ its α ≤ 255 and (256 − top_α)·255 >> 8 ≤ 255 − top_α, so each result stays ≤ 255 (and darkness ≤ α holds wherever it held in both).
+/// A premultiplied layer composited under the partial composite `top`: each field gains the layer's field scaled by the opacity still open above it. PROOF: every field of `bot` ≤ its α ≤ ONE and (ONE + 1 − top_α)·ONE >> DEPTH ≤ ONE − top_α, so each result stays ≤ ONE (and darkness ≤ α holds wherever it held in both); at 16 bits the product is below 2³².
 #[inline]
-fn under_premult(top: u32, bot: u32) -> u32 {
-    let open = 256 - (top >> 24);
-    let ch = |s: u32| ((top >> s) & 0xFF) + ((((bot >> s) & 0xFF) * open) >> 8);
-    (ch(24) << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0)
+fn under_premult<P: Pixel>(top: P, bot: P) -> P {
+    let open = P::ONE + 1 - top.alpha();
+    let ch = |t: u32, b: u32| t + ((b * open) >> P::DEPTH);
+    let (tc, bc) = (top.channels(), bot.channels());
+    P::from_channels(ch(top.alpha(), bot.alpha()), [ch(tc[0], bc[0]), ch(tc[1], bc[1]), ch(tc[2], bc[2])])
 }
 
 /// Paint a beam picture (γ2 Rec.2020 RGB triples) letterboxed in the square, under whatever is already on the canvas — the same under-compositing the field uses, so avatars and buttons drawn before it stay in front. Nearest-neighbour scaling, integer: the picture is already the display's transfer, so the only work per pixel is the pack.
 #[allow(dead_code)]
-pub(super) fn paint_picture(canvas: &mut Canvas, g: &FieldGeom, pic: &crate::wave::beam_session::Picture) {
+pub(super) fn paint_picture<P: Pixel>(canvas: &mut fluor::canvas::Canvas<P>, g: &FieldGeom, pic: &crate::wave::beam_session::Picture) {
     // WHY/PROOF: as in the geometry — on a window narrower than the square's floor the side passes the width, and the picture starts at column 0, not a wrapped one.
     let x0 = canvas.width.saturating_sub(g.side) / 2;
     paint_picture_in(canvas, x0, g.y0, g.side, pic);
 }
 
 /// The same blit into any square: `x0`,`y0` its top-left, `side` its edge — centred.
-pub(super) fn paint_picture_in(canvas: &mut Canvas, x0: usize, y0: usize, side: usize, pic: &crate::wave::beam_session::Picture) {
+pub(super) fn paint_picture_in<P: Pixel>(canvas: &mut fluor::canvas::Canvas<P>, x0: usize, y0: usize, side: usize, pic: &crate::wave::beam_session::Picture) {
     paint_picture_rect(canvas, x0, y0, side, side, pic, false);
 }
 
@@ -294,7 +316,7 @@ pub(super) fn picture_region(buf_w: usize, buf_h: usize, unit: f32) -> (usize, u
 }
 
 /// Blit a picture into a rect, as big as fits: TOP-ANCHORED when `top`, so the spare room is all below it; centred otherwise.
-pub(super) fn paint_picture_rect(canvas: &mut Canvas, x0: usize, y0: usize, rw: usize, rh: usize, pic: &crate::wave::beam_session::Picture, top: bool) {
+pub(super) fn paint_picture_rect<P: Pixel>(canvas: &mut fluor::canvas::Canvas<P>, x0: usize, y0: usize, rw: usize, rh: usize, pic: &crate::wave::beam_session::Picture, top: bool) {
     if pic.w == 0 || pic.h == 0 || pic.rgb.len() < pic.w * pic.h * 3 || rw == 0 || rh == 0 {
         return;
     }
@@ -316,7 +338,7 @@ pub(super) fn paint_picture_rect(canvas: &mut Canvas, x0: usize, y0: usize, rw: 
         let hole_row = pic.holes.as_deref().map(|m| &m[(sy / 2) * (pic.w / 2)..]);
         for x in dx0..x_end {
             let d = line[x];
-            if d >= 0xFF00_0000 {
+            if d.alpha() == P::ONE {
                 continue;
             }
             let sx = (x - dx0) * pic.w / dw;
@@ -326,9 +348,9 @@ pub(super) fn paint_picture_rect(canvas: &mut Canvas, x0: usize, y0: usize, rw: 
             let o = (srow + sx) * 3;
             // The picture is already g2t Rec.2020, the buffer's own encoding (beam_colour.rs) — an HDR beam's light past white goes in as it is.
             let rgb = ((pic.rgb[o] as u32) << 16) | ((pic.rgb[o + 1] as u32) << 8) | pic.rgb[o + 2] as u32;
-            // Opaque: α = 255, the channels stored as darkness (fluor's layer convention, see `field_pixel`).
-            let src = 0xFF00_0000 | (fluor::theme::fmt(rgb ^ 0x00FF_FFFF) & 0x00FF_FFFF);
-            line[x] = if d == 0 { src } else { under_premult(d, src) };
+            // Opaque: α full, the channels stored as darkness (fluor's layer convention, see `field_pixel`); an 8-bit `g2t` code at a wider depth is the same light (`from_g2t8`).
+            let src = P::from_g2t8(fluor::theme::dark(fluor::theme::fmt(rgb)));
+            line[x] = if d == P::EMPTY { src } else { under_premult(d, src) };
         }
     }
     canvas.damage.add_bounds(dx0, dy0, x_end, y_end);
@@ -340,7 +362,7 @@ static PAINTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(
 const PAINT_LOG_EVERY: u64 = 256;
 
 /// Paint the field under whatever is already on the canvas.
-pub(super) fn paint_field(canvas: &mut Canvas, g: &FieldGeom, map: &FieldMap, t: &FieldTables) {
+pub(super) fn paint_field<P: Pixel>(canvas: &mut fluor::canvas::Canvas<P>, g: &FieldGeom, map: &FieldMap, t: &FieldTables) {
     use std::sync::atomic::Ordering;
     let t0 = std::time::Instant::now();
     paint_field_inner(canvas, g, map, t);
@@ -362,13 +384,12 @@ fn sample(t: &[[u16; 3]], age: u16) -> [u32; 3] {
     [mix(0), mix(1), mix(2)]
 }
 
-fn paint_field_inner(canvas: &mut Canvas, g: &FieldGeom, map: &FieldMap, t: &FieldTables) {
+fn paint_field_inner<P: Pixel>(canvas: &mut fluor::canvas::Canvas<P>, g: &FieldGeom, map: &FieldMap, t: &FieldTables) {
     use rayon::prelude::*;
     let (w, h) = (canvas.width, canvas.height);
     if map.key != (w, h, g.side, g.y0) || t.theirs.len() != FIELD_FRAMES + 2 || t.ours.len() != FIELD_FRAMES + 2 || map.bw == 0 {
         return;
     }
-    let enc = &*ENC;
     let lim = (Q - 1) as u32;
     let (bx0, by0, bw) = (map.x0, map.y0, map.bw);
     // One task per box row, each pixel composited in place (field 2026-09-28: a per-row buffer plus a nested parallel flatten per row cost ~20 ms a paint on a phone). Only the row's covered span is visited: past the reach the fade has reached zero, so there is nothing to paint.
@@ -384,7 +405,7 @@ fn paint_field_inner(canvas: &mut Canvas, g: &FieldGeom, map: &FieldMap, t: &Fie
         for x in lo..hi {
             let dst = &mut line[x];
             let d = *dst;
-            if d >= 0xFF00_0000 {
+            if d.alpha() == P::ONE {
                 continue;
             }
             let a = sample(&t.theirs, ages_t[x - bx0]);
@@ -393,9 +414,9 @@ fn paint_field_inner(canvas: &mut Canvas, g: &FieldGeom, map: &FieldMap, t: &Fie
             if r | gr | bl == 0 {
                 continue;
             }
-            let src = field_pixel(enc, r as u16, gr as u16, bl as u16);
+            let src = field_pixel::<P>(r as u16, gr as u16, bl as u16);
             // `src` is already premultiplied, and `under` would multiply it by its α again (a light fringe at every anti-aliased edge above the field): deposit it into the opacity left, every channel α included.
-            *dst = if d == 0 { src } else { under_premult(d, src) };
+            *dst = if d == P::EMPTY { src } else { under_premult(d, src) };
         }
     });
     canvas.damage.add_bounds(bx0, by0, bx0 + bw, by0 + map.bh);
@@ -451,6 +472,24 @@ mod tests {
     use super::*;
 
     /// Ages grow outward from each avatar's edge to the reach (the other avatar's near edge), interiors and everything past the reach read NONE, and the equal-area law holds (frames thin with distance).
+    /// A field pixel at both depths, read back at 8 bits: α and every channel within a step, every channel's darkness within its α at 16 bits too (ENC16's min holds it at the darkest levels).
+    #[test]
+    fn field_pixels_agree_across_depths() {
+        use fluor::pixel::{G2t16, Pixel};
+        for (r, g, b) in [(2000u16, 500u16, 100u16), (4095, 4095, 4095), (1, 0, 0), (3, 2, 1), (40, 900, 4000), (0, 0, 7)] {
+            let (p8, p16) = (field_pixel::<u32>(r, g, b), field_pixel::<G2t16>(r, g, b));
+            assert!(((p16.alpha() >> 8) as i32 - p8.alpha() as i32).abs() <= 1, "{p8:08x} against {p16:016x}");
+            for (x, y) in p8.channels().into_iter().zip(p16.channels()) {
+                assert!(y <= p16.alpha());
+                assert!(((y >> 8) as i32 - x as i32).abs() <= 1, "{p8:08x} against {p16:016x}");
+            }
+        }
+        for v in 0..Q as u16 {
+            let p = field_pixel::<G2t16>(v, v / 2, 0);
+            assert!(p.channels().into_iter().all(|d| d <= p.alpha()));
+        }
+    }
+
     #[test]
     fn ages_run_one_second_from_edge_to_the_other_avatar() {
         let g = field_geom_for(240, 240); // r = 30, theirs (160, 80), ours (80, 160): centres ≈ 113 apart, reach ≈ 83
@@ -538,7 +577,7 @@ mod tests {
         let paint = |t: &FieldTables| {
             let mut px = vec![0u32; w * h];
             let mut dmg = fluor::canvas::Damage::new();
-            paint_field(&mut Canvas::new(&mut px, w, h, &mut dmg), &g, &m, t);
+            paint_field(&mut fluor::canvas::Canvas::new(&mut px, w, h, &mut dmg), &g, &m, t);
             px
         };
         let mut silent = FieldTables::default();
@@ -552,8 +591,7 @@ mod tests {
         assert!(lit.iter().filter(|&&p| p != 0).count() > w * w / 4, "the ripples fill the reach");
         assert!(lit[(h - 1) * w..].iter().all(|&p| p == 0), "nothing below the reach");
         // Full brightness: the brightest channel of a lit pixel carries the `g2t` code of α's light (α is its γ2 code; fluor's buffer is g2t), so its darkness is α minus that code.
-        let enc = &*ENC;
-        let p = field_pixel(enc, 2000, 500, 100);
+        let p = field_pixel::<u32>(2000, 500, 100);
         let a = p >> 24;
         assert_eq!([16, 8, 0].iter().map(|&s| (p >> s) & 0xFF).min(), Some(a - fluor::theme::GAMMA2_TO_G2T[a as usize] as u32));
         // Under a half-opaque pixel, the field deposits its premultiplied bytes into the half left open — once, not α twice.
@@ -599,7 +637,7 @@ mod tests {
         let t1 = std::time::Instant::now();
         for _ in 0..n {
             px.iter_mut().for_each(|p| *p = 0);
-            let mut c = Canvas::new(&mut px, w, h, &mut dmg);
+            let mut c = fluor::canvas::Canvas::new(&mut px, w, h, &mut dmg);
             paint_field(&mut c, &g, &map, &t);
         }
         let per = t1.elapsed() / n;

@@ -68,7 +68,7 @@ fn clip_to_damage(clip: fluor::paint::Clip, hinted: bool, damage: fluor::canvas:
 
 impl PhotonApp {
     /// The full frame paint — the body of [`FluorApp::render`], verbatim; the trait method in `driver.rs` delegates here so the paint code can live in its own file.
-    pub(super) fn render_frame(&mut self, target: &mut [u32], ctx: &mut Context) {
+    pub(super) fn render_frame(&mut self, target: &mut [Px], ctx: &mut Context) {
         // The scene is about to be painted in full: clear the dirty flag NOW, so a flag raised DURING this render (a first-frame measurement that moved the rows) survives to claim the next frame instead of being wiped at the end of this one (field 2026-10-01: the contacts sat under the wrapped filter strip's second line until a scroll forced another frame — the correction frame was asked for and then forgotten).
         self.scene_dirty = false;
         // A launch-box refill waiting on the text renderer (the minting retype puts the first entry back on a mismatch or a cancel).
@@ -784,12 +784,11 @@ impl PhotonApp {
                 chromatic_wave_clipped(canvas, sx0, sx1, wave_top, wave_h, clip_y0, clip_y1, about_wave_phase, 1.0);
             }
         };
-        match scroll_hint {
-            Some((rect, dy, band)) => chrome.scroll_bg(rect, dy, band, ctx.damage, |canvas| paint_bg(canvas, Some(fluor::paint::Clip::new(band.x0, band.y0, band.x1, band.y1)))),
-            None => chrome.rasterize_bg(ctx.damage, |canvas| paint_bg(canvas, None)),
-        }
+        // At 8 bits the chrome's own bg layer; at a wider depth Photon's `bg_layer` at that depth, repainted exactly when the chrome's would be (depth.rs).
+        Px::chrome_paint_bg(chrome, &mut self.bg_layer, scroll_hint, ctx.damage, |canvas, bg_clip| paint_bg(canvas, bg_clip));
         // Window-perimeter hairline FIRST — painted straight into `target` (not the chrome group) and carves the window-shape clip_mask. fluor is under-blend only, so whatever lands in `target` first wins at shared edge pixels; drawing the hairline before any content makes it survive over full-bleed screens (Ready/Conversation) whose content reaches the window edge. The chrome group (buttons / orb / strip / title) still composites UNDER content via `flatten_into` below. The clip_mask carve here is the SOLE source of the single window-shape alpha-trim done at the OS boundary in finalize.
-        chrome.rasterize_perimeter(target, buf_w, buf_h, ctx.clip_mask);
+        // At a wider depth the perimeter, the chord hint and the chrome layer gather in the 8-bit `chrome_front` (fluor's chrome is 8-bit) and go into `target` widened, once, at the chrome flatten below.
+        Px::chrome_perimeter(chrome, target, buf_w, buf_h, ctx.clip_mask, &mut self.chrome_front);
         // Orb press glow lives IN the chrome layer now (drawn after the orb+ring, so under() blooms it beneath them): feed the pressed state each frame; the setter no-ops when unchanged and re-rasters chrome on the press/release edges.
         chrome.set_orb_pressed(
             ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == chrome.app_icon_btn.id(),
@@ -814,11 +813,10 @@ impl PhotonApp {
         // Chord hint — painted INTO `target` FIRST so the hint glyphs sit at the TOP of the under-blend chain (the chrome composes under them).
         if held_now {
             let span = ctx.viewport.effective_span();
-            let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
-            paint::draw_chord_hint(&mut canvas, ctx.text, CHORD_HINTS, span);
+            Px::chrome_chord_hint(target, &mut self.chrome_front, buf_w, buf_h, ctx.damage, ctx.text, CHORD_HINTS, span);
         }
         // The CHROME LAYER (orb, controls strip, title, window buttons) goes in NOW, before any content: fluor is front to back, so it stays on top of everything the screens draw — rows scrolled up under the title strip, the full-screen wave panel. Its bg layer (the speckle) is flattened LAST, under all content (`flatten_bg_into` below).
-        chrome.flatten_chrome_into(target, buf_w, buf_h, None);
+        Px::chrome_flatten(chrome, target, buf_w, buf_h, &mut self.chrome_front);
 
         // WAVE OVERLAY (docs/waves.md) — retained fluor Buttons (no hand-rolled pills), painted HERE, EARLY, so under-blend keeps them above every screen's body (the whole point: a ring must be visible + answerable from wherever the user is). A live wave shows the status chip + action bar; an open callable conversation with no wave shows the ☎ start pill. Pixels land now (hit_map = None); the hit rects are RE-STAMPED at the very end via `stamp_hit_into` because each screen re-stamps its own hit_test_map region and would otherwise wipe this. Hover/press/dispatch ride `visit_app_widgets`. y sits just below the chrome title-bar band.
         {
@@ -2912,7 +2910,8 @@ impl PhotonApp {
                             Some(view) => {
                                 // OPSIN'S VIEWER, WHOLE (Nick 2026-09-17): image area + tool panel + HUD, its pills stamped into the shared hit map under the ids photon reserved for them.
                                 view.set_area(opsin::view::Area { x: 0.0, y: area_top, w: buf_w as f32, h: buf_h as f32 - area_top });
-                                view.render(&mut canvas, ctx.viewport, ctx.text, ctx.damage_clip, (ctx.cursor_x, ctx.cursor_y), &mut chrome.hit_test_map);
+                                // opsin's view draws 8-bit: at a wider depth it goes in widened, under what is already here (depth.rs).
+                                Px::paint_8bit(&mut canvas, &mut self.chrome_front, |c8| view.render(c8, ctx.viewport, ctx.text, ctx.damage_clip, (ctx.cursor_x, ctx.cursor_y), &mut chrome.hit_test_map));
                                 // PHOTON'S PILLS WIN THEIR RECTS LAST (field 2026-10-01, "back button doesn't do anything on the full-screen viewer"): the view's own buttons stamp during their blit, after the pills above, and a panel widget laid over the top-left took the Back pill's pixels. A deliberate after-paint re-win — the pills were painted first, so they are on top on screen too.
                                 for (i, r) in prects.iter().enumerate().filter(|_| !plain) {
                                     restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, r.x as isize, r.y as isize, (r.x + r.w) as isize, (r.y + r.h) as isize, self.viewer_base + if i == 0 { 0 } else { 2 });
@@ -3678,7 +3677,7 @@ impl PhotonApp {
                                 }
                             }
                             let preview_src = super::viewer::preview_source(msg);
-                            let decoded: Option<(usize, usize, &Vec<u32>)> = preview_src.and_then(|(key, _)| match self.img_cache.get(&key) {
+                            let decoded: Option<(usize, usize, &Vec<Px>)> = preview_src.and_then(|(key, _)| match self.img_cache.get(&key) {
                                 Some(Some((w, h, px))) => Some((*w, *h, px)),
                                 _ => None,
                             });
@@ -4437,7 +4436,7 @@ impl PhotonApp {
                             // IMAGE PREVIEW BAND: the row's micro thumb (gamma-2 VSF RGB, ≤24 px) drawn above the pill, aspect-preserved, on the bubble's side. Nearest-neighbour up-scale — this is the before-any-fetch tier; the preview blob replaces it when held (Phase 2).
                             if img_lines > 0 {
                                 let micro_px = if decoded.is_none() { crate::types::parse_micro_image(&msg.preview).map(|(w, h, px)| (w, h, crate::ui::attach_preview::micro_to_display(px))) } else { None };
-                                let picture: Option<(usize, usize, std::borrow::Cow<Vec<u32>>)> = match (decoded, micro_px) {
+                                let picture: Option<(usize, usize, std::borrow::Cow<Vec<Px>>)> = match (decoded, micro_px) {
                                     (Some((w, h, px)), _) => Some((w, h, std::borrow::Cow::Borrowed(px))),
                                     (None, Some((w, h, px))) => Some((w, h, std::borrow::Cow::Owned(px))),
                                     _ => None,
@@ -7585,7 +7584,7 @@ impl PhotonApp {
 
         let mark_content = std::time::Instant::now();
         // On a memmove frame the bg outside the damage is already composed in the buffer: flatten only the damage.
-        chrome.flatten_bg_into(target, buf_w, buf_h, scroll_hint.map(|_| fluor::paint::Clip::new(ctx.damage_clip.x0, ctx.damage_clip.y0, ctx.damage_clip.x1, ctx.damage_clip.y1)));
+        Px::chrome_flatten_bg(chrome, &self.bg_layer, target, buf_w, buf_h, scroll_hint.map(|_| fluor::paint::Clip::new(ctx.damage_clip.x0, ctx.damage_clip.y0, ctx.damage_clip.x1, ctx.damage_clip.y1)));
         self.scroll_shift = 0;
         self.scroll_hint_armed = None;
 
@@ -7599,8 +7598,7 @@ impl PhotonApp {
                 target[i] = self
                     .debug_hit_colours
                     .get(map[i] as usize)
-                    .copied()
-                    .unwrap_or(0);
+                    .map_or(Px::EMPTY, |&c| Px::from_g2t8(c));
             }
         }
 

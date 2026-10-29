@@ -1253,8 +1253,8 @@ impl PhotonApp {
         }
         for &(id, label, tier) in STD_PROFILE_FIELDS {
             let tagged = EXPANDABLE_FIELDS.iter().any(|&(b, tag)| b == id && tag);
-            let tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
-            let tag_tb = tagged.then(|| Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+            let tb = Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.);
+            let tag_tb = tagged.then(|| Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.));
             self.you_fields.push(ProfileField {
                 field_id: id.to_string(),
                 // Standard ids label thru the catalog; the table's English column stays the canonical docs mirror + fallback.
@@ -1287,7 +1287,7 @@ impl PhotonApp {
             if id.is_empty() || self.you_fields.iter().any(|f| f.field_id == id) {
                 continue;
             }
-            let tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
+            let tb = Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.);
             self.you_fields.push(ProfileField {
                 field_id: id,
                 label,
@@ -1367,8 +1367,8 @@ impl PhotonApp {
                     bf.tier,
                 )
             };
-            let tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
-            let tag_tb = tagged.then(|| Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+            let tb = Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.);
+            let tag_tb = tagged.then(|| Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.));
             self.you_fields.insert(
                 li + 1,
                 ProfileField {
@@ -1412,9 +1412,9 @@ impl PhotonApp {
                     .map(|c| c.into_owned())
                     .unwrap_or_else(|| base.to_string());
                 let tier = self.you_fields[li].tier;
-                let tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
+                let tb = Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.);
                 let tag_tb =
-                    tagged.then(|| Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+                    tagged.then(|| Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.));
                 self.you_fields.insert(
                     li + 1,
                     ProfileField {
@@ -1588,7 +1588,7 @@ impl PhotonApp {
             }
             return;
         }
-        let tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
+        let tb = Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.);
         self.you_fields.push(ProfileField {
             field_id: id,
             label: label.clone(),

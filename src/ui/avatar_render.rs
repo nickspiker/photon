@@ -2,10 +2,11 @@
 //!
 //! Inputs are γ=2.0 BT.2020 u8 RGB (already thru `colour_convert::vsf_rgb_to_bt2020`); the buffer is α + darkness packed (see `fluor::pixel`). The render path samples each output pixel from the pre-scaled texture, converts it to a darkness-packed pixel via `fluor::theme::dark(fmt(visible))`, and composes thru `under()` — matching the convention every other photon rasterizer follows.
 
+use crate::ui::Depth;
 use fluor::canvas::Canvas;
 use fluor::coord::Coord;
 use fluor::paint::Clip;
-use fluor::pixel::{Blend, BlendMode};
+use fluor::pixel::BlendMode;
 
 /// Mitchell-filtered square resize of a 3-byte-per-pixel image. Input and output are γ=2.0 RGB triples (so this is technically not gamma-correct resampling, but it matches legacy photon behaviour and is visually acceptable; doing the resize in linear is a follow-up).
 pub fn update_avatar_scaled(src: &[u8], src_size: usize, dst_diameter: usize) -> Vec<u8> {
@@ -42,8 +43,8 @@ pub fn update_avatar_scaled(src: &[u8], src_size: usize, dst_diameter: usize) ->
 }
 
 /// Paint a circular avatar at `(cx, cy)` with fractional `radius`, sampling from a `scaled_diameter × scaled_diameter` BT.2020 γ=2.0 RGB texture. AA edge over the outer half-pixel; composes via `under()` so the caller can paint avatars on top of an existing partial composite. `clip` restricts painting to a sub-rect (e.g. a scrolling list's visible region); `None` = whole buffer.
-pub fn draw_avatar(
-    canvas: &mut Canvas,
+pub fn draw_avatar<P: Depth>(
+    canvas: &mut Canvas<P>,
     cx: Coord,
     cy: Coord,
     radius: Coord,
@@ -71,7 +72,7 @@ pub fn draw_avatar(
         return;
     };
     canvas.damage.add_bounds(x_start, y_start, x_end, y_end);
-    let pixels: &mut [u32] = canvas.pixels;
+    let pixels: &mut [P] = canvas.pixels;
     let diam = scaled_diameter as Coord;
 
     for py in y_start..y_end {
@@ -104,17 +105,18 @@ pub fn draw_avatar(
             let g = scaled[tex_idx + 1] as u32;
             let b = scaled[tex_idx + 2] as u32;
             let visible = (r << 16) | (g << 8) | b;
-            let dark = fluor::theme::dark(fluor::theme::fmt(fluor::theme::from_gamma2(visible))) & 0x00FFFFFF;
+            // Coverage in the depth's own scale (the AA rim's ramp, `t` in (0, 1) there).
             let alpha = if dist2 <= r_in2 {
-                0xFFu32
+                P::ONE
             } else {
                 let t = (r_out2 - dist2) * inv_diff;
-                (255.0 * t) as u32
+                P::cov(t)
             };
             if alpha == 0 {
                 continue;
             }
-            let avatar_pixel = (alpha << 24) | dark;
+            // The texel's γ2 light at the depth's precision ([`Depth::from_gamma2`]: fluor's 8-bit conversion, or the 16-bit code of the byte's exact light).
+            let avatar_pixel = P::from_gamma2(alpha, visible);
             let idx = row_off + px;
             pixels[idx] = pixels[idx].under(avatar_pixel, BlendMode::Normal);
         }
@@ -137,5 +139,28 @@ mod tests {
         let mut canvas = Canvas::new(&mut px, 16, 16, &mut dmg);
         draw_avatar(&mut canvas, 8.0, 8.0, 0.4, &[], 0, None);
         draw_avatar(&mut canvas, 8.0, 8.0, 4.0, &[], 8, None);
+        let mut px16 = vec![0u64; 16 * 16];
+        let mut canvas = Canvas::new(&mut px16, 16, 16, &mut dmg);
+        draw_avatar(&mut canvas, 8.0, 8.0, 4.0, &[], 8, None);
+    }
+
+    /// The same avatar at both depths, read back at 8 bits: α within a step, darkness at most one step under and three over the 8-bit render — fluor's 8-bit kernels divide by 256 where 255 is meant (the deliberate dark bias its own cross-check pins), which a partly covered rim pixel shows as up to 2 steps.
+    #[test]
+    fn an_avatar_draws_alike_at_both_depths() {
+        use fluor::pixel::Pixel;
+        let d = 12;
+        let tex: Vec<u8> = (0..d * d * 3).map(|i| (i * 37 % 256) as u8).collect();
+        let mut dmg = fluor::canvas::Damage::default();
+        let mut p8 = vec![0u32; 16 * 16];
+        draw_avatar(&mut Canvas::new(&mut p8, 16, 16, &mut dmg), 8.0, 8.0, 6.0, &tex, d, None);
+        let mut p16 = vec![0u64; 16 * 16];
+        draw_avatar(&mut Canvas::new(&mut p16, 16, 16, &mut dmg), 8.0, 8.0, 6.0, &tex, d, None);
+        for (a, b) in p8.iter().zip(&p16) {
+            assert!((a.alpha() as i32 - (b.alpha() >> 8) as i32).abs() <= 1, "α {a:08x} against {b:016x}");
+            for (x, y) in a.channels().into_iter().zip(b.channels()) {
+                let step = (y >> 8) as i32 - x as i32;
+                assert!((-1..=3).contains(&step), "{a:08x} against {b:016x}");
+            }
+        }
     }
 }

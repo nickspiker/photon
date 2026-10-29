@@ -2,7 +2,7 @@
 
 use super::*;
 
-impl FluorApp for PhotonApp {
+impl FluorApp<Px> for PhotonApp {
     /// One-shot absolute-zoom restore: the persisted per-device `display.zoom`, set when settings load; the host applies it exactly like a user zoom.
     fn take_zoom_request(&mut self) -> Option<f32> {
         let r = self.pending_zoom_restore.take();
@@ -227,8 +227,8 @@ impl FluorApp for PhotonApp {
         self.chrome = Some(chrome);
 
         // Launch-screen widgets: handle textbox + attest button. Constructed with placeholder geometry; real geometry lands in `update_widget_layout` (called below and on every resize). Hit IDs are allocated from the shared counter AFTER chrome's four — chrome currently takes 1..=4, launch widgets get 5..=6, contacts widgets get 7..=8.
-        self.textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
-        self.attest_btn = Some(Button::new(
+        self.textbox = Some(Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+        self.attest_btn = Some(Button::with_depth(
             &mut self.hit_counter,
             0.,
             0.,
@@ -238,27 +238,27 @@ impl FluorApp for PhotonApp {
             tr(Msg::Attest),
         ));
         // Contacts-page widgets — same placeholder shape; geometry set every frame via `update_widget_layout` based on ReadyLayout. The plus button label is "+" for now; the rotating-hourglass animation lands in a follow-up when we extract `ProgressButton` into fluor.
-        self.contacts_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
-        self.contacts_plus_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "+"));
+        self.contacts_textbox = Some(Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+        self.contacts_plus_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., "+"));
         // Conversation compose box — placeholder geometry; positioned each frame via `update_widget_layout`.
-        self.message_textbox = Some(fluor::widgets::MultiTextbox::new(
+        self.message_textbox = Some(MultiTextbox::with_depth(
             &mut self.hit_counter,
             12.,
             "Oxanium",
         ));
         // Send button overlaid in the compose box. ASCII ">" (not "→" U+2192 — absent from the Android font, so it rendered blank there; the contacts "+" button proves ASCII renders). Geometry set each frame in `update_widget_layout`. Empty label — the glyph is a drawn 4-vertex up arrowhead (draw_up_arrowhead), not text.
-        self.message_send_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
+        self.message_send_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
         // Send wears PURPLE with the green arrow drawn over it; the pigeon button wears the carrier's amber — the two compose actions stop being twins (Nick 2026-09-12).
         if let Some(b) = self.message_send_btn.as_mut() {
             b.set_fill(Some(theme::near_black(*theme::LINK_PURPLE, 0.35)));
         }
         // The link button: purple pill, chain-link glyph (colour emoji face, FE0F pins it), beside send.
-        self.compose_link_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "\u{1F517}\u{FE0F}"));
+        self.compose_link_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., "\u{1F517}\u{FE0F}"));
         if let Some(b) = self.compose_link_btn.as_mut() {
             b.set_fill(Some(*theme::LINK_PURPLE));
         }
         // The paperclip: always shown, one slot left of send (two when the link button is up).
-        self.compose_attach_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "\u{1F54A}\u{FE0F}"));
+        self.compose_attach_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., "\u{1F54A}\u{FE0F}"));
         if let Some(b) = self.compose_attach_btn.as_mut() {
             b.set_fill(Some(theme::near_black(*theme::SEARCH_RELAY_COLOUR, 0.35)));
         }
@@ -333,7 +333,7 @@ impl FluorApp for PhotonApp {
         reserve_hits(&mut self.hit_counter, 1); // the conversation stream filter pill
         self.digit_strip_base = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 12); // the compose digit strip: the twelve dozenal glyphs, tap to insert
-        self.settings_theme_dropdown = Some(fluor::widgets::Dropdown::new(
+        self.settings_theme_dropdown = Some(Dropdown::with_depth(
             &mut self.hit_counter,
             0.,
             0.,
@@ -371,8 +371,8 @@ impl FluorApp for PhotonApp {
         self.invite_hit_base = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 32); // invitation rows: Bind + Decline for 16 open invitations
         // Wave controls (docs/waves.md) — retained Buttons with placeholder geometry; real rect/label/font-size land each frame in the render overlay block (phase-dependent). Registered cross-screen in `visit_app_widgets`, so hover/press/dispatch ride the same walk as every other Button. Construction order fixes the contiguous-id contract: status / start / action / decline. "Open Sans" matches the old hand-rolled pills' face.
-        self.wave_status_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
-        self.wave_start_btn = Some(Button::new(
+        self.wave_status_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
+        self.wave_start_btn = Some(Button::with_depth(
             &mut self.hit_counter,
             0.,
             0.,
@@ -381,18 +381,18 @@ impl FluorApp for PhotonApp {
             12.,
             tr(Msg::WaveStart),
         ));
-        self.wave_action_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
-        self.wave_decline_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
-        self.wave_speaker_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::SpeakerPlain)));
-        self.wave_addhandle_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::AddHandlePlain)));
-        self.wave_back_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BackToContact)));
+        self.wave_action_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
+        self.wave_decline_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
+        self.wave_speaker_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::SpeakerPlain)));
+        self.wave_addhandle_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::AddHandlePlain)));
+        self.wave_back_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BackToContact)));
         // Beam (video) — a STUB: rendered disabled beside the Wave button until video lands; constructed LAST so the status/start/action/decline contiguous-id contract holds.
-        self.beam_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BeamStart)));
-        self.beam_back_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BeamBack)));
-        self.wave_reject_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::Reject)));
-        self.beam_cal_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::Calibrate)));
-        self.wave_mic_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
-        self.wave_out_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
+        self.beam_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BeamStart)));
+        self.beam_back_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BeamBack)));
+        self.wave_reject_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::Reject)));
+        self.beam_cal_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::Calibrate)));
+        self.wave_mic_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
+        self.wave_out_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
         for b in [
             self.wave_status_btn.as_mut(),
             self.wave_start_btn.as_mut(),
@@ -584,12 +584,12 @@ impl FluorApp for PhotonApp {
             12.,
             Self::unattended_enabled(),
         ));
-        self.settings_note_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
-        self.ideas_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
-        self.you_add_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
-        self.molecule_title_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+        self.settings_note_textbox = Some(Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+        self.ideas_textbox = Some(Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+        self.you_add_textbox = Some(Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+        self.molecule_title_textbox = Some(Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         // Unattended-confirm handle box: built once here so its hit_id is stable (lazy creation at open time bumped hit_counter every open, drifting the id out from under the render's stamp — the box then took no input).
-        self.unattended_confirm_tb = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+        self.unattended_confirm_tb = Some(Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         // The per-field boxes are built lazily on first You-page open (build_you_fields) — HitId is a u16, so we allocate the ~32 field ids only when the page is actually visited.
 
         self.update_widget_layout(ctx);
@@ -949,7 +949,7 @@ impl FluorApp for PhotonApp {
                         let idx = (slot - 56) as usize;
                         let devices = self.fleet_device_rows();
                         if let Some((pk, _, _, _, name, _, _, _)) = devices.get(idx).cloned() { // WHY/PROOF: the device rows are rebuilt each frame; a hit from the frame the human saw can outlive a device leaving the list
-                            let mut tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
+                            let mut tb = Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.);
                             tb.set_text(&name, ctx.text);
                             let id = tb.hit_id();
                             self.fleet_rename = Some((pk, tb));
@@ -975,7 +975,7 @@ impl FluorApp for PhotonApp {
                                     .as_ref()
                                     .is_some_and(|(_, _, _, _, wc)| wc.is_some());
                                 if has_commit && self.depart_words_entry.is_none() {
-                                    let tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
+                                    let tb = Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.);
                                     let id = tb.hit_id();
                                     self.depart_words_entry = Some((pk, tb));
                                     self.change_focus(Some(id));
@@ -3851,7 +3851,7 @@ impl FluorApp for PhotonApp {
         self.scroll_hint_armed.map(|(rect, dy, _)| (rect, dy))
     }
 
-    fn render(&mut self, target: &mut [u32], ctx: &mut Context) {
+    fn render(&mut self, target: &mut [Px], ctx: &mut Context) {
         self.render_frame(target, ctx);
         // RE-RESOLVE HOVER against the map this frame just stamped (Nick 2026-10-24: after a page change no button lit or answered until the mouse moved — hover only re-walked on motion, so the new page's widgets never learned the pointer sat on them).
         // The forced walk is idempotent; only a moved id asks for another frame, so a still pointer settles after one.

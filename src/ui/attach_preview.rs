@@ -3,6 +3,7 @@
 //! The MICRO tier is a ≤24-px gamma-2 VSF RGB thumb that rides on the row; the PREVIEW tier is an AV1-in-VSF image (`vsf::builders::compressed_image`, the avatar's own container) at ≤512 px on the long edge, content-addressed and pushed beside the original. Nothing here re-encodes the original: the bytes that travel are the bytes that were picked, and the only thing photon ever encodes is its own house-format preview.
 
 use crate::types::{AttachKind, AttachMeta, MICRO_PREVIEW_MAX_EDGE};
+use crate::ui::{Depth, Px};
 
 /// Long edge of the preview blob.
 pub const PREVIEW_MAX_EDGE: usize = 512;
@@ -159,13 +160,13 @@ fn decode_pdf(bytes: &[u8], max_edge: usize) -> Option<Folded> {
 }
 
 /// A preview built HERE from the original bytes, for a document row that travelled without a preview blob (sent before previews existed for its kind): same tier as the blob would have been, as display pixels.
-pub fn preview_from_original(bytes: &[u8], kind: AttachKind) -> Option<(usize, usize, Vec<u32>)> {
+pub fn preview_from_original(bytes: &[u8], kind: AttachKind) -> Option<(usize, usize, Vec<Px>)> {
     let f = decode_folded(bytes, "", kind, None, PREVIEW_MAX_EDGE)?;
-    Some((f.w, f.h, micro_to_display(&codes_u8(&f.display_gamma2()))))
+    Some((f.w, f.h, display_pixels(&f.display_gamma2())))
 }
 
 /// Decode a held preview blob (AV1-in-VSF) → (w, h, fluor packed α + darkness pixels) for the card and the viewer.
-pub fn decode_preview_blob(vsf_bytes: &[u8]) -> Option<(usize, usize, Vec<u32>)> {
+pub fn decode_preview_blob(vsf_bytes: &[u8]) -> Option<(usize, usize, Vec<Px>)> {
     let parsed = vsf::builders::parse_compressed_image(vsf_bytes).ok()?;
     if parsed.encoding != vsf::builders::ENCODING_AV1 {
         return None;
@@ -176,9 +177,9 @@ pub fn decode_preview_blob(vsf_bytes: &[u8]) -> Option<(usize, usize, Vec<u32>)>
 }
 
 /// The "open original" render: the original bytes decoded and folded to ≤ FULL_VIEW_MAX_EDGE, as display pixels. Off-thread only.
-pub fn full_image(bytes: &[u8], name: &str, kind: AttachKind, raw_path: Option<&std::path::Path>) -> Option<(usize, usize, Vec<u32>)> {
+pub fn full_image(bytes: &[u8], name: &str, kind: AttachKind, raw_path: Option<&std::path::Path>) -> Option<(usize, usize, Vec<Px>)> {
     let f = decode_folded(bytes, name, kind, raw_path, FULL_VIEW_MAX_EDGE)?;
-    Some((f.w, f.h, micro_to_display(&codes_u8(&f.display_gamma2()))))
+    Some((f.w, f.h, display_pixels(&f.display_gamma2())))
 }
 
 fn decode_folded(bytes: &[u8], name: &str, kind: AttachKind, raw_path: Option<&std::path::Path>, max_edge: usize) -> Option<Folded> {
@@ -462,14 +463,39 @@ fn inv3(m: &[f32; 9]) -> Option<[f32; 9]> {
     ])
 }
 
-/// Gamma-2 VSF RGB bytes → fluor's packed α + darkness pixels for `paint::draw_image` (BT.2020 on the way, the same display conversion the avatar takes).
-pub fn micro_to_display(vsf_gamma2: &[u8]) -> Vec<u32> {
+/// Gamma-2 VSF RGB bytes → fluor's packed α + darkness pixels at Photon's depth for `paint::draw_image` (BT.2020 on the way, the same display conversion the avatar takes).
+pub fn micro_to_display(vsf_gamma2: &[u8]) -> Vec<Px> {
+    to_display(vsf_gamma2)
+}
+
+/// [`micro_to_display`] at any depth: each display byte goes in thru [`Depth::from_gamma2`] — fluor's conversion at 8 bits, the byte's exact light as a 16-bit code at 16.
+fn to_display<P: Depth>(vsf_gamma2: &[u8]) -> Vec<P> {
     let bt = crate::ui::colour_convert::vsf_rgb_to_bt2020(vsf_gamma2);
     // Platform byte order thru fluor's `fmt` (R↔B on Android's RGBA_8888 buffer) exactly as the avatar path packs — `pack_argb` alone is desktop order, which is why previews came up blue-for-red on Android (2026-09-10).
     bt.chunks_exact(3)
         .map(|p| {
             let visible = ((p[0] as u32) << 16) | ((p[1] as u32) << 8) | p[2] as u32;
-            fluor::theme::dark(fluor::theme::fmt(fluor::theme::from_gamma2(visible)))
+            P::from_gamma2(P::ONE, visible)
+        })
+        .collect()
+}
+
+/// A folded image's gamma-2 VSF RGB samples (0..1) → display pixels at Photon's depth.
+fn display_pixels(g2: &[f32]) -> Vec<Px> {
+    display_pixels_at(g2)
+}
+
+/// [`display_pixels`] at any depth. 8 bits: the bytes the preview tier always made (×256 truncation, then [`micro_to_display`]'s path). Wider: straight from the decode's floats — light, the display's primaries ([`crate::ui::colour_convert`]'s matrix, none on macOS), then [`Depth::from_light`] — so a decode that held more than 8 bits keeps it.
+fn display_pixels_at<P: Depth>(g2: &[f32]) -> Vec<P> {
+    if P::DEPTH == 8 {
+        return to_display(&codes_u8(g2));
+    }
+    g2.chunks_exact(3)
+        .map(|p| {
+            let lin = [p[0] * p[0], p[1] * p[1], p[2] * p[2]];
+            #[cfg(not(target_os = "macos"))]
+            let lin = vsf::colour::convert::apply_matrix_3x3_f32(&vsf::colour::VSF_RGB2REC2020, &lin);
+            P::from_light(P::ONE, lin)
         })
         .collect()
 }
@@ -477,6 +503,24 @@ pub fn micro_to_display(vsf_gamma2: &[u8]) -> Vec<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A decode's floats go to the screen alike at both depths, read back at 8 bits: the 8-bit tier's own bytes, and the 16-bit straight from the floats at most one step darker and three brighter (the 8-bit path truncates three times — ×256, the γ2 byte after the matrix, then the g2t bucket — each a step down at worst).
+    /// Where the matrix carries a saturated colour past white in a channel, the 8-bit path clips it at white (a γ2 byte stops at 255) and the 16-bit keeps the light above it, which the `g2t` code has room for.
+    #[test]
+    fn display_pixels_agree_across_depths() {
+        use fluor::pixel::{Argb8, G2t16, Pixel};
+        let g2: Vec<f32> = (0..3 * 97).map(|i| ((i * 29) % 101) as f32 / 100.).collect();
+        let p8: Vec<Argb8> = display_pixels_at(&g2);
+        let p16: Vec<G2t16> = display_pixels_at(&g2);
+        assert_eq!(p8, to_display::<Argb8>(&codes_u8(&g2)));
+        for (a, b) in p8.iter().zip(&p16) {
+            assert_eq!(b.alpha(), G2t16::ONE);
+            for (x, y) in a.channels().into_iter().zip(b.channels()) {
+                let white = 255 - fluor::theme::GAMMA2_TO_G2T[255] as u32;
+                assert!((-3..=1).contains(&((y >> 8) as i32 - x as i32)) || (x == white && y >> 8 < x), "{a:08x} against {b:016x}");
+            }
+        }
+    }
 
     #[test]
     fn thumb_dims_keep_aspect_and_never_vanish() {

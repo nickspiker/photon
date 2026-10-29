@@ -21,7 +21,9 @@ use fluor::text::TextStyle;
 // Types used by the CLUTCH ceremony + message machinery extracted from app.rs (referenced bare in those blocks).
 use crate::network::status::AckRequest;
 use crate::types::{ChatMessage, ContactId, FriendshipChains, FriendshipId};
-use fluor::canvas::{Canvas, PixelRect};
+use fluor::canvas::PixelRect;
+use crate::ui::{Canvas, Depth, Px};
+use fluor::pixel::Pixel;
 use fluor::coord::Coord;
 use fluor::event::{
     CursorIcon, ElementState, Event, Ime, Key, MouseButton, MouseScrollDelta, NamedKey,
@@ -32,7 +34,15 @@ use fluor::host::chrome::{self, ResizeEdge};
 use fluor::host::chrome_widget::DefaultChrome;
 use fluor::host::widget::{self, Container, TabDir, Widget};
 use fluor::paint::{self, HitId, HIT_NONE};
-use fluor::widgets::{BlinkTimer, Button, Textbox};
+use fluor::widgets::BlinkTimer;
+/// fluor's widgets at Photon's depth ([`Px`]): `with_depth` builds them (`new` is the 8-bit constructor), the same construction `new` makes at 8 bits.
+type Button = fluor::widgets::Button<Px>;
+/// See [`Button`].
+type Textbox = fluor::widgets::Textbox<Px>;
+/// See [`Button`].
+type Dropdown = fluor::widgets::Dropdown<Px>;
+/// See [`Button`].
+type MultiTextbox = fluor::widgets::MultiTextbox<Px>;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -203,8 +213,10 @@ fn draw_hourglass(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, angle_deg: f
         return;
     }
     canvas.damage.add_bounds(x0, y0, x1, y1);
-    let dark = colour & 0x00FF_FFFF;
-    let base_a = (colour >> 24) & 0xFF;
+    // The authored 8-bit colour at Photon's depth: its darkness, and its α to scale by coverage.
+    let colour = Px::from_g2t8(colour);
+    let dark = colour.rgb();
+    let base_a = colour.alpha();
     for py in y0..y1 {
         let row = py * w;
         for px in x0..x1 {
@@ -230,7 +242,7 @@ fn draw_hourglass(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, angle_deg: f
                 continue;
             }
             let idx = row + px;
-            canvas.pixels[idx] = canvas.pixels[idx].under((alpha << 24) | dark, BlendMode::Normal);
+            canvas.pixels[idx] = canvas.pixels[idx].under(dark.with_alpha(alpha), BlendMode::Normal);
         }
     }
 }
@@ -259,7 +271,8 @@ fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u
     }
     canvas.damage.add_bounds(x0, y0, x1, y1);
     // The glyph's base α; coverage scales it for the under-composite.
-    let glyph_a = ((colour >> 24) & 0xFF) as f32 / 255.0;
+    let colour = Px::from_g2t8(colour);
+    let glyph_a = colour.alpha() as f32 / Px::ONE as f32;
 
     // Even-odd inside test + distance-to-nearest-edge for 1px coverage AA.
     let inside = |px: f32, py: f32| -> bool {
@@ -318,7 +331,7 @@ fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u
             }
             let idx = row + px;
             // Composite UNDER what is already here (fluor is front to back): the glyph is painted BEFORE its pill, so the pill lands under it and feathers the AA edge against whatever pill colour follows. Does NOT touch the hit map: the pill's silhouette stamp covers here, so the hover overlay tints only the pill.
-            let glyph = (((a * 255.0).round() as u32) << 24) | (colour & 0x00FF_FFFF);
+            let glyph = colour.rgb().with_alpha((a * Px::ONE as f32).round() as u32);
             canvas.pixels[idx] = fluor::pixel::Blend::under(canvas.pixels[idx], glyph, fluor::BlendMode::Normal);
         }
     }
@@ -346,7 +359,8 @@ fn draw_check_mark(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u32
         return;
     }
     canvas.damage.add_bounds(x0, y0, x1, y1);
-    let glyph_a = ((colour >> 24) & 0xFF) as f32 / 255.0;
+    let colour = Px::from_g2t8(colour);
+    let glyph_a = colour.alpha() as f32 / Px::ONE as f32;
     let inside = |px: f32, py: f32| -> bool {
         let mut wind = false;
         let mut j = verts.len() - 1;
@@ -401,7 +415,7 @@ fn draw_check_mark(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u32
             }
             let idx = row + px;
             // Composite UNDER what is already here (fluor is front to back): the glyph is painted BEFORE its pill, so the pill lands under it and feathers the AA edge against whatever pill colour follows. Does NOT touch the hit map: the pill's silhouette stamp covers here, so the hover overlay tints only the pill.
-            let glyph = (((a * 255.0).round() as u32) << 24) | (colour & 0x00FF_FFFF);
+            let glyph = colour.rgb().with_alpha((a * Px::ONE as f32).round() as u32);
             canvas.pixels[idx] = fluor::pixel::Blend::under(canvas.pixels[idx], glyph, fluor::BlendMode::Normal);
         }
     }
@@ -1739,10 +1753,10 @@ pub struct PhotonApp {
     /// The typed extras of the attachment row about to be minted by send_chain_message (set by attach_send_now, consumed at row creation) — so the row carries its kind + preview before the transmit reads it.
     attach_stage: Option<(crate::types::AttachMeta, Vec<u8>, crate::types::AttachRef)>,
     /// Decoded attachment pictures by hash (preview blobs and Original decodes): (w, h, packed display pixels); None = decode failed, don't ask again this session.
-    img_cache: crate::linear_map::SortedMap<[u8; 32], Option<(usize, usize, Vec<u32>)>>,
+    img_cache: crate::linear_map::SortedMap<[u8; 32], Option<(usize, usize, Vec<Px>)>>,
     img_pending: crate::linear_map::SortedSet<[u8; 32]>,
-    img_decoded_tx: std::sync::mpsc::Sender<([u8; 32], Option<(usize, usize, Vec<u32>)>)>,
-    img_decoded_rx: std::sync::mpsc::Receiver<([u8; 32], Option<(usize, usize, Vec<u32>)>)>,
+    img_decoded_tx: std::sync::mpsc::Sender<([u8; 32], Option<(usize, usize, Vec<Px>)>)>,
+    img_decoded_rx: std::sync::mpsc::Receiver<([u8; 32], Option<(usize, usize, Vec<Px>)>)>,
     /// Presence probes landed (viewer.rs drain_presence_probes) — the wrap re-measures and the screen repaints.
     presence_tx: std::sync::mpsc::Sender<()>,
     presence_rx: std::sync::mpsc::Receiver<()>,
@@ -1861,6 +1875,10 @@ pub struct PhotonApp {
     show_hitmask: bool,
     /// 256-entry colour table indexed by `hit_test_map` byte. Regenerated each time `[]h` toggles on so distinct IDs get visibly distinct colours. Empty until the chord first arms; cleared back to empty has no effect (the overlay skips when empty).
     debug_hit_colours: Vec<u32>,
+    /// An 8-bit front gathered for widening into a wider depth's frame: the chrome's (perimeter, chord hint, chrome layer — `Depth::chrome_flatten`) and opsin's viewer (`Depth::paint_8bit`); stays empty at 8 bits.
+    chrome_front: Vec<fluor::pixel::Argb8>,
+    /// The background layer (noise, launch wordmark and wave) at a wider depth, which fluor's 8-bit chrome cannot hold (`Depth::chrome_paint_bg`); stays empty at 8 bits, where the chrome's own layer is it.
+    bg_layer: Vec<Px>,
     /// "Were both brackets held last frame?" — read in `damage_rect` so the frame following a release still includes the chord-hint bbox (one extra paint to clear stale hint pixels), and the toggle is debounced thru a full frame.
     last_chord_held: bool,
     /// True when anything OTHER than self-damage-tracking widget state changed since the last render — screen content is immediate-mode (contact rows, bubbles, banners, toasts all re-rasterize as a function of app state), so any state change that could move content claims the full viewport in `damage_rect`. What stays narrow: pure widget frames (blinkey flips, drag-select growth) where the widgets' own `damage_rect`s are the whole story. Set by every event except `CursorMoved` (hover lives in the host overlay pass; drag-select is textbox-tracked), by every content-flavoured `needs_redraw` in `tick`, and cleared at the end of `render`. Starts true so the first frame paints everything.
@@ -1912,7 +1930,7 @@ pub struct PhotonApp {
     /// Plus button to the right of `contacts_textbox` — clicking it (or pressing Enter in the textbox) triggers the add-contact flow (`HandleQuery::search`). Will eventually carry an idle "+" glyph and an in-progress rotating-hourglass animation (legacy port from `compositing.rs`); that lands when `ProgressButton` gets extracted to fluor.
     contacts_plus_btn: Option<Button>,
     /// Conversation-screen message compose box (Conversation state). Distinct from the launch/search boxes so content never bleeds between screens. Enter sends (`submit_message`); the contents encrypt onto the open contact's friendship chain.
-    message_textbox: Option<fluor::widgets::MultiTextbox>,
+    message_textbox: Option<MultiTextbox>,
     /// Compose drafts, one per conversation holding one (drafts.rs, storage/drafts.rs) — unsent text, each stamped with its last edit and shared fleet-wide on every save edge (newest edit wins). Linear search: one entry per conversation with unsent text.
     drafts: Vec<(crate::types::ConversationId, crate::storage::drafts::Draft)>,
     /// The booted ledger (manage.rs, storage::booted): every contact this identity booted, re-emitted as a roster tombstone on every push and consulted before any path mints a contact. Loaded with the contacts at attest. Linear search: a handful of entries.
@@ -2514,7 +2532,7 @@ pub struct PhotonApp {
     vault_filter: VaultFilter,
     vault_breakdown: Option<Vec<(String, u64, u64)>>,
     /// Appearance-page theme selector — a real fluor `Dropdown`. Only in the widget walk while the Settings/Appearance page is up.
-    settings_theme_dropdown: Option<fluor::widgets::Dropdown>,
+    settings_theme_dropdown: Option<Dropdown>,
     /// Appearance-page zoom / text-size control — a real fluor `Slider`.
     settings_zoom_slider: Option<fluor::widgets::Slider>,
     /// Live PT transfer progress (peer, done, total, outbound) — throttled push from the status thread; drives the pill progress bar.
@@ -3046,6 +3064,8 @@ impl PhotonApp {
             chord_rb_release: None,
             show_hitmask: false,
             debug_hit_colours: Vec::new(),
+            chrome_front: Vec::new(),
+            bg_layer: Vec::new(),
             last_chord_held: false,
             scene_dirty: true,
             session: None,
@@ -4172,7 +4192,7 @@ fn is_private_addr(ip: &std::net::IpAddr) -> bool {
 /// CONTENT hit stamps RIDE THE PAINT DECISION (Nick 2026-10-01: "when we paint under we get a bool; if we never painted that pixel because something was there, skip the hit map"). fluor is front to back: the chrome is flattened into `target` before any content, opaque where it owns a pixel (the controls strip, the orb), and the under-blend's early-out skips exactly those pixels when content paints. These two stampers take the same decision from the same bit — a pixel already opaque is not ours — and so must run BEFORE the content they stamp for paints (its own paint would make the pixel opaque). The blind forms below stay for CLEARS and for the deliberate after-paint re-wins (a button reclaiming its silhouette over the widget it overlays), which cannot read opacity by then. The modal full-screen wave wipe fills the map directly.
 fn stamp_hit_rect_under(
     hit_map: &mut [HitId],
-    pixels: &[u32],
+    pixels: &[Px],
     buf_w: usize,
     buf_h: usize,
     x0: isize,
@@ -4189,7 +4209,7 @@ fn stamp_hit_rect_under(
         let row_base = y * buf_w;
         for x in xs..xe {
             let i = row_base + x;
-            if pixels[i] < 0xFF00_0000 {
+            if pixels[i] < Px::OPAQUE {
                 hit_map[i] = hit_id;
             }
         }
@@ -4199,7 +4219,7 @@ fn stamp_hit_rect_under(
 /// The circle twin of [`stamp_hit_rect_under`]: every pixel whose centre is inside the circle AND that nothing opaque has painted yet.
 fn stamp_hit_circle_under(
     hit_map: &mut [HitId],
-    pixels: &[u32],
+    pixels: &[Px],
     buf_w: usize,
     buf_h: usize,
     cx: f32,
@@ -4222,7 +4242,7 @@ fn stamp_hit_circle_under(
         for x in x_min..x_max {
             let dx = (x as f32 + 0.5) - cx;
             let i = row_base + x;
-            if dx * dx + dy2 <= r2 && pixels[i] < 0xFF00_0000 {
+            if dx * dx + dy2 <= r2 && pixels[i] < Px::OPAQUE {
                 hit_map[i] = hit_id;
             }
         }
