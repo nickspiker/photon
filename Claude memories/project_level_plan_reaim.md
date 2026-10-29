@@ -15,3 +15,5 @@ docs/waves.md is canonical for the plan; this is the tuning ledger from the 2026
 
 **Why:** each level and jitter rule here was convicted by a field wave.
 **How to apply:** change a constant only with a field log showing why; playout L/l rules live in [[project_playout_l_slips]], echo doctrine in [[project_incall_learner]].
+
+**2026-10-29 — HOT-MIC GUARD (Nick: "It sounded 10x loud with a hard limiter on it … that should instantly fix itself down to 1:1"):** Josh's Linux mic ran raw ~4000 under the 8× opening makeup (no stored profile → cal voiced 78 default) and the re-aim never fired in a whole wave — its gate (frame > 3× the tracked room AND our speaker quiet) cannot see a mic whose level IS its room level, so the wire sat at 22–26k against 2048 into the cubic rail. Now `hot_mic_makeup` (engine.rs) runs on the 1 s cadence over every live frame's raw mean while our speaker is quiet: if raw × makeup would put > 2× TX_WIRE_TARGET on the wire, the makeup drops at once to the gain that lands the target, floored at 1:1 (the guard removes boost, never attenuates). Logs `WAVE: level plan hot mic — …`; the step rides reaim_history.

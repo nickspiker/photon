@@ -142,6 +142,18 @@ const fn tier_window_bytes(tier: usize) -> usize {
 const TX_WIRE_TARGET: i64 = 2048;
 /// The most makeup a wave may OPEN with, before its own re-aim; the re-aim's 16x budget is unchanged.
 const TX_MAKEUP_OPENING_CAP: i64 = 8;
+
+/// THE HOT-MIC GUARD's decision (Nick 2026-10-29): given this second's raw mean (q8, 16-bit units × 256) and the current makeup (Q32), the makeup to drop to — when that raw level would put more than twice the target on the wire — or None to leave it.
+/// The drop lands the second on target and never goes below 1:1: the guard takes boost away from a hot mic, it never attenuates one. q8 × Q32 is Q40 against the 16-bit wire; raw < 2^23 and makeup ≤ 64× (2^38) keep the product under 2^61.
+fn hot_mic_makeup(raw_q8: i64, makeup_q32: i64) -> Option<i64> {
+    let wire = (raw_q8 * makeup_q32) >> 40;
+    if wire <= TX_WIRE_TARGET * 2 || makeup_q32 <= crate::wave::qgain::UNITY {
+        return None;
+    }
+    // The algorithm, not a guard: the makeup that lands this second on target, held at unity because the guard only ever removes boost (Nick: "down to 1:1").
+    let fit = ((TX_WIRE_TARGET << 40) / raw_q8).max(crate::wave::qgain::UNITY);
+    (fit < makeup_q32).then_some(fit)
+}
 /// Calibrated Unprocessed voiced speech measured on the field phones (Nick 75, Esme 82 — conversation sits ~15 dB under the 94 dB SPL reference).
 const TX_CAL_VOICED: i64 = 78;
 /// The CDD reference: Unprocessed puts 94 dB SPL at ~520 RMS ≈ −36 dBFS; TX_CAL_VOICED (78) is conversation at that reference. A reported per-mic sensitivity S shifts it: voiced_est = 78 · 10^((S+36)/20).
@@ -415,6 +427,9 @@ fn run(
     // The re-aim's evidence: every voiced frame mean since the last decision (fresh evidence per step; cleared on fire and on a failed dynamics gate). Two steps per wave at most — the first from 4 s of speech, one correction if 8 s of later evidence proves it ≥2× wrong (field 2026-09-15 16:54–16:57: four waves in a row fired on 2 s of pre-conversation breath and handling at 7–25 coarse — "4–12× its quiet", the relative gate satisfied — and hit the 64× cap; the real speech that followed ran 53–115 and the wire sat 1.5–2× hot on the rail: "splotchy").
     let mut reaim_ring: Vec<i64> = Vec::with_capacity(4096);
     let mut reaim_steps: u8 = 0;
+    // THE HOT-MIC GUARD's evidence (Nick 2026-10-29, Josh's wave: "It sounded 10x loud with a hard limiter on it … that should instantly fix itself down to 1:1"): the raw mean of every live frame this second, speech or not, while our speaker is quiet — no speech gate, because a mic hot enough to sit at its own room level never passes one.
+    let mut hot_sum_q8: i64 = 0;
+    let mut hot_frames: i64 = 0;
     let makeup_start_q32 = tx_makeup_q32;
     let mut reaim_history: Vec<(u32, u32, u32)> = Vec::new();
     let mut voiced_frames: i64 = 0;
@@ -683,6 +698,11 @@ fn run(
                     if reaim_steps < 2 && reaim_ring.len() < 4096 {
                         reaim_ring.push(mean_q8);
                     }
+                }
+                // Every live frame counts toward the hot-mic guard, our own speaker quiet so its echo is not mistaken for the mic.
+                if mean_q8 > 0 && crate::platform::audio::emitted_level() < 128 {
+                    hot_sum_q8 += mean_q8;
+                    hot_frames += 1;
                 }
                 // The kernel at 24-bit: s24 · g(Q32) is Q40 against the i16 domain, so the shift is 40 and the carry keeps 40 bits. Budget: 2^23 · 2^39 (128× makeup) + carry < 2^63.
                 let mut carry = tx_stage.take_carry();
@@ -1484,6 +1504,25 @@ fn run(
             .map_or(1.0, |db| 10f32.powf(db / 20.0));
         if last_est.elapsed() >= std::time::Duration::from_secs(1) {
             last_est = std::time::Instant::now();
+            // THE HOT-MIC GUARD (Nick 2026-10-29): the re-aim learns only from frames that stand out as speech, so a mic already hot — its level IS its room level — kept the opening makeup for a whole wave, 8× into the rail ("10x loud with a hard limiter").
+            // Each second: the wire this second's raw level would carry at the current makeup; past twice the target the makeup drops at once to the gain that puts it on target, and never below 1:1 — the guard takes boost away, it does not attenuate the mic.
+            if hot_frames > 0 {
+                let raw_q8 = hot_sum_q8 / hot_frames;
+                if let Some(fit) = hot_mic_makeup(raw_q8, tx_makeup_q32) {
+                    crate::logf!(
+                        "WAVE: level plan hot mic — raw {} would put {} on the wire against {}; makeup {} → {}",
+                        raw_q8 >> 8,
+                        (raw_q8 * tx_makeup_q32) >> 40,
+                        TX_WIRE_TARGET,
+                        format!("{:.1}x", tx_makeup_q32 as f64 / crate::wave::qgain::UNITY as f64),
+                        format!("{:.1}x", fit as f64 / crate::wave::qgain::UNITY as f64)
+                    );
+                    reaim_history.push(((raw_q8 >> 8) as u32, (tx_makeup_q32 * 10 / crate::wave::qgain::UNITY) as u32, (fit * 10 / crate::wave::qgain::UNITY) as u32));
+                    tx_makeup_q32 = fit;
+                }
+                hot_sum_q8 = 0;
+                hot_frames = 0;
+            }
             // THE RE-AIM (Nick "Go", 2026-09-15): session-to-session speech levels swing ±14 dB on the same phone (490→99 and 45→165 in one night — position, effort, room), so a history-fixed makeup lands crackling-hot or whisper-quiet somewhere. Once THIS wave holds 4 s of speech-like far-quiet-gated voiced evidence, the makeup steps exactly onto the plan; one correction is allowed if 8 s of later evidence proves that step ≥2× wrong; then it is fixed for the wave — two calibration corrections from ground truth at most, never an AGC. The initial 16× profile cap does not bind a fresh measurement (a genuinely quiet mic may need more); the kernel budget (128×) does.
             let need = if reaim_steps == 0 { 800 } else { 1600 };
             if reaim_steps < 2 && reaim_ring.len() >= need {
@@ -2211,6 +2250,18 @@ mod fill_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Josh's wave (2026-10-29): a mic running raw ~4000 under the 8× opening makeup put ~32000 on the wire; the guard drops the makeup to 1:1 in one step, leaves a normal mic and an unboosted one alone, and only trims a shout to the target.
+    #[test]
+    fn the_hot_mic_guard_drops_boost_to_unity_and_never_attenuates() {
+        let u = crate::wave::qgain::UNITY;
+        let q8 = |v: i64| v << 8;
+        assert_eq!(hot_mic_makeup(q8(4000), 8 * u), Some(u), "a hot mic falls straight to 1:1, never below");
+        assert_eq!(hot_mic_makeup(q8(250), 8 * u), None, "a normal voice at 8× (~2000 on the wire) is left alone");
+        let shout = hot_mic_makeup(q8(1000), 8 * u).expect("a sustained shout at 8× (~8000) trims");
+        assert!(shout > u && shout < 8 * u, "a shout trims to the target, not to unity");
+        assert_eq!(hot_mic_makeup(q8(4000), u), None, "at 1:1 there is no boost to take away");
+    }
 
     #[test]
     fn loss_loop_holds_the_floor_when_clean_and_lifts_on_loss() {
