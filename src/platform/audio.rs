@@ -1240,6 +1240,8 @@ mod desktop {
     static REBUILD: AtomicBool = AtomicBool::new(false);
     /// The session has a render stream (the engine's stall watchdog has nothing to rebuild without one).
     static HAS_RENDER: AtomicBool = AtomicBool::new(false);
+    /// The thread that owns this session's streams, so stop can wake it and wait for it to let go of the devices before a start opens its own (2026-10-29, Nick and Josh: a caller's ringback stopped and the engine started inside one 50 ms poll, the old thread never saw the stop, and two mic streams fed one wave — 400 frames a second, thousands of re-anchors, "it sounded terrible").
+    static SESSION_THREAD: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 
     fn name_of(dev: &cpal::Device) -> String {
         dev.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "?".into())
@@ -1315,10 +1317,14 @@ mod desktop {
         #[cfg(target_os = "macos")]
         if crate::platform::audio_vpio::live() {
             crate::platform::audio_vpio::stop();
-            let _ = std::thread::Builder::new().name("wave-audio".into()).spawn(audio_thread);
+            *SESSION_THREAD.lock().unwrap() = std::thread::Builder::new().name("wave-audio".into()).spawn(audio_thread).ok();
             return;
         }
         REBUILD.store(true, Ordering::SeqCst);
+        // Wake the session thread now rather than at its next poll.
+        if let Some(h) = SESSION_THREAD.lock().unwrap().as_ref() {
+            h.thread().unpark();
+        }
     }
 
     /// Start the audio session: spawns the thread that owns both cpal streams for the life of the wave. Returns false when no devices exist (the wave proceeds one-way rather than failing — a mic-less desktop can still listen).
@@ -1337,10 +1343,10 @@ mod desktop {
         if super::voice_dsp_wanted() && picks() == (None, None) && crate::platform::audio_vpio::start() {
             return true;
         }
-        std::thread::Builder::new()
-            .name("wave-audio".into())
-            .spawn(audio_thread)
-            .is_ok()
+        let spawned = std::thread::Builder::new().name("wave-audio".into()).spawn(audio_thread).ok();
+        let ok = spawned.is_some();
+        *SESSION_THREAD.lock().unwrap() = spawned;
+        ok
     }
 
     pub fn stop() {
@@ -1357,6 +1363,12 @@ mod desktop {
             return;
         }
         ACTIVE.store(false, Ordering::SeqCst);
+        // Wake the session thread and wait for it to drop its streams: the next start must find the devices released, never a second pair open beside the first.
+        let session = SESSION_THREAD.lock().unwrap().take();
+        if let Some(h) = session {
+            h.thread().unpark();
+            let _ = h.join();
+        }
     }
 
     /// Build the capture stream for whatever sample format the device speaks (ALSA defaults love i16; everything folds thru f32 internally).
@@ -1471,7 +1483,8 @@ mod desktop {
             let (in_stream, out_stream) = open_streams(&host);
             HAS_RENDER.store(out_stream.is_some(), Ordering::Relaxed);
             while ACTIVE.load(Ordering::Relaxed) && !REBUILD.load(Ordering::SeqCst) {
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                // Parked, not slept: stop and rebuild unpark it on their edge; the timeout only covers a wake that raced the park.
+                std::thread::park_timeout(std::time::Duration::from_millis(50));
             }
             drop(in_stream);
             drop(out_stream);
