@@ -1676,7 +1676,7 @@ pub fn scheme_words(mask: fgtw::fleet::scheme::Mask) -> String {
 }
 
 pub struct PhotonApp {
-    chrome: Option<DefaultChrome>,
+    chrome: Option<DefaultChrome<Px>>,
     hit_counter: HitId,
     event_proxy: Option<Arc<dyn WakeSender<PhotonEvent>>>,
     /// Vertical scroll offset for the background noise — drives `paint::background_noise`'s `scroll_offset` (visually translates the noise pattern up/down), `shimmer` (noise colour bias cycle), AND the chromatic wave's phase. MouseWheel events in `on_event` mutate this; everything else reads it.
@@ -1875,10 +1875,8 @@ pub struct PhotonApp {
     show_hitmask: bool,
     /// 256-entry colour table indexed by `hit_test_map` byte. Regenerated each time `[]h` toggles on so distinct IDs get visibly distinct colours. Empty until the chord first arms; cleared back to empty has no effect (the overlay skips when empty).
     debug_hit_colours: Vec<u32>,
-    /// An 8-bit front gathered for widening into a wider depth's frame: the chrome's (perimeter, chord hint, chrome layer — `Depth::chrome_flatten`) and opsin's viewer (`Depth::paint_8bit`); stays empty at 8 bits.
-    chrome_front: Vec<fluor::pixel::Argb8>,
-    /// The background layer (noise, launch wordmark and wave) at a wider depth, which fluor's 8-bit chrome cannot hold (`Depth::chrome_paint_bg`); stays empty at 8 bits, where the chrome's own layer is it.
-    bg_layer: Vec<Px>,
+    /// The 8-bit front opsin's viewer (8-bit only) draws into at a wider depth, widened under the frame (`Depth::paint_8bit`); stays empty at 8 bits.
+    front8: Vec<fluor::pixel::Argb8>,
     /// "Were both brackets held last frame?" — read in `damage_rect` so the frame following a release still includes the chord-hint bbox (one extra paint to clear stale hint pixels), and the toggle is debounced thru a full frame.
     last_chord_held: bool,
     /// True when anything OTHER than self-damage-tracking widget state changed since the last render — screen content is immediate-mode (contact rows, bubbles, banners, toasts all re-rasterize as a function of app state), so any state change that could move content claims the full viewport in `damage_rect`. What stays narrow: pure widget frames (blinkey flips, drag-select growth) where the widgets' own `damage_rect`s are the whole story. Set by every event except `CursorMoved` (hover lives in the host overlay pass; drag-select is textbox-tracked), by every content-flavoured `needs_redraw` in `tick`, and cleared at the end of `render`. Starts true so the first frame paints everything.
@@ -3064,8 +3062,7 @@ impl PhotonApp {
             chord_rb_release: None,
             show_hitmask: false,
             debug_hit_colours: Vec::new(),
-            chrome_front: Vec::new(),
-            bg_layer: Vec::new(),
+            front8: Vec::new(),
             last_chord_held: false,
             scene_dirty: true,
             session: None,

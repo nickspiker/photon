@@ -207,7 +207,7 @@ impl FluorApp<Px> for PhotonApp {
                 None
             }
         };
-        let mut chrome = DefaultChrome::new(
+        let mut chrome = DefaultChrome::with_depth(
             ctx.viewport,
             "Photon",
             orb_icon,

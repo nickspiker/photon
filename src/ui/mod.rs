@@ -1,19 +1,21 @@
 // All platforms share the fluor-hosted UI stack: `photon_app::PhotonApp` runs under `fluor::host::android::AndroidShell` on Android and `fluor::host::app::run_app` on desktop.
 // The legacy Android compositor (app / compositing / drawing / keyboard / mouse / text_editing / text_rasterizing / renderer_android) was deleted once fully retired — text measurement, editing, and rendering now live in fluor.
 
-/// The pixel depth Photon renders at on this target: fluor's 16-bit `G2t16` where the host takes it, its 8-bit `Argb8` elsewhere.
+/// The pixel depth Photon renders at on this target: fluor's 16-bit `G2t16` on every host that takes it (since fluor e9cedec all of them: winit/softbuffer desktops, Android, ferros), each target its own line so one can go back to fluor's 8-bit `Argb8` alone.
 /// Every buffer, cache and kernel of Photon's own paint is written against fluor's `Pixel` trait thru this name, so flipping a target is its one line here.
-/// ferros's display decodes G2t16 surfaces itself; the desktop (winit/softbuffer) and Android hosts stay 8-bit until fluor's hosts take G2t16.
 #[cfg(target_os = "ferros")]
 pub type Px = fluor::pixel::G2t16;
 /// See the ferros arm.
-#[cfg(not(target_os = "ferros"))]
-pub type Px = fluor::pixel::Argb8;
+#[cfg(target_os = "android")]
+pub type Px = fluor::pixel::G2t16;
+/// See the ferros arm.
+#[cfg(not(any(target_os = "ferros", target_os = "android")))]
+pub type Px = fluor::pixel::G2t16;
 
 /// fluor's canvas at Photon's depth: every `&mut Canvas` in Photon's paint code is a canvas of [`Px`].
 pub type Canvas<'a> = fluor::canvas::Canvas<'a, Px>;
 
-/// What Photon's paint needs of a depth beyond fluor's `Pixel`: colour in from the display's γ2 RGB, and the bridge to fluor's 8-bit chrome.
+/// What Photon's paint needs of a depth beyond fluor's `Pixel`: colour in from the display's γ2 RGB and the bridge for a painter that only draws 8-bit (opsin's viewer).
 pub mod depth;
 pub use depth::Depth;
 

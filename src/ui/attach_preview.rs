@@ -607,8 +607,8 @@ mod colour_order_tests {
         let (_, _, px) = crate::types::parse_micro_image(&p.preview).unwrap();
         assert!(px[0] > px[1] && px[0] > px[2], "VSF gamma2 thumb: R {} G {} B {}", px[0], px[1], px[2]);
         let disp = micro_to_display(&px[..3]);
-        let packed = disp[0];
-        let (dr, dg, db) = (((packed >> 16) & 0xFF) as i32, ((packed >> 8) & 0xFF) as i32, (packed & 0xFF) as i32);
+        // The pixel's channels at whatever depth Photon renders, thru fluor's trait.
+        let [dr, dg, db] = fluor::pixel::Pixel::channels(disp[0]);
         // Darkness convention: the RED byte is the LEAST dark.
         assert!(dr < dg && dr < db, "display darkness R {dr} G {dg} B {db}");
     }

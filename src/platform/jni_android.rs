@@ -557,7 +557,7 @@ pub fn request_service_tick() {
 /// Activity-side context. Holds the fluor shell that owns the FluorApp + surface + pipeline. Lifetime: created on Activity surface-creation (`nativeInitWithNetwork`), destroyed on Activity teardown (`nativeDestroy`).
 #[cfg(target_os = "android")]
 pub struct PhotonContext {
-    pub shell: AndroidShell<PhotonApp>,
+    pub shell: AndroidShell<PhotonApp, crate::ui::Px>,
     /// Re-entry guard between the Activity draw thread (`nativeDraw` → `tick`) and the foreground-service thread (`nativeServiceTick` → `advance_protocol`). Both mutate the one `PhotonApp` thru the `&'static mut` handed out by `get_context`, so they must never run concurrently. They normally can't — the frame callback is removed on `onPause`, exactly when the service tick takes over — but the `onResume` re-arm can momentarily overlap. This flag serialises them: whoever holds it runs, the other skips (a skipped background tick is harmless — the next foreground `tick` drains the same channels anyway). See docs/background-tick.md.
     pub ticking: std::sync::atomic::AtomicBool,
 }
