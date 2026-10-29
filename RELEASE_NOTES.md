@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v133
 - **Tap a picture to hide its controls.** In the picture viewer, a tap on the picture hides the side panel, the info and the Back and Save buttons, and another tap brings them back. With the controls showing the picture stays put and zooming resizes the controls; with the picture alone, zooming, scrolling and dragging move the picture.
 - **No more black box behind pictures.** The picture viewer no longer covers Photon's background with a big black rectangle; the picture and its controls sit on the usual background.
 - **Read on one device, read on all.** Reading a conversation on one of your devices left it marked unread on the others, so replying from your phone could make your computer show that conversation as unread. Opening a conversation or replying in it now clears it everywhere, and a photon that arrives while you are reading on another device no longer marks it unread here.
