@@ -193,6 +193,8 @@ impl PhotonApp {
                     let mut counter = base;
                     let mut view = opsin::view::View::new(loaded, &mut counter);
                     view.set_export_label(&tr(Msg::SavePill));
+                    // Photon's speckle shows thru the viewer: the view paints no backdrop or panel surface of its own (Nick 2026-10-28, "the massive black rectangle that gets painted in front of the background").
+                    view.set_host_backdrop(true);
                     v.view = Some(view);
                 }
                 Err(_) => v.failed = true,

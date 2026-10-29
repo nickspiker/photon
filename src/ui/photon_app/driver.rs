@@ -608,14 +608,15 @@ impl FluorApp for PhotonApp {
 
     // Zoom about the ANCHOR (the pointer, or the window centre when no pointer is in the window), never about the pane top: the content under the pointer holds still while everything scales around it (Nick 2026-09-09 — "it locks from top"). Every pane inset is span-relative, so it scales by the same factor as the content and cancels out of the math; the anchor is measured from whichever WINDOW edge the pane hangs from. Top-hung panes (contacts block, settings rail + content): the content under the anchor sits `scroll + ay` below the top and `(scroll + ay) × f` after the zoom, so the new scroll is that minus `ay`. The conversation hangs from the BOTTOM (offset 0 = newest at the bottom, positive = older revealed above), so it measures from the bottom edge. Only the on-screen panes move — an off-screen pane has no anchor to hold. The 0 end clamps hard (a zoom-out at the top must not bounce off the rubber band); the far end is re-measured by the next render and settles like any other overshoot.
     /// The image viewer claims the zoom gesture while open, so the hosts leave the UI's `ru` alone and hand the raw factor to `on_zoom` — a pinch or Ctrl+wheel zooms the PICTURE, never the interface underneath it (the double-zoom both hosts used to apply).
+    /// Only with its controls hidden (Nick 2026-10-28: "when the controls are visible, zooming and scrolling adjusts the controls, when the image alone is visible, the image gets transformed") — with them up the gesture is the UI's `ru` and the controls scale.
     fn owns_zoom_gesture(&self) -> bool {
-        self.viewer.is_some()
+        self.viewer.as_ref().and_then(|v| v.view.as_ref()).is_some_and(|view| view.plain())
     }
 
     fn on_zoom(&mut self, factor: f32, _anchor_x: Coord, anchor_y: Coord, ctx: &mut Context) {
-        // The image viewer owns the gesture while open: opsin's view zooms about the pointer (the point under it holds still); before the decode lands the preview just sits fitted.
+        // The image viewer with its controls hidden owns the gesture: opsin's view zooms about the pointer (the point under it holds still). With the controls up `ru` already moved and the picture holds still; the screens behind the viewer are not drawn, so nothing scrolls either.
         if let Some(v) = self.viewer.as_mut() {
-            if let Some(view) = v.view.as_mut() {
+            if let Some(view) = v.view.as_mut().filter(|view| view.plain()) {
                 view.zoom_around(factor, _anchor_x, anchor_y);
             }
             self.scene_dirty = true;

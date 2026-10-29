@@ -2895,15 +2895,19 @@ impl PhotonApp {
                     // Topmost first: pills paint before the picture, the picture before the backdrop — everything wins exactly its own pixels.
                     if let Some(v) = self.viewer.as_mut() {
                         let held = crate::storage::blob_present_or_pending(&v.hash);
-                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[0], &tr(Msg::ViewerBack), self.viewer_base, ctx.pressed_hit, true, None, "Oxanium");
-                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[1], &tr(Msg::SavePill), self.viewer_base + 2, ctx.pressed_hit, held, None, "Oxanium");
+                        // Back and Save are controls too: hidden with the rest while the picture shows alone (a tap on it, or Escape, brings them back).
+                        let plain = v.view.as_ref().is_some_and(|view| view.plain());
+                        if !plain {
+                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[0], &tr(Msg::ViewerBack), self.viewer_base, ctx.pressed_hit, true, None, "Oxanium");
+                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[1], &tr(Msg::SavePill), self.viewer_base + 2, ctx.pressed_hit, held, None, "Oxanium");
+                        }
                         match v.view.as_mut() {
                             Some(view) => {
                                 // OPSIN'S VIEWER, WHOLE (Nick 2026-09-17): image area + tool panel + HUD, its pills stamped into the shared hit map under the ids photon reserved for them.
                                 view.set_area(opsin::view::Area { x: 0.0, y: area_top, w: buf_w as f32, h: buf_h as f32 - area_top });
                                 view.render(&mut canvas, ctx.viewport, ctx.text, ctx.damage_clip, (ctx.cursor_x, ctx.cursor_y), &mut chrome.hit_test_map);
                                 // PHOTON'S PILLS WIN THEIR RECTS LAST (field 2026-10-01, "back button doesn't do anything on the full-screen viewer"): the view's own buttons stamp during their blit, after the pills above, and a panel widget laid over the top-left took the Back pill's pixels. A deliberate after-paint re-win — the pills were painted first, so they are on top on screen too.
-                                for (i, r) in prects.iter().enumerate() {
+                                for (i, r) in prects.iter().enumerate().filter(|_| !plain) {
                                     restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, r.x as isize, r.y as isize, (r.x + r.w) as isize, (r.y + r.h) as isize, self.viewer_base + if i == 0 { 0 } else { 2 });
                                 }
                             }
@@ -2976,9 +2980,12 @@ impl PhotonApp {
                         draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[0], &tr(Msg::ViewerBack), self.viewer_base, ctx.pressed_hit, true, None, "Oxanium");
                         draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[1], &tr(Msg::SavePill), self.viewer_base + 2, ctx.pressed_hit, true, None, "Oxanium");
                     }
-                    // Backdrop LAST (under-blend: everything above already owns its pixels) — the whole buffer below the chrome strip; the view painted its own area opaque, so this lands on what it left (the status-bar strip on Android, the reader's page).
-                    let bd_top = if cfg!(target_os = "android") { 0.0 } else { fluor::host::chrome::strip_height(ctx.viewport) };
-                    paint::fill_rect(&mut canvas, 0, bd_top as isize, buf_w as isize, (buf_h as f32 - bd_top) as isize, *theme::VIEWER_BG_COLOUR, None, None);
+                    // The READER's page: its backdrop LAST (under-blend: everything above already owns its pixels), the whole buffer below the chrome strip.
+                    // The image viewer paints none — Photon's speckle shows behind the picture and its controls (Nick 2026-10-28, "the massive black rectangle that gets painted in front of the background").
+                    if self.reader.is_some() {
+                        let bd_top = if cfg!(target_os = "android") { 0.0 } else { fluor::host::chrome::strip_height(ctx.viewport) };
+                        paint::fill_rect(&mut canvas, 0, bd_top as isize, buf_w as isize, (buf_h as f32 - bd_top) as isize, *theme::VIEWER_BG_COLOUR, None, None);
+                    }
                 }
             }
             // The one conversation arm paints ANY conversation from its header; `hdr.ci` is the one person it is with, when it is with one we hold a contact for.
