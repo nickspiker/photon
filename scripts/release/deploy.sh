@@ -371,9 +371,9 @@ r2_put "$R2_BUCKET/$REL_PATH/photon-messenger-android-release.apk" \
 # THE SWITCH: the installers (patched to the folder above, which is now fully up), then the manifest — a few small files, so the new release goes live together.
 r2_put "$R2_BUCKET/$R2_PATH/install-release.sh" \
     --file /tmp/install-release.sh --content-type text/plain --remote
-# The resilient-launch shim (docs/resilient-launch.md): the installer fetches this to $HOME/.local/bin/photon-launch and points the .desktop at it.
-r2_put "$R2_BUCKET/$R2_PATH/photon-launch.sh" \
-    --file installers/photon-launch.sh --content-type text/plain --remote
+# The resilient launcher (docs/resilient-launch.md): the installer fetches this to $HOME/.local/bin/photon — the `photon` command — and points the .desktop at it.
+r2_put "$R2_BUCKET/$R2_PATH/photon.sh" \
+    --file installers/photon.sh --content-type text/plain --remote
 r2_put "$R2_BUCKET/$R2_PATH/icon-1024.png" \
     --file assets/icon-1024.png --content-type image/png --remote
 r2_put "$R2_BUCKET/$R2_PATH/app.png" \

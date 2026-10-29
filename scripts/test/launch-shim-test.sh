@@ -1,8 +1,8 @@
 #!/bin/bash
-# Hermetic test for installers/photon-launch.sh — the resilient launcher. Fakes two "photon" copies (good / bad-sig / hangs / missing) via env-overridden paths and asserts the shim picks the right one, falls back, times out, and refuses when all are bad. No real binary, no network; runs in seconds.
+# Hermetic test for installers/photon.sh — the resilient launcher. Fakes two "photon" copies (good / bad-sig / hangs / missing) via env-overridden paths and asserts the shim picks the right one, falls back, times out, and refuses when all are bad. No real binary, no network; runs in seconds.
 set -u
 
-SHIM="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../installers" && pwd)/photon-launch.sh"
+SHIM="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../installers" && pwd)/photon.sh"
 
 PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); echo "  ok   - $1"; }

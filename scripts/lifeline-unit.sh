@@ -9,7 +9,7 @@ Description=Photon headless lifeline (bridge survives X death — docs/headless-
 
 [Service]
 # The shim verifies the binary then execs it with args forwarded; --lifeline watches the instance lock and pumps headless only while nothing else holds it.
-ExecStart=%h/.local/bin/photon-launch --lifeline
+ExecStart=%h/.local/bin/photon --lifeline
 # A yield handoff exits 0 (full-UI launch took the lock) and a crash exits non-zero — both must come back as the watcher.
 Restart=always
 RestartSec=10

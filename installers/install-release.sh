@@ -101,19 +101,21 @@ if [ "$OS" = "Linux" ]; then
     mkdir -p "$COPY_B_DIR"
     cp "$INSTALL_DIR/$BINARY_NAME" "$COPY_B_DIR/$BINARY_NAME"
     chmod +x "$COPY_B_DIR/$BINARY_NAME"
-    SHIM_URL="https://brobdingnagian.holdmyoscilloscope.com/photon/photon-launch.sh"
+    SHIM_URL="https://brobdingnagian.holdmyoscilloscope.com/photon/photon.sh"
+    # The launcher is the `photon` command; an older install's `photon-launch` goes.
+    rm -f "$INSTALL_DIR/photon-launch" 2>/dev/null || true
     SHIM_OK=""
     if command -v curl >/dev/null 2>&1; then
-        curl -sSfL "$SHIM_URL" -o "$INSTALL_DIR/photon-launch" 2>/dev/null && SHIM_OK=1 || true
+        curl -sSfL "$SHIM_URL" -o "$INSTALL_DIR/photon" 2>/dev/null && SHIM_OK=1 || true
     elif command -v wget >/dev/null 2>&1; then
-        wget -q "$SHIM_URL" -O "$INSTALL_DIR/photon-launch" 2>/dev/null && SHIM_OK=1 || true
+        wget -q "$SHIM_URL" -O "$INSTALL_DIR/photon" 2>/dev/null && SHIM_OK=1 || true
     fi
-    if [ -n "$SHIM_OK" ] && [ -s "$INSTALL_DIR/photon-launch" ]; then
-        chmod +x "$INSTALL_DIR/photon-launch"
-        EXEC_TARGET="$INSTALL_DIR/photon-launch"
+    if [ -n "$SHIM_OK" ] && [ -s "$INSTALL_DIR/photon" ]; then
+        chmod +x "$INSTALL_DIR/photon"
+        EXEC_TARGET="$INSTALL_DIR/photon"
         echo "✓ Resilient launch installed (second copy + verify-and-fallback shim)"
     else
-        rm -f "$INSTALL_DIR/photon-launch" 2>/dev/null || true
+        rm -f "$INSTALL_DIR/photon" 2>/dev/null || true
         echo "  (launch shim unavailable — launching the binary directly; second copy still installed)"
     fi
     echo ""

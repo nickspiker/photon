@@ -16,6 +16,7 @@
 - [feedback_commit_all.md](feedback_commit_all.md) — "commit" includes all modified files unless told otherwise
 - [feedback_source_map.md](feedback_source_map.md) — keep src/lib.rs source-map comment current when pub items/files change
 - [No Python](feedback_no_python.md) — HARD: no Python in the photon repo unless proven necessary; commit generated artifacts (fonts), tools are Rust
+- [Launcher is `photon`](feedback_launcher_named_photon.md) — the resilient launcher is the `photon` command (~/.local/bin/photon), never photon-launch
 - [No wrapped comments](feedback_no_comment_wraps.md) — one sentence per line, never hard-wrapped, any repo; comment-gate.sh enforces
 - [Edges, not timers](edges-not-timers.md) — react on event edges, never timers/debounces; UI too: [feedback_no_time_based_ui.md](feedback_no_time_based_ui.md)
 - [feedback_direct_pixel_no_floaters.md](feedback_direct_pixel_no_floaters.md) — rendering is direct pixel access only; no GPU shaders/float pipeline
