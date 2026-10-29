@@ -713,27 +713,15 @@ See [AGENT.md](AGENT.md) for complete code generation rules.
 
 ## Contributing
 
-Photon is in early development. Contributions welcome—please read architecture documentation first:
+Contributions are welcome. Before writing code, read:
 
-- [AUTH.md](AUTH.md) - Attestation system specification (1,350 lines)
-- [AGENT.md](AGENT.md) - Code generation rules
-- This README - Architecture and current status
+- [AGENT.md](AGENT.md) — the code rules, for people and coding agents alike: house formats only (VSF, AV1, Opus, BLAKE3, XChaCha20-Poly1305), no bounds check or clamp without a proof it is needed, Eagle Time only, no structured data smuggled through strings, C¹-smooth UI math. Changes that break them get sent back.
+- [docs/](docs/) — one design document per subsystem. Good starting points: [conversations.md](docs/conversations.md) (one conversation model at any size), [braid.md](docs/braid.md) (the rolling-chain encryption), [clutch.md](docs/clutch.md) (the key ceremony), [waves.md](docs/waves.md) (voice) and [lexicon.md](docs/lexicon.md) (what Photon's words mean).
+- [src/lib.rs](src/lib.rs) — opens with a map of the whole source tree.
 
-**High-priority areas:**
+Build with `./build.sh`; test with `cargo test` (the whole suite — `--lib` alone skips the tests in `tests/`).
 
-0. Network transport (direct peer connections, WebSocket)
-1. Message persistence (VSF storage layer)
-2. Social recovery (shard distribution, threshold reconstruction)
-3. Android testing (real-device validation)
-4. XChaCha20 / XChaCha20-Poly1305 integration (complete rolling-chain implementation)
-
-**Testing:**
-```bash
-cargo test
-cargo bench  # Crypto benchmarks
-```
-
-Test coverage is currently minimal—this is early-stage development. Write tests for any new cryptographic code.
+Ideas and bug reports go thru **Settings → Ideas** inside Photon. Every one is public, so you can see whether yours is already in and what becomes of it.
 
 ---
 

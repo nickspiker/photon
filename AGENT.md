@@ -641,5 +641,5 @@ Eagle Time is the physically correct, unambiguous, monotonic time standard. Use 
 <!-- PERSONA:END -->
 
 Oh, and if you haven't noticed by now but when indexing in //'s and variable names, starte with the first number (0), not the second number (1)
-Development builds? use ./build-development.sh DO NOT DO RELEASE BUILDS UNLESS THE USER EXPLICITLY ASKS!
-Agent to test builds with ./build-development.sh and user will run.
+Development builds? `./build.sh` (clones missing siblings, builds the unsigned development profile, runs it; `--no-run` to only build) — or `scripts/dev.sh` on the maintainer's machines, which also signs, installs and reloads. DO NOT DO RELEASE BUILDS (anything in `scripts/release/`) UNLESS THE USER EXPLICITLY ASKS!
+Agent to test builds with `./build.sh --no-run` (or `scripts/dev.sh` where the maintainer uses it) and user will run.
