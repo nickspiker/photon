@@ -428,10 +428,14 @@ impl PhotonApp {
         )> = Vec::new();
         // Consent gate (2026-08-25): knocks to fire and the roster ride for a Mutual flip — both need &mut self, so they wait out the drain like the jobs above.
         let mut knock_after: Vec<crate::types::ContactId> = Vec::new();
+        // Contacts whose knock reached us while we still waited on them — confirmed after the drain (consent_confirmed takes &mut self, and the drain holds the checker).
+        let mut knock_consent: Vec<crate::types::ContactId> = Vec::new();
         // Pong-seal reseed request(s) this drain — one walk after the loop no matter how many unkeyed devices reported (the per-drain edge that replaced the 10s clock).
         let mut seal_reseed_requested = false;
         // Fold-freshness tripwire (the Jon incident): friend hps whose pong claimed a NEWER chain tip than our stored fold — refetch after the drain (the contacts loop holds &mut self.contacts, so the &mut-self spawn defers, the knock_after idiom). The claim rides along so the pursuit map records what we acted on.
         let mut stale_fold_hps: Vec<([u8; 32], i64)> = Vec::new();
+        // Contacts that answered while their device list is still unfolded: if our mesh ask for their chain went unanswered, this pong is the edge that sends the ask to the seed (peers first, seed last — "last" needs an edge, and a lost direct ask has none).
+        let mut fold_unanswered: Vec<[u8; 32]> = Vec::new();
         // Snapshot of the pursuit map for the in-loop gate (the loop holds &mut self.contacts; the map lives on self).
         let stale_fold_claims = self.fleet_tip_pursuit.clone();
         // chain_pull request/miss events, deferred past the checker borrow (their handling mutates watermarks / re-keys).
@@ -1000,6 +1004,13 @@ impl PhotonApp {
                                     hex::encode(&peer_pubkey.key[..4]),
                                     if is_online { "up" } else { "down" }
                                 );
+                            }
+                            // Every return of a contact who has not added us back is a fresh chance for our knock: the one sent this session may have hit a closed pipe (2026-10-29: the MacBook's knock reached Josh's app mid-restart and was never sent again).
+                            if came_online && !contact.consent_mutual && !contact.is_sibling {
+                                contact.knocked_session = false;
+                            }
+                            if is_online && !contact.fleet_folded_once && !contact.is_sibling && !fold_unanswered.contains(&contact.handle_proof) {
+                                fold_unanswered.push(contact.handle_proof);
                             }
                             // A sibling coming online is the fleet-history catch-up trigger: it may hold conversation rows written while we were apart. Deferred — the sweep needs &mut contacts. Also the heal edge: re-announce our STORED attention/claim so the reconnecting sibling sheds any stale holder beliefs.
                             if came_online && contact.is_sibling {
@@ -1998,6 +2009,8 @@ impl PhotonApp {
                     // OFFER AS MUTUALITY EVIDENCE (consent gate, 2026-08-25): an old client never knocks — its opening move is still the full offer. A token-matched, trust-gated offer proves the sender holds both party ids, exactly what the knock proves, so it flips a WeAsked row Mutual (persist + roster ride) before normal processing arms the ceremony.
                     if !self.contacts[matched_ci].consent_mutual {
                         self.contacts[matched_ci].consent_mutual = true;
+                        // Stamped newer so the roster push carries the consent past every sibling's merge, as the knock path does.
+                        self.contacts[matched_ci].roster_updated = vsf::eagle_time_oscillations();
                         crate::logf!(
                             "CONSENT: mutual add confirmed with {} via their offer — arming the ceremony",
                             crate::fp(&self.contacts[matched_ci].handle_proof)
@@ -4175,31 +4188,10 @@ impl PhotonApp {
                             crate::fp(&self.contacts[ci].handle_proof)
                         );
                     }
+                    // The roster entry is stamped newer before the save, so the push carries the consent past every sibling's LWW merge — the ceremony owner learns it even when this knock reached only us.
                     if !self.contacts[ci].consent_mutual {
-                        self.contacts[ci].consent_mutual = true;
-                        crate::logf!(
-                            "CONSENT: mutual add confirmed with {} — arming the ceremony",
-                            crate::fp(&self.contacts[ci].handle_proof)
-                        );
-                        let id = self.contacts[ci].id.clone();
-                        let (Some(us), them) = (our_pid, self.contacts[ci].handle_hash) else {
-                            continue;
-                        };
-                        if self.contacts[ci].clutch_our_keypairs.is_none()
-                            && !self.contacts[ci].clutch_keygen_in_progress
-                        {
-                            self.contacts[ci].clutch_keygen_in_progress = true;
-                            let progress = self.spawn_clutch_keygen(id, us, them);
-                            self.contacts[ci].clutch_keygen_progress = Some(progress);
-                        }
-                        if let Some(storage) = self.storage.as_ref() {
-                            let snapshot = self.contacts[ci].clone();
-                            if let Err(e) =
-                                crate::storage::contacts::save_contact(&snapshot, storage)
-                            {
-                                crate::logf!("CONSENT: contact save failed: {}", e);
-                            }
-                        }
+                        self.contacts[ci].roster_updated = vsf::eagle_time_oscillations();
+                        knock_consent.push(self.contacts[ci].id.clone());
                         consent_roster_push = true;
                     }
                 }
@@ -5705,9 +5697,24 @@ impl PhotonApp {
             }
         }
 
+        // A contact answered, but our ask for its chain over the mesh never was (2026-10-29: Josh asked Nick's desktop directly through a NAT that never let it in, so his app knew one of Nick's devices and ignored the rest): the seed folds it now. Dropped from the standing set once sent, so a failed seed fetch waits for the next refresh edge rather than repeating on every pong.
+        let seed_due: Vec<[u8; 32]> = fold_unanswered.into_iter().filter(|hp| self.fleet_asked.contains(hp)).collect();
+        if !seed_due.is_empty() {
+            for hp in &seed_due {
+                crate::logf!("FLEET: {} answered but never sent its chain over the mesh — asking the seed", crate::fp(hp));
+            }
+            self.spawn_contact_fleet_refresh(seed_due.clone());
+            self.fleet_asked.retain(|h| !seed_due.contains(h));
+        }
+
         // BRAID MIGRATION — REMOVED (field 2026-09-28): it armed a heavy weave whenever the FRIEND's devices all showed v2, but the friend claims v2 only when OURS all do, so with any older or refused device of ours the weave could never reach v2 and re-armed on every restart; its churn tripped the ceremony breaker and stranded Emma's chains. v2 now arrives with any natural ceremony (both offers claim it once both fleets are ready). A migration trigger comes back only when it can see BOTH fleets are v2.
 
         // Consent knocks collected on pong edges (after releasing the checker borrow), plus the roster ride for any Mutual flip this drain confirmed — siblings learn the flip so whichever device is in hand completes the handshake.
+        for id in knock_consent {
+            if let Some(ci) = self.contacts.iter().position(|c| c.id == id) {
+                self.consent_confirmed(ci, "their knock");
+            }
+        }
         for id in knock_after {
             if let Some(ci) = self.contacts.iter().position(|c| c.id == id) {
                 self.send_friend_knock(ci);

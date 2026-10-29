@@ -37,6 +37,8 @@ impl PhotonApp {
                 woven: false,
                 // A tombstone carries no identity payload — name, pin and owner are already blanked above for the same reason. Stranger (0) is the least-privileged value, so a tombstone that somehow lost its flag downgrades rather than promotes.
                 trust_level: 0,
+                // A tombstone records no consent: it is a boot, not a friendship.
+                consent: false,
             };
             let live = self
                 .fleet_settings
@@ -600,6 +602,31 @@ impl PhotonApp {
                 contact.clutch_our_eggs_proof = None;
             }
         }
+    }
+
+    /// THE MUTUALITY EDGE, one place: they have added us too — heard as their knock on this device, or adopted from the fleet roster because another of our devices heard it (2026-10-29: Josh knocked one desktop while the MacBook owned the ceremony, and the handshake waited forever).
+    /// Records it, arms the ceremony the way a knock always has (keygen when none is held or running), and saves the contact; returns whether consent was new.
+    pub(super) fn consent_confirmed(&mut self, ci: usize, via: &str) -> bool {
+        if self.contacts[ci].consent_mutual {
+            return false;
+        }
+        self.contacts[ci].consent_mutual = true;
+        crate::logf!("CONSENT: mutual add confirmed with {} ({}) — arming the ceremony", crate::fp(&self.contacts[ci].handle_proof), via);
+        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        if let Some(us) = us {
+            if self.contacts[ci].clutch_our_keypairs.is_none() && !self.contacts[ci].clutch_keygen_in_progress {
+                let (id, them) = (self.contacts[ci].id.clone(), self.contacts[ci].handle_hash);
+                self.contacts[ci].clutch_keygen_in_progress = true;
+                let progress = self.spawn_clutch_keygen(id, us, them);
+                self.contacts[ci].clutch_keygen_progress = Some(progress);
+            }
+        }
+        if let Some(storage) = self.storage.as_ref() {
+            if let Err(e) = crate::storage::contacts::save_contact(&self.contacts[ci], storage) {
+                crate::logf!("CONSENT: contact save failed: {}", e);
+            }
+        }
+        true
     }
 
     /// Send the consent KNOCK at a contact we added (2026-08-25): the few-hundred-byte signed intent frame that replaced the 548KB offer as the opening move — no key material travels until the add is reciprocated. Direct + relay like every small ceremony frame; loss is covered by the once-per-session re-knock on presence edges and, ultimately, by the peer's own add (the later adder initiates).

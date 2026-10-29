@@ -1580,6 +1580,7 @@ impl PhotonApp {
                 ceremony_owner: [0u8; 32],
                 woven: false,
                 trust_level: 0,
+                consent: false,
             });
         self.contacts
             .iter()
@@ -1599,6 +1600,8 @@ impl PhotonApp {
                 ceremony_owner: c.ceremony_owner.unwrap_or([0u8; 32]),
                 woven: c.chain_woven || c.owner_woven,
                 trust_level: crate::storage::cloud::trust_level_to_u8(c.trust_level),
+                // They have added us too — whichever device heard their knock says so for the whole fleet, so the ceremony owner arms even when the knock never reached it.
+                consent: c.consent_mutual,
             })
             .chain(tombstones)
             .collect()
@@ -1613,6 +1616,8 @@ impl PhotonApp {
         let mut adopted = 0usize;
         let mut removed = 0usize;
         let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
+        // Contacts a sibling says have added us too, armed after the loop (it can remove contacts, so positions are resolved again by proof).
+        let mut consent_from_roster: Vec<[u8; 32]> = Vec::new();
         for e in entries {
             // Match FRIEND contacts only — sibling contacts carry OUR handle_proof and must not suppress a roster entry (nor be treated as its holder).
             if let Some(pos) = self
@@ -1705,6 +1710,9 @@ impl PhotonApp {
                 c.ceremony_owner = new_owner;
                 c.owner_woven = e.woven;
                 c.roster_updated = e.updated;
+                if e.consent && !c.consent_mutual {
+                    consent_from_roster.push(e.handle_proof);
+                }
                 if let Some(storage) = self.storage.as_ref() {
                     if let Err(err) =
                         crate::storage::contacts::save_contact(&self.contacts[pos], storage)
@@ -1763,8 +1771,16 @@ impl PhotonApp {
             // §4.2: the entry names the fleet device running this friendship's ceremony — adopt the claim so THIS device parks instead of racing its own round at the friend. No discard hook needed here: a fresh from_pin contact holds no round state.
             contact.ceremony_owner = (e.ceremony_owner != [0u8; 32]).then_some(e.ceremony_owner);
             contact.owner_woven = e.woven;
+            // Whether they have added us comes with the entry: a contact another device added and is still waiting on stays waiting here, never a default "mutual" that hides the wait (2026-10-29).
+            contact.consent_mutual = e.consent;
             self.contacts.push(contact);
             added += 1;
+        }
+        // Another of our devices heard their knock: they have added us, and the ceremony arms here exactly as if the knock had reached this device.
+        for hp in consent_from_roster {
+            if let Some(ci) = self.contacts.iter().position(|c| !c.is_sibling && c.handle_proof == hp) {
+                self.consent_confirmed(ci, "a sibling heard their knock");
+            }
         }
         if removed > 0 {
             // The index row must go with the contact, or the next launch resurrects it from the list.

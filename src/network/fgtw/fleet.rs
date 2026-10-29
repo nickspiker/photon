@@ -981,6 +981,7 @@ mod tests {
             ceremony_owner: [hp.wrapping_add(2); 32],
             woven: false,
             trust_level: hp % 4,
+            consent: true,
         }
     }
 
