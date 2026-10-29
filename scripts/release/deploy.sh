@@ -1,8 +1,9 @@
 #!/bin/bash
+# The release: bump the version, build and sign every platform, publish, tag. It needs the release signing keys and the hosting credentials, so it is the maintainer's, not a contributor's (contributors run ./build.sh).
 set -e
-source scripts/lib/wrangler-auth.sh
 # Anchor to the repo root like dev.sh does — every source/sub-script below is repo-relative, and the bridge runs commands from wherever its shell happens to sit (field 2026-08-26: invoked from /, died at the first source).
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/../.."
+source scripts/lib/wrangler-auth.sh
 
 source scripts/lib/github.sh
 source scripts/lib/manifest.sh
@@ -185,7 +186,7 @@ snap_cargo build --release --bin photon-signature-signer --bin photon-manifest
 
 # Build and sign Linux x86_64 (native). SNAP_DIR is exported so build-release.sh builds from the frozen tree too.
 export SNAP_DIR
-timed "linux-x86_64 (native)" ./build-release.sh
+timed "linux-x86_64 (native)" ./scripts/release/build-release.sh
 
 # Linux ARM64 is ALREADY built and signed — build-release.sh above does both targets (native + aarch64) with the working cross env: CC_aarch64_unknown_linux_gnu plus the cross-libs/aarch64 pkgconfig paths that the vendored-.so/x11.pc staging needs.
 # A second build+sign lived here until 2026-09-03. It was pure waste (cargo no-op, and the signer is idempotent so the re-sign no-op'd too) AND a trap: its env was NOT equivalent — no CC_<target> at all, and unsuffixed PKG_CONFIG_* pointing at the fc42 sysroot instead of cross-libs. It only ever appeared to work because build-release.sh had already produced the artifact; had that step ever moved, this block would have silently become the real builder with the worse config.

@@ -28,7 +28,7 @@ comment_gate() {
     done)
 
     # Shell: # marker (never the #! shebang), heredoc-aware.
-    sh_off=$(find . -maxdepth 3 -name "*.sh" -not -path "*/node_modules/*" -not -path "*/target/*" 2>/dev/null | sort -u | while read -r f; do
+    sh_off=$(find . -maxdepth 4 -name "*.sh" -not -path "*/node_modules/*" -not -path "*/target/*" 2>/dev/null | sort -u | while read -r f; do
         awk -v F="$f" '
             FNR == 1 { pm = ""; prev = ""; term = "" }
             {
@@ -62,7 +62,7 @@ comment_gate() {
 no_python_gate() {
     local hits
     # comment-gate.sh itself is exempt: it is the one file whose job is to NAME python in order to ban it.
-    hits=$(find . -maxdepth 3 -name "*.sh" -not -path "*/node_modules/*" -not -path "*/target/*" -not -name comment-gate.sh 2>/dev/null | sort -u | while read -r f; do
+    hits=$(find . -maxdepth 4 -name "*.sh" -not -path "*/node_modules/*" -not -path "*/target/*" -not -name comment-gate.sh 2>/dev/null | sort -u | while read -r f; do
         awk -v F="$f" '{ l = $0; sub(/^[[:space:]]*/, "", l); if (l ~ /^#/) next; if ($0 ~ /(^|[^A-Za-z0-9_])python[0-9]?([^A-Za-z0-9_]|$)/) print F ":" FNR ": " $0 }' "$f"
     done)
     if [ -n "$hits" ]; then

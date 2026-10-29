@@ -2,7 +2,7 @@
 # Publish a Linux dev build (logging on) to the R2 dev channel: build -> sign -> upload binary + installer.
 # Not a local install — this pushes to the CDN so the team installs with the printed curl|sh.
 set -e
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../../.."
 source scripts/lib/sign.sh
 source scripts/lib/publish.sh
 source scripts/lib/github.sh

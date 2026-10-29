@@ -3,7 +3,7 @@
 # Companion to dev-windows-x86.sh. The toolchain env mirrors deploy.sh's aarch64-pc-windows-gnullvm release recipe (llvm-mingw is BOTH the C compiler cc-rs auto-detects on PATH and the linker).
 # Binary-only, like dev-linux-arm64.sh: install-development.ps1 stays an x86_64 artefact (its injected hash names one binary) — ARM64 dev installs are a hand-copied .exe, and the in-binary self-verify covers integrity.
 set -e
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../../.."
 source scripts/lib/sign.sh
 source scripts/lib/publish.sh
 source scripts/lib/github.sh

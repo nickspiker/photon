@@ -3,7 +3,7 @@
 # The osxcross clang-wrapper env mirrors deploy.sh's release recipe for the aarch64-apple-darwin target.
 # Binary-only, like the other dev-* scripts; dev-linux.sh publishes the arch-agnostic install-development.sh.
 set -e
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../../.."
 source scripts/lib/sign.sh
 source scripts/lib/publish.sh
 source scripts/lib/github.sh

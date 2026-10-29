@@ -3,7 +3,7 @@
 # Companion to dev-linux.sh (which does the host arch only). The cross env mirrors build-release.sh's aarch64 recipe.
 # No installer script here — dev-linux.sh already publishes install-development.sh (arch-agnostic), and Android/Mac follow the same binary-only pattern.
 set -e
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../../.."
 source scripts/lib/sign.sh
 source scripts/lib/publish.sh
 source scripts/lib/github.sh

@@ -232,45 +232,31 @@ chmod +x photon-messenger
 
 ### Building from Source
 
-**⚠️ Warning**: release binaries self-verify an Ed25519 signature, so a from-source release build requires generating your own signing keys. Use the installer, or build the **dev profile** (no signing) unless you have specific reasons to do otherwise.
-
-Photon rides a family of sibling crates by **path dependency** — they must be cloned **side by side** in one parent directory:
+You need **git**, **Rust** (from [rustup.rs](https://rustup.rs)), **CMake** and a C toolchain; on Linux also the usual X11/Wayland/ALSA development headers ([scripts/provision-builder.sh](scripts/provision-builder.sh) has the exact package lists).
+The Opus voice codec is compiled from vendored source into the binary, so there is no libopus to install.
 
 ```bash
 mkdir Code && cd Code
-for r in photon chirp fgtw fluor ihi kete limbus manifestus nunc opsin rarangi spirix tapuwae tohu voca vsf; do
-    git clone https://github.com/nickspiker/$r
-done
+git clone https://github.com/nickspiker/photon
 cd photon
+./build.sh
 ```
 
-(`winit`, `softbuffer` and `audiopus_sys` are patched via git URLs in Cargo.toml and resolve on their own.)
+That's all. Photon builds against a family of sibling crates (vsf, fluor, fgtw and others), each its own repo; `build.sh` clones whichever are missing beside `photon/`, builds the development profile and runs it.
+The list of siblings comes from the Cargo.toml files themselves, so it is never out of date.
 
-System deps: a C toolchain plus **CMake** — the Opus voice codec is compiled from vendored source into the binary (no libopus install, no runtime dependency). On Linux you'll also want the usual X11/Wayland/ALSA dev headers (see [scripts/provision-builder.sh](scripts/provision-builder.sh) for the exact package lists).
+- `./build.sh --no-run` builds without launching; the binary is `target/debug/photon-messenger`.
+- `scripts/pull-deps.sh` brings photon and every sibling up to date together (a fresh photon against a stale sibling fails with errors that look like photon's fault).
+- Working on a fork of the siblings too? `PHOTON_SIBLINGS_BASE=https://github.com/<you> ./build.sh` clones them from there.
+- `cargo test` runs the test suite.
 
-**Desktop dev build** (the normal from-source path — no signing keys needed; development builds waive the startup self-verify when unsigned):
-```bash
-./scripts/dev.sh          # build + install to ~/.local/bin + launch, for the host OS
-# or manually:
-cargo build --features development
-./target/debug/photon-messenger
-```
+A development build is **unsigned**, and that's fine: release binaries check their own Ed25519 signature at startup, and a development build without one skips that check.
+Building a signed release needs signing keys of your own (see [src/bin/photon-keygen.rs](src/bin/photon-keygen.rs) and [src/crypto/self_verify.rs](src/crypto/self_verify.rs)).
 
-**Desktop release build** (self-verifying — needs your own keys):
-```bash
-# Generate signing keys (see src/bin/photon-keygen.rs), put your public key in src/crypto/self_verify.rs, then:
-PHOTON_ALLOW_RELEASE=1 cargo build --release
-```
+**Android** needs the Android SDK and NDK, JDK 17 or 21, and an APK signing keystore; the scripts in `scripts/android/` expect the maintainer's keystore today, so building your own APK means pointing `scripts/lib/keystore.sh` at yours.
 
-See [src/self_verify.rs](src/self_verify.rs) for the signing documentation.
-
-**Android** (arm64): needs the Android SDK + NDK, **JDK 17 or 21**, and Gradle provisions itself via the wrapper:
-```bash
-rustup target add aarch64-linux-android
-./scripts/android/build.sh          # signed release APK (needs your keystore env)
-# or a dev APK straight onto a connected phone:
-./scripts/android/dev-adb.sh
-```
+**The maintainer's scripts** live in `scripts/release/`: the release (`deploy.sh`), the dev-channel publishes, and the signed local builds.
+They need the project's signing keys and hosting credentials, so you won't run them; they are there so you can see exactly how the published binaries are made.
 
 ---
 

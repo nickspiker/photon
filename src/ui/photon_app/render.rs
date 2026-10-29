@@ -6780,7 +6780,8 @@ impl PhotonApp {
                         (&tr(Msg::IdeasSendFix), (btn_base + IDEAS_PILL_FIX), true, None),
                     ], "Open Sans");
                     // Everyone's ideas are public (Nick 2026-10-28): while words are in the box the ones sharing them show right here — is it already in the bucket? — and with the box empty the whole list closes the page.
-                    let gripe_row = |kind: &str, state: &str, version: &str, id: &[u8; 32]| format!("{} · {} · {}{}", hex::encode(&id[..4]), kind, if state.is_empty() { "…" } else { state }, if version.is_empty() { String::new() } else { format!(" {}", version) });
+                    // The state leads, in plain words (Nick 2026-10-28: "so they can see if it's in the works, done or whatever"), then the kind and the id it is known by.
+                    let gripe_row = |kind: &str, state: &str, version: &str, id: &[u8; 32]| format!("{}{} · {} · {}", tr(Msg::IdeaState(state)), if version.is_empty() { String::new() } else { format!(" {}", version) }, kind, hex::encode(&id[..4]));
                     let typing = self.ideas_textbox.as_ref().is_some_and(|tb| !tb.chars.is_empty());
                     let typed_now: String = self.ideas_textbox.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
                     let everyone: Vec<(String, String, String)> = Self::ranked_public_gripes(&self.public_gripes, &typed_now).into_iter().map(|g| (gripe_row(&g.kind, &g.state, &g.version, &g.id), g.text.clone(), g.note.clone())).collect();

@@ -46,7 +46,7 @@ path = "src/bin/test-device-key.rs"
 name = "photonlog"
 path = "src/bin/photonlog.rs"
 
-# Update-manifest writer (docs/updates.md) — deploy.sh + scripts/publish/dev-*.sh build/merge + sign the channel manifests with the release key.
+# Update-manifest writer (docs/updates.md) — deploy.sh + scripts/release/publish/dev-*.sh build/merge + sign the channel manifests with the release key.
 [[bin]]
 name = "photon-manifest"
 path = "src/bin/photon-manifest.rs"

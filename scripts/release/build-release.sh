@@ -6,7 +6,7 @@
 # suffix when uploaded to brobdingnagian.
 
 set -e
-cd "$(dirname "$0")"
+cd "$(dirname "$0")/../.."
 
 export PHOTON_ALLOW_RELEASE=1
 

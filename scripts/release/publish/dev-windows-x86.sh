@@ -3,7 +3,7 @@
 # Companion: dev-windows-arm64.sh covers the aarch64-pc-windows-gnullvm flavor (binary-only).
 # build -> sign -> upload .exe + the PowerShell installer with the binary's SHA256 injected.
 set -e
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../../.."
 source scripts/lib/sign.sh
 source scripts/lib/publish.sh
 source scripts/lib/github.sh

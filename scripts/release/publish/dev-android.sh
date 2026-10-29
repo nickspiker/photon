@@ -2,7 +2,7 @@
 # Publish an Android dev build (logging on) to the R2 dev channel: build the signed development APK -> upload.
 # Mirror of dev-linux.sh for the Android target. Users download the APK straight from the site's Development section (no curl|sh installer — Android sideloads the .apk).
 set -e
-cd "$(dirname "$0")/../.."
+cd "$(dirname "$0")/../../.."
 source scripts/lib/keystore.sh
 source scripts/lib/android-env.sh
 source scripts/lib/android.sh

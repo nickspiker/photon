@@ -1,6 +1,6 @@
 # CMake toolchain for cross-compiling C -sys crates (audiopus_sys → vendored libopus for voice calls)
 # to Apple targets via osxcross FROM Linux. Pointed at by CMAKE_TOOLCHAIN_FILE_<target> in the build
-# scripts (deploy.sh, scripts/publish/dev-macos-*.sh).
+# scripts (deploy.sh, scripts/release/publish/dev-macos-*.sh).
 #
 # WHY THIS EXISTS: the `cmake` crate (0.1.58) never sets CMAKE_AR, so CMake auto-detects the archiver
 # and picks the HOST GNU `ar` (/usr/bin/ar). That wraps the (correct Mach-O) object files in a GNU-format

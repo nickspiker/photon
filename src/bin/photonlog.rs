@@ -152,7 +152,7 @@ fn main() {
                 match (id, state) {
                     (Some(id), Some(state)) => gripe_status = Some((id, state, note, version)),
                     _ => {
-                        eprintln!("photonlog: --gripe-status <id 64hex> <received|seen|planned|fixed|declined|duplicate> [note] [version]");
+                        eprintln!("photonlog: --gripe-status <id 64hex> <received|seen|planned|working|fixed|declined|duplicate> [note] [version]");
                         std::process::exit(2);
                     }
                 }

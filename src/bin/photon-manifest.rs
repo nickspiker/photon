@@ -1,4 +1,4 @@
-//! Build + sign the update version manifest (docs/updates.md) — invoked by deploy.sh (release channel, every platform at once) and by each scripts/publish/dev-*.sh (dev channel, merging its ONE platform section into the fetched current manifest).
+//! Build + sign the update version manifest (docs/updates.md) — invoked by deploy.sh (release channel, every platform at once) and by each scripts/release/publish/dev-*.sh (dev channel, merging its ONE platform section into the fetched current manifest).
 //!
 //! Output is a COMPLETE VSF file signed by the release key (the same key that signs binaries): ONE SECTION PER ARTEFACT, each named `manifest.photon.<release|development>`, every field NAMED and semantically TYPED — `platform: x`, `arch: x`, `major/minor/patch: z` (native version numbers; `major` omitted while 0, `patch` omitted when 0 so its presence means "dev build"), `commit: hs` (full 20-byte git SHA-1, raw), `url: nu`, `hash: hb`. No numbered field names, no positional values, no digit strings.
 //!

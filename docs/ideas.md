@@ -22,7 +22,8 @@ The worker sees the sender's address, as any HTTPS server does, and keeps nothin
 - `gripe_list {}` → PUBLIC (Nick 2026-10-28: "Always public, it's free software for everyone, I don't hide anything unless it lets someone steal from me"). A `gripe_list_ack {count}` head section, then one `idea` section per gripe with typed fields: `id` (hb), `kind` (a), `state` (a), `received` (e6), `text` (v t), `note` (v t), `version` (a). The old tab-joined `rows` form is gone, and so is its reader.
 - `gripe_status {token, id, state, note, version}` → `gripe_status_ack`: the developer's, gated on the `GRIPES_TOKEN` worker secret. The token lives in keys/gripes.token, never in a repo. A status set broadcasts the hub event `idea` too.
 
-States: received, seen, planned, fixed (with the version), declined, duplicate.
+States: received, seen, planned, working, fixed (with the version), declined, duplicate.
+The page shows them in plain words: Received, Seen, Planned, In the works, Done (in the version), Not planned, Already asked.
 
 ## The page
 
@@ -46,7 +47,7 @@ Not built yet: an FCM topic for the ticker, so a phone in deep Doze hears it too
 
 ```
 photonlog --gripes
-photonlog --gripe-status <id 64hex> <received|seen|planned|fixed|declined|duplicate> [note] [version]
+photonlog --gripe-status <id 64hex> <received|seen|planned|working|fixed|declined|duplicate> [note] [version]
 ```
 
 `--gripes` needs no token (the list is public) and prints one row per gripe, oldest first: id, kind, state, received (UTC, display only), text, then the note and version when set.

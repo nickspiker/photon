@@ -1,7 +1,7 @@
 #!/bin/bash
 # Deploy the website alone, with whatever credential can reach Pages (photon's wrangler-auth rules).
 set -e
-cd /mnt/Harbor/Code/photon
+cd "$(dirname "$0")/../../.."
 source scripts/lib/wrangler-auth.sh
 if ! wrangler_pages_available; then
     echo "No credential can reach Cloudflare Pages."

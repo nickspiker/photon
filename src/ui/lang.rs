@@ -917,6 +917,8 @@ pub enum Msg<'a> {
     IdeasNothingLikeIt,
     IdeasEveryone,
     IdeasEveryoneNone,
+    /// Ideas page: a gripe's state in plain words (the worker's state names: received, seen, planned, working, fixed, declined, duplicate; the client's own: sending, not sent).
+    IdeaState(&'a str),
     OptionalNote,
     // ---- you / profile ----
     YouAddCustomField,

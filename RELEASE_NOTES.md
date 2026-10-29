@@ -6,7 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
-- **Everyone's ideas are public, and you can follow them.** Settings → Ideas now lists every idea and fix anyone has sent, with what became of each. As you type yours, the ones that share your words show up right under the box, so you can see whether it's already in before you send it. A new switch there, off unless you turn it on, gives you a notification whenever someone sends a new one.
+- **Everyone's ideas are public, and you can follow them.** Settings → Ideas now lists every idea and fix anyone has sent, with what became of each. As you type yours, the ones that share your words show up right under the box, so you can see whether it's already in before you send it. Each one says plainly where it stands: received, planned, in the works, done (and in which version), not planned, or already asked. A new switch there, off unless you turn it on, gives you a notification whenever someone sends a new one.
 
 ## v133
 - **Tap a picture to hide its controls.** In the picture viewer, a tap on the picture hides the side panel, the info and the Back and Save buttons, and another tap brings them back. With the controls showing the picture stays put and zooming resizes the controls; with the picture alone, zooming, scrolling and dragging move the picture.
