@@ -26,6 +26,9 @@ arch_gate() {
     meta="$(cargo metadata --format-version 1 --manifest-path "$manifest" 2>/dev/null)"
     if [ -z "$meta" ]; then
         echo "ARCH GATE: cargo metadata produced nothing — refusing to pass vacuously (a gate that greens on its own failure is worse than none)."
+        # Cargo's own reason, which the capture above swallowed (Josh 2026-10-28, building from source: the bare line told him nothing, while cargo build named the problem) — re-run only on this failure path.
+        echo "  cargo says:"
+        cargo metadata --format-version 1 --manifest-path "$manifest" 2>&1 >/dev/null | tail -n 20 | sed 's/^/    /'
         return 1
     fi
 
