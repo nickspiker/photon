@@ -2190,27 +2190,26 @@ impl PhotonApp {
         }
     }
 
-    /// The engine's calibration seed, ringback-first: a coupling this device measured on THIS route seconds ago outranks a stored profile measured on another day (the field-wave-1/2 failure was exactly a stale seed the in-wave learner never had time to correct). The voice half (mic gain, floor) still comes from the stored profile — the ringback measures the room, not the user's voice, since the whole point is that nobody is talking during it.
+    /// The engine's calibration seed: the stored voice profile, with the ringback probe's floor standing in only when nothing is stored (the probe measures the room while nobody talks, so it has no voiced level to give).
     fn ringback_seeded_cal(&self) -> Option<crate::wave::engine::CalSnapshot> {
         let stored = self.cal_snapshot();
         let Some(p) = crate::wave::ringback::take_probe() else {
             return stored;
         };
         crate::logf!(
-            "WAVE: engine seeded from the ringback probe — g {:.4} delay {}ms (conf {:?}, {} window(s)); stored profile {}",
+            "WAVE: ringback probe — g {:.4} delay {}ms (conf {:?}, {} window(s)); stored voice profile {}",
             p.g_norm,
             p.delay_bins * 10,
             format!("{:?}", p.confidence),
             p.windows,
-            if stored.is_some() { "overridden" } else { "absent" }
+            if stored.is_some() { "present" } else { "absent" }
         );
-        Some(crate::wave::engine::CalSnapshot {
-            g_norm: p.g_norm,
-            delay_bins: p.delay_bins,
-            voiced: stored.as_ref().and_then(|c| c.voiced),
-            // The stored fine floor wins (a per-mic measurement); the ringback probe's coarse floor stands in only when nothing is stored, and only when it is a real reading.
-            floor: stored.as_ref().and_then(|c| c.floor).or(Some(p.floor).filter(|f| *f > 0.0)),
-        })
+        let floor = stored.as_ref().and_then(|c| c.floor).or(Some(p.floor).filter(|f| *f > 0.0));
+        let voiced = stored.as_ref().and_then(|c| c.voiced);
+        if voiced.is_none() && floor.is_none() {
+            return None;
+        }
+        Some(crate::wave::engine::CalSnapshot { voiced, floor })
     }
 
     pub(super) fn contact_index_by_handle_hash(&self, hh: &[u8; 32]) -> Option<usize> {

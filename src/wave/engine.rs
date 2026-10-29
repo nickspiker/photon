@@ -147,12 +147,19 @@ const TX_MAKEUP_OPENING_CAP: i64 = 8;
 /// The drop lands the second on target and never goes below 1:1: the guard takes boost away from a hot mic, it never attenuates one. q8 × Q32 is Q40 against the 16-bit wire; raw < 2^23 and makeup ≤ 64× (2^38) keep the product under 2^61.
 fn hot_mic_makeup(raw_q8: i64, makeup_q32: i64) -> Option<i64> {
     let wire = (raw_q8 * makeup_q32) >> 40;
-    if wire <= TX_WIRE_TARGET * 2 || makeup_q32 <= crate::wave::qgain::UNITY {
+    if wire <= TX_WIRE_TARGET << 1 || makeup_q32 <= crate::wave::qgain::UNITY {
         return None;
     }
-    // The algorithm, not a guard: the makeup that lands this second on target, held at unity because the guard only ever removes boost (Nick: "down to 1:1").
-    let fit = ((TX_WIRE_TARGET << 40) / raw_q8).max(crate::wave::qgain::UNITY);
-    (fit < makeup_q32).then_some(fit)
+    // Past twice the target the fit TARGET<<40 / raw_q8 is under half the current makeup, so it is always a drop.
+    // A mic that reaches the target on its own (raw ≥ target at 1:1) falls to 1:1 instead of the fit.
+    // WHY: there the fit is a gain under 1:1, and a makeup under 1:1 attenuates the mic, which THE MIC IS UNTOUCHED (above) forbids: the wire carries the calibrated capture, lifted or as is.
+    // PROOF: raw_q8 ≥ TARGET<<8 ⇔ TARGET<<40 / raw_q8 ≤ UNITY (Q40 over Q8 is Q32), and this is the only path that value could take into tx_makeup_q32.
+    // It guards no memory; it is the level plan's rule written as a decision (Nick 2026-10-29: "down to 1:1").
+    if raw_q8 >= TX_WIRE_TARGET << 8 {
+        Some(crate::wave::qgain::UNITY)
+    } else {
+        Some((TX_WIRE_TARGET << 40) / raw_q8)
+    }
 }
 /// Calibrated Unprocessed voiced speech measured on the field phones (Nick 75, Esme 82 — conversation sits ~15 dB under the 94 dB SPL reference).
 const TX_CAL_VOICED: i64 = 78;
@@ -183,11 +190,9 @@ pub struct GroupLink {
     pub slot_gen: u64,
 }
 
-/// The stored profile snapshot for this route/mic. Since the level plan, the engine reads ONE field: `voiced`, this device's measured raw voiced level, which sets the fixed TX makeup for the whole wave. g/delay/floor ride along for the log and future loudspeaker work.
+/// The stored voice profile for this mic: `voiced` sets the fixed TX makeup for the whole wave, `floor` seeds it when no voiced level exists yet.
 #[derive(Debug, Clone, Copy)]
 pub struct CalSnapshot {
-    pub g_norm: f32,
-    pub delay_bins: usize,
     /// This mic's measured raw voiced mean |sample| (blended across waves, fleet-synced per device+input) — the makeup's denominator. None until the first wave measures it.
     pub voiced: Option<f32>,
     /// This mic's measured quiet (fractional coarse units since 2026-09-15 — the fine floor): the seed's second rung when no voiced profile exists, ranked ABOVE the vendor sensitivity (Nick: "normalize on quiet" — the quiet is measured on this device, the vendor number is marketing). None until a wave measures it; a talkless wave still posts one.
@@ -1506,6 +1511,7 @@ fn run(
             last_est = std::time::Instant::now();
             // THE HOT-MIC GUARD (Nick 2026-10-29): the re-aim learns only from frames that stand out as speech, so a mic already hot — its level IS its room level — kept the opening makeup for a whole wave, 8× into the rail ("10x loud with a hard limiter").
             // Each second: the wire this second's raw level would carry at the current makeup; past twice the target the makeup drops at once to the gain that puts it on target, and never below 1:1 — the guard takes boost away, it does not attenuate the mic.
+            // WHY the count is checked: a second where our speaker never went quiet, or the mic delivered only silence, counts no frame, and the mean below would divide by zero.
             if hot_frames > 0 {
                 let raw_q8 = hot_sum_q8 / hot_frames;
                 if let Some(fit) = hot_mic_makeup(raw_q8, tx_makeup_q32) {

@@ -1483,8 +1483,8 @@ mod desktop {
             let (in_stream, out_stream) = open_streams(&host);
             HAS_RENDER.store(out_stream.is_some(), Ordering::Relaxed);
             while ACTIVE.load(Ordering::Relaxed) && !REBUILD.load(Ordering::SeqCst) {
-                // Parked, not slept: stop and rebuild unpark it on their edge; the timeout only covers a wake that raced the park.
-                std::thread::park_timeout(std::time::Duration::from_millis(50));
+                // Parked until an edge: stop and rebuild store their flag before they unpark, and an unpark that lands before this park leaves the token set, so the park returns at once and the loop reads the flag.
+                std::thread::park();
             }
             drop(in_stream);
             drop(out_stream);
