@@ -99,6 +99,8 @@ pub struct PTManager {
     /// Inbound transfers already answered with a COMPLETE, oldest first, capped at `SPEC_SENDERS_CAP`: a COMPLETE is one unacknowledged datagram, so the sender's probe (its final chunk again) is answered from here when it was lost.
     /// An entry leaves when its sender opens a new transfer on the same letter (the sender has retired the old one by then), or off the cap.
     answered: Vec<Answered>,
+    /// THE PATH PACES: one shared send window per path carrying large transfers ([`PathPace`]), opened at the path's first DATA and closed when it goes idle, so its base RTT is measured afresh after every quiet spell and a pace lives only as long as its path is busy.
+    paces: Vec<(SocketAddr, PathPace)>,
 }
 
 /// One inbound transfer this receiver has answered: whose it was and what the answer said.
@@ -170,6 +172,7 @@ impl PTManager {
             spec_senders: Vec::new(),
             dead_addrs: Vec::new(),
             answered: Vec::new(),
+            paces: Vec::new(),
             newly_dead: Vec::new(),
         }
     }
@@ -201,6 +204,55 @@ impl PTManager {
             .filter(|t| peer_key(t.recipient_pubkey, t.peer_addr) == key)
             .filter(|t| !matches!(t.state, TransferState::Complete | TransferState::Failed))
             .count()
+    }
+
+    /// The pace of one path, opened fresh when it has none.
+    fn pace_of(paces: &mut Vec<(SocketAddr, PathPace)>, addr: SocketAddr) -> &mut PathPace {
+        let i = match paces.iter().position(|(a, _)| same_addr(*a, addr)) {
+            Some(i) => i,
+            None => {
+                paces.push((addr, PathPace::new()));
+                paces.len() - 1
+            }
+        };
+        &mut paces[i].1
+    }
+
+    /// DATA packets outstanding on one path, across its transfers still sending (a transfer awaiting its COMPLETE holds only its probe, which the window does not carry).
+    fn path_in_flight(&self, addr: SocketAddr) -> usize {
+        self.outbound
+            .iter()
+            .filter(|t| t.state == TransferState::Transferring && same_addr(t.peer_addr, addr))
+            .map(|t| t.flight.count())
+            .sum()
+    }
+
+    /// Send new DATA on one path while its pace admits it, oldest transfer first so the earliest chunk finishes first.
+    /// A path left with nothing in flight has nothing left to send, so it has gone idle and its pace closes.
+    fn pump(&mut self, addr: SocketAddr) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        loop {
+            let in_flight = self.path_in_flight(addr);
+            if !Self::pace_of(&mut self.paces, addr).admits(in_flight) {
+                break;
+            }
+            let next = self
+                .outbound
+                .iter_mut()
+                .filter(|t| t.state == TransferState::Transferring && same_addr(t.peer_addr, addr))
+                .find_map(|t| t.next_packet());
+            let Some(data) = next else {
+                break;
+            };
+            out.push(data.to_bytes());
+        }
+        if self.path_in_flight(addr) == 0 {
+            if let Some(i) = self.paces.iter().position(|(a, _)| same_addr(*a, addr)) {
+                let (_, p) = self.paces.remove(i);
+                crate::logf!("PT: path {} idle — its pace closes at a window of {:.1} packet(s), base RTT {}", addr, p.window(), p.base_rtt().map_or("unmeasured".into(), |b| format!("{} ms", b.as_millis())));
+            }
+        }
+        out
     }
 
     /// Max VSF size for single UDP packet (no sharding needed) 1KB threshold - VSF this size or smaller sent directly Larger VSF gets sharded into [lowercase letter][packet number][1KB DATA] packets
@@ -563,10 +615,9 @@ impl PTManager {
                 stream_id as char
             );
 
-            // Send initial window of DATA packets
-            for data in transfer.packets_to_send() {
-                packets.push(data.to_bytes());
-            }
+            // The first DATA goes out as the path's pace admits it, shared with every other transfer on the path.
+            let path = transfer.peer_addr;
+            packets.extend(self.pump(path));
         } else {
             crate::logf!(
                 "PT: SPEC ACK from {} for unknown stream '{}' (hash {})",
@@ -745,7 +796,7 @@ impl PTManager {
                 transfer.peer_addr = peer_addr;
                 transfer.alt_addr = None;
             }
-            transfer.handle_ack(&ack);
+            let sample = transfer.handle_ack(&ack);
 
             // Only log progress at milestones (every 100 packets or completion) Avoids spamming logs with per-ACK updates
             let (acked, total) = transfer.send_buffer.progress();
@@ -767,10 +818,13 @@ impl PTManager {
                 );
             }
 
-            // Send more packets (pipelining phase sends packets_per_ack new packets)
-            for data in transfer.packets_for_ack() {
-                packets.push(data.to_bytes());
+            // The ACK times the path for its pace (the packets still out on it plus this one, so at least one), then the path sends what the pace now admits.
+            let path = transfer.peer_addr;
+            if let Some(s) = sample {
+                let n = self.path_in_flight(path) + 1;
+                Self::pace_of(&mut self.paces, path).on_rtt(s, n);
             }
+            packets.extend(self.pump(path));
         }
 
         packets
@@ -794,6 +848,7 @@ impl PTManager {
             for data in transfer.handle_nak(&nak) {
                 packets.push(data.to_bytes());
             }
+            Self::pace_of(&mut self.paces, peer_addr).on_loss();
         }
 
         packets
@@ -815,10 +870,9 @@ impl PTManager {
                 crate::logf!("PT: Peer {} requested resume", peer_addr);
             }
             ControlCommand::SlowDown => {
-                if let Some(transfer) = self.outbound.iter_mut().find(|t| {
-                    same_addr(t.peer_addr, peer_addr) && t.state == TransferState::Transferring
-                }) {
-                    transfer.window.on_loss(); // Treat SlowDown like loss - backs off send ratio
+                // The receiver's SlowDown reads as a loss on the path: its pace halves.
+                if self.outbound.iter().any(|t| same_addr(t.peer_addr, peer_addr) && t.state == TransferState::Transferring) {
+                    Self::pace_of(&mut self.paces, peer_addr).on_loss();
                     crate::logf!("PT: Slowing down to {}", peer_addr);
                 }
             }
@@ -833,7 +887,7 @@ impl PTManager {
                 && t.send_buffer.data_hash() == complete.final_hash
                 && !matches!(t.state, TransferState::Complete | TransferState::Failed)
         }) {
-            let (packets, bytes, retransmits, duration_ms, max_window, rtt_ms, packet_size) =
+            let (packets, bytes, retransmits, duration_ms, rtt_ms, packet_size) =
                 transfer.stats();
             transfer.handle_complete(&complete);
 
@@ -856,7 +910,7 @@ impl PTManager {
                     format!("{:.0} kbps", thruput_kbps)
                 };
 
-                crate::logf!("PT: → {} OK | {} | {:.1}s | {}B pkt | win {} | RTT {}ms | {:.0}% util ({} retx)", peer_addr, thruput_str, duration_ms as f64 / 1000.0, packet_size, max_window, rtt_ms, utilization, retransmits);
+                crate::logf!("PT: → {} OK | {} | {:.1}s | {}B pkt | RTT {}ms | {:.0}% sent once ({} retx)", peer_addr, thruput_str, duration_ms as f64 / 1000.0, packet_size, rtt_ms, utilization, retransmits);
             } else {
                 crate::logf!(
                     "PT: → {} FAILED verification ({} packets, {} bytes)",
@@ -1108,7 +1162,12 @@ impl PTManager {
 
             // Check for DATA packet timeouts (only during transfer phase). DATA retransmits are a UDP concern — the whole payload already went over TCP once (if eligible) during the SPEC phase, so no per-DATA TCP send here.
             if transfer.state == TransferState::Transferring {
-                for data in transfer.check_timeouts() {
+                let resent = transfer.check_timeouts();
+                // A timed-out round is a loss on the path: its pace halves (once, until an ACK comes back).
+                if !resent.is_empty() {
+                    Self::pace_of(&mut self.paces, transfer.peer_addr).on_loss();
+                }
+                for data in resent {
                     to_send.push(TickSend {
                         peer_addr: transfer.peer_addr,
                         wire_bytes: data.to_bytes(),
@@ -1272,6 +1331,21 @@ impl PTManager {
                 self.window_parked.remove(&key);
             }
         }
+
+        // This tick changed what the paths carry (a loss halved a pace, a failed transfer left the window to the rest): each path still sending gets its pump, and a path left idle closes its pace there.
+        let mut paths: Vec<SocketAddr> = Vec::new();
+        for t in &self.outbound {
+            if t.state == TransferState::Transferring && !paths.iter().any(|p| same_addr(*p, t.peer_addr)) {
+                paths.push(t.peer_addr);
+            }
+        }
+        for path in paths {
+            for wire_bytes in self.pump(path) {
+                to_send.push(TickSend { peer_addr: path, wire_bytes, tcp_payload: None, relay: None });
+            }
+        }
+        // A pace whose path has no transfer sending any more (each finished or failed) closes with it.
+        self.paces.retain(|(a, _)| self.outbound.iter().any(|t| t.state == TransferState::Transferring && same_addr(t.peer_addr, *a)));
 
         to_send
     }

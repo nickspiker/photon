@@ -55,7 +55,7 @@
 - [Bindreq peer-to-peer](project_bindreq_peer_to_peer.md) — FGTW = phonebook only; bind request goes device to device (BUILT 2026-10-26)
 - [Fleet over the mesh](project_fleet_over_mesh.md) — 2026-10-26 BUILT: chain/bind request/fan-out device to device (fleet_req/resp, bind_req, fanout_resp), chain held on device, seed = mirror asked last; next: attest degrades to the held chain; field test pending
 - [Beams](project_beams.md) — H.264 beams BUILT (desktop + phone); g2t stream planned · [standing-queue verdict](project_beam_standing_queue.md) FIXED 2026-10-27
-- [PT shared congestion](project_pt_shared_congestion.md) — 2026-10-29: 13 per-peer streams each own a window, flood the uplink, starve FGTW HTTPS (Mac log submit); shared window PROPOSED
+- [PT path pace](project_pt_shared_congestion.md) — 2026-10-29 BUILT: one delay-based window per path shared by its transfers (replaced blast-256 that flooded the uplink and starved FGTW); field test pending
 - [opsin byte order + async loads](project_opsin_android_byte_order_async_loads.md) — 2026-10-05: pixels pack thru fluor::theme::fmt; loads off-thread
 - [Chain = text + pointers](project_chain_text_and_pointers.md) — DOCTRINE: attachments = wrapped VSF blobs keyed by header hb;…
 - [HDR stack](project_hdr_stack.md) — OWNED; Android 10-bit surface merged; peak metric open

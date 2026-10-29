@@ -4,7 +4,7 @@
 
 use super::buffer::{ReceiveBuffer, SendBuffer};
 use super::packets::*;
-use super::window::{FlightTracker, RTTEstimator, WindowController};
+use super::window::{FlightTracker, RTTEstimator};
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -58,7 +58,6 @@ pub struct OutboundTransfer {
     pub transfer_id: usize, // Monotonic ID for external tracking
     pub state: TransferState,
     pub send_buffer: SendBuffer,
-    pub window: WindowController,
     pub rtt: RTTEstimator,
     pub flight: FlightTracker,
     pub spec_sent: bool,
@@ -100,7 +99,6 @@ impl OutboundTransfer {
             transfer_id,
             state: TransferState::AwaitingSpec,
             send_buffer: SendBuffer::new(data, PTSpec::DEFAULT_PACKET_SIZE),
-            window: WindowController::new(),
             rtt: RTTEstimator::new(),
             flight: FlightTracker::new(),
             spec_sent: false,
@@ -170,77 +168,24 @@ impl OutboundTransfer {
         }
     }
 
-    /// Get next packets to send based on blast-256 model
-    ///
-    /// Phase 1 (blast): Send up to INITIAL_BLAST packets immediately Phase 2 (pipelining): Send packets_per_ack() packets for each ACK
-    pub fn packets_to_send(&mut self) -> Vec<PTData> {
-        let mut packets = Vec::new();
-
-        if self.window.in_blast_phase() {
-            // Blast phase: send ALL blast packets immediately (no in-flight limit) We're intentionally flooding - ACKs will catch up
-            while self.window.in_blast_phase() {
-                if let Some(seq) = self.send_buffer.next_to_send() {
-                    if let Some(payload) = self.send_buffer.get_packet(seq) {
-                        packets.push(PTData {
-                            stream_id: self.stream_id,
-                            sequence: seq,
-                            payload: payload.to_vec(),
-                        });
-                        self.flight.sent(seq);
-                        self.window.consume_blast();
-                    }
-                } else {
-                    // Less data than INITIAL_BLAST - exit blast phase early
-                    while self.window.in_blast_phase() {
-                        self.window.consume_blast();
-                    }
-                    break;
-                }
-            }
-        }
-        // After blast phase, packets are sent via handle_ack() using send_ratio
-
-        packets
-    }
-
-    /// Get packets to send after receiving an ACK (pipelining phase)
-    pub fn packets_for_ack(&mut self) -> Vec<PTData> {
-        let mut packets = Vec::new();
-
-        if self.window.in_blast_phase() {
-            return packets; // Don't pipeline during blast
-        }
-
-        // Send packets_per_ack() new packets
-        let to_send = self.window.packets_per_ack();
-        for _ in 0..to_send {
-            if let Some(seq) = self.send_buffer.next_to_send() {
-                if let Some(payload) = self.send_buffer.get_packet(seq) {
-                    packets.push(PTData {
-                        stream_id: self.stream_id,
-                        sequence: seq,
-                        payload: payload.to_vec(),
-                    });
-                    self.flight.sent(seq);
-                }
-            } else {
-                break; // No more data to send
-            }
-        }
-
-        packets
+    /// The next never-sent DATA packet, now in flight, or None when every packet has gone out once. The manager calls it only while the path's [`super::window::PathPace`] admits one more.
+    pub fn next_packet(&mut self) -> Option<PTData> {
+        let seq = self.send_buffer.next_to_send()?;
+        let payload = self.send_buffer.get_packet(seq)?.to_vec();
+        self.flight.sent(seq);
+        Some(PTData { stream_id: self.stream_id, sequence: seq, payload })
     }
 
     /// Handle ACK received Note: chunk_hash verification is done in PTManager::handle_ack() during transfer matching (`ack_names_chunk`)
-    pub fn handle_ack(&mut self, ack: &PTAck) -> bool {
-        // Update RTT if we were tracking this packet
-        if let Some(rtt_sample) = self.flight.acked(ack.sequence) {
+    /// Returns the ACK's RTT sample for the path's pace: None for a packet sent more than once, or one no longer in flight.
+    pub fn handle_ack(&mut self, ack: &PTAck) -> Option<Duration> {
+        let sample = self.flight.acked(ack.sequence);
+        if let Some(rtt_sample) = sample {
             self.rtt.update(rtt_sample);
         }
 
         // Mark as ACK'd
         if self.send_buffer.mark_acked(ack.sequence) {
-            self.window.on_ack();
             self.last_activity = Instant::now();
             // `retries` counts CONSECUTIVE no-progress timeout rounds, not lifetime losses — so any real progress refunds the whole stale budget. Without this, a blast into a path whose RTT hovers near the RTO (cellular: every tick finds SOME packet older than the ACK-recomputed RTO) bumps `retries` past the `is_stale` cap in under a second and kills a transfer that is actively ACKing (observed: both sides of a multi-hundred-packet offer exchange self-killed about a second after locking a working path).
             self.retries = 0;
@@ -256,12 +201,11 @@ impl OutboundTransfer {
             self.flight.sent(ack.sequence);
         }
 
-        true
+        sample
     }
 
-    /// Handle NAK received - queue retransmits
+    /// Handle NAK received - queue retransmits (the manager halves the path's pace)
     pub fn handle_nak(&mut self, nak: &PTNak) -> Vec<PTData> {
-        self.window.on_loss();
         self.last_activity = Instant::now();
 
         let mut packets = Vec::new();
@@ -272,7 +216,7 @@ impl OutboundTransfer {
                     sequence: seq,
                     payload: payload.to_vec(),
                 });
-                self.flight.sent(seq);
+                self.flight.resent(seq);
                 self.retransmits += 1;
             }
         }
@@ -294,29 +238,25 @@ impl OutboundTransfer {
         }
     }
 
-    /// Get transfer statistics Returns: (total_packets, bytes, retransmits, duration_ms, send_ratio_x100, rtt_ms, packet_size)
-    pub fn stats(&self) -> (u32, u32, u32, u64, u32, u64, u16) {
+    /// Get transfer statistics Returns: (total_packets, bytes, retransmits, duration_ms, rtt_ms, packet_size)
+    pub fn stats(&self) -> (u32, u32, u32, u64, u64, u16) {
         let duration_ms = self.created_at.elapsed().as_millis() as u64;
         let rtt_ms = self.rtt.srtt().as_millis() as u64;
-        // Report send_ratio * 100 as integer (e.g., 2.0 -> 200, 1.5 -> 150)
-        let send_ratio_x100 = (self.window.send_ratio() * 100.0) as u32;
         (
             self.send_buffer.total_packets(),
             self.send_buffer.total_size(),
             self.retransmits,
             duration_ms,
-            send_ratio_x100,
             rtt_ms,
             self.send_buffer.packet_size(),
         )
     }
 
-    /// Check for timed out packets
+    /// Check for timed out packets: re-sent untimed, counted as retransmits (a non-empty result is a loss the manager halves the path's pace for).
     pub fn check_timeouts(&mut self) -> Vec<PTData> {
         let timed_out = self.flight.timed_out(self.rtt.rto());
 
         if !timed_out.is_empty() {
-            self.window.on_loss();
             self.rtt.backoff();
             self.retries += 1;
         }
@@ -329,7 +269,8 @@ impl OutboundTransfer {
                     sequence: seq,
                     payload: payload.to_vec(),
                 });
-                self.flight.sent(seq);
+                self.flight.resent(seq);
+                self.retransmits += 1;
             }
         }
         packets
