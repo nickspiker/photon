@@ -1504,6 +1504,15 @@ impl PhotonApp {
                             crate::log("BEAM: the incoming wave carries a beam");
                         }
                         wave.express_beats += 1; // u32 per express frame during one ring
+                        // THE ORIGIN'S OWN KEY WINS (2026-10-29, Nick's MacBook waving Josh: every media packet failed to open both ways): the express offer carries the lane key the origin captured when its offer committed, the one its secret derives from. A copy of the offer row on ANOTHER lane — a sibling's fleet forward, a re-serve on a rotated lane — can ring us first and leave a different key behind; until we answer, the origin's word replaces it.
+                        if let Some(k) = lane_key {
+                            if wave.offer_lane_key != Some(k) {
+                                if wave.offer_lane_key.is_some() {
+                                    crate::logf!("WAVE: the offer reached us on another lane first — adopting the origin's own lane key from its express offer (id {})", hex::encode(&wave.wave_id[..4]));
+                                }
+                                wave.offer_lane_key = Some(k);
+                            }
+                        }
                     }
                 }
             }

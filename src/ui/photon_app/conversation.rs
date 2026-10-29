@@ -3123,7 +3123,8 @@ impl PhotonApp {
                 let fwd: Vec<(String, i64, Option<(crate::types::RefKind, i64)>)> = fresh
                     .iter()
                     .chain(known_undelivered.iter().filter(|m| !pending.contains(&m.timestamp)))
-                    .filter(|m| m.is_outgoing && !m.delivered)
+                    // Never a WAVE row (2026-10-29, Nick's MacBook waving Josh): a wave belongs to the device that placed it — its offer's lane key is half the media secret, so a copy re-encrypted on THIS device's lane rang the friend first, left them a different key, and every media packet failed to open both ways. The origin sends its own; a wave's end row is minted by each fleet.
+                    .filter(|m| m.is_outgoing && !m.delivered && m.wave_signal().is_none() && m.wave.is_none())
                     .map(|m| (m.content.clone(), m.timestamp, m.reference))
                     .collect();
                 for (text, ts, re_ref) in fwd {
