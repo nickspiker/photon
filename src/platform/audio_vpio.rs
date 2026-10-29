@@ -344,7 +344,8 @@ pub fn start() -> bool {
     *UNIT.lock().unwrap() = unit as usize;
     LIVE.store(true, Ordering::SeqCst);
     // What is in front of the mic now: the level plan, the duck and the loss read this (see platform::audio::VOICE_DSP_ACTIVE). With the gain control off the calibrated plan keeps running; with it on, the plan stands down as on the phone.
-    super::audio::VOICE_DSP_ACTIVE.store(!agc_off, Ordering::Relaxed);
+    // THE MAC'S DSP OWNS THE MIC (Nick 2026-10-29: "we decided to use the mac DSP for audio and only provide that path, with of course third party bluetooth and headphone plug"): the unit is the vendor processing whether or not its gain control could be switched off, so the level plan opens at 1:1 instead of the 8× an unmeasured raw mic gets (a wave from the Mac reached Josh "very distorted" for 30 s on that boost).
+    super::audio::VOICE_DSP_ACTIVE.store(true, Ordering::Relaxed);
     super::audio::VOICE_DSP_CANCELS.store(true, Ordering::Relaxed);
     super::audio::set_mic_identity("mic:voice-processing".to_string());
     crate::logf!("AUDIO: voice processing unit up — 48 kHz mono float both ways, echo cancellation on, gain control {}", if agc_off { "off" } else { "ON (could not be disabled)" });

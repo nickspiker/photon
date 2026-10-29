@@ -2270,6 +2270,17 @@ impl FluorApp<Px> for PhotonApp {
                     .map(|c| c.hit_at(ctx.cursor_x, ctx.cursor_y))
                     .unwrap_or(HIT_NONE);
 
+                // CLICK OFF (Nick 2026-10-29: "Click off or moving the window around should deselect the textbox and do whatever the click wants to do at that location"): a press anywhere but the focused textbox takes its focus away and then goes on to do what it does there — select, open, drag, move the window.
+                // The compose box's own buttons are part of it (Send, the link button, the paperclip): pressing one leaves the box focused, so typing carries on.
+                if self.is_textbox(self.focused) && Some(hit_id) != self.focused {
+                    let own = |b: &Option<Button>| b.as_ref().is_some_and(|b| b.hit_id() == hit_id);
+                    let compose_part = self.message_textbox.as_ref().is_some_and(|t| Some(t.hit_id()) == self.focused)
+                        && (own(&self.message_send_btn) || own(&self.compose_link_btn) || own(&self.compose_attach_btn));
+                    if !compose_part && self.change_focus(None) {
+                        ctx.window.request_redraw();
+                    }
+                }
+
                 // DRAG-OUT (desktop): a press on a held file's visual remembers itself; a move past the slop drags the file out of the window (the CursorMoved arm).
                 self.file_drag_from = None;
                 #[cfg(not(target_os = "android"))]

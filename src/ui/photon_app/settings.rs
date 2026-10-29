@@ -765,16 +765,14 @@ impl PhotonApp {
 
     pub(super) fn cal_snapshot(&self) -> Option<crate::wave::engine::CalSnapshot> {
         let fs = self.fleet_settings.as_ref()?;
+        // The VOICE profile belongs to the mic, the ECHO profile to the speaker route: each is read on its own (2026-10-29, Nick's Mac and Josh's laptop opened every wave at the 8× default — their stored voiced levels were never read, because the lookup returned nothing whenever the route was still unnamed at engine start or had no echo profile yet, and the engine reads only the voice half).
         let route = crate::platform::audio::route_id();
-        if route.is_empty() {
-            return None;
-        }
-        let g_norm = fs
-            .device_local(&format!("audio.cal.echo.{route}.g"))
-            .and_then(crate::storage::fleet_settings::as_f32)?;
-        let delay_bins = fs
-            .device_local(&format!("audio.cal.echo.{route}.delay"))
-            .and_then(|v| v.as_u64())
+        let echo_g = (!route.is_empty())
+            .then(|| fs.device_local(&format!("audio.cal.echo.{route}.g")).and_then(crate::storage::fleet_settings::as_f32))
+            .flatten();
+        let delay_bins = (!route.is_empty())
+            .then(|| fs.device_local(&format!("audio.cal.echo.{route}.delay")).and_then(|v| v.as_u64()))
+            .flatten()
             .unwrap_or(0) as usize
             / 10;
         let mic = crate::platform::audio::mic_id();
@@ -785,7 +783,11 @@ impl PhotonApp {
             .device_local(&format!("audio.cal.voice.{mic}.floor"))
             .and_then(crate::storage::fleet_settings::as_f32)
             .filter(|f| *f > 0.0);
-        Some(crate::wave::engine::CalSnapshot { g_norm, delay_bins, voiced, floor })
+        // Nothing stored at all is "no snapshot"; either half alone still seeds what it can (an absent echo reads as no coupling, which the engine does not consult — the sweep measures it live).
+        if echo_g.is_none() && voiced.is_none() && floor.is_none() {
+            return None;
+        }
+        Some(crate::wave::engine::CalSnapshot { g_norm: echo_g.unwrap_or(0.0), delay_bins, voiced, floor })
     }
 
     /// Blend one LEARNED profile into the stored one (the v-chirp probe and the in-wave learner both post thru this). Echo g rides learn::blend_g (asymmetric: duck-more fast, duck-less slow + solid-only); voice gain/floor ride a symmetric EMA with the same sample weighting. `<base>.n` carries the accumulated sample count.
