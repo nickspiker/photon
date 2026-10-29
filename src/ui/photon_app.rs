@@ -3722,18 +3722,20 @@ impl PhotonApp {
     }
 }
 
-/// DEV-ONLY orb: a per-build random gradient, so a freshly built + uploaded debug build is instantly recognizable (did the upload actually take?). Seeded from a hash of THIS executable's tail — the appended signature is regenerated every build — so it's identical across a run and different across builds. Each channel (R, G, B) gets its OWN random plane `z = a·x + b·y` with `a, b ∈ [-1, 1]` over normalized `x, y ∈ [0, 1]`; the raw z, clamped to [0, 1], IS the channel value — NO normalization, so different slopes yield different intensity ranges and every build looks distinct. `draw_app_icon` masks it to the circle.
+/// A tapuwae mark (sibling crate `tapuwae`) for `salt`, `diam × diam` pixels in fluor's α + darkness, its disc filling the square: the root spiral of a Julia set placed and lit from the salt, tapering to black at its rim, α 0 outside the circle.
+fn tapuwae_pixels(salt: &[u8; 32], diam: usize) -> Vec<u32> {
+    let mut px = vec![0u32; diam * diam];
+    let r = diam as f32 * 0.5;
+    tapuwae::render_disc(&mut px, diam, r, r, r, &tapuwae::Params::new(salt, ""), &tapuwae::Look::default());
+    px
+}
+
+/// DEV-ONLY orb: a tapuwae mark unique to this build, so a freshly built + uploaded debug build is instantly recognizable (did the upload actually take?). Salted from a hash of THIS executable's tail — the appended signature is regenerated every build — so it's identical across a run and different across builds. Composited onto opaque black; `draw_app_icon` masks it to the circle.
 #[cfg(feature = "development")]
 fn dev_gradient_orb() -> fluor::host::icon::Icon {
-    fn splitmix(state: &mut u64) -> u64 {
-        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = *state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-    // Per-build seed: hash the executable's tail (its appended 64-byte signature changes every build).
-    let mut seed = (|| -> Option<u64> {
+    use fluor::pixel::{Blend, BlendMode};
+    // Per-build salt: hash the executable's tail (its appended 64-byte signature changes every build).
+    let salt = (|| -> Option<[u8; 32]> {
         use std::io::{Read, Seek, SeekFrom};
         let mut f = std::fs::File::open(std::env::current_exe().ok()?).ok()?;
         let len = f.metadata().ok()?.len();
@@ -3741,91 +3743,37 @@ fn dev_gradient_orb() -> fluor::host::icon::Icon {
         f.seek(SeekFrom::End(-(tail as i64))).ok()?;
         let mut buf = vec![0u8; tail];
         f.read_exact(&mut buf).ok()?;
-        Some(u64::from_le_bytes(
-            blake3::hash(&buf).as_bytes()[..8].try_into().unwrap(),
-        ))
+        Some(*blake3::hash(&buf).as_bytes())
     })()
-    .unwrap_or(0xDEAD_BEEF_CAFE_F00D);
-    let unit = |s: &mut u64| (splitmix(s) >> 11) as f64 / (1u64 << 53) as f64; // [0,1)
-                                                                               // Per-channel slopes a,b ∈ [-1,1): red, green, blue each get their own gradient plane.
-                                                                               // Slopes CUBED: still [-1,1] (extremes still reach the full [-4pi,4pi] → 4 periods) but concentrated near zero, so most channels are gentle low-frequency gradients — not a busy 4x plaid.
-    let (r_a, r_b) = (
-        (unit(&mut seed) * 2.0 - 1.0).powi(3),
-        (unit(&mut seed) * 2.0 - 1.0).powi(3),
-    );
-    let (g_a, g_b) = (
-        (unit(&mut seed) * 2.0 - 1.0).powi(3),
-        (unit(&mut seed) * 2.0 - 1.0).powi(3),
-    );
-    let (b_a, b_b) = (
-        (unit(&mut seed) * 2.0 - 1.0).powi(3),
-        (unit(&mut seed) * 2.0 - 1.0).powi(3),
-    );
-    // Each channel is a sine plane wave: map the disk to [-4pi, 4pi] per axis, z = a*x + b*y (slopes in [-1,1]), then (sin(z)+1)/2 -> [0,1] with NO normalization and NO clipping (sine is bounded). Circle vignette darkens the rim over the top.
+    .unwrap_or(*blake3::hash(b"photon dev orb").as_bytes());
     const N: u32 = 256;
-    let s = 4.0 * std::f64::consts::PI;
-    let mut pixels = Vec::with_capacity((N * N) as usize);
-    for py in 0..N {
-        for px in 0..N {
-            let xc = 2.0 * (px as f64 / (N - 1) as f64) - 1.0;
-            let yc = 2.0 * (py as f64 / (N - 1) as f64) - 1.0;
-            let (x, y) = (xc * s, yc * s);
-            let vignette = (1.0 - xc * xc - yc * yc).max(0.0).sqrt(); // the algorithm: outside the unit disk 1 − r² is negative and the vignette is zero
-            let ch =
-                |a: f64, b: f64| ((((a * x + b * y).sin() + 1.0) / 2.0) * vignette * 255.0) as u32;
-            let (cr, cg, cb) = (ch(r_a, r_b), ch(g_a, g_b), ch(b_a, b_b));
-            pixels.push(0xFF00_0000 | ((255 - cr) << 16) | ((255 - cg) << 8) | (255 - cb));
-        }
-    }
-    fluor::host::icon::Icon {
-        width: N,
-        height: N,
-        pixels,
-    }
+    let pixels = tapuwae_pixels(&salt, N as usize).into_iter().map(|p| p.under(0xFFFF_FFFF, BlendMode::Normal)).collect();
+    fluor::host::icon::Icon { width: N, height: N, pixels }
 }
 
-/// The default UNSET avatar: a deterministic per-identity gradient (seeded from the public proof), spherical-shaded like the dev orb, as a `diam×diam×3` visible-RGB buffer for `draw_avatar`. Replaces the flat grey placeholder — everyone without a set avatar shows a distinct little lit orb keyed to their identity, identical on every device that knows the proof. Each channel is its own plane `z = a·x + b·y` (`a,b ∈ [-1,1]`, raw clamped z, no normalization) × the dome `√(1−x_c²−y_c²)`.
-fn gradient_avatar_rgb(mut seed: u64, diam: usize) -> Vec<u8> {
-    fn splitmix(state: &mut u64) -> u64 {
-        *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let mut z = *state;
-        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
+/// Rendered avatars kept for reuse, newest last: the draw paths ask for the same (seed, diameter) every frame, and a tapuwae mark takes milliseconds to place and render. A linear search over at most `AVATAR_CACHE` entries; the oldest is dropped when full.
+static AVATAR_CACHE_STORE: std::sync::Mutex<Vec<((u64, usize), std::sync::Arc<Vec<u8>>)>> = std::sync::Mutex::new(Vec::new());
+const AVATAR_CACHE: usize = 1 << 6;
+
+/// The default UNSET avatar: a deterministic per-identity tapuwae mark (salted from the public seed, so identical on every device that knows it), as a `diam×diam×3` visible-RGB buffer for `draw_avatar`. Black outside the disc, which `draw_avatar` masks away.
+fn gradient_avatar_rgb(seed: u64, diam: usize) -> Vec<u8> {
+    if let Some((_, rgb)) = AVATAR_CACHE_STORE.lock().unwrap().iter().find(|(k, _)| *k == (seed, diam)) {
+        return rgb.to_vec();
     }
-    let unit = |s: &mut u64| (splitmix(s) >> 11) as f64 / (1u64 << 53) as f64; // [0,1)
-                                                                               // Slopes CUBED: still [-1,1] (extremes still reach the full [-4pi,4pi] → 4 periods) but concentrated near zero, so most channels are gentle low-frequency gradients — not a busy 4x plaid.
-    let (r_a, r_b) = (
-        (unit(&mut seed) * 2.0 - 1.0).powi(3),
-        (unit(&mut seed) * 2.0 - 1.0).powi(3),
-    );
-    let (g_a, g_b) = (
-        (unit(&mut seed) * 2.0 - 1.0).powi(3),
-        (unit(&mut seed) * 2.0 - 1.0).powi(3),
-    );
-    let (b_a, b_b) = (
-        (unit(&mut seed) * 2.0 - 1.0).powi(3),
-        (unit(&mut seed) * 2.0 - 1.0).powi(3),
-    );
-    // Each channel is a sine plane wave: disk mapped to [-4pi, 4pi] per axis, z = a*x + b*y, then (sin(z)+1)/2 -> [0,1] (bounded, no clip); circle vignette over the top.
-    // WHY/PROOF: a 0- or 1-pixel disk has no span to map across; the denominator is 1 there, never a wrapped 2^64 or a divide by zero.
-    let denom = diam.saturating_sub(1).max(1) as f64;
-    let s = 4.0 * std::f64::consts::PI;
+    let salt = *blake3::Hasher::new().update(b"photon avatar").update(&seed.to_le_bytes()).finalize().as_bytes();
     let mut out = vec![0u8; diam * diam * 3];
-    for py in 0..diam {
-        for px in 0..diam {
-            let xc = 2.0 * (px as f64 / denom) - 1.0;
-            let yc = 2.0 * (py as f64 / denom) - 1.0;
-            let (x, y) = (xc * s, yc * s);
-            let vignette = (1.0 - xc * xc - yc * yc).max(0.0).sqrt(); // (outside the disk — see above)
-            let ch =
-                |a: f64, b: f64| ((((a * x + b * y).sin() + 1.0) / 2.0) * vignette * 255.0) as u8;
-            let i = (py * diam + px) * 3;
-            out[i] = ch(r_a, r_b);
-            out[i + 1] = ch(g_a, g_b);
-            out[i + 2] = ch(b_a, b_b);
-        }
+    for (i, p) in tapuwae_pixels(&salt, diam).into_iter().enumerate() {
+        // α + darkness, premultiplied: visible = α − darkness per channel.
+        let a = p >> 24;
+        out[i * 3] = (a - ((p >> 16) & 0xFF)) as u8;
+        out[i * 3 + 1] = (a - ((p >> 8) & 0xFF)) as u8;
+        out[i * 3 + 2] = (a - (p & 0xFF)) as u8;
     }
+    let mut cache = AVATAR_CACHE_STORE.lock().unwrap();
+    if cache.len() >= AVATAR_CACHE {
+        cache.remove(0);
+    }
+    cache.push(((seed, diam), std::sync::Arc::new(out.clone())));
     out
 }
 

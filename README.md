@@ -238,7 +238,7 @@ Photon rides a family of sibling crates by **path dependency** — they must be 
 
 ```bash
 mkdir Code && cd Code
-for r in photon chirp fgtw fluor ihi kete limbus manifestus nunc opsin rarangi spirix tohu voca vsf; do
+for r in photon chirp fgtw fluor ihi kete limbus manifestus nunc opsin rarangi spirix tapuwae tohu voca vsf; do
     git clone https://github.com/nickspiker/$r
 done
 cd photon
