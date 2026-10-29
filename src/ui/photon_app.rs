@@ -3809,6 +3809,39 @@ fn gradient_avatar_rgb(seed: u64, diam: usize) -> Vec<u8> {
     out
 }
 
+/// The default avatar's mark drawn straight at Photon's depth, by (seed, diameter), newest last: the [`AVATAR_CACHE_STORE`] of a depth that takes the mark directly ([`Depth::mark_disc`]).
+static AVATAR_DISC_STORE: std::sync::Mutex<Vec<((u64, usize), std::sync::Arc<Vec<Px>>)>> = std::sync::Mutex::new(Vec::new());
+
+/// Draw the default UNSET avatar for `seed` at (`cx`, `cy`), radius `r`: at 8 bits exactly as before (the γ2 texture of [`gradient_avatar_rgb`] thru `draw_avatar`); at a depth that draws the mark directly, tapuwae's disc at that depth, cached like the textures, under what is on the canvas.
+fn draw_gradient_avatar(canvas: &mut Canvas, cx: f32, cy: f32, r: f32, seed: u64, clip: Option<fluor::paint::Clip>) {
+    let gd = render::disk_px(r * 2.0);
+    // 8 bits draws no mark directly (`Depth::mark_disc` is None there): the texture route, exactly as before, without touching the disc cache.
+    if Px::DEPTH == 8 {
+        crate::ui::avatar_render::draw_avatar(canvas, cx, cy, r, &gradient_avatar_rgb(seed, gd), gd, clip);
+        return;
+    }
+    let cached = AVATAR_DISC_STORE.lock().unwrap().iter().find(|(k, _)| *k == (seed, gd)).map(|(_, d)| d.clone());
+    let disc = match cached {
+        Some(d) => d,
+        None => {
+            let salt = *blake3::Hasher::new().update(b"photon avatar").update(&seed.to_le_bytes()).finalize().as_bytes();
+            let Some(px) = Px::mark_disc(&salt, gd) else {
+                crate::ui::avatar_render::draw_avatar(canvas, cx, cy, r, &gradient_avatar_rgb(seed, gd), gd, clip);
+                return;
+            };
+            let d = std::sync::Arc::new(px);
+            let mut cache = AVATAR_DISC_STORE.lock().unwrap();
+            if cache.len() >= AVATAR_CACHE {
+                cache.remove(0);
+            }
+            cache.push(((seed, gd), d.clone()));
+            d
+        }
+    };
+    let half = gd as f32 * 0.5;
+    crate::ui::depth::blit_premult(canvas, &disc, gd, gd, (cx - half).round() as isize, (cy - half).round() as isize, clip);
+}
+
 /// Seed a gradient from a 32-byte public proof (`handle_proof`) — deterministic per identity.
 fn proof_gradient_seed(proof: &[u8; 32]) -> u64 {
     u64::from_le_bytes(proof[..8].try_into().unwrap())

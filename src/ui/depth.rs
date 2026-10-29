@@ -4,10 +4,13 @@
 //! An 8-bit-only painter (opsin's viewer) goes in thru an 8-bit front buffer, widened under the frame; fluor's chrome runs at the depth itself (`DefaultChrome<Px>`).
 
 use fluor::canvas::Canvas;
+#[cfg(test)]
+use fluor::canvas::Damage;
+use fluor::paint::Clip;
 use fluor::pixel::{Argb8, G2t16, Pixel};
 use rayon::prelude::*;
 
-/// A pixel depth Photon paints at: fluor's [`Pixel`], plus colour in from the display's γ2 RGB and the bridge for an 8-bit-only painter.
+/// A pixel depth Photon paints at: fluor's [`Pixel`], plus colour in from the display's γ2 RGB, the tapuwae mark, and the bridge for an 8-bit-only painter.
 pub trait Depth: Pixel {
     /// A colour given as the display's γ2 visible bytes `0x00RRGGBB` (a decoded image, an avatar texel) at straight α `alpha` (`0..=ONE`): its `g2t` darkness at this depth, in the platform's channel order (fluor's `fmt`).
     fn from_gamma2(alpha: u32, visible: u32) -> Self;
@@ -18,6 +21,8 @@ pub trait Depth: Pixel {
 
     /// Run a painter that only draws 8-bit (opsin's viewer) under what is on `canvas`: at 8 bits straight onto it; at a wider depth into the 8-bit `front`, cleared, then widened under the canvas, which is the same front-to-back composite.
     fn paint_8bit(canvas: &mut Canvas<Self>, front: &mut Vec<Argb8>, paint: impl FnOnce(&mut Canvas<Argb8>));
+    /// A tapuwae mark for `salt` drawn straight at this depth, `diam × diam`, its disc filling the square (premultiplied, empty outside), or `None` where the depth takes the mark thru the avatar texture instead (8 bits: the γ2 RGB texture `draw_avatar` converts, as always).
+    fn mark_disc(salt: &[u8; 32], diam: usize) -> Option<Vec<Self>>;
 }
 
 impl Depth for Argb8 {
@@ -39,6 +44,9 @@ impl Depth for Argb8 {
 
     fn paint_8bit(canvas: &mut Canvas<Self>, _front: &mut Vec<Argb8>, paint: impl FnOnce(&mut Canvas<Argb8>)) {
         paint(canvas);
+    }
+    fn mark_disc(_salt: &[u8; 32], _diam: usize) -> Option<Vec<Self>> {
+        None
     }
 }
 
@@ -65,6 +73,28 @@ impl Depth for G2t16 {
         front.resize(w * h, Argb8::EMPTY);
         paint(&mut Canvas::new(front, w, h, canvas.damage));
         compose_widened(canvas.pixels, w, front);
+    }
+    /// tapuwae's own 16-bit disc ([`tapuwae::render_disc_g2t16`]): each pixel's light as a 16-bit `g2t` code, never thru an 8-bit byte.
+    fn mark_disc(salt: &[u8; 32], diam: usize) -> Option<Vec<Self>> {
+        let mut px = vec![Self::EMPTY; diam * diam];
+        let r = diam as f32 * 0.5;
+        tapuwae::render_disc_g2t16(&mut px, diam, r, r, r, &tapuwae::Params::new(salt, ""), &tapuwae::Look::default());
+        Some(px)
+    }
+}
+
+/// A premultiplied `sw × sh` picture (a fluor layer: built by `under` from empty, or a disc packed premultiplied) under what is on `canvas`, its top-left at (`ox`, `oy`), within `clip`.
+pub fn blit_premult<P: Pixel>(canvas: &mut Canvas<P>, src: &[P], sw: usize, sh: usize, ox: isize, oy: isize, clip: Option<Clip>) {
+    let Some((x0, y0, x1, y1)) = Clip::intersect_bbox(clip, canvas.width, canvas.height, ox as i32, (ox + sw as isize) as i32, oy as i32, (oy + sh as isize) as i32) else {
+        return;
+    };
+    canvas.damage.add_bounds(x0, y0, x1, y1);
+    let w = canvas.width;
+    for y in y0..y1 {
+        // PROOF: the bbox lies inside the picture's own rect, so y − oy and x − ox index its rows and columns.
+        let sy = (y as isize - oy) as usize;
+        let sx0 = (x0 as isize - ox) as usize;
+        fluor::paint::flatten_premult(&mut canvas.pixels[y * w + x0..y * w + x1], &src[sy * sw + sx0..sy * sw + sx0 + (x1 - x0)]);
     }
 }
 
@@ -134,6 +164,27 @@ mod tests {
         for a in 0..256u32 {
             let p = G2t16::widen_composite((a << 24) | (a << 16) | (a / 2));
             assert!(p.channels().into_iter().all(|d| d <= p.alpha()));
+        }
+    }
+
+    /// The mark straight at 16 bits (none at 8, which keeps the texture route), and a premultiplied blit onto nothing is the picture itself, clipped where it overhangs.
+    #[test]
+    fn the_mark_blits_as_drawn() {
+        let salt = *blake3::hash(b"depth mark").as_bytes();
+        assert!(<Argb8 as Depth>::mark_disc(&salt, 8).is_none());
+        let d = 12;
+        let disc = <G2t16 as Depth>::mark_disc(&salt, d).expect("16 bits draws the mark");
+        assert!(disc.iter().any(|&p| p != 0) && disc.iter().all(|p| p.channels().into_iter().all(|c| c <= p.alpha())));
+        let (w, h) = (20usize, 16usize);
+        let mut px = vec![G2t16::EMPTY; w * h];
+        let mut dmg = Damage::new();
+        blit_premult(&mut Canvas::new(&mut px, w, h, &mut dmg), &disc, d, d, 10, -2, None);
+        for y in 0..h {
+            for x in 0..w {
+                let inside = (10..10 + d).contains(&x) && y + 2 < d;
+                let want = if inside { disc[(y + 2) * d + x - 10] } else { 0 };
+                assert_eq!(px[y * w + x], want, "({x}, {y})");
+            }
         }
     }
 }

@@ -1930,21 +1930,12 @@ impl PhotonApp {
                 );
             } else {
                 // Default unset avatar: our deterministic per-identity gradient (public proof) instead of a flat grey disk.
-                let gd = disk_px(radius * 2.0);
                 let seed = self
                     .session
                     .as_ref()
                     .map(|s| proof_gradient_seed(&s.handle_proof))
                     .unwrap_or(0);
-                crate::ui::avatar_render::draw_avatar(
-                    &mut canvas,
-                    cx,
-                    cy,
-                    radius,
-                    &gradient_avatar_rgb(seed, gd),
-                    gd,
-                    None,
-                );
+                draw_gradient_avatar(&mut canvas, cx, cy, radius, seed, None);
             }
             }
             // Avatar update hint below the circle — DESKTOP ONLY, shown on hover. On Android, tapping the grey circle to pick an image is self-evident.
@@ -2339,16 +2330,7 @@ impl PhotonApp {
                     }
                     _ => {
                         // Default unset avatar: the deterministic gradient (a contact's public proof; a group's id).
-                        let gd = disk_px(avatar_r * 2.0);
-                        crate::ui::avatar_render::draw_avatar(
-                            &mut canvas,
-                            avatar_cx,
-                            cy,
-                            avatar_r,
-                            &gradient_avatar_rgb(view.gradient_seed, gd),
-                            gd,
-                            Some(rows_clip),
-                        );
+                        draw_gradient_avatar(&mut canvas, avatar_cx, cy, avatar_r, view.gradient_seed, Some(rows_clip));
                     }
                 }
                 // The row's colour — a contact's relationship colour (ears and eyes and the unread cue all agree on it), a group's own. A zero-remote row gets the neutral anchor.
@@ -2667,9 +2649,8 @@ impl PhotonApp {
                             match own {
                                 Some((a, d)) => crate::ui::avatar_render::draw_avatar(&mut canvas, acx, acy, ar, a, d, None),
                                 None => {
-                                    let gd = disk_px(ar * 2.0);
                                     let seed = b.ci.map_or_else(|| super::proof_gradient_seed(&b.party), |ci| super::proof_gradient_seed(&self.contacts[ci].handle_proof));
-                                    crate::ui::avatar_render::draw_avatar(&mut canvas, acx, acy, ar, &super::gradient_avatar_rgb(seed, gd), gd, None);
+                                    super::draw_gradient_avatar(&mut canvas, acx, acy, ar, seed, None);
                                 }
                             }
                             // Name, bold while selected (Nick: "it turns bold/normal"), then its tag dimmer.
@@ -7985,7 +7966,7 @@ fn hairline_px(ru: f32) -> f32 {
 /// An avatar disk's diameter in whole pixels, at least one.
 /// WHY: a row's avatar radius scales with the window and drops below half a pixel on the smallest layouts.
 /// PROOF: the gradient raster and its cache are sized by this diameter, and a 0-pixel disk would be a zero-length buffer that the painter still indexes — one pixel is the smallest disk there is.
-fn disk_px(diameter: f32) -> usize {
+pub(super) fn disk_px(diameter: f32) -> usize {
     diameter.max(1.0) as usize
 }
 

@@ -15,7 +15,7 @@ pub type Px = fluor::pixel::G2t16;
 /// fluor's canvas at Photon's depth: every `&mut Canvas` in Photon's paint code is a canvas of [`Px`].
 pub type Canvas<'a> = fluor::canvas::Canvas<'a, Px>;
 
-/// What Photon's paint needs of a depth beyond fluor's `Pixel`: colour in from the display's γ2 RGB and the bridge for a painter that only draws 8-bit (opsin's viewer).
+/// What Photon's paint needs of a depth beyond fluor's `Pixel`: colour in from the display's γ2 RGB, the tapuwae mark at the depth, and the bridge for a painter that only draws 8-bit (opsin's viewer).
 pub mod depth;
 pub use depth::Depth;
 
