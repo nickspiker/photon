@@ -523,6 +523,7 @@ impl PhotonApp {
         if let Some(cb) = self.settings_wave_hold_check.as_mut() {
             cb.set_checked(self.wave_hold);
         }
+        self.load_ideas_ticker();
         // The remembered mic / speaker / camera picks (device-local): the next wave and beam open them.
         self.apply_device_picks();
         // Settings → Beam (per device unless it follows the fleet) into the senders.

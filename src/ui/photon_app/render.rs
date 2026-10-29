@@ -6779,22 +6779,47 @@ impl PhotonApp {
                         (&tr(Msg::IdeasSendIdea), (btn_base + IDEAS_PILL_IDEA), true, None),
                         (&tr(Msg::IdeasSendFix), (btn_base + IDEAS_PILL_FIX), true, None),
                     ], "Open Sans");
+                    // Everyone's ideas are public (Nick 2026-10-28): while words are in the box the ones sharing them show right here — is it already in the bucket? — and with the box empty the whole list closes the page.
+                    let gripe_row = |kind: &str, state: &str, version: &str, id: &[u8; 32]| format!("{} · {} · {}{}", hex::encode(&id[..4]), kind, if state.is_empty() { "…" } else { state }, if version.is_empty() { String::new() } else { format!(" {}", version) });
+                    let typing = self.ideas_textbox.as_ref().is_some_and(|tb| !tb.chars.is_empty());
+                    let typed_now: String = self.ideas_textbox.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
+                    let everyone: Vec<(String, String, String)> = Self::ranked_public_gripes(&self.public_gripes, &typed_now).into_iter().map(|g| (gripe_row(&g.kind, &g.state, &g.version, &g.id), g.text.clone(), g.note.clone())).collect();
+                    let list_rows = |flow: &mut Flow, canvas: &mut Canvas, text: &mut fluor::text::TextRenderer, rows: &[(String, String, String)]| {
+                        for (head, body, note) in rows {
+                            flow.gap(hspan2 * 0.3);
+                            flow.line(canvas, text, head, hspan2 * 0.9, *theme::SEARCH_FOUND_COLOUR, 600);
+                            flow.prose(canvas, text, body, hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
+                            if !note.is_empty() {
+                                flow.prose(canvas, text, note, hspan2 * 0.9, *theme::CONTACT_NAME_COLOUR, 400);
+                            }
+                        }
+                    };
+                    if typing {
+                        flow.gap(hspan2 * 0.8);
+                        flow.line(&mut canvas, ctx.text, &tr(Msg::IdeasLikeYours), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
+                        if everyone.is_empty() {
+                            flow.prose(&mut canvas, ctx.text, &tr(Msg::IdeasNothingLikeIt), hspan2, *theme::LABEL_COLOUR, 400);
+                        }
+                        list_rows(&mut flow, &mut canvas, ctx.text, &everyone);
+                    }
+                    flow.gap(hspan2 * 0.6);
+                    if let Some(cb) = self.settings_ideas_ticker_check.as_mut() {
+                        flow_checkbox(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, cb, &tr(Msg::IdeasTicker), hspan2);
+                    }
                     flow.gap(hspan2 * 0.8);
                     flow.line(&mut canvas, ctx.text, &tr(Msg::IdeasYours), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
                     if self.my_gripes.is_empty() {
                         flow.prose(&mut canvas, ctx.text, &tr(Msg::IdeasNone), hspan2, *theme::LABEL_COLOUR, 400);
                     }
-                    let rows: Vec<(String, String, String)> = self.my_gripes.iter().map(|g| {
-                        let head = format!("{} · {} · {}{}", hex::encode(&g.id[..4]), g.kind, if g.state.is_empty() { "…" } else { g.state.as_str() }, if g.version.is_empty() { String::new() } else { format!(" {}", g.version) });
-                        (head, g.text.clone(), g.note.clone())
-                    }).collect();
-                    for (head, text, note) in rows {
-                        flow.gap(hspan2 * 0.3);
-                        flow.line(&mut canvas, ctx.text, &head, hspan2 * 0.9, *theme::SEARCH_FOUND_COLOUR, 600);
-                        flow.prose(&mut canvas, ctx.text, &text, hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
-                        if !note.is_empty() {
-                            flow.prose(&mut canvas, ctx.text, &note, hspan2 * 0.9, *theme::CONTACT_NAME_COLOUR, 400);
+                    let rows: Vec<(String, String, String)> = self.my_gripes.iter().map(|g| (gripe_row(&g.kind, &g.state, &g.version, &g.id), g.text.clone(), g.note.clone())).collect();
+                    list_rows(&mut flow, &mut canvas, ctx.text, &rows);
+                    if !typing {
+                        flow.gap(hspan2 * 0.8);
+                        flow.line(&mut canvas, ctx.text, &tr(Msg::IdeasEveryone), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
+                        if everyone.is_empty() {
+                            flow.prose(&mut canvas, ctx.text, &tr(Msg::IdeasEveryoneNone), hspan2, *theme::LABEL_COLOUR, 400);
                         }
+                        list_rows(&mut flow, &mut canvas, ctx.text, &everyone);
                     }
                     flow.gap(hspan2);
                     measured_extent = Some((flow.used(), inset.h));

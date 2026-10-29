@@ -520,6 +520,12 @@ impl PhotonApp {
             }
             { needs_redraw = true; self.note_redraw(line!()); }
         }
+        // The ideas ticker: device-local, default OFF (ideas.rs).
+        let ticker_toggle = self.settings_ideas_ticker_check.as_mut().map(|cb| (cb.take_toggle(), cb.is_checked()));
+        if let Some((true, checked)) = ticker_toggle {
+            self.set_ideas_ticker(checked);
+            { needs_redraw = true; self.note_redraw(line!()); }
+        }
         // The phone's voice processing: device-local (unlinked) bool, default OFF; the switch flips now and applies at the next stream open (the next wave).
         let voice_dsp_toggle = self
             .settings_voice_dsp_check
@@ -836,6 +842,13 @@ impl PhotonApp {
             let our_hp = self.our_handle_proof();
             let mut refresh_contacts: Vec<[u8; 32]> = Vec::new();
             for (kind, evt_hp) in &fleet_evts {
+                if *kind == "idea" {
+                    // A public idea landed or its status moved (docs/ideas.md): fetch the list when the ticker is on or the Ideas page is open — nobody else needs it.
+                    if self.ideas_ticker || self.state == AppState::Settings(SettingsPage::Ideas) {
+                        self.refresh_public_gripes();
+                    }
+                    continue;
+                }
                 if *kind == "release" {
                     // Release notice off the hub — the advisory "go look" a deploy fires: make the next drive_auto_update poll due NOW instead of the jittered 6-8h cadence. Trust is unchanged — the poll fetches the SIGNED manifest thru the stamp window, so the worst a forged notice does is cause a poll. (`1` = due-in-the-past but nonzero, so the ==0 first-launch ramp doesn't swallow it.)
                     crate::log("UPDATE: release notice from the hub — manifest poll due now");
@@ -1250,6 +1263,9 @@ impl PhotonApp {
         }
         if let Some(cb) = self.settings_wave_hold_check.as_mut() {
             cb.set_label(tr(Msg::HoldWavesOnDevice));
+        }
+        if let Some(cb) = self.settings_ideas_ticker_check.as_mut() {
+            cb.set_label(tr(Msg::IdeasTicker));
         }
         if let Some(cb) = self.settings_voice_dsp_check.as_mut() {
             cb.set_label(tr(Msg::VoiceDsp));

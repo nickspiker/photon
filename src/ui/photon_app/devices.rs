@@ -922,6 +922,7 @@ impl PhotonApp {
                                                 "fleet" => "fleet",
                                                 "friendship" => "friendship",
                                                 "release" => "release",
+                                                "idea" => "idea",
                                                 _ => continue,
                                             };
                                             if tx.send((k, evt_hp)).is_err() {

@@ -908,6 +908,15 @@ pub enum Msg<'a> {
     IdeasSending,
     IdeasSent,
     IdeasSendFailed(&'a str),
+    /// Ideas page: the ticker switch (off by default) and the notification titles it raises.
+    IdeasTicker,
+    IdeasTickerNewIdea,
+    IdeasTickerNewFix,
+    /// Ideas page: the public list — the matches while typing, and the whole list with the box empty.
+    IdeasLikeYours,
+    IdeasNothingLikeIt,
+    IdeasEveryone,
+    IdeasEveryoneNone,
     OptionalNote,
     // ---- you / profile ----
     YouAddCustomField,

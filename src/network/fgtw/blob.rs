@@ -885,19 +885,52 @@ pub fn gripe_get_blocking(id: &[u8; 32]) -> Result<(String, String, String), Blo
     Ok((ack_text(&ack, "state"), ack_text(&ack, "note"), ack_text(&ack, "version")))
 }
 
-/// The developer's list (token-gated): one row per gripe, `id\tkind\tstate\treceived\ttext`.
-pub fn gripe_list_blocking(token: &[u8]) -> Result<Vec<String>, BlobError> {
-    let mut sec = vsf::file_format::VsfSection::new("gripe_list");
-    sec.add_field_multi("token", vec![VsfType::v(b'k', token.to_vec())]);
-    let bytes = gripe_post(sec, "gripe_list")?;
-    let schema = vsf::schema::SectionSchema::new("gripe_list_ack").field("rows", vsf::schema::TypeConstraint::DictKey);
-    let ack = gripe_ack(&bytes, schema)?;
-    Ok(ack
-        .get_values("rows")
-        .unwrap_or_default()
-        .into_iter()
-        .filter_map(|v| match v { VsfType::d(s) | VsfType::a(s) => Some(s), _ => None })
-        .collect())
+/// One gripe as everyone sees it (the list is public): its id, kind, the developer's state, when it arrived, its text, and the developer's note and version.
+#[derive(Clone, Debug)]
+pub struct PublicGripe {
+    pub id: [u8; 32],
+    pub kind: String,
+    pub state: String,
+    pub received_osc: i64,
+    pub text: String,
+    pub note: String,
+    pub version: String,
+}
+
+/// Every gripe, public (docs/ideas.md): one typed `idea` section per gripe behind a `gripe_list_ack` head, read thru the verified-document gate.
+pub fn gripe_list_blocking() -> Result<Vec<PublicGripe>, BlobError> {
+    use crate::storage::record::Rec;
+    let bytes = gripe_post(vsf::file_format::VsfSection::new("gripe_list"), "gripe_list")?;
+    let sections = crate::storage::record::verified_sections(&bytes, None).map_err(|e| BlobError::Network(format!("Parse gripe list: {e}")))?;
+    let Some(count) = sections.iter().find(|s| s.name == "gripe_list_ack").and_then(|s| Rec(s).uint("count")) else {
+        return Err(BlobError::ServerError("gripe_list: no gripe_list_ack count".into()));
+    };
+    let ascii = |r: &Rec, name: &str| match r.all(name).first() {
+        Some(VsfType::a(s)) | Some(VsfType::d(s)) => s.clone(),
+        _ => String::new(),
+    };
+    let words = |r: &Rec, name: &str| r.wrapped(name, b't').map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+    let ideas: Vec<PublicGripe> = sections
+        .iter()
+        .filter(|s| s.name == "idea")
+        .map(Rec)
+        .filter_map(|r| {
+            Some(PublicGripe {
+                id: r.h32("id")?,
+                kind: ascii(&r, "kind"),
+                state: ascii(&r, "state"),
+                received_osc: r.osc("received").unwrap_or(0),
+                text: words(&r, "text"),
+                note: words(&r, "note"),
+                version: ascii(&r, "version"),
+            })
+        })
+        .collect();
+    // The head says how many it sent: an idea that did not read (no 32-byte id) is a fault to see, never a row quietly missing.
+    if ideas.len() as u64 != count {
+        return Err(BlobError::ServerError(format!("gripe_list: the head counts {count} but {} read", ideas.len())));
+    }
+    Ok(ideas)
 }
 
 /// The developer sets a gripe's status (token-gated).

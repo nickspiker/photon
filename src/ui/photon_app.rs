@@ -2645,6 +2645,14 @@ pub struct PhotonApp {
     my_gripes: Vec<ideas::Gripe>,
     gripe_tx: Option<std::sync::mpsc::Sender<ideas::GripeEvent>>,
     gripe_rx: Option<std::sync::mpsc::Receiver<ideas::GripeEvent>>,
+    /// Everyone's gripes (the list is public — docs/ideas.md), as last fetched; the Ideas page shows them, ranked by likeness to what is in the box.
+    public_gripes: Vec<crate::network::fgtw::PublicGripe>,
+    /// The public list has been fetched once this session: the baseline the ticker compares against, so an idea is announced only when it is new since then.
+    public_gripes_known: bool,
+    /// The ideas ticker (`ideas.ticker`, DEVICE-LOCAL, default OFF — Nick 2026-10-28: "a ticker that you can subscribe to but is off by default"): a new public idea or fix raises a notification here.
+    ideas_ticker: bool,
+    /// Ideas-page "Tell me when someone sends an idea" — the ticker switch.
+    settings_ideas_ticker_check: Option<fluor::widgets::Checkbox>,
     /// Fleet page inline rename: the device being renamed + its textbox. Some = that card's name band renders the box; Enter commits to the fleet-linked `fleet.name.<pkhex>` setting, Esc cancels.
     fleet_rename: Option<([u8; 32], Textbox)>,
     /// You-page profile editor: one box per field (display name, first, email, custom fields, …), grouped by taxonomy tier and prefilled from the fleet `profile.<id>` settings on page-open. "Save profile" writes every changed field in one batched push. HitId is scarce (u16) so this is built ONCE (lazily, on first open) and never rebuilt — custom fields append.
@@ -3396,6 +3404,10 @@ impl PhotonApp {
             my_gripes: Vec::new(),
             gripe_tx: None,
             gripe_rx: None,
+            public_gripes: Vec::new(),
+            public_gripes_known: false,
+            ideas_ticker: false,
+            settings_ideas_ticker_check: None,
             fleet_rename: None,
             you_fields: Vec::new(),
             you_add_textbox: None,
@@ -4072,6 +4084,9 @@ impl PhotonApp {
                     }
                 }
                 SettingsPage::Ideas => {
+                    if let Some(cb) = self.settings_ideas_ticker_check.as_mut() {
+                        f(cb);
+                    }
                     if let Some(tb) = self.ideas_textbox.as_mut() {
                         f(tb);
                     }

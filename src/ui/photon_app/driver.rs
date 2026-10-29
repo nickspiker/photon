@@ -497,6 +497,17 @@ impl FluorApp for PhotonApp {
             12.,
             true,
         ));
+        // The ideas ticker (ideas.ticker, device-local, default OFF): the Ideas page.
+        self.settings_ideas_ticker_check = Some(fluor::widgets::Checkbox::new(
+            &mut self.hit_counter,
+            tr(Msg::IdeasTicker),
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            false,
+        ));
         // The phone's voice processing on the earpiece too (waves.voice_dsp, device-local, default OFF) — the Wave page, Android only: the loudspeaker always takes it, and no other platform has a vendor path wired.
         self.settings_voice_dsp_check = if cfg!(any(target_os = "android", target_os = "macos")) {
             Some(fluor::widgets::Checkbox::new(
@@ -903,6 +914,7 @@ impl FluorApp for PhotonApp {
                     if *p == SettingsPage::Ideas {
                         self.load_my_gripes();
                         self.refresh_gripe_states();
+                        self.refresh_public_gripes();
                     }
                     // Opening the Wave page snapshots the profile list (the render reads a copy).
                     if *p == SettingsPage::Wave {

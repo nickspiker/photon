@@ -229,16 +229,16 @@ fn main() {
     }
     let filter = Filter { min_level, grep };
 
-    // The developer's side of the Ideas page (docs/ideas.md).
+    // The developer's side of the Ideas page (docs/ideas.md): the list is public, setting a status takes the token.
     if gripes_list || gripe_status.is_some() {
-        let token = std::fs::read("/mnt/Harbor/Code/keys/gripes.token")
-            .map(|b| b.into_iter().filter(|c| !c.is_ascii_whitespace()).collect::<Vec<u8>>())
-            .unwrap_or_default();
-        if token.is_empty() {
-            eprintln!("photonlog: no token at keys/gripes.token");
-            std::process::exit(2);
-        }
         if let Some((id, state, note, version)) = gripe_status {
+            let token = std::fs::read("/mnt/Harbor/Code/keys/gripes.token")
+                .map(|b| b.into_iter().filter(|c| !c.is_ascii_whitespace()).collect::<Vec<u8>>())
+                .unwrap_or_default();
+            if token.is_empty() {
+                eprintln!("photonlog: no token at keys/gripes.token");
+                std::process::exit(2);
+            }
             match photon_messenger::network::fgtw::gripe_status_blocking(&token, &id, &state, &note, &version) {
                 Ok(()) => println!("{} → {}{}", hex::encode(&id[..8]), state, if note.is_empty() { String::new() } else { format!(" ({note})") }),
                 Err(e) => {
@@ -248,13 +248,14 @@ fn main() {
             }
         }
         if gripes_list {
-            match photon_messenger::network::fgtw::gripe_list_blocking(&token) {
-                Ok(rows) => {
-                    for r in &rows {
-                        let mut parts = r.splitn(5, '\t');
-                        let (id, kind, state, received, text) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
-                        let when = received.parse::<i64>().ok().map(|o| { let (secs, _) = vsf::types::to_unix_ns(o); format!("{}", secs) }).unwrap_or_default();
-                        println!("{}  {:<4} {:<9} {:>12}  {}", id, kind, state, when, text.replace('\n', " / "));
+            match photon_messenger::network::fgtw::gripe_list_blocking() {
+                Ok(mut rows) => {
+                    rows.sort_by_key(|g| g.received_osc);
+                    for g in &rows {
+                        println!("{}  {:<4} {:<9} {}  {}", hex::encode(g.id), g.kind, g.state, eagle_display(g.received_osc), g.text.replace('\n', " / "));
+                        if !g.note.is_empty() || !g.version.is_empty() {
+                            println!("    note: {}{}", g.note, if g.version.is_empty() { String::new() } else { format!(" [{}]", g.version) });
+                        }
                     }
                     eprintln!("photonlog: {} gripe(s)", rows.len());
                 }
