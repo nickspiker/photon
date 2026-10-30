@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v134
 - **Sending a big attachment no longer chokes your connection.** Photon used to fire large files at the other device as fast as it could, which filled your upload link and could make everything else fail meanwhile; it now watches how long its packets take to come back, slows down the moment a queue starts building, and leaves room for everything else.
 - **No more white dots in a focused text box.** A focused text box could show a fine grid of white dots, one every few pixels; the highlight is now worked out at full colour depth and lands exactly on the theme colour.
 - **Clicking off a text box lets go of it.** Clicking anywhere outside a text box, or moving the window, now takes the typing focus away and then does whatever the click means there: selecting a photon, opening something, dragging. The compose box's own buttons (Send, link, attach) keep it focused, so you can keep typing.
