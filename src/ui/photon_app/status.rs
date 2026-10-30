@@ -3840,7 +3840,7 @@ impl PhotonApp {
                         });
                         queue_job(&self.attach_job_tx, move || {
                             let _serving = serving;
-                            // A RAW request for content held WRAPPED (an older build asking by `fh`, until v134): the original is unwrapped thru the verified load and served FROM MEMORY — an in-memory manifest and slices — never re-stored, so the wrapper stays the one copy at rest.
+                            // A RAW request for content held WRAPPED (an older build asking by `fh`, until v146): the original is unwrapped thru the verified load and served FROM MEMORY — an in-memory manifest and slices — never re-stored, so the wrapper stays the one copy at rest.
                             let held_wrapped_raw = if crate::storage::blob_manifest(&content_hash).is_none() && crate::storage::wrap_alias(&content_hash).is_some_and(|hb| hb != content_hash) {
                                 crate::storage::blob_load(&seed, &content_hash)
                             } else {

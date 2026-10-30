@@ -10,7 +10,7 @@ Release must never silently take the last copy of an attachment. Canonical write
 - Holders counted per ITEM, never per device (a watch vouches only for what it holds).
 - Reply = list of MISSING content hashes, not a bitmap.
 - Phase 1 BUILT (8cc9831f): wrapped original keyed by header hb ([[project_chain_text_and_pointers]]).
-- Phase 2 BUILT 2026-10-17 (ui/photon_app/holdings.rs): arming Release → worker probes held originals+heads → `holdings_ask` (fleet-key-derived seal) to live siblings → each answers `holdings_missing` off-thread → at-risk lines + non-answering siblings with last-heard age under the Release pill. Second tap still releases. RAW hashes until v134 (presence follows the raw→hb alias).
+- Phase 2 BUILT 2026-10-17 (ui/photon_app/holdings.rs): arming Release → worker probes held originals+heads → `holdings_ask` (fleet-key-derived seal) to live siblings → each answers `holdings_missing` off-thread → at-risk lines + non-answering siblings with last-heard age under the Release pill. Second tap still releases. RAW hashes until v146 (presence follows the raw→hb alias).
 - Phase 3 BUILT 2026-10-17: "Copy, then release" pill → `holdings_pull` to the most complete answering sibling, which fetches with the leaver ranked first (`attach_fetch_prefer`) and re-answers as items land; device-local `release.when_copied` persists; leaver auto-sends the departure request when nothing is at risk.
 - OPEN: 4 free space / target choice / export; 5 durability cursor for rows. Field test of phases 2-3 pending (dev build on two devices). Sibling pull job is RAM only.
 

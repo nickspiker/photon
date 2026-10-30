@@ -2,7 +2,7 @@
 //!
 //! The identity is the document's header `hb` — BLAKE3 over the whole wrapped file with only the hb slot zeroed, the hash VSF computes last — so one value addresses the blob, names it on the wire, keys the vault and the device-removal have-set, and verifies a fetched copy by itself.
 //! The wrapper is DETERMINISTIC: unsigned, no thumbnails (they live in the head), and the header time is the CONTENT's own time when known (a photo's capture, a recording's start) — never the moment of wrapping, never a filesystem mtime — so the same content always wraps to the same bytes and the same hb, wherever and whoever wraps it.
-//! Inside: `rh` (hb) = BLAKE3 of the raw bytes, the identity rows carried before the wrapper (and keep carrying until v134), and `data` = `v(b'b', raw)`, VSF's standard binary blob (length in bits, vsf_type.rs).
+//! Inside: `rh` (hb) = BLAKE3 of the raw bytes, the identity rows carried before the wrapper (and keep carrying until v146), and `data` = `v(b'b', raw)`, VSF's standard binary blob (length in bits, vsf_type.rs).
 
 use vsf::file_format::VsfSection;
 use vsf::VsfType;

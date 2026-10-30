@@ -224,7 +224,7 @@ pub struct AttachRef {
     pub role: AttachRole,
     /// THE HEAD (flag day 2026-10-07, Nick: "keep the chain simply text, text formatting, links, pointers… store the pdf or tiff or whatever in a wrapped vsf blob with a thumbnail… off chain"): the hash of the attachment's HEAD blob — name, kind, dims, thumbnails, a wave's envelope — so the row on the chain is two pointers and nothing else. `None` on every row minted before the flag day, which still carries those fields inline and reads exactly as it always did.
     pub head: Option<[u8; 32]>,
-    /// THE WRAPPED ORIGINAL (storage/wrapped.rs, Nick 2026-10-17): the header hb of the original wrapped in its own VSF document — the address a wrapper-aware build fetches, stores and verifies under. NOT identity, exactly like the head: an older build drops the unknown `fw` field, so identity keeps the raw `hash` until v134 retires the raw form.
+    /// THE WRAPPED ORIGINAL (storage/wrapped.rs, Nick 2026-10-17): the header hb of the original wrapped in its own VSF document — the address a wrapper-aware build fetches, stores and verifies under. NOT identity, exactly like the head: an older build drops the unknown `fw` field, so identity keeps the raw `hash` until v146 retires the raw form.
     pub wrap: Option<[u8; 32]>,
 }
 
@@ -463,7 +463,7 @@ mod tests {
         assert_ne!(f.ident_bytes(), AttachRef { role: AttachRole::WaveAudio, ..f.clone() }.ident_bytes());
     }
 
-    /// THE WRAPPER IS NOT IDENTITY (2026-10-17, until v134): a wrapper-aware build and an older one must derive the same braid keys for the same file photon, so the wrapper hb changes neither the identity bytes nor `same_identity` — and it rides the wire (`fw`) intact for the builds that read it.
+    /// THE WRAPPER IS NOT IDENTITY (2026-10-17, until v146): a wrapper-aware build and an older one must derive the same braid keys for the same file photon, so the wrapper hb changes neither the identity bytes nor `same_identity` — and it rides the wire (`fw`) intact for the builds that read it.
     #[test]
     fn wrapper_hb_is_metadata_not_identity() {
         let bare = AttachRef::pointer([3; 32], 4096, AttachRole::File, [4; 32]);

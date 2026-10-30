@@ -661,10 +661,10 @@ pub fn blob_binds(bytes: &[u8], content_hash: &[u8; 32]) -> bool {
     blake3::hash(bytes).as_bytes() == content_hash || wrapped::verify(bytes, content_hash).is_ok()
 }
 
-/// THE RAW-FORM WINDOW CLOSES AT v134 (Nick 2026-10-17: back-compat for 12 releases, then halt the build): the wrapper shipped in v122, so releases 122..=133 carry the raw-hash alias, the raw-request serving, the alternating fetch ask and the raw hash in row identity. v134 does not compile until they are gone and identity names the wrapper hb (docs/attachments.md "The wrapped original").
-const _: () = assert!(crate::VERSION_MINOR < 134, "v134: the raw-form compat window is over — drop the wrapped-original alias, raw-request serving and alternating fetch ask, and move row identity to the wrapper hb");
+/// THE RAW-FORM WINDOW CLOSES AT v146 (Nick 2026-10-17: back-compat for 12 releases, then halt the build; Nick 2026-10-30, the v134 deploy: "Bump it another 12 versions" — about a third of the network was on a wrapper-aware build): the wrapper shipped in v122, so releases 122..=145 carry the raw-hash alias, the raw-request serving, the alternating fetch ask and the raw hash in row identity. v146 does not compile until they are gone and identity names the wrapper hb (docs/attachments.md "The wrapped original").
+const _: () = assert!(crate::VERSION_MINOR < 146, "v146: the raw-form compat window is over — drop the wrapped-original alias, raw-request serving and alternating fetch ask, and move row identity to the wrapper hb");
 
-/// THE RAW → WRAPPER ALIAS (until v134): a content held wrapped is still asked for by its RAW hash — every row's identity and every older build's request carry it — so the vault keeps a 32-byte pointer from the raw hash to the wrapper's hb, at its own keyed address.
+/// THE RAW → WRAPPER ALIAS (until v146): a content held wrapped is still asked for by its RAW hash — every row's identity and every older build's request carry it — so the vault keeps a 32-byte pointer from the raw hash to the wrapper's hb, at its own keyed address.
 fn alias_addr(raw_hash: &[u8; 32]) -> Option<[u8; 32]> {
     let k = (*BLOB_NAME_KEY.lock().unwrap())?;
     let mut input = Vec::with_capacity(9 + 32);

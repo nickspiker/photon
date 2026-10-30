@@ -108,7 +108,7 @@ impl PhotonApp {
             let raw_tmp = raw_temp_path(kind, &hash, &bytes);
             let p = crate::ui::attach_preview::prepare(&bytes, &name, raw_tmp.as_deref());
             // Sealed to disk HERE, not in the drain: the row and the push need only the manifest.
-            // WRAPPED (storage/wrapped.rs, 2026-10-17): the original rests and travels inside its own VSF document, named by the document's header hb; the raw hash keeps naming it in the row's identity and for older builds (an alias), until v134. A wrap that fails stores the raw form as before.
+            // WRAPPED (storage/wrapped.rs, 2026-10-17): the original rests and travels inside its own VSF document, named by the document's header hb; the raw hash keeps naming it in the row's identity and for older builds (an alias), until v146. A wrap that fails stores the raw form as before.
             let (wrap, manifest) = match crate::storage::blob_store_wrapped(&seed, &bytes, None) {
                 Ok((hb, m)) => (Some(hb), m),
                 Err(e) => {
@@ -454,7 +454,7 @@ impl PhotonApp {
         else {
             return;
         };
-        // THE ASK (storage/wrapped.rs, until v134): a row naming a WRAPPER (`fw`) asks for it by its hb; a holder still on an older build knows only the raw hash, so the rounds alternate — whichever form answers is stored, and every load by the row's raw hash reads either. The in-flight bookkeeping stays keyed by the raw hash.
+        // THE ASK (storage/wrapped.rs, until v146): a row naming a WRAPPER (`fw`) asks for it by its hb; a holder still on an older build knows only the raw hash, so the rounds alternate — whichever form answers is stored, and every load by the row's raw hash reads either. The in-flight bookkeeping stays keyed by the raw hash.
         let wrap = self.conversations.iter().flat_map(|c| c.messages.iter()).find_map(|m| m.file.as_ref().filter(|f| f.hash == *content_hash).and_then(|f| f.wrap));
         let round = self.attach_fetch_inflight.get(content_hash).map_or(0, |f| f.tries);
         let ask = match wrap {

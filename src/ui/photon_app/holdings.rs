@@ -6,7 +6,7 @@
 //! Phase 3, copy-then-release: one tap asks ONE sibling (the most complete holder that answered) to fetch the at-risk set from this device now, and persists `release.when_copied` (device-local).
 //! The sibling fetches thru the ordinary attachment fetch, aimed at the leaver first, and re-answers as items land; when nothing is at risk any more the leaver sends its departure request by itself, and the approval words appear on its Security page as for any Release.
 //! The flag survives a restart: with it set, the check re-runs as soon as the session and the fleet key are up, and a fresh pull goes out once the answers show what is still at risk.
-//! The list carries RAW content hashes: presence follows the raw→hb alias, so a wrapped original answers the same as a raw one; the ask moves to header hb when the raw form retires at v134.
+//! The list carries RAW content hashes: presence follows the raw→hb alias, so a wrapped original answers the same as a raw one; the ask moves to header hb when the raw form retires at v146.
 //! Every presence probe runs on a worker (the UI thread makes no vault call); the fleet key is read from RAM only.
 
 use super::*;
