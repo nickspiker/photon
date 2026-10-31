@@ -1265,6 +1265,21 @@ mod desktop {
         }
     }
 
+    /// This wave gave up on the picked microphone: it opens Auto until the session ends (the pick is kept for the next wave).
+    static MIC_FALLBACK: AtomicBool = AtomicBool::new(false);
+
+    /// A PICKED MICROPHONE THAT OPENS AND THEN FAILS (Nick's desktop 2026-10-31: a raw ALSA card PipeWire already holds opened, then answered every poll with POLLERR, and Emma heard nothing): any capture error but an overrun means the device is unusable, so the session reopens on the system default — an edge, once per wave.
+    fn capture_failed(e: &cpal::StreamError) {
+        if matches!(e, cpal::StreamError::BufferUnderrun) || MIC_PICK.lock().unwrap().is_none() || MIC_FALLBACK.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        crate::log("AUDIO: the picked microphone failed after opening — Auto for this wave");
+        REBUILD.store(true, Ordering::SeqCst);
+        if let Some(h) = SESSION_THREAD.lock().unwrap().as_ref() {
+            h.thread().unpark();
+        }
+    }
+
     fn name_of(dev: &cpal::Device) -> String {
         dev.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "?".into())
     }
@@ -1290,7 +1305,7 @@ mod desktop {
 
     fn input_device(host: &cpal::Host) -> Option<cpal::Device> {
         let listed: Vec<cpal::Device> = host.input_devices().map(|ds| ds.collect()).unwrap_or_default();
-        choose(MIC_PICK.lock().unwrap().clone(), listed, host.default_input_device())
+        choose(if MIC_FALLBACK.load(Ordering::SeqCst) { None } else { MIC_PICK.lock().unwrap().clone() }, listed, host.default_input_device())
     }
 
     fn output_device(host: &cpal::Host) -> Option<cpal::Device> {
@@ -1360,6 +1375,8 @@ mod desktop {
         if ACTIVE.swap(true, Ordering::SeqCst) {
             return true; // already live
         }
+        // A new wave tries the pick again.
+        MIC_FALLBACK.store(false, Ordering::SeqCst);
         clear_queues();
         // The route first (the output device's name), so the backend choice below can read it.
         if let Some(dev) = output_device(&cpal::default_host()) {
@@ -1447,7 +1464,10 @@ mod desktop {
                         framed_pos += FRAME_SAMPLES as i64;
                     }
                 },
-                |e| stream_error("capture", &CAPTURE_ERRORS, &e),
+                |e| {
+                    stream_error("capture", &CAPTURE_ERRORS, &e);
+                    capture_failed(&e);
+                },
                 None,
             )
             .ok()?;
