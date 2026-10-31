@@ -66,11 +66,11 @@ Every link carries a beam both ways, exactly as a 1:1 wave does, under its own l
 - **Receiving:** each link runs its own beam receiver (`beam_session::start_receiver_slot`) with its own frame queue, self-description and rotation, and its picture lands in the link's far slot. Every beam datagram goes to every receiver and each seal keeps its own (the same tag-before-advance rule as the media plane).
 - **Sending:** the group keeps a FAN — one beam transport per live link, from the link's secret, aimed at the link's current address (`wave::slot_tx_addr`, which each engine keeps). A sender in group mode (`beam_session::Target::Group`) encodes once and sends every frame to all of them; a link that joins mid-beam is told what the beam is before its first frame; the frame counter survives a camera stopping and starting. Desktop and phone alike — the phone's encoded feed goes to the fan the same way.
 - The ladder follows the lead link's verdict (v1): one encode for everyone, sized to the path the lead sees.
-- The wave screen tiles every beaming member's picture over the picture region, our own camera as the inset.
+- The wave screen gives every member a tile on the stage (`wave_field::face_tiles`): a member whose picture is up fills their tile with it, our own camera fills ours (and is the camera switch), the rest show their face.
 
 ## The wave screen
 
-A group wave shows the ROLL instead of the 1:1 field: everyone in the wave around the square (us first once joined, then each device in join order), each ringed in the colour of their own newest audio — ours from what we send, each member's from their link's far slot (`live::push_rx_slot`, `wave_field::env_ring_colour`), dark after half a second of nothing — and each name beneath in that person's colour.
+A group wave shows the ROLL instead of the 1:1 field: everyone in the wave on the stage's tile grid (us first once joined, then each device in join order; a circle around the square until 2026-10-31), each ringed in the colour of their own newest audio — ours from what we send, each member's from their link's far slot (`live::push_rx_slot`, `wave_field::env_ring_colour`), dark after half a second of nothing — and each name beneath in that person's colour.
 
 ## Reconnecting
 

@@ -32,18 +32,73 @@ pub(super) struct FieldGeom {
     pub ours: (f32, f32),
 }
 
-/// The avatars' square: SQUARE_UNITS layout units under the top inset, centred — narrowed only when the screen cannot hold it above the three text lines and the wave's button rows (`unit` = the layout unit the wave screen scales from).
-pub(super) fn field_geom(buf_w: usize, buf_h: usize, unit: f32) -> FieldGeom {
-    // Under the status bar (max rule: the margin or the bar, whichever is taller), and clear of the navigation bar at the bottom.
+/// THE WAVE SCREEN'S BANDS (Nick 2026-10-31, "better than it was but it still needs some work"): one height budget, measured from the bottom up, so nothing on the screen can cover anything else.
+/// The dock takes what its rows need (the diagonal, and the secondary row of pills when there is one), the info strip takes what its text measures (the name, the status lines, the readout), and the stage — avatars, a picture, or the group's tiles — gets whatever height is left.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct WaveLayout {
+    /// The stage, in buffer pixels: x, y, width, height.
+    pub stage: (usize, usize, usize, usize),
+    /// The name's centre line, when the strip carries one.
+    pub name_y: Option<f32>,
+    /// The first text line's centre under the name, and the pitch from one line to the next.
+    pub text_y: f32,
+    pub line: f32,
+    /// The diagonal (Nick 2026-09-30): button size, the three column centres, and each column's height — left highest, the main action centred, right lowest.
+    pub bw: f32,
+    pub bh: f32,
+    pub gap: f32,
+    pub cols: [f32; 3],
+    pub rows: [f32; 3],
+    /// The secondary row: its centre line and pill height (laid out whether or not a row is shown, so the dock reads the same either way).
+    pub sec_y: f32,
+    pub sec_h: f32,
+}
+
+/// The bands for a `buf_w` × `buf_h` buffer at layout unit `unit`: `name` whether the strip shows the name, `text_lines` how many lines of text it carries under it, `secondary` whether the dock has a row of pills above the diagonal.
+pub(super) fn wave_layout(buf_w: usize, buf_h: usize, unit: f32, name: bool, text_lines: usize, secondary: bool) -> WaveLayout {
+    let (w, h) = (buf_w as f32, buf_h as f32);
+    // Under the status bar and clear of the navigation bar, each by the max rule: the margin or the bar, whichever is taller, never the two added.
     let top = (unit * 0.4).max(crate::ui::safe_top_px() as f32);
-    // The wave screen's bottom stack (the diagonal button row) and the name and status lines take about 14.5 units, plus whatever of the navigation bar the button margin does not already cover.
-    let nav_extra = (crate::ui::safe_bottom_px() as f32 - unit * 1.5).max(0.0);
-    let room = buf_h as f32 - top - unit * 14.5 - nav_extra;
-    // WHY/PROOF: a square wider than the buffer, or taller than the room above the text and buttons, would put an avatar off screen; the ru size stands wherever it fits, and the floor keeps a degenerate window drawable.
-    let side = (unit * SQUARE_UNITS).min(buf_w as f32).min(room).max(16.0).floor() as usize;
-    // WHY/PROOF: the window is the OS's size — narrower than the 16-px floor, the square overhangs and starts at column 0 instead of a wrapped column past the buffer.
-    let x0 = buf_w.saturating_sub(side) / 2;
-    let y0 = top as usize;
+    let bottom = (unit * 1.5).max(crate::ui::safe_bottom_px() as f32);
+    let (bh, gap) = (unit * 2.4, unit * 0.6);
+    let bw = w * 0.28;
+    let step = bh * 0.55;
+    let ry = h - bottom - bh * 0.5;
+    let rows = [ry - 2.0 * step, ry - step, ry];
+    let cols = [w * 0.5 - bw - gap, w * 0.5, w * 0.5 + bw + gap];
+    let sec_h = unit * 1.6;
+    let sec_y = rows[0] - bh * 0.5 - gap - sec_h * 0.5;
+    let dock_top = if secondary { sec_y - sec_h * 0.5 } else { rows[0] - bh * 0.5 };
+    let (name_h, line) = (unit * 1.5, unit * 0.85);
+    let strip_h = if name { name_h } else { 0.0 } + text_lines as f32 * line;
+    // An empty strip takes no gap of its own.
+    let strip_top = dock_top - gap - strip_h;
+    let stage_bottom = if strip_h > 0.0 { strip_top - gap } else { strip_top };
+    // WHY/PROOF: the window is the OS's size — a window shorter than the dock and the strip leaves no stage, and a negative height cast to usize would wrap to a huge one; the stage then has no rows rather than wrapped ones.
+    let stage_h = (stage_bottom - top).max(0.0) as usize;
+    WaveLayout {
+        stage: (0, top as usize, buf_w, stage_h),
+        name_y: name.then_some(strip_top + name_h * 0.5),
+        text_y: strip_top + if name { name_h } else { 0.0 } + line * 0.5,
+        line,
+        bw,
+        bh,
+        gap,
+        cols,
+        rows,
+        sec_y,
+        sec_h,
+    }
+}
+
+/// The avatars' square inside the stage: SQUARE_UNITS layout units across, narrowed only when the stage cannot hold it, centred both ways.
+pub(super) fn field_geom(buf_w: usize, buf_h: usize, unit: f32, stage: (usize, usize, usize, usize)) -> FieldGeom {
+    let (sx, sy, sw, sh) = stage;
+    // WHY/PROOF: a square wider or taller than the stage would put an avatar under the strip or off screen; the ru size stands wherever it fits, and the floor keeps a degenerate window drawable.
+    let side = (unit * SQUARE_UNITS).min(sw as f32).min(sh as f32).max(16.0).floor() as usize;
+    // WHY/PROOF: a stage narrower or shorter than the 16-px floor overhangs; the square then starts at the stage's edge instead of a wrapped column or row past the buffer.
+    let x0 = sx + sw.saturating_sub(side) / 2;
+    let y0 = sy + sh.saturating_sub(side) / 2;
     let s = side as f32;
     FieldGeom {
         w: buf_w,
@@ -176,20 +231,15 @@ fn lin_ring_colour([r, g, b]: [u16; 3]) -> u32 {
     (a << 24) | (fluor::theme::fmt(visible ^ 0x00FF_FFFF) & 0x00FF_FFFF)
 }
 
-/// THE GROUP ROLL (docs/group-waves.md): `n` faces around a circle in the wave square, the first at the top, clockwise — the centre and radius of each.
-/// One face sits in the middle at the 1:1 avatar's size; more share the circle, each as large as its arc allows and never larger than a 1:1 avatar.
-pub(super) fn roll_positions(g: &FieldGeom, n: usize) -> Vec<(f32, f32, f32)> {
-    let s = g.side as f32;
-    let (cx, cy) = (g.w.saturating_sub(g.side) as f32 / 2.0 + s / 2.0, g.y0 as f32 + s / 2.0);
-    if n <= 1 {
-        return vec![(cx, cy, g.r)];
-    }
-    let ring = s * 0.32;
-    let r = (ring * (std::f32::consts::PI / n as f32).sin() * 0.8).min(g.r);
-    (0..n)
-        .map(|i| {
-            let a = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::TAU / n as f32;
-            (cx + ring * a.cos(), cy + ring * a.sin(), r)
+/// THE GROUP TILES (docs/group-waves.md; Nick 2026-10-31, one grid for faces and pictures): `n` members on the stage's tile grid, each tile holding a face or that member's picture — the tile, and the face's centre and radius in it.
+/// The face is a quarter of the tile's smaller side across the radius, a little above the tile's centre so the name fits under it inside the tile.
+pub(super) fn face_tiles(stage: (usize, usize, usize, usize), n: usize, unit: f32) -> Vec<((usize, usize, usize, usize), (f32, f32, f32))> {
+    let (sx, sy, sw, sh) = stage;
+    picture_tiles(sx, sy, sw, sh, n)
+        .into_iter()
+        .map(|(tx, ty, tw, th)| {
+            let r = tw.min(th) as f32 / 4.0;
+            ((tx, ty, tw, th), (tx as f32 + tw as f32 / 2.0, ty as f32 + th as f32 / 2.0 - unit * 0.4, r))
         })
         .collect()
 }
@@ -303,16 +353,6 @@ pub(super) fn paint_picture<P: Pixel>(canvas: &mut fluor::canvas::Canvas<P>, g: 
 /// The same blit into any square: `x0`,`y0` its top-left, `side` its edge — centred.
 pub(super) fn paint_picture_in<P: Pixel>(canvas: &mut fluor::canvas::Canvas<P>, x0: usize, y0: usize, side: usize, pic: &crate::wave::beam_session::Picture) {
     paint_picture_rect(canvas, x0, y0, side, side, pic, false);
-}
-
-/// THE BEAM'S REGION (Nick 2026-10-13: "keeps the image top as big as it can, so not letterbox but letterbottom… the wave buttons are in the empty space below the video"): the full width, from under the status bar down to just above the button stack.
-pub(super) fn picture_region(buf_w: usize, buf_h: usize, unit: f32) -> (usize, usize, usize, usize) {
-    let top = (unit * 0.4).max(crate::ui::safe_top_px() as f32);
-    let bottom = (unit * 1.5).max(crate::ui::safe_bottom_px() as f32);
-    // The diagonal stack's top edge: three slots stepped 0.55 of a 2.4-unit button apart, half a button above the lowest centre, plus a half-unit gap.
-    let stack = unit * 2.4 * (0.5 + 2.0 * 0.55 + 0.5) + unit * 0.5;
-    let h = (buf_h as f32 - top - bottom - stack).max(16.0);
-    (0, top as usize, buf_w, h as usize)
 }
 
 /// Blit a picture into a rect, as big as fits: TOP-ANCHORED when `top`, so the spare room is all below it; centred otherwise.
@@ -516,29 +556,40 @@ mod tests {
         FieldGeom { w, h, y0: 0, side: w.min(h), r: s / 8.0, theirs: (s * 2.0 / 3.0, s / 3.0), ours: (s / 3.0, s * 2.0 / 3.0) }
     }
 
-    /// The group roll: every face inside the square, none overlapping its neighbour, none larger than a 1:1 avatar, the first at the top.
+    /// The group tiles: every face inside its own tile with room under it for the name, none overlapping its neighbour.
     #[test]
-    fn the_roll_fits_everyone_in_the_square() {
-        let g = field_geom_for(800, 800);
+    fn every_face_sits_inside_its_own_tile() {
+        let unit = 20.0;
         for n in 1..=8 {
-            let at = roll_positions(&g, n);
+            let at = face_tiles((0, 30, 800, 600), n, unit);
             assert_eq!(at.len(), n);
-            for &(x, y, r) in &at {
-                assert!(r > 0.0 && r <= g.r + 1e-3);
-                assert!(x - r >= 0.0 && x + r <= 800.0 && y - r >= 0.0 && y + r <= 800.0, "n {n}: a face leaves the square");
-            }
-            for i in 0..n {
-                for j in i + 1..n {
-                    let ((x0, y0, r0), (x1, y1, r1)) = (at[i], at[j]);
-                    assert!(((x0 - x1).powi(2) + (y0 - y1).powi(2)).sqrt() > r0 + r1, "n {n}: faces {i} and {j} overlap");
-                }
-            }
-            if n > 1 {
-                assert!(at[0].1 < at[1].1.min(400.0), "the first face is at the top");
+            for &((tx, ty, tw, th), (x, y, r)) in &at {
+                assert!(r > 0.0);
+                assert!(x - r >= tx as f32 && x + r <= (tx + tw) as f32, "n {n}: a face leaves its tile sideways");
+                assert!(y - r >= ty as f32 && y + r + unit * 0.75 <= (ty + th) as f32, "n {n}: a face or its name leaves its tile");
             }
         }
     }
 
+    /// The bands never overlap: the stage ends above the strip, the strip above the secondary row, the secondary row above the diagonal's highest button.
+    #[test]
+    fn the_bands_stack_without_overlap() {
+        let unit = 20.0;
+        for (name, lines, secondary) in [(true, 1, true), (true, 4, true), (false, 0, true), (false, 1, false), (true, 2, false)] {
+            let l = wave_layout(900, 1200, unit, name, lines, secondary);
+            let stage_bottom = (l.stage.1 + l.stage.3) as f32;
+            let strip_top = l.name_y.map_or(l.text_y - l.line * 0.5, |y| y - unit * 0.75);
+            let strip_bottom = l.text_y - l.line * 0.5 + lines as f32 * l.line;
+            let dock_top = if secondary { l.sec_y - l.sec_h * 0.5 } else { l.rows[0] - l.bh * 0.5 };
+            assert!(stage_bottom <= strip_top + 0.5, "{name} {lines} {secondary}: the stage runs into the strip");
+            assert!(strip_bottom <= dock_top, "{name} {lines} {secondary}: the strip runs into the dock");
+            assert!(l.sec_y + l.sec_h * 0.5 <= l.rows[0] - l.bh * 0.5, "the secondary row runs into the diagonal");
+            assert!(l.rows[2] + l.bh * 0.5 <= 1200.0, "the lowest button leaves the screen");
+        }
+        // More text takes height from the stage, never from the dock.
+        let (a, b) = (wave_layout(900, 1200, unit, true, 1, true), wave_layout(900, 1200, unit, true, 3, true));
+        assert!(b.stage.3 < a.stage.3 && a.rows == b.rows && a.sec_y == b.sec_y);
+    }
     /// The picture grid tiles the region without overlap, as near square as the count allows.
     #[test]
     fn picture_tiles_cover_the_region() {

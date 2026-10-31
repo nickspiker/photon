@@ -912,11 +912,6 @@ impl PhotonApp {
         }
     }
 
-    /// The far slots whose peers are beaming, in link order, for the wave screen's picture grid.
-    pub(super) fn group_picture_slots(&self) -> Vec<usize> {
-        self.group_wave.as_ref().map(|w| w.links.iter().map(|l| l.slot).collect()).unwrap_or_default()
-    }
-
     /// The group keep, off the UI thread: wait for every link's engine (the fill drain may still be writing), merge the spools into one recording, store it; the drain lands the row.
     fn spawn_group_keep(&mut self, gid: MoleculeId, offer_osc: i64, wave_id: [u8; 16], spent: Vec<(crate::wave::spool::SpoolTicket, Option<std::thread::JoinHandle<()>>)>) {
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {

@@ -521,39 +521,115 @@ impl PhotonApp {
                 None => Some(tr(Msg::WaveChipElsewhereUnknown).into_owned()),
             }
         });
-        // Ring-panel avatar: pre-scale the origin's avatar (or the identity gradient) to the panel diameter — done HERE (before the canvas borrows) because it needs &mut self. Cache keyed by diameter; dropped when nothing rings.
-        if wave_fullscreen {
-            let unit_now = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
-            let diameter = ((unit_now * 7.0) as usize).max(2);
-            let stale = self
-                .ring_avatar_scaled
-                .as_ref()
-                .map_or(true, |(d, _)| *d != diameter);
-            if stale {
-                if let Some((_, _, _, Some(pi), _)) = &wave_overlay {
-                    let c = &self.contacts[*pi];
-                    let px = match c.avatar_pixels.as_ref() {
-                        Some(base) => crate::ui::avatar_render::update_avatar_scaled(
-                            base,
-                            crate::ui::avatar::AVATAR_SIZE,
-                            diameter,
-                        ),
-                        None => gradient_avatar_rgb(proof_gradient_seed(&c.handle_proof), diameter),
-                    };
-                    self.ring_avatar_scaled = Some((diameter, px));
+        // THE WAVE SCREEN'S BANDS (wave_field.rs `wave_layout`; Nick 2026-10-31): measured here, before the chrome borrow pins `self` — the status text and the dock's buttons decide how tall the strip and the dock are, and the stage takes whatever height is left.
+        let wave_unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
+        let wave_phase_now = wave_overlay.as_ref().map(|o| o.0);
+        let wave_live = matches!(wave_phase_now, Some(crate::wave::WavePhase::Active | crate::wave::WavePhase::Outgoing));
+        let group_layout = self.group_wave.is_some();
+        let group_beaming = self.group_beaming();
+        // The Beam page reads this inside the chrome borrow.
+        let beam_follows = self.beam_follows_fleet();
+        let roll = if wave_fullscreen && group_layout { self.group_roll() } else { Vec::new() };
+        // A PICTURE IS UP when someone else's is (Nick 2026-10-14: "we don't need the ripple effect or the avatars on beam. just the buttons"): the peer's on a pair, any other member's on a group.
+        // Our own camera alone is only the inset (or our own tile), so the avatars stay until theirs arrives.
+        let picture_up = wave_fullscreen
+            && if group_layout {
+                roll.iter().any(|f| !f.us && f.slot.is_some_and(|s| crate::wave::beam_session::picture_slot(s).is_some()))
+            } else {
+                crate::wave::beam_session::picture().is_some()
+            };
+        // CALIBRATION on the status line (beam_calibrate.rs): "looking" while the scan runs; the outcome until the next poke after it — an edge, never a timer.
+        let cal_line: Option<String> = {
+            use crate::wave::beam_calibrate::Status;
+            let unpoked = |t: std::time::Instant| self.last_poke.map_or(true, |p| p <= t);
+            match crate::wave::beam_calibrate::status() {
+                (Status::Scanning, _) => Some(tr(Msg::CalScanning).into_owned()),
+                (Status::Done { serial, warning }, Some(t)) if unpoked(t) => {
+                    let line = tr(Msg::Calibrated(&serial.to_string())).into_owned();
+                    Some(match warning.lines().map(str::trim).find(|l| !l.is_empty()) {
+                        Some(w) => format!("{line} \u{00B7} \u{26A0} {w}"),
+                        None => line,
+                    })
+                }
+                (Status::Failed(why), Some(t)) if unpoked(t) => Some(tr(Msg::CalFailed(why.lines().next().unwrap_or("").trim())).into_owned()),
+                _ => None,
+            }
+        };
+        // The status under the name: the incoming cue while ringing, the live timer while talking, or what is wrong (the mic, the path, the calibration).
+        let (wave_status_line, wave_status_warns) = match &wave_overlay {
+            Some((phase, name, direct, _, _)) => match phase {
+                crate::wave::WavePhase::Ringing => (
+                    if self.active_wave.as_ref().is_some_and(|w| w.beam) {
+                        tr(Msg::IncomingBeam).into_owned()
+                    } else if *direct {
+                        tr(Msg::IncomingWave).into_owned()
+                    } else {
+                        tr(Msg::IncomingWaveNoPath).into_owned()
+                    },
+                    false,
+                ),
+                crate::wave::WavePhase::Active => {
+                    use std::sync::atomic::Ordering::Relaxed;
+                    // THE MIC, named (field 2026-10-10): a denied grant or a capture of zeros is said on the status line, so the one end that is broken knows it is this one.
+                    if crate::wave::MIC_RELAUNCH.load(Relaxed) {
+                        (tr(Msg::MicRelaunch).into_owned(), true)
+                    } else if crate::wave::MIC_DENIED.load(Relaxed) {
+                        (tr(Msg::MicDenied).into_owned(), true)
+                    } else if let Some(line) = cal_line {
+                        (line, true)
+                    } else if crate::wave::MIC_SILENT.load(Relaxed) {
+                        (format!("{} \u{00B7} {}", wave_dur_str, tr(Msg::MicSilent)), true)
+                    } else if wave_reconnecting {
+                        (tr(Msg::WaveReconnecting).into_owned(), true)
+                    } else if *direct {
+                        // Glyph + duration only (no words) — nothing to translate, stays a raw format.
+                        (format!("\u{260E} {}", wave_dur_str), false)
+                    } else {
+                        (tr(Msg::WaveActiveNoPath(&wave_dur_str)).into_owned(), false)
+                    }
+                }
+                // A beam we placed says so (field 2026-10-13: "Beam from mac says 'waving Emma' rather than beaming").
+                crate::wave::WavePhase::Outgoing if self.active_wave.as_ref().is_some_and(|w| w.beam) => (tr(Msg::BeamingName(name)).into_owned(), false),
+                crate::wave::WavePhase::Outgoing => (tr(Msg::WavingName(name)).into_owned(), false),
+            },
+            None => (String::new(), false),
+        };
+        // WRAPPED (field 2026-10-13: "you have to resize Photon super wide to read it"): a long status breaks onto as many centred lines as it needs within 90% of the window — measured HERE, so the strip is as tall as its text and the stage gives up the height.
+        // Over a picture only a warning shows.
+        let wave_status_style = TextStyle::new(wave_unit * 0.62, *theme::STATUS_TEXT_COLOUR).font("Oxanium");
+        let mut wave_status_lines: Vec<String> = Vec::new();
+        if wave_fullscreen && (!picture_up || wave_status_warns) {
+            let max_w = buf_w as f32 * 0.9;
+            let mut cur = String::new();
+            for word in wave_status_line.split(' ') {
+                let trial = if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
+                if !cur.is_empty() && ctx.text.measure_text(&trial, &wave_status_style) > max_w {
+                    wave_status_lines.push(std::mem::take(&mut cur));
+                    cur = word.to_string();
+                } else {
+                    cur = trial;
                 }
             }
-        } else if self.ring_avatar_scaled.is_some() {
-            self.ring_avatar_scaled = None;
+            if !cur.is_empty() {
+                wave_status_lines.push(cur);
+            }
         }
-        // The wave's path colour (the ringing avatar's ring, and the orb's fill once Active) — computed here, before the chrome borrow pins `self`.
-        let wave_path = self.wave_path_colour(wave_overlay.as_ref().and_then(|o| o.3));
-        // THE WAVE FIELD (wave_field.rs), prepared here for the same reason: the square, its per-pixel ages (rebuilt only when the square changes size), this paint's live snapshot as colour tables, and both avatars at the field's diameter.
+        // THE READOUT (Nick 2026-09-28, the round trip mouth to ear and back; moved off the stage into the strip 2026-10-31): a pair talking without a picture.
+        let wave_readout = wave_fullscreen && wave_phase_now == Some(crate::wave::WavePhase::Active) && !picture_up && !group_layout;
+        // THE DOCK'S SECONDARY ROW, one row of equal pills above the diagonal — the same gates drive the paint, the hit stamp and `visit_app_widgets`.
+        // Ringing: the other answer.
+        // Talking or ringing out: the speaker and mic pickers on a desktop (the route pill holds the diagonal's right slot on a phone, so there the row carries the mic and the Beam toggle), and Calibrate while it can run.
+        let can_beam = crate::wave::beam_session::can_send();
+        let dock_other = wave_phase_now == Some(crate::wave::WavePhase::Ringing) && can_beam;
+        let dock_out = wave_live && cfg!(not(target_os = "android"));
+        let dock_mic = wave_live;
+        let dock_beam2 = wave_live && cfg!(target_os = "android");
+        let dock_cal = wave_phase_now == Some(crate::wave::WavePhase::Active) && crate::wave::beam_calibrate::available();
+        let dock_secondary = dock_other || dock_out || dock_mic || dock_beam2 || dock_cal;
+        let wave_layout = wave_fullscreen.then(|| super::wave_field::wave_layout(buf_w, buf_h, wave_unit, !picture_up, wave_status_lines.len() + wave_readout as usize, dock_secondary));
+        // THE WAVE FIELD (wave_field.rs), prepared here for the same reason: the square inside the stage, its per-pixel ages (rebuilt only when the square changes size), this paint's live snapshot as colour tables, and both avatars at the field's diameter.
         // ONE WAVE SCREEN (Nick 2026-09-29): ringing in, ringing out and talking all lay out on the same square — only who is shown changes.
-        let field_geom = wave_fullscreen.then(|| {
-            let unit_now = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
-            super::wave_field::field_geom(buf_w, buf_h, unit_now)
-        });
+        let field_geom = wave_layout.map(|l| super::wave_field::field_geom(buf_w, buf_h, wave_unit, l.stage));
         if let Some(g) = field_geom {
             if self.wave_field_map.as_ref().map_or(true, |m| m.key != (g.w, g.h, g.side, g.y0)) {
                 self.wave_field_map = Some(super::wave_field::FieldMap::build(&g));
@@ -583,17 +659,11 @@ impl PhotonApp {
             self.wave_field_avatars = None;
             self.wave_field_tabs = Default::default();
         }
-        // THE GROUP ROLL (docs/group-waves.md): a group wave shows everyone in it around the square instead of the 1:1 field — their faces scaled here, before the paint borrows `self`, and their positions for the paint.
-        let group_layout = self.group_wave.is_some();
-        let group_beaming = self.group_beaming();
-        let group_slots = self.group_picture_slots();
-        // The Beam page reads this inside the chrome borrow.
-        let beam_follows = self.beam_follows_fleet();
-        let group_roll: Vec<(super::group_wave::RollFace, (f32, f32, f32))> = match field_geom.filter(|_| group_layout) {
-            Some(g) => {
-                let roll = self.group_roll();
-                let at = super::wave_field::roll_positions(&g, roll.len());
-                if let Some(&(_, _, r)) = at.first() {
+        // THE GROUP TILES (docs/group-waves.md; one grid for faces and pictures, 2026-10-31): each member a tile on the stage — their faces scaled here, before the paint borrows `self`.
+        let group_roll: Vec<(super::group_wave::RollFace, ((usize, usize, usize, usize), (f32, f32, f32)))> = match wave_layout.filter(|_| group_layout) {
+            Some(l) => {
+                let at = super::wave_field::face_tiles(l.stage, roll.len(), wave_unit);
+                if let Some(&(_, (_, _, r))) = at.first() {
                     self.refresh_group_roll_avatars(((r * 2.0) as usize).max(2));
                 }
                 roll.into_iter().zip(at).collect()
@@ -605,6 +675,7 @@ impl PhotonApp {
                 Vec::new()
             }
         };
+
 
         // Content-scroll → background offset (hoisted before the chrome borrow, which takes `&mut self`). The background noise translates WITH the foreground content so the whole scene is one rigid vertical shift on scroll — the bg tracks whatever you're reading, and (once the host learns to scroll-copy) a scroll becomes a memcopy of the prior frame plus a repaint of just the newly-exposed slice instead of a full redraw. Sign matches the foreground pixel motion: Contacts moves rows UP as `contacts_scroll` grows (`row_top = … − contacts_scroll`) → texture shifts by `−contacts_scroll`; Conversation moves messages DOWN as `scroll_offset` grows (`y = … + scroll`) → texture shifts by `+scroll_offset`. Settings/ContactPanel keep the split-pane path below. `scroll_offset` is clamped elsewhere (tick clamps the stored conversation offset; contacts_scroll is clamped in the render block), so reading it raw here matches what the foreground draws.
         let content_bg_scroll: isize = if self.wave_screen() { 0 } else { match self.state {
@@ -830,19 +901,13 @@ impl PhotonApp {
             let cy = y0 + pill_h * 0.5; // Buttons take a CENTRE; the row is one pill tall
             let wave_font = unit * 0.55; // button-text scale, proportional to the pill so it tracks zoom
             _rt.mark("bg+chrome");
-            if wave_fullscreen {
-                // ── FULL-SCREEN WAVE PANEL ── Ringing / Active / Ended, painted over whatever screen was up; every element scales off `unit` (zoom-honest, no fixed pixels).
-                let (phase, name, direct, pi) = match &wave_overlay {
-                    Some((ph, n, d, p, _)) => (*ph, n.clone(), *d, *p),
-                    None => (
-                        crate::wave::WavePhase::Ringing,
-                        String::from("?"),
-                        false,
-                        None,
-                    ),
+            if let (Some(l), Some(g)) = (wave_layout, field_geom) {
+                // ── FULL-SCREEN WAVE PANEL ── three bands (wave_field.rs `wave_layout`): the stage, the info strip under it, the dock at the bottom; every element scales off `unit` (zoom-honest, no fixed pixels).
+                let (phase, name, pi) = match &wave_overlay {
+                    Some((ph, n, _, p, _)) => (*ph, n.clone(), *p),
+                    None => (crate::wave::WavePhase::Ringing, String::from("?"), None),
                 };
                 let w = buf_w as f32;
-                let h = buf_h as f32;
                 let colour = pi
                     .and_then(|i| {
                         let c = &self.contacts[i];
@@ -854,70 +919,69 @@ impl PhotonApp {
                         })
                     })
                     .unwrap_or(*theme::STATUS_TEXT_COLOUR);
-                let avatar_r = unit * 3.5;
-                // THE BEAM SCREEN IS PICTURE + BUTTONS (Nick 2026-10-14: "we don't need the ripple effect or the avatars on beam. just the buttons"): once a picture is up, no avatars, rings, ripples or name — only a status line that is a warning.
-                let beam_showing = field_geom.is_some() && crate::wave::beam_session::showing();
-                // With the field up (an Active wave), the name/status/stats block sits under the square; otherwise the single ringing avatar at its usual height.
-                let (acx, acy) = match field_geom {
-                    Some(g) => (w * 0.5, (g.y0 + g.side) as f32 + unit * 0.2 - avatar_r),
-                    None => (w * 0.5, h * 0.36),
-                };
-                if field_geom.is_none() {
-                    if let Some((diam, px)) = self.ring_avatar_scaled.as_ref() {
-                        crate::ui::avatar_render::draw_avatar(&mut canvas, acx, acy, avatar_r, px, *diam, None);
-                    }
-                }
-                // THE PATH COLOUR (Nick 2026-09-11): the path the wave is actually on — cyan the same LAN, blue radio-direct, green across the internet, amber while the engine waits on the sentinel with no direct path — and the contact's own tier while it still rings. With the field up it moves OFF the avatars (Nick 2026-09-28: the avatar rings carry the live level) to a dot beside the status line.
-                let path_colour = wave_path;
-                match field_geom {
-                    None => paint::draw_circle(&mut canvas, acx, acy, avatar_r + super::ring_thickness(avatar_r), path_colour, None),
-                    Some(_) if beam_showing => {}
-                    // A GROUP wave: every face on the roll, each ringed in the colour of its own newest audio (ours from what we send), each name beneath in that person's colour.
-                    Some(_) if group_layout => {
-                        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
-                        for (face, (fx, fy, fr)) in &group_roll {
-                            if let Some((_, diam, px)) = self.group_roll_avatars.iter().find(|(d, _, _)| *d == face.device) {
-                                crate::ui::avatar_render::draw_avatar(&mut canvas, *fx, *fy, *fr, px, *diam, None);
+                let (sx, sy, sw, sh) = l.stage;
+                // ── THE STAGE ──
+                // A GROUP: one tile per member (one grid for faces and pictures, 2026-10-31) — a member whose picture is up fills their tile with it, the rest show their face ringed in the colour of their newest audio (ours from what we send), the name inside the tile in that person's colour.
+                self.beam_self_rect = None;
+                if group_layout {
+                    let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+                    let me = crate::wave::beam_session::self_picture();
+                    for (face, ((tx, ty, tw, th), (fx, fy, fr))) in &group_roll {
+                        let (label, tint) = if face.us {
+                            (tr(Msg::WaveYou).into_owned(), *theme::STATUS_TEXT_COLOUR)
+                        } else {
+                            (face.name.clone(), us.map(|u| party_colour(&relationship_digest(&face.party, &u))).unwrap_or(*theme::STATUS_TEXT_COLOUR))
+                        };
+                        let pic = if face.us { me.clone() } else { face.slot.and_then(crate::wave::beam_session::picture_slot) };
+                        let name_style = TextStyle::new(unit * 0.55, tint);
+                        match pic {
+                            Some(p) => {
+                                // The name rides the tile's foot, painted first so it sits over the picture.
+                                ctx.text.draw_text_center(&mut canvas, &label, (*tx + *tw / 2) as f32, (*ty + *th) as f32 - unit * 0.6, &name_style, None, None);
+                                super::wave_field::paint_picture_rect(&mut canvas, *tx, *ty, *tw, *th, &p, false);
+                                // Our own tile is the camera switch while we beam and there is another camera to switch to.
+                                if face.us && self.group_wave.as_ref().is_some_and(|w| w.beam_tx.is_some()) && (cfg!(target_os = "android") || crate::wave::beam_session::desktop_cameras().len() > 1) {
+                                    self.beam_self_rect = Some((*tx, *ty, *tx + *tw, *ty + *th));
+                                }
                             }
-                            // Ours from what we send; theirs from their link's far slot, dark until the link is up.
-                            let ring = match (face.us, face.slot) {
-                                (true, _) => super::wave_field::env_ring_colour(crate::wave::live::latest(None)),
-                                (false, Some(s)) => super::wave_field::env_ring_colour(crate::wave::live::latest(Some(s))),
-                                (false, None) => 0,
-                            };
-                            paint::draw_circle(&mut canvas, *fx, *fy, *fr + super::ring_thickness(*fr), ring, None);
-                            let (label, tint) = if face.us {
-                                (tr(Msg::WaveYou).into_owned(), *theme::STATUS_TEXT_COLOUR)
-                            } else {
-                                (face.name.clone(), us.map(|u| party_colour(&relationship_digest(&face.party, &u))).unwrap_or(*theme::STATUS_TEXT_COLOUR))
-                            };
-                            ctx.text.draw_text_center(&mut canvas, &label, *fx, *fy + *fr + unit * 0.75, &TextStyle::new(unit * 0.55, tint), None, None);
-                        }
-                    }
-                    Some(g) => {
-                        // Both parties, theirs top-right and ours bottom-left, each ringed in the colour of its field at age 0 — the newest audio, exactly as the ripple leaves the avatar (Nick 2026-09-28; the path quality lives in the top-left orb) — at the usual fixed ring width (Nick: no stroke width changes). Drawn before the field, so they sit on top of it.
-                        // Each party is shown once it is IN the wave (Nick 2026-09-29): ringing out, only ours; ringing in, only theirs (they are already waving); talking, both.
-                        let show_theirs = !matches!(phase, crate::wave::WavePhase::Outgoing);
-                        let show_ours = !matches!(phase, crate::wave::WavePhase::Ringing);
-                        if let Some((diam, theirs, ours)) = self.wave_field_avatars.as_ref() {
-                            if show_theirs {
-                                crate::ui::avatar_render::draw_avatar(&mut canvas, g.theirs.0, g.theirs.1, g.r, theirs, *diam, None);
-                            }
-                            if show_ours {
-                                crate::ui::avatar_render::draw_avatar(&mut canvas, g.ours.0, g.ours.1, g.r, ours, *diam, None);
+                            None => {
+                                if let Some((_, diam, px)) = self.group_roll_avatars.iter().find(|(d, _, _)| *d == face.device) {
+                                    crate::ui::avatar_render::draw_avatar(&mut canvas, *fx, *fy, *fr, px, *diam, None);
+                                }
+                                // Ours from what we send; theirs from their link's far slot, dark until the link is up.
+                                let ring = match (face.us, face.slot) {
+                                    (true, _) => super::wave_field::env_ring_colour(crate::wave::live::latest(None)),
+                                    (false, Some(s)) => super::wave_field::env_ring_colour(crate::wave::live::latest(Some(s))),
+                                    (false, None) => 0,
+                                };
+                                paint::draw_circle(&mut canvas, *fx, *fy, *fr + super::ring_thickness(*fr), ring, None);
+                                ctx.text.draw_text_center(&mut canvas, &label, *fx, *fy + *fr + unit * 0.75, &name_style, None, None);
                             }
                         }
-                        let th = super::ring_thickness(g.r);
-                        // Ringing in, their ring is the living circle below; the level ring takes over once the wave's audio runs.
-                        if show_theirs && !matches!(phase, crate::wave::WavePhase::Ringing) {
-                            paint::draw_circle(&mut canvas, g.theirs.0, g.theirs.1, g.r + th, self.wave_field_tabs.ring_colour(true), None);
+                    }
+                } else if !picture_up {
+                    // A PAIR without their picture: both parties, theirs top-right and ours bottom-left, each ringed in the colour of its field at age 0 — the newest audio, exactly as the ripple leaves the avatar (Nick 2026-09-28; the path quality lives in the top-left orb) — at the usual fixed ring width (Nick: no stroke width changes). Drawn before the field, so they sit on top of it.
+                    // Each party is shown once it is IN the wave (Nick 2026-09-29): ringing out, only ours; ringing in, only theirs (they are already waving); talking, both.
+                    let show_theirs = !matches!(phase, crate::wave::WavePhase::Outgoing);
+                    let show_ours = !matches!(phase, crate::wave::WavePhase::Ringing);
+                    if let Some((diam, theirs, ours)) = self.wave_field_avatars.as_ref() {
+                        if show_theirs {
+                            crate::ui::avatar_render::draw_avatar(&mut canvas, g.theirs.0, g.theirs.1, g.r, theirs, *diam, None);
                         }
                         if show_ours {
-                            paint::draw_circle(&mut canvas, g.ours.0, g.ours.1, g.r + th, self.wave_field_tabs.ring_colour(false), None);
+                            crate::ui::avatar_render::draw_avatar(&mut canvas, g.ours.0, g.ours.1, g.r, ours, *diam, None);
                         }
                     }
+                    let th = super::ring_thickness(g.r);
+                    // Ringing in, their ring is the living circle below; the level ring takes over once the wave's audio runs.
+                    if show_theirs && !matches!(phase, crate::wave::WavePhase::Ringing) {
+                        paint::draw_circle(&mut canvas, g.theirs.0, g.theirs.1, g.r + th, self.wave_field_tabs.ring_colour(true), None);
+                    }
+                    if show_ours {
+                        paint::draw_circle(&mut canvas, g.ours.0, g.ours.1, g.r + th, self.wave_field_tabs.ring_colour(false), None);
+                    }
                 }
-                // The living circle — ONLY while Ringing (Active/Ended sit calm): one perfect circle BEHIND the avatar (paint order per Nick: avatar, circle, text/buttons, background — later paints compose under earlier, so the avatar covers it and it washes over the text where it reaches). Digest-keyed waveforms move it, a spin decouples the offsets from the axes, a fourth scales it, a fifth breathes its opacity (ui::ring_rim); relationship colour, same as the name. Pure function of (digest, now) — the wake_at tick keeps frames coming while Ringing.
+                // The living circle — ONLY while Ringing (Active sits calm): one perfect circle BEHIND the avatar (paint order per Nick: avatar, circle, text/buttons, background — later paints compose under earlier, so the avatar covers it and it washes over the text where it reaches). Digest-keyed waveforms move it, a spin decouples the offsets from the axes, a fourth scales it, a fifth breathes its opacity (ui::ring_rim); relationship colour, same as the name. Pure function of (digest, now) — the wake_at tick keeps frames coming while Ringing.
                 if matches!(phase, crate::wave::WavePhase::Ringing) {
                     if let Some(digest) = pi.and_then(|i| {
                         let c = &self.contacts[i];
@@ -932,11 +996,10 @@ impl PhotonApp {
                         let t_secs = vsf::eagle_time_oscillations() as f64
                             / vsf::OSCILLATIONS_PER_SECOND as f64;
                         let m = crate::ui::ring_rim::sample(&orbit, t_secs);
-                        // Around THEIR avatar in the square (the one wave screen), or the lone avatar when there is no square.
-                        let (acx, acy, avatar_r) = match field_geom {
-                            Some(_) if group_layout => group_roll.first().map_or((acx, acy, avatar_r), |r| r.1),
-                            Some(g) => (g.theirs.0, g.theirs.1, g.r),
-                            None => (acx, acy, avatar_r),
+                        // Around THEIR avatar: the pair's square, or the first tile of a group.
+                        let (acx, acy, avatar_r) = match group_roll.first() {
+                            Some((_, (_, at))) if group_layout => *at,
+                            _ => (g.theirs.0, g.theirs.1, g.r),
                         };
                         // Edge budget (Nick 2026-09-04): the rim lives roughly 31/32..17/16 of the avatar radius — mostly peeking, sometimes swallowed. Radius carries ±1/64 of it, the offset the remaining ~1.5/64 (×√2 when both axes peak lands the extremes on the budget).
                         let r = avatar_r * (65.0 + m.scale) / 64.0;
@@ -951,160 +1014,51 @@ impl PhotonApp {
                         );
                     }
                 }
-                // Name in the relationship colour, large; the phase line beneath in the status grey.
-                if !beam_showing {
-                    ctx.text.draw_text_center(
-                        &mut canvas,
-                        &name,
-                        acx,
-                        acy + avatar_r + unit * 1.1,
-                        &TextStyle::new(unit * 1.05, colour),
-                        None,
-                        None,
-                    );
+                // ── THE INFO STRIP ── the name in the relationship colour, large; the status lines beneath in the status grey (measured before the paint, so the strip is exactly as tall as they are); the readout last.
+                if let Some(ny) = l.name_y {
+                    ctx.text.draw_text_center(&mut canvas, &name, w * 0.5, ny, &TextStyle::new(unit * 1.05, colour), None, None);
                 }
-                // Status / timer line beneath the name. Active shows the LIVE wave timer (per-frame recompute from phase_osc); Ended a frozen wave summary; Ringing the incoming cue. Oxanium so the base-aware `fmt_duration` (Phase 4 dozenal) resolves its glyphs.
-                // CALIBRATION on the status line (beam_calibrate.rs): "looking" while the scan runs; the outcome until the next poke after it — an edge, never a timer.
-                let cal_line: Option<String> = {
-                    use crate::wave::beam_calibrate::Status;
-                    let unpoked = |t: std::time::Instant| self.last_poke.map_or(true, |p| p <= t);
-                    match crate::wave::beam_calibrate::status() {
-                        (Status::Scanning, _) => Some(tr(Msg::CalScanning).into_owned()),
-                        (Status::Done { serial, warning }, Some(t)) if unpoked(t) => {
-                            let line = tr(Msg::Calibrated(&serial.to_string())).into_owned();
-                            Some(match warning.lines().map(str::trim).find(|l| !l.is_empty()) {
-                                Some(w) => format!("{line} \u{00B7} \u{26A0} {w}"),
-                                None => line,
-                            })
-                        }
-                        (Status::Failed(why), Some(t)) if unpoked(t) => Some(tr(Msg::CalFailed(why.lines().next().unwrap_or("").trim())).into_owned()),
-                        _ => None,
-                    }
-                };
-                let status_line = match phase {
-                    crate::wave::WavePhase::Ringing => {
-                        if self.active_wave.as_ref().is_some_and(|w| w.beam) {
-                            tr(Msg::IncomingBeam).into_owned()
-                        } else if direct {
-                            tr(Msg::IncomingWave).into_owned()
-                        } else {
-                            tr(Msg::IncomingWaveNoPath).into_owned()
-                        }
-                    }
-                    crate::wave::WavePhase::Active => {
-                        // THE MIC, named (field 2026-10-10): a denied grant or a capture of zeros is said on the status line, so the one end that is broken knows it is this one.
-                        if crate::wave::MIC_RELAUNCH.load(std::sync::atomic::Ordering::Relaxed) {
-                            tr(Msg::MicRelaunch).into_owned()
-                        } else if crate::wave::MIC_DENIED.load(std::sync::atomic::Ordering::Relaxed) {
-                            tr(Msg::MicDenied).into_owned()
-                        } else if let Some(line) = cal_line.clone() {
-                            line
-                        } else if crate::wave::MIC_SILENT.load(std::sync::atomic::Ordering::Relaxed) {
-                            format!("{} \u{00B7} {}", wave_dur_str, tr(Msg::MicSilent))
-                        } else if wave_reconnecting {
-                            tr(Msg::WaveReconnecting).into_owned()
-                        } else if direct {
-                            // Glyph + duration only (no words) — nothing to translate, stays a raw format.
-                            format!("\u{260E} {}", wave_dur_str)
-                        } else {
-                            tr(Msg::WaveActiveNoPath(&wave_dur_str)).into_owned()
-                        }
-                    }
-                    // A beam we placed says so (field 2026-10-13: "Beam from mac says 'waving Emma' rather than beaming").
-                    crate::wave::WavePhase::Outgoing if self.active_wave.as_ref().is_some_and(|w| w.beam) => tr(Msg::BeamingName(&name)).into_owned(),
-                    crate::wave::WavePhase::Outgoing => tr(Msg::WavingName(&name)).into_owned(),
-                };
-                let status_style = TextStyle::new(unit * 0.62, *theme::STATUS_TEXT_COLOUR).font("Oxanium");
-                let status_warns = matches!(phase, crate::wave::WavePhase::Active)
-                    && (crate::wave::MIC_RELAUNCH.load(std::sync::atomic::Ordering::Relaxed)
-                        || crate::wave::MIC_DENIED.load(std::sync::atomic::Ordering::Relaxed)
-                        || crate::wave::MIC_SILENT.load(std::sync::atomic::Ordering::Relaxed)
-                        || wave_reconnecting
-                        || cal_line.is_some());
-                // WRAPPED (field 2026-10-13: "you have to resize Photon super wide to read it"): a long status — the microphone messages — breaks onto as many centred lines as it needs within 90% of the window.
-                if !beam_showing || status_warns {
-                    let max_w = buf_w as f32 * 0.9;
-                    let mut lines: Vec<String> = Vec::new();
-                    let mut cur = String::new();
-                    for word in status_line.split(' ') {
-                        let trial = if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
-                        if !cur.is_empty() && ctx.text.measure_text(&trial, &status_style) > max_w {
-                            lines.push(std::mem::take(&mut cur));
-                            cur = word.to_string();
-                        } else {
-                            cur = trial;
-                        }
-                    }
-                    if !cur.is_empty() {
-                        lines.push(cur);
-                    }
-                    let y0 = acy + avatar_r + unit * 2.2;
-                    for (i, line) in lines.iter().enumerate() {
-                        ctx.text.draw_text_center(&mut canvas, line, acx, y0 + i as f32 * unit * 0.85, &status_style, None, None);
-                    }
+                for (i, line) in wave_status_lines.iter().enumerate() {
+                    ctx.text.draw_text_center(&mut canvas, line, w * 0.5, l.text_y + i as f32 * l.line, &wave_status_style, None, None);
                 }
-                // Under each avatar, the rung that voice is sent on; centred between them, the ROUND TRIP mouth to ear and back (Nick 2026-09-28): our own l plus the l they report. The sum is exact whatever the two clocks disagree by — a one-way split would be a guess until the grid has an outside reference (GPS or the like).
-                if let Some(g) = field_geom.filter(|_| matches!(phase, crate::wave::WavePhase::Active) && !beam_showing && !group_layout) {
+                // THE READOUT: the rung we hear them on (↓), the ROUND TRIP mouth to ear and back (Nick 2026-09-28: our own l plus the l they report — exact whatever the two clocks disagree by), and the rung we send on (↑).
+                if wave_readout {
+                    use std::sync::atomic::Ordering::Relaxed;
                     let rung = |t: u32| if t == u32::MAX { "\u{2014}".to_string() } else { crate::wave::engine::tier_name(t as usize).to_string() };
                     let ours_l = crate::platform::audio::play_latency().map(|l| (l.max(0) / 48) as u32);
-                    let theirs_l = Some(crate::wave::LAST_PEER_L_MS.load(std::sync::atomic::Ordering::Relaxed)).filter(|&v| v != u32::MAX);
-                    let st = TextStyle::new(unit * 0.5, *theme::LABEL_COLOUR).font("Oxanium");
-                    let below = g.r + unit * 0.9;
-                    ctx.text.draw_text_center(&mut canvas, &rung(crate::wave::LAST_PEER_TIER.load(std::sync::atomic::Ordering::Relaxed)), g.theirs.0, g.theirs.1 + below, &st, None, None);
-                    ctx.text.draw_text_center(&mut canvas, &rung(crate::wave::LAST_LINK_TIER.load(std::sync::atomic::Ordering::Relaxed)), g.ours.0, g.ours.1 + below, &st, None, None);
+                    let theirs_l = Some(crate::wave::LAST_PEER_L_MS.load(Relaxed)).filter(|&v| v != u32::MAX);
                     let round_trip = match (ours_l, theirs_l) {
                         (Some(a), Some(b)) => format!("{} ms", crate::fmt_num(a + b)),
                         _ => "\u{2014}".to_string(),
                     };
-                    ctx.text.draw_text_center(&mut canvas, &round_trip, (g.theirs.0 + g.ours.0) * 0.5, (g.theirs.1 + g.ours.1) * 0.5, &st, None, None);
+                    let line = format!("\u{2193} {} \u{00B7} {} \u{00B7} \u{2191} {}", rung(crate::wave::LAST_PEER_TIER.load(Relaxed)), round_trip, rung(crate::wave::LAST_LINK_TIER.load(Relaxed)));
+                    let st = TextStyle::new(unit * 0.5, *theme::LABEL_COLOUR).font("Oxanium");
+                    ctx.text.draw_text_center(&mut canvas, &line, w * 0.5, l.text_y + wave_status_lines.len() as f32 * l.line, &st, None, None);
                 }
-                // RUNNING STATS on every build (Nick 2026-09-11): the rung by its Spaceballs name, the round trip as a frequency in the current base, the loss ring, the buffer — refreshed by the engine once a second while the wave runs. With the field up, each voice's rung sits under its avatar and the round trip between them instead (Nick 2026-09-28).
-                if matches!(phase, crate::wave::WavePhase::Active) && field_geom.is_none() {
-                    let rtt = crate::wave::LAST_LINK_RTT_MS.load(std::sync::atomic::Ordering::Relaxed);
-                    if rtt > 0 {
-                        let rung = crate::wave::engine::tier_name(crate::wave::LAST_LINK_TIER.load(std::sync::atomic::Ordering::Relaxed) as usize);
-                        let freq = crate::link_rtt_label(rtt);
-                        let loss = crate::fmt_num(crate::wave::LAST_LINK_LOSS.load(std::sync::atomic::Ordering::Relaxed));
-                        let buf = crate::fmt_num(crate::wave::LAST_LINK_TARGET.load(std::sync::atomic::Ordering::Relaxed));
-                        let line = tr(Msg::WaveLiveStats { rung, freq: &freq, loss: &loss, buf: &buf });
-                        ctx.text.draw_text_center(
-                            &mut canvas,
-                            &line,
-                            acx,
-                            acy + avatar_r + unit * 3.0,
-                            &TextStyle::new(unit * 0.5, *theme::LABEL_COLOUR).font("Oxanium"),
-                            None,
-                            None,
-                        );
-                    }
-                }
-                // ONE BOTTOM ROW, three slots, every phase (Nick 2026-09-29): the main action always in the middle, so the thumb that answers is already on End wave. Ringing in: Reject (silent — nothing leaves the fleet) · Wave back · Decline (tells them). Ringing out and talking: ‹ Contact (minimise) · End wave · the route (Android). Bottom-anchored so a heads-up banner (which owns the top) never covers them.
-                // THE DIAGONAL (Nick 2026-09-30, in the spirit of Beam over Wave): each slot sits a little higher than the one to its right — left highest, the main action centred, right lowest. The lowest edge clears the navigation bar by the max rule: the usual margin, or the bar where it is taller, never the two added.
-                let bh = unit * 2.4;
+                // ── THE DOCK ──
+                // ONE BOTTOM ROW, three slots, every phase (Nick 2026-09-29): the main action always in the middle, so the thumb that answers is already on End wave. Ringing in: Reject (silent — nothing leaves the fleet) · Wave back · Decline (tells them). Ringing out and talking: ‹ Contact (minimise) · End wave · Beam (desktop) or the route (Android). Bottom-anchored so a heads-up banner (which owns the top) never covers them.
+                // THE DIAGONAL (Nick 2026-09-30, in the spirit of Beam over Wave): each slot sits a little higher than the one to its right — left highest, the main action centred, right lowest.
+                // Every label is fitted to its pill: a long one shrinks rather than overflowing.
+                let (bw, bh) = (l.bw, l.bh);
                 let bfont = unit * 0.75;
-                let bw = w * 0.28;
-                let gap = unit * 0.6;
-                let (lx, cx, rx) = (w * 0.5 - bw - gap, w * 0.5, w * 0.5 + bw + gap);
-                let bottom = (unit * 1.5).max(crate::ui::safe_bottom_px() as f32);
-                let step = bh * 0.55;
-                let ry = h - bottom - bh * 0.5;
-                let (ly, by) = (ry - 2.0 * step, ry - step);
+                let [lx, cx, rx] = l.cols;
+                let [ly, by, ry] = l.rows;
                 match phase {
                     crate::wave::WavePhase::Ringing => {
                         if let Some(b) = self.wave_reject_btn.as_mut() {
                             b.set_rect(lx, ly, bw, bh);
-                            b.set_font_size(bfont * 0.9);
                             b.set_label(tr(Msg::Reject));
+                            b.set_font_size_fitted(bfont * 0.9, ctx.text);
                             b.set_fill(Some(theme::PILL_GREY.0));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
                         if let Some(b) = self.wave_action_btn.as_mut() {
                             b.set_rect(cx, by, bw, bh);
-                            b.set_font_size(bfont);
                             // The big button answers in KIND (Nick 2026-10-10): what is coming at us — Beam back on an incoming beam this device can return, Wave back otherwise ("Wave back" = answering is choosing AUDIO, 2026-09-09).
-                            let beam_in = self.active_wave.as_ref().is_some_and(|w| w.beam) && crate::wave::beam_session::can_send();
+                            let beam_in = self.active_wave.as_ref().is_some_and(|w| w.beam) && can_beam;
                             b.set_label(tr(if beam_in { Msg::BeamBack } else { Msg::WaveBack }));
+                            b.set_font_size_fitted(bfont, ctx.text);
                             b.set_enabled(true);
                             b.set_fill(Some(*theme::WAVE_ACCEPT_FILL));
                             b.set_hover_fill(Some(*theme::WAVE_ACCEPT_HOVER));
@@ -1112,26 +1066,10 @@ impl PhotonApp {
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
-                        // THE OTHER ANSWER, smaller, above the big one: Wave back on an incoming beam, Beam back on an incoming wave (only where this device can send a beam).
-                        let beam_in = self.active_wave.as_ref().is_some_and(|w| w.beam) && crate::wave::beam_session::can_send();
-                        if beam_in || crate::wave::beam_session::can_send() {
-                            if let Some(b) = self.beam_back_btn.as_mut() {
-                                let (sw, sh) = (bw * 0.78, bh * 0.78);
-                                b.set_rect(cx + (bw - sw) / 2., by - sh * 1.35, sw, sh);
-                                b.set_font_size(bfont * 0.8);
-                                b.set_label(tr(if beam_in { Msg::WaveBack } else { Msg::BeamBack }));
-                                b.set_enabled(true);
-                                b.set_fill(Some(*theme::WAVE_ACCEPT_FILL));
-                                b.set_hover_fill(Some(*theme::WAVE_ACCEPT_HOVER));
-                                b.set_held_fill(Some(*theme::WAVE_ACCEPT_HOVER));
-                                let id = b.hit_id();
-                                b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
-                            }
-                        }
                         if let Some(b) = self.wave_decline_btn.as_mut() {
                             b.set_rect(rx, ry, bw, bh);
-                            b.set_font_size(bfont);
                             b.set_label(tr(Msg::Decline));
+                            b.set_font_size_fitted(bfont, ctx.text);
                             b.set_fill(Some(*theme::WAVE_DANGER_FILL));
                             b.set_hover_fill(Some(*theme::WAVE_DANGER_HOVER));
                             b.set_held_fill(Some(*theme::WAVE_DANGER_HOVER));
@@ -1142,19 +1080,19 @@ impl PhotonApp {
                     _ => {
                         if let Some(b) = self.wave_back_btn.as_mut() {
                             b.set_rect(lx, ly, bw, bh);
-                            b.set_font_size(bfont * 0.8);
                             b.set_label(tr(Msg::BackToContact));
+                            b.set_font_size_fitted(bfont * 0.8, ctx.text);
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
                         if let Some(b) = self.wave_action_btn.as_mut() {
                             b.set_rect(cx, by, bw, bh);
-                            b.set_font_size(bfont);
                             // A wave with video in it is a beam (Nick 2026-10-21: "when your camera is on it still has an End wave"): our camera on or opening, or the far side's picture up.
                             let beaming = crate::wave::beam_session::showing()
                                 || self.active_wave.as_ref().is_some_and(|w| w.beam_tx.is_some() || w.beam_opening.is_some())
                                 || group_beaming;
                             b.set_label(tr(if beaming { Msg::EndBeam } else { Msg::EndWave }));
+                            b.set_font_size_fitted(bfont, ctx.text);
                             b.set_enabled(true);
                             b.set_fill(Some(*theme::WAVE_DANGER_FILL));
                             b.set_hover_fill(Some(*theme::WAVE_DANGER_HOVER));
@@ -1162,33 +1100,10 @@ impl PhotonApp {
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
-                        // The BEAM toggle on the phone (docs/beams.md): above the end button, the route button keeping the right slot.
-                        #[cfg(target_os = "android")]
-                        if let Some(b) = self.beam_btn.as_mut() {
-                            b.set_rect(cx, by - bh * 1.3, bw, bh);
-                            b.set_font_size(bfont * 0.8);
-                            let sending = crate::wave::beam_session::android_sending();
-                            b.set_label(tr(if sending { Msg::BeamToggle } else { Msg::BeamStart }));
-                            b.set_enabled(true);
-                            let id = b.hit_id();
-                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
-                        }
-                        // CALIBRATE (beam_calibrate.rs): the left column's upper slot, above ‹ Contact, while a phone beams thru a straight camera and chameleon shipped with this build.
-                        if crate::wave::beam_calibrate::available() {
-                            if let Some(b) = self.beam_cal_btn.as_mut() {
-                                b.set_rect(lx, ly - bh * 1.3, bw, bh);
-                                b.set_font_size(bfont * 0.8);
-                                b.set_label(tr(Msg::Calibrate));
-                                b.set_enabled(crate::wave::beam_calibrate::status().0 != crate::wave::beam_calibrate::Status::Scanning);
-                                let id = b.hit_id();
-                                b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
-                            }
-                        }
                         // The route (Android, field 2026-09-14): labelled with the device the wave plays on (the Kotlin route mirror); a tap cycles to the next available output.
                         #[cfg(target_os = "android")]
                         if let Some(b) = self.wave_speaker_btn.as_mut() {
                             b.set_rect(rx, ry, bw, bh);
-                            b.set_font_size(bfont * 0.8);
                             let route = crate::platform::audio::route_id();
                             let label = match route.as_str() {
                                 "speaker" => tr(Msg::SpeakerPlain).into_owned(),
@@ -1198,17 +1113,7 @@ impl PhotonApp {
                                 _ => route.split_once(':').map_or_else(|| route.clone(), |(_, name)| name.to_string()),
                             };
                             b.set_label(label);
-                            let id = b.hit_id();
-                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
-                        }
-                        // The phone's MIC picker (Nick 2026-10-17) above the route pill: labelled with the input in use, a tap moves to the next.
-                        #[cfg(target_os = "android")]
-                        if let Some(b) = self.wave_mic_btn.as_mut() {
-                            let (mic_pick, _) = crate::platform::audio::picks();
-                            let (mic_open, _) = crate::platform::audio::opened();
-                            b.set_rect(rx, ry - bh * 1.3, bw, bh);
-                            b.set_font_size(bfont * 0.6);
-                            b.set_label(Self::device_label("🎤", mic_pick, mic_open));
+                            b.set_font_size_fitted(bfont * 0.8, ctx.text);
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
@@ -1216,80 +1121,96 @@ impl PhotonApp {
                         #[cfg(not(target_os = "android"))]
                         if let Some(b) = self.beam_btn.as_mut() {
                             b.set_rect(rx, ry, bw, bh);
-                            b.set_font_size(bfont * 0.8);
                             // A camera still opening reads as sending: the next tap cancels it.
                             let sending = self.active_wave.as_ref().map_or(false, |w| w.beam_tx.is_some() || w.beam_opening.is_some()) || group_beaming;
                             b.set_label(tr(if sending { Msg::BeamToggle } else { Msg::BeamStart }));
-                            b.set_enabled(crate::wave::beam_session::can_send());
+                            b.set_font_size_fitted(bfont * 0.8, ctx.text);
+                            b.set_enabled(can_beam);
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
-                        // THE MIC AND SPEAKER PICKERS (Nick 2026-10-17): the speaker above ‹ Contact, the mic above Beam, each labelled with the device in use; a tap moves to the next.
-                        #[cfg(not(target_os = "android"))]
-                        {
-                            let (mic_pick, out_pick) = crate::platform::audio::picks();
-                            let (mic_open, out_open) = crate::platform::audio::opened();
-                            if let Some(b) = self.wave_out_btn.as_mut() {
-                                b.set_rect(lx, ly - bh * 1.3, bw, bh);
-                                b.set_font_size(bfont * 0.6);
-                                b.set_label(Self::device_label("🔊", out_pick, out_open));
-                                let id = b.hit_id();
-                                b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
-                            }
-                            if let Some(b) = self.wave_mic_btn.as_mut() {
-                                b.set_rect(rx, ry - bh * 1.3, bw, bh);
-                                b.set_font_size(bfont * 0.6);
-                                b.set_label(Self::device_label("🎤", mic_pick, mic_open));
-                                let id = b.hit_id();
-                                b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
-                            }
-                        }
                     }
                 }
-                // The field goes UNDER everything drawn so far in this panel (avatars, rings, text, buttons): fluor composites front to back. It is translucent; the panel paints NO backdrop of its own (Nick 2026-09-28: it must not hide things) — the per-screen bodies are skipped while it shows, so what lands under it is the chrome group's speckle layer, flattened last, and the chrome itself stays on top (flattened first).
-                // THE BEAM LAYOUT (Nick 2026-10-13): the peer's picture as big as the screen allows, TOP-anchored, so the buttons sit in the room below it; our camera as an inset in the picture's bottom-right corner. The inset paints FIRST: fluor composites front to back, so it lands over the picture painted next and under the avatars and buttons.
-                if field_geom.is_some() {
-                    let unit_now = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
-                    let (rx0, ry0, rw, rh) = super::wave_field::picture_region(buf_w, buf_h, unit_now);
-                    // A GROUP beam: every beaming member's picture, tiled over the region (docs/group-waves.md); a 1:1 beam's one picture otherwise.
-                    let group_pics: Vec<crate::wave::beam_session::Picture> = if group_layout {
-                        group_slots.iter().copied().filter_map(crate::wave::beam_session::picture_slot).collect()
-                    } else {
-                        Vec::new()
-                    };
-                    let peer = if group_layout { None } else { crate::wave::beam_session::picture() };
-                    // The picture's drawn height (fit to width first), so the inset hugs its corner rather than the region's.
-                    let ph = peer.as_ref().map_or(rh, |p| if p.w * rh >= p.h * rw { (p.h * rw / p.w.max(1)).min(rh) } else { rh });
-                    self.beam_self_rect = None;
+                // THE SECONDARY ROW: equal pills spanning the diagonal's width, in a fixed order (the other answer; the speaker, the mic, the Beam toggle on a phone, Calibrate), each labelled with what it acts on (Nick 2026-10-17: "enumerate the names").
+                let row: Vec<u8> = [(dock_other, 0u8), (dock_out, 1), (dock_mic, 2), (dock_beam2, 3), (dock_cal, 4)].iter().filter(|(on, _)| *on).map(|(_, k)| *k).collect();
+                if !row.is_empty() {
+                    let span = 3.0 * bw + 2.0 * l.gap;
+                    let pw = (span - (row.len() - 1) as f32 * l.gap) / row.len() as f32;
+                    let sfont = bfont * 0.7;
+                    let (mic_pick, out_pick) = crate::platform::audio::picks();
+                    let (mic_open, out_open) = crate::platform::audio::opened();
+                    for (i, k) in row.iter().enumerate() {
+                        let px = w * 0.5 - span * 0.5 + pw * 0.5 + i as f32 * (pw + l.gap);
+                        let b = match k {
+                            0 => self.beam_back_btn.as_mut(),
+                            1 => self.wave_out_btn.as_mut(),
+                            2 => self.wave_mic_btn.as_mut(),
+                            3 => self.beam_btn.as_mut(),
+                            _ => self.beam_cal_btn.as_mut(),
+                        };
+                        let Some(b) = b else {
+                            continue;
+                        };
+                        b.set_rect(px, l.sec_y, pw, l.sec_h);
+                        match k {
+                            // THE OTHER ANSWER: Wave back on an incoming beam, Beam back on an incoming wave.
+                            0 => {
+                                let beam_in = self.active_wave.as_ref().is_some_and(|w| w.beam);
+                                b.set_label(tr(if beam_in { Msg::WaveBack } else { Msg::BeamBack }));
+                                b.set_enabled(true);
+                                b.set_fill(Some(*theme::WAVE_ACCEPT_FILL));
+                                b.set_hover_fill(Some(*theme::WAVE_ACCEPT_HOVER));
+                                b.set_held_fill(Some(*theme::WAVE_ACCEPT_HOVER));
+                            }
+                            1 => b.set_label(Self::device_label("🔊", out_pick.clone(), out_open.clone())),
+                            2 => b.set_label(Self::device_label("🎤", mic_pick.clone(), mic_open.clone())),
+                            3 => {
+                                let sending = crate::wave::beam_session::android_sending();
+                                b.set_label(tr(if sending { Msg::BeamToggle } else { Msg::BeamStart }));
+                                b.set_enabled(true);
+                            }
+                            _ => {
+                                b.set_label(tr(Msg::Calibrate));
+                                b.set_enabled(crate::wave::beam_calibrate::status().0 != crate::wave::beam_calibrate::Status::Scanning);
+                            }
+                        }
+                        b.set_font_size_fitted(sfont, ctx.text);
+                        let id = b.hit_id();
+                        b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                    }
+                }
+                // THE PAIR'S PICTURES (Nick 2026-10-13): the peer's picture as big as the stage allows, TOP-anchored, so the spare room falls below it; our camera as an inset in the picture's bottom-right corner (the stage's, until theirs arrives), its name inside the inset's foot. The inset paints FIRST: fluor composites front to back, so it lands over the picture painted next and under the text and buttons.
+                if !group_layout {
+                    let peer = crate::wave::beam_session::picture();
+                    // The picture's drawn height (fit to width first), so the inset hugs its corner rather than the stage's.
+                    let ph = peer.as_ref().map_or(sh, |p| if p.w * sh >= p.h * sw { (p.h * sw / p.w.max(1)).min(sh) } else { sh });
                     if let Some(me) = crate::wave::beam_session::self_picture() {
-                        let s = (rw.min(ph) / 4).max(16);
+                        let s = sw.min(ph) / 4;
                         let m = s / 8;
-                        // WHY/PROOF: `ph` follows the PEER's picture shape — a sliver of a picture is shorter than the inset's 16-px floor, and the inset then sits at the rect's top rather than a wrapped row past the buffer.
-                        let (ix, iy) = (rx0 + rw - s - m, ry0 + ph.saturating_sub(s + m));
+                        // WHY/PROOF: `ph` follows the PEER's picture shape — a sliver of a picture is shorter than the inset and its margin, and the inset then sits at the stage's top rather than a wrapped row past the buffer.
+                        let (ix, iy) = (sx + sw - s - m, sy + ph.saturating_sub(s + m));
+                        // The camera's name inside the inset's foot (Nick 2026-10-17: "enumerate the names"), painted before the inset so it sits on it.
+                        if let Some(name) = Self::camera_label() {
+                            let cap = TextStyle::new(s as f32 / 9.0, *theme::STATUS_TEXT_COLOUR).font("Oxanium");
+                            ctx.text.draw_text_center(&mut canvas, &name, (ix + s / 2) as f32, (iy + s) as f32 - s as f32 / 8.0, &cap, None, None);
+                        }
                         super::wave_field::paint_picture_rect(&mut canvas, ix, iy, s, s, &me, false);
                         // The inset is the camera switch (a tap cycles lenses on a phone, devices on a desktop): its square is a tap target, re-stamped at the end of the frame.
                         let sending = if cfg!(target_os = "android") {
                             crate::wave::beam_session::android_sending()
                         } else {
-                            (self.active_wave.as_ref().is_some_and(|w| w.beam_tx.is_some()) || self.group_wave.as_ref().is_some_and(|w| w.beam_tx.is_some())) && crate::wave::beam_session::desktop_cameras().len() > 1
+                            self.active_wave.as_ref().is_some_and(|w| w.beam_tx.is_some()) && crate::wave::beam_session::desktop_cameras().len() > 1
                         };
                         if sending {
                             self.beam_self_rect = Some((ix, iy, ix + s, iy + s));
                         }
-                        // The camera's name under the inset (Nick 2026-10-17: "enumerate the names").
-                        if let Some(name) = Self::camera_label() {
-                            let cap = TextStyle::new((s as f32 / 9.0).max(10.0), *theme::STATUS_TEXT_COLOUR).font("Oxanium");
-                            ctx.text.draw_text_center(&mut canvas, &name, (ix + s / 2) as f32, (iy + s + m) as f32 + s as f32 / 12.0, &cap, None, None);
-                        }
                     }
                     if let Some(p) = peer {
-                        super::wave_field::paint_picture_rect(&mut canvas, rx0, ry0, rw, rh, &p, true);
-                    }
-                    for (p, (tx0, ty0, tw, th)) in group_pics.iter().zip(super::wave_field::picture_tiles(rx0, ry0, rw, rh, group_pics.len())) {
-                        super::wave_field::paint_picture_rect(&mut canvas, tx0, ty0, tw, th, p, true);
+                        super::wave_field::paint_picture_rect(&mut canvas, sx, sy, sw, sh, &p, true);
                     }
                 }
-                if let (Some(g), Some(m), false, false) = (field_geom, self.wave_field_map.as_ref(), beam_showing, group_layout) {
+                // The field goes UNDER everything drawn so far in this panel (avatars, rings, text, buttons): fluor composites front to back. It is translucent; the panel paints NO backdrop of its own (Nick 2026-09-28: it must not hide things) — what lands under it is the chrome group's speckle layer, flattened last, and the chrome itself stays on top (flattened first).
+                if let (Some(m), false, false) = (self.wave_field_map.as_ref(), picture_up, group_layout) {
                     super::wave_field::paint_field(&mut canvas, &g, m, &self.wave_field_tabs);
                 }
             } else if let Some((phase, name, direct, _pi, _dur)) = &wave_overlay {
@@ -7506,31 +7427,34 @@ impl PhotonApp {
                     b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
                 }
             }
-            // Full-screen-only controls, phase-gated (the modal wipe above cleared the map, so these must re-assert): the bottom row's side slots.
+            // Full-screen-only controls (the modal wipe above cleared the map, so these must re-assert), by the SAME gates the paint used — a pill painted but never stamped is a dead tap (2026-10-10 Beam; 2026-10-31 the mic and speaker pickers, "working intermittently").
             if wave_fullscreen {
-                match wave_overlay.as_ref().map(|t| t.0) {
+                let stamp = |b: Option<&Button>, map: &mut Vec<HitId>| {
+                    if let Some(b) = b {
+                        b.stamp_hit_into(map, buf_w, buf_h, b.hit_id());
+                    }
+                };
+                match wave_phase_now {
                     Some(crate::wave::WavePhase::Active | crate::wave::WavePhase::Outgoing) => {
                         // The route pill stamps only where it renders (Android).
                         #[cfg(target_os = "android")]
-                        if let Some(b) = self.wave_speaker_btn.as_ref() {
-                            b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
+                        stamp(self.wave_speaker_btn.as_ref(), &mut chrome.hit_test_map);
+                        stamp(self.wave_back_btn.as_ref(), &mut chrome.hit_test_map);
+                        // The Beam toggle (the diagonal's right slot on a desktop, the secondary row on a phone): live wave only, and only where it can act.
+                        if wave_phase_now == Some(crate::wave::WavePhase::Active) && can_beam {
+                            stamp(self.beam_btn.as_ref(), &mut chrome.hit_test_map);
                         }
-                        if let Some(b) = self.wave_back_btn.as_ref() {
-                            b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
+                        if dock_cal {
+                            stamp(self.beam_cal_btn.as_ref(), &mut chrome.hit_test_map);
                         }
-                        // The Beam toggle (field 2026-10-10: "Tapping on beam doesn't do anything" — it painted but was never re-stamped after the modal wipe, so a tap hit nothing). Live wave only, and only where it can act.
-                        if wave_overlay.as_ref().map(|t| t.0) == Some(crate::wave::WavePhase::Active) && crate::wave::beam_session::can_send() {
-                            if let Some(b) = self.beam_btn.as_ref() {
-                                b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
-                            }
+                        if dock_out {
+                            stamp(self.wave_out_btn.as_ref(), &mut chrome.hit_test_map);
                         }
-                        // Calibrate and the self-view's camera cycle, where they painted — the same re-assert after the modal wipe.
-                        if wave_overlay.as_ref().map(|t| t.0) == Some(crate::wave::WavePhase::Active) {
-                            if crate::wave::beam_calibrate::available() {
-                                if let Some(b) = self.beam_cal_btn.as_ref() {
-                                    b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
-                                }
-                            }
+                        if dock_mic {
+                            stamp(self.wave_mic_btn.as_ref(), &mut chrome.hit_test_map);
+                        }
+                        // The self-view's camera cycle (the pair's inset, or our own group tile), where it painted.
+                        if wave_phase_now == Some(crate::wave::WavePhase::Active) {
                             if let Some((x0, y0, x1, y1)) = self.beam_self_rect {
                                 restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, x0 as isize, y0 as isize, x1 as isize, y1 as isize, self.beam_self_hit);
                             }
@@ -7538,16 +7462,12 @@ impl PhotonApp {
                     }
                     // Reject was painted but never re-stamped after the modal wipe — a tap on it hit nothing.
                     Some(crate::wave::WavePhase::Ringing) => {
-                        if let Some(b) = self.wave_reject_btn.as_ref() {
-                            b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
-                        }
-                        if crate::wave::beam_session::can_send() {
-                            if let Some(b) = self.beam_back_btn.as_ref() {
-                                b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
-                            }
+                        stamp(self.wave_reject_btn.as_ref(), &mut chrome.hit_test_map);
+                        if dock_other {
+                            stamp(self.beam_back_btn.as_ref(), &mut chrome.hit_test_map);
                         }
                     }
-                    _ => {}
+                    None => {}
                 }
             }
         } else if matches!(self.state, AppState::Conversation)

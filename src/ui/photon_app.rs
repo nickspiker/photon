@@ -2759,8 +2759,6 @@ pub struct PhotonApp {
     pub pending_clipboard_copy: Option<String>,
     /// OFF-GRID add-a-friend (docs/offgrid.md open house): the typed handle + its derived handle_proof, armed by an add submitted while the registry is unreachable. The pt_disc beacon that matches this proof CREATES the contact (device key + address from the beacon) — the registry's job, done by proximity. Cleared on match or on leaving the flow.
     pub pending_woods_add: Option<(String, [u8; 32])>,
-    /// Ring-panel avatar cache: the origin's avatar (or gradient) pre-scaled to the full-screen panel diameter — the list-size `avatar_scaled` is far too small to blit large. (diameter, pixels); rebuilt when the panel diameter changes, dropped when no wave is ringing.
-    pub ring_avatar_scaled: Option<(usize, Vec<u8>)>,
     /// The active wave screen's field (wave_field.rs): per-pixel audio ages for the current square size, this paint's colour tables, the live-history scratch, and both avatars scaled to the field's diameter (theirs, ours).
     wave_field_map: Option<wave_field::FieldMap>,
     wave_field_tabs: wave_field::FieldTables,
@@ -3477,7 +3475,6 @@ impl PhotonApp {
             pending_clipboard_copy: None,
             pending_woods_add: None,
             woods_add_rx: None,
-            ring_avatar_scaled: None,
             wave_field_map: None,
             wave_field_tabs: Default::default(),
             wave_field_scratch: (Vec::new(), Vec::new()),
@@ -3935,12 +3932,14 @@ impl PhotonApp {
     /// Every APP widget (NOT chrome) active on the current screen, yielded to `f` — the single per-widget registry (see [`Container::visit`]). Screen-gated: an off-screen widget is neither dispatched to, tab-focusable, hover-lit, nor damage-claimed. An inherent method (not part of `Container`) so hover/damage passes can call it directly.
     fn visit_app_widgets(&mut self, f: &mut dyn FnMut(&mut dyn Widget)) {
         // Wave controls ride EVERY screen (a ring must be answerable from wherever the user is — docs/waves.md), so they're yielded BEFORE the per-state matches — hover/press/dispatch/apply_pressed/overlay-tint all walk this one registry. The status chip is NOT yielded (non-interactive label). Visibility mirrors the render gate exactly: a live wave yields the action (+ decline in ringing/ended); an open callable conversation with no wave yields the ☎ start pill. A dimmed (not-yet-reachable) start pill is drawn but withheld here so a dead tap can't dispatch.
-        if let Some(phase) = self.active_wave.as_ref().map(|c| c.phase) {
+        if let Some(phase) = self.wave_phase() {
             use crate::wave::WavePhase;
             // The action button is live in EVERY phase (Answer / End wave / Hang up / Keep).
             if let Some(b) = self.wave_action_btn.as_mut() {
                 f(b);
             }
+            // A pair's wave or a group's (`wave_phase`): a group wave's controls walked nowhere until 2026-10-31. The gates are the paint's and the hit stamp's (render.rs, the dock): a control is walked exactly where it is drawn.
+            let can_beam = crate::wave::beam_session::can_send();
             match phase {
                 WavePhase::Ringing => {
                     if let Some(b) = self.wave_decline_btn.as_mut() {
@@ -3949,34 +3948,31 @@ impl PhotonApp {
                     if let Some(b) = self.wave_reject_btn.as_mut() {
                         f(b);
                     }
-                    // The ring's second answer (Wave back / Beam back) — present wherever this device can send a beam.
-                    if crate::wave::beam_session::can_send() {
+                    // The ring's other answer (Wave back / Beam back) — present wherever this device can send a beam.
+                    if can_beam {
                         if let Some(b) = self.beam_back_btn.as_mut() {
                             f(b);
                         }
                     }
                 }
-                // Active full-screen in-wave controls; a minimized Active wave yields only the action (the strip / compact bar's End).
-                WavePhase::Active if !self.wave_minimized => {
+                // Full-screen in-wave controls, ringing out and talking; a minimized wave yields only the action (the strip / compact bar's End).
+                WavePhase::Active | WavePhase::Outgoing if !self.wave_minimized => {
                     // The route pill (Android): cycle the wave's output among the available devices.
                     #[cfg(target_os = "android")]
                     if let Some(b) = self.wave_speaker_btn.as_mut() {
-                        f(b);
-                    }
-                    if let Some(b) = self.wave_addhandle_btn.as_mut() {
                         f(b);
                     }
                     if let Some(b) = self.wave_back_btn.as_mut() {
                         f(b);
                     }
                     // The Beam toggle (docs/beams.md) — in the walk so a press + release becomes a click (field 2026-10-10: it was painted and stamped nowhere).
-                    if crate::wave::beam_session::can_send() {
+                    if phase == WavePhase::Active && can_beam {
                         if let Some(b) = self.beam_btn.as_mut() {
                             f(b);
                         }
                     }
                     // Calibrate: only while it is drawn (the same gate as the paint).
-                    if crate::wave::beam_calibrate::available() {
+                    if phase == WavePhase::Active && crate::wave::beam_calibrate::available() {
                         if let Some(b) = self.beam_cal_btn.as_mut() {
                             f(b);
                         }
