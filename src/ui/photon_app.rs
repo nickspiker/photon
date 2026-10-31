@@ -2169,6 +2169,10 @@ pub struct PhotonApp {
     wave_out_btn: Option<Button>,
     /// BEAM FROM THE CONVERSATION (docs/beams.md stage 4): the Beam slat started this wave, so the camera goes out the moment the wave is live. Cleared when the send starts or the wave ends.
     beam_armed: bool,
+    /// THE GRANTS GATE (platform/grants.rs): a wave or beam asked for while a permission prompt is up, held against the count of prompt answers it saw — any newer answer re-runs it.
+    pending_grant: Option<(wave_ui::GrantIntent, u64)>,
+    /// Why the ring on screen cannot be answered the way it was asked (a refused grant), shown on the ringing status line.
+    wave_grant_note: Option<String>,
     /// Reject — the silent dismissal on the ring panel (no signal to the origin; the wave row's Rejected outcome stops every sibling's ring on merge).
     wave_reject_btn: Option<Button>,
     /// Beam back / Beam toggle — the ring panel's video answer and the active panel's video switch, both STUBS rendered disabled until video lands (Nick 2026-09-09: choose audio-only while they beam, switchable in-wave). Never dispatches.
@@ -3215,6 +3219,8 @@ impl PhotonApp {
             wave_mic_btn: None,
             wave_out_btn: None,
             beam_armed: false,
+            pending_grant: None,
+            wave_grant_note: None,
             beam_back_btn: None,
             wave_reject_btn: None,
             wave_action_btn: None,
@@ -3939,7 +3945,7 @@ impl PhotonApp {
                 f(b);
             }
             // A pair's wave or a group's (`wave_phase`): a group wave's controls walked nowhere until 2026-10-31. The gates are the paint's and the hit stamp's (render.rs, the dock): a control is walked exactly where it is drawn.
-            let can_beam = crate::wave::beam_session::can_send();
+            let can_beam = crate::wave::beam_session::camera_usable();
             match phase {
                 WavePhase::Ringing => {
                     if let Some(b) = self.wave_decline_btn.as_mut() {

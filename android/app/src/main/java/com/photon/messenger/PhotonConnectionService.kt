@@ -1059,6 +1059,20 @@ class PhotonConnectionService : Service() {
         PhotonLog.i(TAG, "beam: capture started")
     }
 
+    /** THE GRANTS GATE (platform/grants.rs): Rust asks for the microphone before a wave is placed or answered; the Activity's prompt reports back thru nativeGrants. */
+    fun askMic() {
+        PhotonActivity.live?.requestMicPermission()
+    }
+
+    /** A grant refused for good: Android will not prompt again, so open Photon's own page in the system settings, where the switch is. */
+    fun openAppSettings() {
+        try {
+            startActivity(android.content.Intent(android.provider.Settings.ACTION_APPLICATION_DETAILS_SETTINGS, android.net.Uri.fromParts("package", packageName, null)).addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK))
+        } catch (e: Throwable) {
+            PhotonLog.w(TAG, "grants: app settings did not open", e)
+        }
+    }
+
     /** Called from Rust at the first beam intent (the Beam slat, Beam back, the in-wave Beam button): the CAMERA prompt goes up while the wave connects instead of after it (field 2026-10-21, Nick's MacBook asked 0.7 s into the live wave). Starts nothing. */
     fun askCameraEarly() {
         if (checkSelfPermission(android.Manifest.permission.CAMERA) != android.content.pm.PackageManager.PERMISSION_GRANTED) {

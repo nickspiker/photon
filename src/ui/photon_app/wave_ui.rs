@@ -77,10 +77,127 @@ pub(super) fn wave_header(w: crate::types::WaveInfo) -> String {
     }
 }
 
+
+/// A wave the user asked for, as the grants gate holds it (platform/grants.rs).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum GrantIntent {
+    /// Place a wave or a beam to a contact.
+    Place { ci: usize, beam: bool },
+    /// Start a group wave or beam in a molecule.
+    PlaceGroup { gi: usize, beam: bool },
+    /// Answer the ring on screen, with our camera (Beam back) or without (Wave back).
+    Answer { beam: bool },
+}
+
+impl GrantIntent {
+    fn beam(self) -> bool {
+        match self {
+            GrantIntent::Place { beam, .. } | GrantIntent::PlaceGroup { beam, .. } | GrantIntent::Answer { beam } => beam,
+        }
+    }
+}
 impl PhotonApp {
     /// Format a wave duration as `M:SS`, base-aware (the About-page dozenal toggle). Rendered in the Oxanium face so the dozenal `+glyphs` control-block glyphs resolve. Dozenal seconds pad to two dozenal digits (0–4B).
     pub(super) fn fmt_duration(&self, secs: i64) -> String {
         fmt_duration_secs(secs)
+    }
+
+    /// THE GRANTS GATE (Nick 2026-10-31: "when you initiate a beam or wave it should check all permissions first and ask you to grant before it even starts"): every place and every answer comes thru here. The microphone, and the camera for a beam: granted (or no grants on this platform) goes now; not yet asked raises the prompt and holds the wave until the answer's edge; refused stops it — nothing is sent, the settings pane is opened, and the screen says which grant is off.
+    pub(super) fn request_wave(&mut self, intent: GrantIntent) {
+        self.pending_grant = None;
+        self.wave_grant_note = None;
+        self.run_grant_intent(intent);
+    }
+
+    fn run_grant_intent(&mut self, intent: GrantIntent) {
+        use crate::platform::grants::{self, Need};
+        use crate::platform::mic_permission::MicAccess;
+        let needs: &[Need] = if intent.beam() { &[Need::Mic, Need::Camera] } else { &[Need::Mic] };
+        for &need in needs {
+            match grants::status(need) {
+                MicAccess::Granted | MicAccess::Unknown => {}
+                MicAccess::Undetermined => {
+                    grants::request(need);
+                    self.pending_grant = Some((intent, grants::answered()));
+                    crate::logf!("GRANTS: {} held until the {} prompt is answered", format!("{:?}", intent), grants::name(need));
+                    self.scene_dirty = true;
+                    return;
+                }
+                MicAccess::Denied => {
+                    self.refuse_wave(intent, need);
+                    return;
+                }
+            }
+        }
+        match intent {
+            GrantIntent::Place { ci, beam } => {
+                if beam {
+                    self.beam_armed = true;
+                }
+                self.start_wave(ci);
+                if beam {
+                    crate::wave::beam_session::preview_start();
+                    crate::log("BEAM: wave started from the Beam button — the camera shows now and sends once they answer");
+                }
+            }
+            GrantIntent::PlaceGroup { gi, beam } => {
+                if beam {
+                    self.beam_armed = true;
+                }
+                self.start_group_wave(gi);
+                if beam {
+                    crate::wave::beam_session::preview_start();
+                    crate::log("BEAM: group wave started from the Beam button — the camera shows now and sends on the first link");
+                }
+            }
+            GrantIntent::Answer { beam } => {
+                // The ring may have ended while the prompt was up.
+                if self.wave_phase() != Some(WavePhase::Ringing) {
+                    crate::log("GRANTS: the ring ended while its prompt was up — nothing to answer");
+                    return;
+                }
+                if beam {
+                    self.beam_armed = true;
+                    crate::log("BEAM: answered with Beam back — the camera follows the engine");
+                } else if self.active_wave.as_ref().is_some_and(|w| w.beam) {
+                    crate::log("WAVE: answered with Wave back on an incoming beam — voice only from here");
+                }
+                self.answer_wave();
+            }
+        }
+    }
+
+    /// A grant is off: nothing is sent, its settings pane opens, and the screen the user is on says so — the conversation screen's toast for a wave being placed, the ringing status line for a ring (where Wave back still answers when only the camera is off).
+    fn refuse_wave(&mut self, intent: GrantIntent, need: crate::platform::grants::Need) {
+        use crate::platform::grants::Need;
+        self.pending_grant = None;
+        crate::logf!("GRANTS: the {} is off for Photon — {} not sent; opening its settings", crate::platform::grants::name(need), format!("{:?}", intent));
+        crate::platform::grants::open_settings(need);
+        let note = tr(match need {
+            Need::Mic => Msg::GrantMicOff,
+            Need::Camera => Msg::GrantCameraOff,
+        })
+        .into_owned();
+        match intent {
+            GrantIntent::Answer { .. } => self.wave_grant_note = Some(note),
+            _ => {
+                self.ready_toast = Some(note);
+                self.ready_toast_screen = None;
+            }
+        }
+        self.scene_dirty = true;
+    }
+
+    /// The answer's edge, read on the tick: a held wave re-runs the gate once any prompt has been answered since it was held.
+    pub(super) fn grants_tick(&mut self) {
+        let Some((intent, seen)) = self.pending_grant else {
+            return;
+        };
+        if crate::platform::grants::answered() == seen {
+            return;
+        }
+        self.pending_grant = None;
+        self.run_grant_intent(intent);
     }
 
     /// Poll the retained wave Buttons' rising-edge clicks (docs/waves.md) — mirrors the attest/+/send pattern: `dispatch_release` (or a focused-key activation) fired `on_click`; we observe the edge here and run the phase's action. Called from BOTH the Released arm and the key path so pointer taps and Enter/Space on a focused wave button both fire exactly once. The verb is phase-driven: action = Answer/Keep/Hang up, decline = Decline/Delete, start = place the wave.
@@ -89,15 +206,9 @@ impl PhotonApp {
         let mut any = false;
         // THE RING'S SECOND OPTION (Nick 2026-10-10: "the default/largest button would be what's coming at us… we can beam back or wave back"): the smaller button above the big one is the OTHER answer — Wave back on an incoming beam, Beam back on an incoming wave.
         if self.beam_back_btn.as_mut().map(|b| b.take_click()).unwrap_or(false) && phase == Some(WavePhase::Ringing) {
+            // The other answer: Wave back on an incoming beam, Beam back on an incoming wave.
             let incoming_beam = self.active_wave.as_ref().is_some_and(|w| w.beam);
-            if incoming_beam {
-                crate::log("WAVE: answered with Wave back on an incoming beam — voice only from here");
-            } else {
-                crate::wave::beam_session::ask_camera_early();
-                self.beam_armed = true;
-                crate::log("BEAM: answered a wave with Beam back — the camera follows the engine");
-            }
-            self.answer_wave();
+            self.request_wave(GrantIntent::Answer { beam: !incoming_beam });
             any = true;
         }
         // Calibrate (beam_calibrate.rs): the next camera frame goes to chameleon; the status line reports.
@@ -123,22 +234,12 @@ impl PhotonApp {
                 }
                 // The conversation screen's Beam slat: a wave with the beam armed — the camera goes out the moment the wave is live (the drought tick's edge).
                 None => {
-                    if let Some(ci) = self.active_contact() {
-                        if crate::wave::beam_session::can_send() {
-                            crate::wave::beam_session::ask_camera_early();
-                            self.beam_armed = true;
-                            self.start_wave(ci);
-                            crate::wave::beam_session::preview_start();
-                            crate::log("BEAM: wave started from the Beam button — the camera shows now and sends once they answer");
-                            any = true;
-                        }
+                    // The conversation screen's Beam slat: a beam to a contact, or a molecule's group beam — thru the grants gate (microphone and camera first).
+                    if let Some(ci) = self.active_contact().filter(|_| crate::wave::beam_session::can_send()) {
+                        self.request_wave(GrantIntent::Place { ci, beam: true });
+                        any = true;
                     } else if let Some(gi) = self.active_molecule().filter(|_| crate::wave::beam_session::can_send()) {
-                        // A molecule's Beam: the group wave with our camera armed — it opens the moment the first link is up.
-                        crate::wave::beam_session::ask_camera_early();
-                        self.beam_armed = true;
-                        self.start_group_wave(gi);
-                        crate::wave::beam_session::preview_start();
-                        crate::log("BEAM: group wave started from the Beam button — the camera follows the first link");
+                        self.request_wave(GrantIntent::PlaceGroup { gi, beam: true });
                         any = true;
                     }
                 }
@@ -156,12 +257,9 @@ impl PhotonApp {
             match phase {
                 // The big button answers in KIND: an incoming beam is beamed back (when this device can send one), an incoming wave is waved back.
                 Some(WavePhase::Ringing) => {
-                    if self.active_wave.as_ref().is_some_and(|w| w.beam) && crate::wave::beam_session::can_send() {
-                        crate::wave::beam_session::ask_camera_early();
-                        self.beam_armed = true;
-                        crate::log("BEAM: answered a beam with Beam back — the camera follows the engine");
-                    }
-                    self.answer_wave();
+                    // The big button answers in kind: Beam back on an incoming beam this device can return (a camera it may use), Wave back otherwise.
+                    let beam_in = self.active_wave.as_ref().is_some_and(|w| w.beam) && crate::wave::beam_session::camera_usable();
+                    self.request_wave(GrantIntent::Answer { beam: beam_in });
                 }
                 Some(_) => self.hangup_wave(),
                 None => {}
@@ -200,10 +298,10 @@ impl PhotonApp {
             && self.group_wave.is_none()
         {
             if let Some(ci) = self.active_contact() {
-                self.start_wave(ci);
+                self.request_wave(GrantIntent::Place { ci, beam: false });
                 any = true;
             } else if let Some(gi) = self.active_molecule() {
-                self.start_group_wave(gi);
+                self.request_wave(GrantIntent::PlaceGroup { gi, beam: false });
                 any = true;
             }
         }
@@ -1621,6 +1719,7 @@ impl PhotonApp {
         self.beam_armed = false;
         crate::wave::beam_session::android_stop();
         crate::wave::beam_session::preview_stop();
+        self.wave_grant_note = None;
         let engine_thread = self.active_wave.as_ref().and_then(|wave| {
             let e = wave.engine.as_ref()?;
             e.stop(); // the engine thread zeroizes its chains, clears the sink, and releases audio

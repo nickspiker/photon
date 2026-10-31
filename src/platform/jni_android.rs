@@ -2254,3 +2254,9 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOpenConversatio
     }
     crate::logf!("NOTIFY: tap asked to open conversation {}", hex::encode(&bytes[..4]));
 }
+
+/// THE GRANTS GATE (platform/grants.rs): the Activity's report of the microphone and camera grants — at every resume and after every prompt — and the edge a held wave goes out on.
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeGrants(_env: JNIEnv<'_>, _this: JObject<'_>, mic: jint, camera: jint) {
+    crate::platform::grants::android_report(mic as u8, camera as u8);
+}

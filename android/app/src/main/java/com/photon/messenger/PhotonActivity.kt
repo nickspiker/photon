@@ -214,6 +214,19 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private external fun nativeResize(contextPtr: Long, width: Int, height: Int)
     private external fun nativeOnTouch(contextPtr: Long, action: Int, x: Float, y: Float): Int  // Returns: 1=show keyboard, -1=hide keyboard, 2=open image picker, 0=no change
     private external fun nativeOnTextInput(contextPtr: Long, text: String)  // Text from soft keyboard
+    // THE GRANTS GATE (platform/grants.rs): the microphone and camera grants, each 1 granted, 2 not granted (a prompt can ask), 3 refused at a prompt this run — Rust holds a wave on a prompt and places it on this report's edge.
+    private external fun nativeGrants(mic: Int, camera: Int)
+    @Volatile private var micRefused = false
+    @Volatile private var cameraRefused = false
+
+    private fun reportGrants() {
+        fun state(perm: String, refused: Boolean): Int = when {
+            ContextCompat.checkSelfPermission(this, perm) == PackageManager.PERMISSION_GRANTED -> 1
+            refused -> 3
+            else -> 2
+        }
+        try { nativeGrants(state(Manifest.permission.RECORD_AUDIO, micRefused), state(Manifest.permission.CAMERA, cameraRefused)) } catch (_: Throwable) {}
+    }
     private external fun nativeOnKeyEvent(contextPtr: Long, keyCode: Int): Boolean  // Special keys (backspace, enter)
     private external fun nativeOnBackPressed(contextPtr: Long): Boolean  // Back button - returns true if handled
     private external fun nativeOnScale(contextPtr: Long, scaleFactor: Float)  // Pinch-to-zoom scale factor
@@ -321,6 +334,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         } else {
             PhotonLog.w(TAG, "RECORD_AUDIO denied — this wave stays listen-only")
         }
+        micRefused = !isGranted
+        reportGrants()
     }
 
     // Called from the Service (off the main thread, via the JNI wave-start upcall) when a going-active
@@ -347,6 +362,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         } else {
             PhotonLog.w(TAG, "CAMERA denied — no beam from this device")
         }
+        cameraRefused = !isGranted
+        reportGrants()
     }
 
     fun requestCameraPermission() {
@@ -1055,6 +1072,10 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
 
     override fun onResume() {
         super.onResume()
+        // A grant flipped in the system settings while we were away is seen here, and clears a refusal.
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) micRefused = false
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) cameraRefused = false
+        reportGrants()
         if (!networkCallbackRegistered) {
             try {
                 (getSystemService(CONNECTIVITY_SERVICE) as android.net.ConnectivityManager).registerDefaultNetworkCallback(networkCallback)

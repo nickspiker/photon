@@ -54,6 +54,7 @@ mod mac {
             } else {
                 crate::logf!("AUDIO: microphone access {} by the user", if granted.as_bool() { "GRANTED" } else { "DENIED" });
             }
+            super::super::grants::note_answer();
         });
         unsafe {
             let _: () = msg_send![class!(AVCaptureDevice), requestAccessForMediaType: &*media, completionHandler: &*block];
@@ -83,6 +84,7 @@ mod mac {
             } else {
                 crate::logf!("BEAM: camera access {} by the user", if granted.as_bool() { "GRANTED" } else { "DENIED" });
             }
+            super::super::grants::note_answer();
         });
         unsafe {
             let _: () = msg_send![class!(AVCaptureDevice), requestAccessForMediaType: &*media, completionHandler: &*block];

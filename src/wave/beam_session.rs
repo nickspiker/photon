@@ -751,6 +751,20 @@ pub fn encoded_sender_live() -> bool {
 
 /// The Beam button armed a send on the phone: the wave secret and our side, waiting for Kotlin's pipeline-up edge (`android_started`). Cleared by `android_stop`.
 static ANDROID_ARMED: Mutex<Option<Target>> = Mutex::new(None);
+/// What Kotlin's camera pipeline last reported when it came up (the pipeline-up edge's arguments): a preview holds them so the sender can start on the same open camera when the wave goes live.
+#[derive(Clone)]
+struct PipelineUp {
+    w: usize,
+    h: usize,
+    fps: u32,
+    maker: Option<[f32; 9]>,
+    straight: bool,
+    curve: bool,
+    hdr: bool,
+    camera: String,
+    camera_name: String,
+}
+static ANDROID_PIPELINE: Mutex<Option<PipelineUp>> = Mutex::new(None);
 /// The phone's encoded sender handle (the UI thread cannot own it: the pipeline-up edge arrives on the service thread).
 static ANDROID_SENDER: Mutex<Option<Sender>> = Mutex::new(None);
 
@@ -758,22 +772,37 @@ static ANDROID_SENDER: Mutex<Option<Sender>> = Mutex::new(None);
 #[cfg(target_os = "android")]
 pub fn android_arm(target: Target) -> bool {
     *ANDROID_ARMED.lock().unwrap() = Some(target);
-    crate::platform::jni_android::wave_service_void("startBeamCapture")
+    // A preview already holds the camera: start the sender on it — Kotlin's next frame gets a plan and builds its encoder, whose first frame is the keyframe a new stream needs.
+    let up = ANDROID_PIPELINE.lock().unwrap().clone();
+    match up {
+        Some(p) => match android_started(p.w, p.h, p.fps, p.maker, p.straight, p.curve, p.hdr, &p.camera, &p.camera_name) {
+            Ok(()) => true,
+            Err(e) => {
+                crate::logf!("{}", e);
+                false
+            }
+        },
+        None => crate::platform::jni_android::wave_service_void("startBeamCapture"),
+    }
 }
 
 /// The pipeline-up edge from Kotlin: build the beam's self-description from what the camera is, and start the encoded sender the button armed. `camera` names the lens ("1", "0/3" — logical id / physical id), the key a calibration is kept under.
 /// A CAMERA SWITCH mid-beam (Nick 2026-10-14: "tap and switch between the front and back cam, or the other three back cams… cycles thru all when I tap on my preview") arrives as this same edge while the sender is live: the transport stays — a new BeamTx would restart its key chain — and the ladder rebuilds from the new capture keeping the link's detail; the new size, colour and orientation go out at once, and the encoder's restart opens with the keyframe the new size needs.
 pub fn android_started(w: usize, h: usize, fps: u32, maker: Option<[f32; 9]>, straight: bool, curve: bool, hdr: bool, camera: &str, camera_name: &str) -> Result<(), String> {
     *ANDROID_CAMERA_NAME.lock().unwrap() = Some(camera_name.to_string());
-    let Some(target) = *ANDROID_ARMED.lock().unwrap() else {
-        return Err("BEAM: pipeline up with nothing armed".into());
-    };
+    *ANDROID_PIPELINE.lock().unwrap() = Some(PipelineUp { w, h, fps, maker, straight, curve, hdr, camera: camera.to_string(), camera_name: camera_name.to_string() });
+    let armed = *ANDROID_ARMED.lock().unwrap();
     // A calibration made earlier this run for THIS lens (beam_calibrate.rs) outranks the maker's matrix — on the straight path only, where the frames are the colour it was solved from.
     let on_straight = straight && curve && !hdr;
     super::beam_calibrate::set_camera(camera, on_straight);
     let calibrated = super::beam_calibrate::calibration().filter(|_| on_straight);
     let entry = if hdr { hdr_entry() } else { calibrated.as_ref().map_or_else(|| phone_entry(maker, straight, curve), |(e, _)| e.clone()) };
     *ANDROID_SELF_CONV.lock().unwrap() = Some(Converter::new(Characterization::from_entry(&entry)));
+    // THE PREVIEW (a beam placed, still ringing): the self-view runs and nothing is sent — no ladder, so Kotlin plans no frame and builds no encoder until the wave is live.
+    let Some(target) = armed else {
+        crate::logf!("BEAM: phone preview up — camera {}, {}×{} @ {} fps; nothing is sent until the wave is live", camera, w, h, fps);
+        return Ok(());
+    };
     let colour = colour_bytes_cal(&entry, calibrated.map(|(_, c)| c));
     // THE LADDER (beam_ladder.rs): bands from the capture itself (Kotlin picked it: ≤ ~5 MP, ≤ 30 fps, least cropped), the ceiling per `ceiling`.
     let bands = super::beam_ladder::bands_for(w, h);
@@ -813,6 +842,7 @@ pub fn android_cycle_camera() -> bool {
 /// Stop a phone send: the sender handle, the arm, and Kotlin's pipeline.
 pub fn android_stop() {
     *ANDROID_SENDER.lock().unwrap() = None;
+    *ANDROID_PIPELINE.lock().unwrap() = None;
     *ANDROID_ARMED.lock().unwrap() = None;
     *ANDROID_SELF_CONV.lock().unwrap() = None;
     *ANDROID_LADDER.lock().unwrap() = None;
@@ -1176,11 +1206,18 @@ fn take_preview_source() -> Option<Box<dyn FrameSource>> {
     p.thread.join().ok().flatten()
 }
 
-/// A phone's camera opens with its sender (Kotlin's capture pipeline); there is no desktop preview to start or stop.
+/// A phone previews thru Kotlin's own capture pipeline: started here with nothing armed, it shows the self-view and sends nothing (see `android_started`); stopped here unless a send took it over.
 #[cfg(target_os = "android")]
-pub fn preview_start() {}
+pub fn preview_start() {
+    let _ = crate::platform::jni_android::wave_service_void("startBeamCapture");
+}
 #[cfg(target_os = "android")]
-pub fn preview_stop() {}
+pub fn preview_stop() {
+    if !android_sending() {
+        android_stop();
+    }
+}
+
 /// The stopping that runs off the UI thread, in order: each retirement joins the one before it, and a camera open waits for the last.
 static RETIRING: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 
@@ -1222,6 +1259,29 @@ pub fn can_send() -> bool {
         return true;
     }
     h264::AVAILABLE && (cfg!(target_os = "linux") || cfg!(target_os = "macos"))
+}
+
+/// Can this device place or answer a BEAM right now (Nick 2026-10-31: "if a beam is incoming and you don't have a cam you can wave back"): it can send a beam at all, the camera grant is not refused, and on a desktop a camera is listed.
+/// The desktop list is read from the cache only (the render never opens a device): a cache not filled yet counts as a camera, and a worker fills it once.
+pub fn camera_usable() -> bool {
+    if !can_send() || crate::platform::grants::status(crate::platform::grants::Need::Camera) == crate::platform::mic_permission::MicAccess::Denied {
+        return false;
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let listed = DESKTOP_CAMS.lock().unwrap().as_ref().map(|l| !l.is_empty());
+        if listed.is_none() {
+            static ASKED: AtomicBool = AtomicBool::new(false);
+            if !ASKED.swap(true, Ordering::Relaxed) {
+                let _ = std::thread::Builder::new().name("camera-list".into()).spawn(reenumerate_desktop_cameras);
+            }
+        }
+        listed.unwrap_or(true)
+    }
+    #[cfg(target_os = "android")]
+    {
+        true
+    }
 }
 
 /// Is the camera ready to open now (not waiting on the system prompt)? The armed-beam edge waits for the user's answer instead of re-asking every tick.

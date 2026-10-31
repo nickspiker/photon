@@ -9,6 +9,8 @@ pub mod control;
 pub mod desktop_notify;
 #[cfg(not(any(target_os = "android", target_os = "ferros")))]
 pub mod tray;
+/// The grants gate: the microphone and camera checked and asked for before a wave or beam is placed or answered.
+pub mod grants;
 /// X11 connection diagnostics: X protocol errors into the log, and the X sockets' state at a panic.
 #[cfg(target_os = "linux")]
 pub mod x11_diag;

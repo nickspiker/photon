@@ -84,6 +84,8 @@ impl FluorApp<Px> for PhotonApp {
     }
 
     fn set_event_proxy(&mut self, proxy: Arc<dyn WakeSender<Self::UserEvent>>) {
+        // A permission prompt answered on a system thread wakes the app, so a wave held on it goes out at once.
+        crate::platform::grants::set_wake(proxy.clone());
         // Desktop resident mode: start serving the second-launch control channel now that we can wake the UI thread. No-op if main never parked a listener (lock-holder only).
         #[cfg(not(target_os = "android"))]
         {
@@ -1702,7 +1704,7 @@ impl FluorApp<Px> for PhotonApp {
                         // WAVE BACK (the wave card's option): place a wave to this conversation's contact; the strip closes.
                         6 => {
                             self.selected_msg = None;
-                            if let Some(ci) = self.pair_contact_of(sci) { self.start_wave(ci); }
+                            if let Some(ci) = self.pair_contact_of(sci) { self.request_wave(super::wave_ui::GrantIntent::Place { ci, beam: false }); }
                             self.scene_dirty = true;
                         }
                         // The wave card's recording options: SAVE (blob held → Downloads) or FETCH (missing → ask the fleet), and REPLICATE (a fleet-internal fetch hint so every sibling holds the blob now, not on demand).
@@ -3419,7 +3421,8 @@ impl FluorApp<Px> for PhotonApp {
         #[cfg(target_os = "android")]
         if let Some(answer) = crate::platform::jni_android::take_wave_action() {
             if answer {
-                self.answer_wave();
+                // The notification's Answer is a Wave back, thru the grants gate like the button.
+                self.request_wave(super::wave_ui::GrantIntent::Answer { beam: false });
             } else {
                 self.decline_wave();
             }

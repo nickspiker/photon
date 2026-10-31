@@ -30,6 +30,7 @@ impl PhotonApp {
         timed_drain!("wave_express", self.drain_express_signals());
         // Media-liveness measurement on the live wave (two atomic loads when idle).
         timed_drain!("wave_drought", self.wave_drought_tick());
+        timed_drain!("grants", self.grants_tick());
         timed_drain!("beam_armed", self.beam_armed_tick());
         // The camera worker's answer: a sender to install, or why not (one try_recv while a camera opens, nothing otherwise).
         timed_drain!("beam_open", self.drain_beam_open());

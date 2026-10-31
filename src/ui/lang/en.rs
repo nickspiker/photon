@@ -690,6 +690,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BeamShedSmooth => "Keep it smooth".into(),
         Msg::BeamShedSharp => "Keep it sharp".into(),
         Msg::BeamRotateHead(cam) => format!("Turn the picture from {cam}").into(),
+        Msg::GrantMicOff => "The microphone is off for Photon — turn it on in Settings, then try again".into(),
+        Msg::GrantCameraOff => "The camera is off for Photon — turn it on in Settings, then try again".into(),
         Msg::BeamTestHead => "Test patterns".into(),
         Msg::BeamScreenHdr { allowed, asked } => format!("This screen shows HDR: {allowed} stops above white allowed right now, {asked} asked for.").into(),
         Msg::BeamScreenHdrNone => "This screen can show HDR but is allowing none right now. On a phone, check the HDR brightness setting and battery saver.".into(),

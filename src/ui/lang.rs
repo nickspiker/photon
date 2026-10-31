@@ -847,6 +847,9 @@ pub enum Msg<'a> {
     BeamShedSharp,
     /// The Beam page's camera-rotation heading, naming the camera it applies to.
     BeamRotateHead(&'a str),
+    /// The grants gate's refusals: a wave or beam not sent because the microphone or camera is switched off for Photon.
+    GrantMicOff,
+    GrantCameraOff,
     BeamTestHead,
     BeamScreenHdr { allowed: &'a str, asked: &'a str },
     BeamScreenHdrNone,

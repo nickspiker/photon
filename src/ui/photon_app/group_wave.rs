@@ -655,6 +655,7 @@ impl PhotonApp {
         self.beam_armed = false;
         crate::wave::beam_session::android_stop();
         crate::wave::beam_session::preview_stop();
+        self.wave_grant_note = None;
         crate::wave::beam_session::fan_clear();
         w.ring = None;
         Self::stop_group_ring_platform();

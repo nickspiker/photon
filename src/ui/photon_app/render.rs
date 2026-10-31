@@ -449,7 +449,7 @@ impl PhotonApp {
             && !wave_pill_no_path
             || molecule_wave.is_some_and(|(_, on)| on);
         // A molecule beams too: our camera to every link (docs/group-waves.md).
-        let beam_pill_enabled = wave_pill_enabled && crate::wave::beam_session::can_send();
+        let beam_pill_enabled = wave_pill_enabled && crate::wave::beam_session::camera_usable();
         // Live wave-duration seconds, computed here (a per-frame recompute from the frozen osc stamps — no stored timer): Active counts up from `phase_osc` (re-stamped at answer); Ended freezes at `final_osc - phase_osc`; other phases show 0. Carried in the overlay tuple so the panel + strip render it via the base-aware `fmt_duration`.
         let wave_overlay: Option<(crate::wave::WavePhase, String, bool, Option<usize>, i64)> =
             self.active_wave.as_ref().map(|c| {
@@ -560,6 +560,8 @@ impl PhotonApp {
         // The status under the name: the incoming cue while ringing, the live timer while talking, or what is wrong (the mic, the path, the calibration).
         let (wave_status_line, wave_status_warns) = match &wave_overlay {
             Some((phase, name, direct, _, _)) => match phase {
+                // A refused grant says so on the ring (the camera off: Wave back still answers).
+                crate::wave::WavePhase::Ringing if self.wave_grant_note.is_some() => (self.wave_grant_note.clone().unwrap_or_default(), true),
                 crate::wave::WavePhase::Ringing => (
                     if self.active_wave.as_ref().is_some_and(|w| w.beam) {
                         tr(Msg::IncomingBeam).into_owned()
@@ -647,7 +649,8 @@ impl PhotonApp {
         // THE DOCK'S SECONDARY ROW, one row of equal pills above the diagonal — the same gates drive the paint, the hit stamp and `visit_app_widgets`.
         // Ringing: the other answer.
         // Talking or ringing out: the speaker and mic pickers on a desktop (the route pill holds the diagonal's right slot on a phone, so there the row carries the mic and the Beam toggle), and Calibrate while it can run.
-        let can_beam = crate::wave::beam_session::can_send();
+        // A beam this device can place or answer now: a codec, a camera it may use (the grant not refused, one listed) — otherwise only Wave back answers a ring (Nick 2026-10-31).
+        let can_beam = crate::wave::beam_session::camera_usable();
         let dock_other = wave_phase_now == Some(crate::wave::WavePhase::Ringing) && can_beam;
         let dock_out = wave_live && cfg!(not(target_os = "android"));
         let dock_mic = wave_live;
