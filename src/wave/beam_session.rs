@@ -587,9 +587,18 @@ pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_b
     let (bw, bh) = (plan.w, plan.h);
     let mut enc = h264::Encoder::new(bw as usize, bh as usize, cam_fps, plan.bitrate)?;
     let (mut tx, first_frame, key) = Outbound::for_target(&target)?;
-    let self_conv = Converter::new(Characterization::from_entry(&source.characterization()));
-    let colour = colour_bytes(&source.characterization());
+    // CALIBRATION (beam_calibrate.rs, Nick 2026-10-31: "that should work for all platforms"): this camera is the one Calibrate scans, keyed by its name; a calibration made earlier this run outranks the assumed sRGB entry.
+    let cam_name = camera_name().unwrap_or_default();
+    let base = source.characterization();
+    super::beam_calibrate::set_desktop_camera(Some((&cam_name, base.transfer)));
+    let (entry, cal) = match super::beam_calibrate::calibration_for(&cam_name) {
+        Some((e, c)) => (e, Some(c)),
+        None => (base, None),
+    };
+    let mut self_conv = Converter::new(Characterization::from_entry(&entry));
+    let colour = colour_bytes_cal(&entry, cal);
     let mut info = Info { width: bw, height: bh, fps: cam_fps as u8, codec: Codec::H264, colour };
+    let mut landed = super::beam_calibrate::LANDED.load(Ordering::Relaxed);
     let top = ladder.bands()[max_band];
     crate::logf!("BEAM: ladder up — camera {}×{}, ceiling {}×{}, starting {}×{} at {} kbit/s", sw, sh, top.0, top.1, bw, bh, plan.bitrate / 1000);
     let stop = Arc::new(AtomicBool::new(false));
@@ -616,6 +625,18 @@ pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_b
                     break;
                 };
                 win_cam += 1;
+                // Calibrate: the frame goes to the scanner when one is wanted (one atomic otherwise); a calibration that landed for this camera recolours the self-view and the beam's self-description at once.
+                super::beam_calibrate::offer_frame(&frame);
+                let now_landed = super::beam_calibrate::LANDED.load(Ordering::Relaxed);
+                if now_landed != landed {
+                    landed = now_landed;
+                    if let Some((e, c)) = super::beam_calibrate::calibration_for(&cam_name) {
+                        self_conv.set_characterization(Characterization::from_entry(&e));
+                        info.colour = colour_bytes_cal(&e, Some(c));
+                        tx.send_info(&info);
+                        crate::logf!("BEAM: {} calibrated — the beam's colour follows", cam_name);
+                    }
+                }
                 if win_cam >= cam_fps as u64 {
                     let ms = win_t.elapsed().as_millis() as u64;
                     *SEND_STATS.lock().unwrap() = Some(SendStats { cam_w: sw, cam_h: sh, cam_fps: per_second(win_cam, ms), sent_w: coded.w, sent_h: coded.h, sent_fps: per_second(win_sent, ms), kbps: per_second(win_bytes * 8, ms) / 1000 });
@@ -703,6 +724,7 @@ pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_b
             }
             *SEND_STATS.lock().unwrap() = None;
             clear_self();
+            super::beam_calibrate::set_desktop_camera(None);
             tx.park(key, frame_no);
         })
         .map_err(|e| format!("beam-send thread: {e}"))?;
