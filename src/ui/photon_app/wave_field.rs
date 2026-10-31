@@ -356,11 +356,11 @@ pub(super) fn paint_picture_in<P: Pixel>(canvas: &mut fluor::canvas::Canvas<P>, 
 }
 
 /// Blit a picture into a rect, as big as fits: TOP-ANCHORED when `top`, so the spare room is all below it; centred otherwise.
+/// THE FRAME IS THE WINDOW'S SHAPE (Nick 2026-10-31: "trimmed in the shape of the button/OS too rather than rectangular with sharp corners"): the drawn picture takes the window perimeter's asymmetric squircle corners at its own span, anti-aliased by fluor's one squircle kernel (`draw_squircle_rrect_from`).
 pub(super) fn paint_picture_rect<P: Pixel>(canvas: &mut fluor::canvas::Canvas<P>, x0: usize, y0: usize, rw: usize, rh: usize, pic: &crate::wave::beam_session::Picture, top: bool) {
     if pic.w == 0 || pic.h == 0 || pic.rgb.len() < pic.w * pic.h * 3 || rw == 0 || rh == 0 {
         return;
     }
-    let (cw, ch) = (canvas.width, canvas.height);
     // Fit: whichever axis binds first.
     let (dw, dh) = if pic.w * rh >= pic.h * rw {
         (rw, (pic.h * rw / pic.w).max(1))
@@ -368,32 +368,23 @@ pub(super) fn paint_picture_rect<P: Pixel>(canvas: &mut fluor::canvas::Canvas<P>
         ((pic.w * rh / pic.h).max(1), rh)
     };
     let (dx0, dy0) = (x0 + (rw - dw) / 2, if top { y0 } else { y0 + (rh - dh) / 2 });
-    let y_end = (dy0 + dh).min(ch);
-    let x_end = (dx0 + dw).min(cw);
-    for y in dy0..y_end {
-        let sy = (y - dy0) * pic.h / dh;
-        let srow = sy * pic.w;
-        let line = &mut canvas.pixels[y * cw..(y + 1) * cw];
+    // Nearest neighbour, integer: each drawn column's and row's source index, once per paint rather than once per pixel.
+    let sxs: Vec<usize> = (0..dw).map(|x| x * pic.w / dw).collect();
+    let sys: Vec<usize> = (0..dh).map(|y| y * pic.h / dh).collect();
+    let src = |dx: isize, dy: isize| -> P {
+        let (sx, sy) = (sxs[dx as usize], sys[dy as usize]);
         // A block the decoder has never painted is left untouched: the background composited under it later shows thru.
-        let hole_row = pic.holes.as_deref().map(|m| &m[(sy / 2) * (pic.w / 2)..]);
-        for x in dx0..x_end {
-            let d = line[x];
-            if d.alpha() == P::ONE {
-                continue;
-            }
-            let sx = (x - dx0) * pic.w / dw;
-            if hole_row.is_some_and(|r| r.get(sx / 2).is_some_and(|&b| b != 0)) {
-                continue;
-            }
-            let o = (srow + sx) * 3;
-            // The picture is already g2t Rec.2020, the buffer's own encoding (beam_colour.rs) — an HDR beam's light past white goes in as it is.
-            let rgb = ((pic.rgb[o] as u32) << 16) | ((pic.rgb[o + 1] as u32) << 8) | pic.rgb[o + 2] as u32;
-            // Opaque: α full, the channels stored as darkness (fluor's layer convention, see `field_pixel`); an 8-bit `g2t` code at a wider depth is the same light (`from_g2t8`).
-            let src = P::from_g2t8(fluor::theme::dark(fluor::theme::fmt(rgb)));
-            line[x] = if d == P::EMPTY { src } else { under_premult(d, src) };
+        // PROOF the index is in the map: the decoder's pictures are 4:2:0, so both sides are even and the half-resolution map holds (w/2)·(h/2) entries — the largest index, (h/2 − 1)·(w/2) + w/2 − 1, is the last.
+        if pic.holes.as_deref().is_some_and(|m| m[(sy / 2) * (pic.w / 2) + sx / 2] != 0) {
+            return P::EMPTY;
         }
-    }
-    canvas.damage.add_bounds(dx0, dy0, x_end, y_end);
+        let o = (sy * pic.w + sx) * 3;
+        // The picture is already g2t Rec.2020, the buffer's own encoding (beam_colour.rs) — an HDR beam's light past white goes in as it is.
+        let rgb = ((pic.rgb[o] as u32) << 16) | ((pic.rgb[o + 1] as u32) << 8) | pic.rgb[o + 2] as u32;
+        // Opaque: α full, the channels stored as darkness (fluor's layer convention, see `field_pixel`); an 8-bit `g2t` code at a wider depth is the same light (`from_g2t8`).
+        P::from_g2t8(fluor::theme::dark(fluor::theme::fmt(rgb)))
+    };
+    fluor::paint::draw_squircle_rrect_from(canvas, dx0 as isize, dy0 as isize, dw as isize, dh as isize, fluor::paint::window_radii(dw as f32, dh as f32), fluor::paint::WINDOW_SHAPE_POWER, &src);
 }
 
 /// Field paint timing, logged every PAINT_LOG_EVERY paints (a count of paints, not a clock): what the field costs on this device.

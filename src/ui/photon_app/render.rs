@@ -938,7 +938,10 @@ impl PhotonApp {
                             Some(p) => {
                                 // The name rides the tile's foot, painted first so it sits over the picture.
                                 ctx.text.draw_text_center(&mut canvas, &label, (*tx + *tw / 2) as f32, (*ty + *th) as f32 - unit * 0.6, &name_style, None, None);
-                                super::wave_field::paint_picture_rect(&mut canvas, *tx, *ty, *tw, *th, &p, false);
+                                // A quarter unit in from each tile edge, so neighbouring frames' rounded corners read as separate frames.
+                                let gp = (unit / 4.0) as usize;
+                                // WHY/PROOF: a tile is the stage split by the member count, and on a tiny window it is narrower than the two margins — the plain subtraction would wrap to a huge width and the blit would run past the buffer; the frame then has no size and paints nothing.
+                                super::wave_field::paint_picture_rect(&mut canvas, *tx + gp, *ty + gp, tw.saturating_sub(2 * gp), th.saturating_sub(2 * gp), &p, false);
                                 // Our own tile is the camera switch while we beam and there is another camera to switch to.
                                 if face.us && self.group_wave.as_ref().is_some_and(|w| w.beam_tx.is_some()) && (cfg!(target_os = "android") || crate::wave::beam_session::desktop_cameras().len() > 1) {
                                     self.beam_self_rect = Some((*tx, *ty, *tx + *tw, *ty + *th));
