@@ -6,6 +6,13 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **A cleaner wave and beam screen.** The screen is now three bands — the people or the picture, a strip with the name and status, and the buttons — so nothing covers anything else; the microphone and speaker buttons sit in one row and respond to every tap.
+- **Pictures with rounded corners.** Video in a beam, your own preview and each person in a group beam now take the same rounded shape as Photon's window and buttons.
+- **See yourself before they answer.** When you start a beam from a computer, your camera shows straight away while it rings, and the other person sees you the moment they answer.
+- **More cameras work, and the right one is picked.** Cameras that only send Motion-JPEG now work on Linux, and a real camera is chosen ahead of virtual ones from OBS or similar programs.
+- **Turn your camera.** Settings → Beam can turn the picture from each camera by a quarter, half or three-quarter turn, for a camera mounted sideways or upside down; it is kept per camera on that device.
+- **Microphone and speaker choices never get stuck.** The buttons always cycle back to Auto, and a chosen microphone or speaker that won't work switches to the system default for that wave instead of leaving you unheard or hearing nothing.
+- **The numbers behind a wave.** The wave screen now shows which microphone and speaker are in use and, on a beam, what your camera delivers, what is being sent and what is arriving.
 
 ## v134
 - **Sending a big attachment no longer chokes your connection.** Photon used to fire large files at the other device as fast as it could, which filled your upload link and could make everything else fail meanwhile; it now watches how long its packets take to come back, slows down the moment a queue starts building, and leaves room for everything else.
