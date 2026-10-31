@@ -6814,7 +6814,7 @@ impl PhotonApp {
                         let quality = QUALITIES.iter().zip(q_names).enumerate().map(|(i, (&q, m))| (tr(m).into_owned(), 12 + i as u16, true, bs.tuning.bpp_milli == q)).collect();
                         let mut rate = vec![(tr(Msg::BeamAuto).into_owned(), 15u16, true, bs.tuning.bitrate_cap.is_none())];
                         rate.extend(BITRATE_CAPS.iter().enumerate().map(|(i, &b)| (tr(Msg::BeamKbit(&crate::fmt_num(b / 1000))).into_owned(), 16 + i as u16, true, bs.tuning.bitrate_cap == Some(b))));
-                        vec![
+                        let mut v = vec![
                             (tr(Msg::BeamFollowHead).into_owned(), None, vec![(tr(Msg::BeamThisDevice).into_owned(), 0, true, !follows), (tr(Msg::BeamFollowFleet).into_owned(), 1, true, follows)]),
                             (
                                 tr(Msg::BeamHdrHead).into_owned(),
@@ -6826,7 +6826,13 @@ impl PhotonApp {
                             (tr(Msg::BeamQualityHead).into_owned(), Some(tr(Msg::BeamQualityProse).into_owned()), quality),
                             (tr(Msg::BeamBitrateHead).into_owned(), None, rate),
                             (tr(Msg::BeamShedHead).into_owned(), None, vec![(tr(Msg::BeamShedSmooth).into_owned(), 20, true, !bs.tuning.keep_detail), (tr(Msg::BeamShedSharp).into_owned(), 21, true, bs.tuning.keep_detail)]),
-                        ]
+                        ];
+                        // CAMERA TURNS (Nick 2026-10-31, a camera mounted upside down): the camera this device beams from, turned clockwise — this device only, whatever the fleet follows.
+                        if let Some(cam) = crate::wave::beam_session::camera_name() {
+                            let t = crate::wave::beam_settings::turns_for(&cam);
+                            v.push((tr(Msg::BeamRotateHead(&cam)).into_owned(), None, (0..4u16).map(|q| (format!("{}\u{00B0}", crate::fmt_num(q as u32 * 90)), 22 + q, true, t as u16 == q)).collect()));
+                        }
+                        v
                     };
                     for (head, prose, pills) in &sections {
                         flow.gap(hspan2 * 0.6);

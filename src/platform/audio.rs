@@ -777,7 +777,15 @@ pub fn rebuild_streams() {
 }
 
 /// The next pick after `cur` in the cycle [Auto, names…] — a name that is gone counts as Auto, and the last name wraps back to Auto (`None`).
+/// Each NAME is one stop (Nick's desktop 2026-10-31: ALSA listed "HD-Audio Generic, ALCS1200A Analog" twice, the cycle found the first and stepped to the second — the same name — and nine more taps never left it): a pick is a name, so two devices under one name are one choice.
 pub fn next_pick(cur: &Option<String>, names: &[String]) -> Option<String> {
+    let mut uniq: Vec<String> = Vec::with_capacity(names.len());
+    for n in names {
+        if !uniq.contains(n) {
+            uniq.push(n.clone());
+        }
+    }
+    let names = &uniq[..];
     let at = cur.as_ref().and_then(|n| names.iter().position(|x| x == n)).map_or(0, |p| p + 1);
     let next = (at + 1) % (names.len() + 1);
     if next == 0 { None } else { Some(names[next - 1].clone()) }
@@ -1243,6 +1251,19 @@ mod desktop {
     /// The thread that owns this session's streams, so stop can wake it and wait for it to let go of the devices before a start opens its own (2026-10-29, Nick and Josh: a caller's ringback stopped and the engine started inside one 50 ms poll, the old thread never saw the stop, and two mic streams fed one wave — 400 frames a second, thousands of re-anchors, "it sounded terrible").
     static SESSION_THREAD: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 
+    /// Errors a stream has reported since it opened. A dead device repeats its error from the callback thread without pause (Nick's desktop 2026-10-31: 76 542 "POLLERR" lines in one second filled the log and rotated the beam it should have shown out of it), so each stream logs its first few and then every STREAM_ERROR_EVERY-th with the count.
+    static CAPTURE_ERRORS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static RENDER_ERRORS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    const STREAM_ERROR_FIRST: u64 = 1 << 2;
+    const STREAM_ERROR_EVERY: u64 = 1 << 10;
+
+    fn stream_error(kind: &str, count: &std::sync::atomic::AtomicU64, e: &cpal::StreamError) {
+        let n = count.fetch_add(1, Ordering::Relaxed) + 1;
+        if n <= STREAM_ERROR_FIRST || n % STREAM_ERROR_EVERY == 0 {
+            crate::logf!("AUDIO: {} stream error #{}: {}", kind, n, e);
+        }
+    }
+
     fn name_of(dev: &cpal::Device) -> String {
         dev.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "?".into())
     }
@@ -1420,7 +1441,7 @@ mod desktop {
                         framed_pos += FRAME_SAMPLES as i64;
                     }
                 },
-                |e| crate::logf!("AUDIO: capture stream error: {}", e),
+                |e| stream_error("capture", &CAPTURE_ERRORS, &e),
                 None,
             )
             .ok()?;
@@ -1466,7 +1487,7 @@ mod desktop {
                         }
                     }
                 },
-                |e| crate::logf!("AUDIO: render stream error: {}", e),
+                |e| stream_error("render", &RENDER_ERRORS, &e),
                 None,
             )
             .ok()?;
@@ -1503,8 +1524,10 @@ mod desktop {
     /// One open of the picked mic and speaker (either may be absent — the wave runs one-way rather than not at all).
     fn open_streams(host: &cpal::Host) -> (Option<cpal::Stream>, Option<cpal::Stream>) {
         use cpal::SampleFormat;
+        CAPTURE_ERRORS.store(0, Ordering::Relaxed);
+        RENDER_ERRORS.store(0, Ordering::Relaxed);
         // ---- input (mic) ----
-        let in_stream = input_device(host).and_then(|dev| {
+        let open_capture = |dev: cpal::Device| -> Option<cpal::Stream> {
             let name = name_of(&dev);
             *MIC_OPEN.lock().unwrap() = Some(name.clone());
             super::set_mic_identity(format!("mic:{name}"));
@@ -1529,14 +1552,21 @@ mod desktop {
                     None
                 }
             }
-        });
+        };
+        // A PICKED DEVICE THAT WILL NOT OPEN FALLS BACK TO AUTO (Nick's desktop 2026-10-31: the picker left both picks on a raw ALSA card PipeWire already holds, and every wave after it ran with no speaker — "no render device" — and a mic that overran and died; Emma heard almost nothing): this wave opens the system default instead; the pick is kept, so plugging the device back in or freeing it brings it back.
+        let mic_picked = MIC_PICK.lock().unwrap().is_some();
+        let mut in_stream = input_device(host).and_then(open_capture);
+        if in_stream.is_none() && mic_picked {
+            crate::log("AUDIO: the picked microphone would not open — Auto for this wave");
+            in_stream = host.default_input_device().and_then(open_capture);
+        }
         if in_stream.is_none() {
             *MIC_OPEN.lock().unwrap() = None;
             crate::log("AUDIO: no capture device — the wave is listen-only on this end");
         }
 
         // ---- output (speaker) ----
-        let out_stream = output_device(host).and_then(|dev| {
+        let open_render = |dev: cpal::Device| -> Option<cpal::Stream> {
             let name = name_of(&dev);
             *SPEAKER_OPEN.lock().unwrap() = Some(name.clone());
             let sniffed = sniff_route(&name);
@@ -1568,7 +1598,13 @@ mod desktop {
                     None
                 }
             }
-        });
+        };
+        let speaker_picked = SPEAKER_PICK.lock().unwrap().is_some();
+        let mut out_stream = output_device(host).and_then(open_render);
+        if out_stream.is_none() && speaker_picked {
+            crate::log("AUDIO: the picked speaker would not open — Auto for this wave");
+            out_stream = host.default_output_device().and_then(open_render);
+        }
         if out_stream.is_none() {
             *SPEAKER_OPEN.lock().unwrap() = None;
             crate::log("AUDIO: no render device — the wave is talk-only on this end");
@@ -1805,6 +1841,14 @@ mod tests {
         assert_eq!(next_pick(&Some("USB Headset".into()), &names), None);
         assert_eq!(next_pick(&Some("Unplugged".into()), &names), Some("Built-in".into()));
         assert_eq!(next_pick(&None, &[]), None);
+    }
+
+    /// Two devices under one name are one stop, so the cycle always reaches Auto again (2026-10-31: a duplicated ALSA name trapped it).
+    #[test]
+    fn a_duplicated_name_never_traps_the_cycle() {
+        let names = vec!["Analog".to_string(), "Analog".to_string(), "HDMI".to_string()];
+        assert_eq!(next_pick(&Some("Analog".into()), &names), Some("HDMI".into()));
+        assert_eq!(next_pick(&Some("HDMI".into()), &names), None);
     }
 
     /// ONE test on purpose: the queues are process-global statics, so parallel test threads racing clear_queues corrupt each other — everything that touches them serializes here.

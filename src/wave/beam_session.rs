@@ -84,7 +84,7 @@ pub fn android_self_frame(w: usize, h: usize, planes: &[u8]) {
     if let Some(conv) = g.as_ref() {
         let mut rgb = Vec::new();
         let o = ANDROID_ORIENT.load(Ordering::Relaxed);
-        post_self(conv, &f, Gains::NONE, 0, &mut rgb, o & 3, o & 4 != 0);
+        post_self(conv, &f, Gains::NONE, 0, &mut rgb, android_turns(o), o & 4 != 0);
     }
 }
 
@@ -92,6 +92,11 @@ pub fn android_self_frame(w: usize, h: usize, planes: &[u8]) {
 static ANDROID_ORIENT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 /// The value last put on the wire, so a change goes out at once.
 static ANDROID_ORIENT_SENT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0xFF);
+/// The phone's quarter turns as sent: Kotlin's mounting-and-gravity turns plus this lens's own turns from Settings → Beam (a phone held in a rig upside down), mod 4.
+fn android_turns(orient: u8) -> u8 {
+    let lens = ANDROID_CAMERA_NAME.lock().unwrap().clone().unwrap_or_default();
+    ((orient & 3) + super::beam_settings::turns_for(&lens)) & 3
+}
 
 /// The phone's ladder, the camera timestamp (ns) of the last frame it kept, and the beam-settings generation it last read.
 static ANDROID_LADDER: Mutex<Option<(super::beam_ladder::Ladder, i64, u32)>> = Mutex::new(None);
@@ -549,16 +554,30 @@ pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_b
             let mut sent_bytes = 0u64;
             let mut self_rgb = Vec::new();
             let mut coded = h264::I420::new(bw as usize, bh as usize);
+            // This camera's turns (Settings → Beam), sent now and again on every change — a change bumps the settings generation, read on each frame's edge.
+            let cam = camera_name().unwrap_or_default();
+            let mut turns = super::beam_settings::turns_for(&cam);
+            let mut turns_seen = super::beam_settings::generation();
+            tx.send_orient(turns);
             while !stop2.load(Ordering::Relaxed) {
                 let Some((frame, gains)) = source.next() else {
                     crate::log("BEAM: camera gone — sender stops");
                     break;
                 };
+                if super::beam_settings::generation() != turns_seen {
+                    turns_seen = super::beam_settings::generation();
+                    let t = super::beam_settings::turns_for(&cam);
+                    if t != turns {
+                        turns = t;
+                        tx.send_orient(turns);
+                        crate::logf!("BEAM: {} turned {} quarter turn(s)", cam, turns);
+                    }
+                }
                 cam_frames += 1;
                 tx.follow();
                 // The self-view, every other camera frame — the camera as it is, whatever the ladder sends.
                 if cam_frames % 2 == 0 {
-                    post_self(&self_conv, &frame, gains, frame_no, &mut self_rgb, 0, true);
+                    post_self(&self_conv, &frame, gains, frame_no, &mut self_rgb, turns, true);
                 }
                 // The link verdict moves the ladder (an edge: a new verdict once a second, nothing in between).
                 let (seq, congested, clean) = super::link_verdict();
@@ -592,7 +611,7 @@ pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_b
                 rate_acc -= cam_fps;
                 if frame_no % beam::INFO_EVERY_FRAMES == 0 {
                     tx.send_info(&info);
-                    tx.send_orient(0);
+                    tx.send_orient(turns);
                 }
                 // The camera frame → the coded size at the ladder's softness (crop to 16:9, shrink, grow).
                 let mut f = frame;
@@ -649,7 +668,7 @@ pub fn push_encoded(gains: Gains, au: &[u8]) -> bool {
     let mut g = ENCODED_TX.lock().unwrap();
     let Some((tx, info, frame_no)) = g.as_mut() else { return false };
     tx.follow();
-    let o = ANDROID_ORIENT.load(Ordering::Relaxed) & 3;
+    let o = android_turns(ANDROID_ORIENT.load(Ordering::Relaxed));
     let changed = ANDROID_ORIENT_SENT.swap(o, Ordering::Relaxed) != o;
     if *frame_no % beam::INFO_EVERY_FRAMES == 0 {
         tx.send_info(info);
@@ -1065,7 +1084,7 @@ pub fn preview_start() {
             n = n.wrapping_add(1);
             // Every other camera frame, as the sender's self-view does.
             if n % 2 == 0 {
-                post_self(&conv, &frame, gains, n, &mut rgb, 0, true);
+                post_self(&conv, &frame, gains, n, &mut rgb, super::beam_settings::turns_for(&camera_name().unwrap_or_default()), true);
             }
         }
         Some(source)

@@ -61,3 +61,21 @@ pub fn set_hdr_capable(capable: bool) {
 pub fn hdr_wanted() -> bool {
     hdr_capable() && current().hdr
 }
+
+/// CAMERA TURNS (Nick 2026-10-31: the desktop's camera is mounted upside down, "would also be nice to have a settings in beam to rotate"): per camera on this device, the quarter turns clockwise that put its picture upright — never linked to the fleet, since how a camera is mounted belongs to the machine it is on.
+/// The wire stays sensor-native (docs/beams.md §5b): the turns go out as the beam's orientation, which the far side and our own self-view apply at display.
+static TURNS: Mutex<Vec<(String, u8)>> = Mutex::new(Vec::new());
+
+/// Replace the turn table (camera name → quarter turns); a change bumps the generation so a live sender re-reads it on its next frame.
+pub fn set_turns(table: Vec<(String, u8)>) {
+    let mut g = TURNS.lock().unwrap();
+    if *g != table {
+        *g = table;
+        GENERATION.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+/// The quarter turns for a camera by name (0 when it has none set).
+pub fn turns_for(camera: &str) -> u8 {
+    TURNS.lock().unwrap().iter().find(|(c, _)| c == camera).map_or(0, |(_, t)| t & 3)
+}

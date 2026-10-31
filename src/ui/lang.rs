@@ -845,6 +845,8 @@ pub enum Msg<'a> {
     BeamShedHead,
     BeamShedSmooth,
     BeamShedSharp,
+    /// The Beam page's camera-rotation heading, naming the camera it applies to.
+    BeamRotateHead(&'a str),
     BeamTestHead,
     BeamScreenHdr { allowed: &'a str, asked: &'a str },
     BeamScreenHdrNone,

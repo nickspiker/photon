@@ -1163,6 +1163,37 @@ impl PhotonApp {
             },
         };
         crate::wave::beam_settings::set(s);
+        // Each camera's turns, this device's own keys only (`beam.turns.<camera name>`, never linked: a camera's mounting belongs to its machine).
+        let turns: Vec<(String, u8)> = self
+            .fleet_settings
+            .as_ref()
+            .map(|fs| fs.device_local_under(Self::BEAM_TURNS).into_iter().filter_map(|(cam, v)| v.as_u64().map(|t| (cam, (t & 3) as u8))).collect())
+            .unwrap_or_default();
+        crate::wave::beam_settings::set_turns(turns);
+    }
+
+    /// The per-camera turn keys' prefix.
+    const BEAM_TURNS: &'static str = "beam.turns.";
+
+    /// Turn the camera this device beams from by `q` quarter turns clockwise (Settings → Beam), kept on this device only.
+    fn set_camera_turns(&mut self, q: u8) {
+        let Some(cam) = crate::wave::beam_session::camera_name() else {
+            return;
+        };
+        if !self.ensure_fleet_settings() {
+            return;
+        }
+        let key = format!("{}{}", Self::BEAM_TURNS, cam);
+        let now = vsf::eagle_time_oscillations();
+        let fs = self.fleet_settings.as_mut().unwrap();
+        if fs.linked(&key) {
+            fs.set_link(&key, false, now);
+        }
+        if fs.set(&key, vsf::VsfType::u(q as usize, false), now) {
+            crate::logf!("SETTINGS: {} = {} quarter turn(s) (device-local)", key, q);
+            self.persist_and_push_settings();
+        }
+        self.load_beam_settings();
     }
 
     /// Write one beam key where this device keeps it (its own map, unless it follows the fleet), then retune the senders.
@@ -1220,6 +1251,7 @@ impl PhotonApp {
             15 => self.write_beam("beam.bitrate_cap", VsfType::u0(false)),
             16..=19 => self.write_beam("beam.bitrate_cap", num(BITRATE_CAPS[(slot - 16) as usize])),
             20 | 21 => self.write_beam("beam.keep_detail", VsfType::u0(slot == 21)),
+            22..=25 => self.set_camera_turns((slot - 22) as u8),
             _ => {}
         }
         self.scene_dirty = true;

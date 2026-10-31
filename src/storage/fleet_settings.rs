@@ -136,6 +136,15 @@ impl FleetSettings {
         self.our_entry(key).map(|e| &e.value)
     }
 
+    /// This device's own keys under `prefix`, with what follows the prefix and the value (a per-camera or per-microphone family).
+    pub fn device_local_under(&self, prefix: &str) -> Vec<(String, VsfType)> {
+        self.devices
+            .iter()
+            .find(|d| d.device_pubkey == self.our_device)
+            .map(|d| d.entries.iter().filter_map(|e| e.key.strip_prefix(prefix).map(|rest| (rest.to_string(), e.value.clone()))).collect())
+            .unwrap_or_default()
+    }
+
     /// Set a key's value: writes the GLOBAL when linked (propagates to every linked device), our own map when unlinked. Returns true if anything changed (caller persists + pushes).
     pub fn set(&mut self, key: &str, value: VsfType, now: i64) -> bool {
         if self.effective(key) == Some(&value) {
