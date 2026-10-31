@@ -9,6 +9,9 @@ pub mod control;
 pub mod desktop_notify;
 #[cfg(not(any(target_os = "android", target_os = "ferros")))]
 pub mod tray;
+/// X11 connection diagnostics: X protocol errors into the log, and the X sockets' state at a panic.
+#[cfg(target_os = "linux")]
+pub mod x11_diag;
 
 /// Native-fault catcher (SEH / unix signals) — writes the panic hook's crash sidecar so segfaults ride the next log submission.
 pub mod crash_native;

@@ -32,6 +32,13 @@ fn main() {
         // SIDECAR FIRST, lock-free: a panic raised inside the log sink self-deadlocks the calls below (non-reentrant mutexes) and the evidence dies with the process.
         photon_messenger::write_crash_sidecar(&format!("PANIC at {}: {}", location, msg));
         photon_messenger::logf!("PANIC at {}: {}", location, msg);
+        // An X connection failure (winit's x11 code, or an x11rb Connection error in the message): say what each socket to the X server looks like now, so the log names who closed it.
+        #[cfg(target_os = "linux")]
+        if location.contains("/x11/") || msg.contains("Connection(") {
+            let report = photon_messenger::platform::x11_diag::socket_report();
+            photon_messenger::write_crash_sidecar(&report);
+            photon_messenger::logf!("{}", report);
+        }
         // A panic is THE flush edge: the process is about to die and in-process RAM (the soft-mode batch) dies with it.
         photon_messenger::flush_log_buffer();
 
@@ -47,6 +54,9 @@ fn main() {
     photon_messenger::report_prior_crash();
     // Native faults (access violation / SIGSEGV / stack overflow) bypass the panic hook on every OS — this writes the same sidecar so they ride the next submission too.
     photon_messenger::platform::crash_native::install();
+    // X protocol errors into the log (winit reports them only thru `tracing`), so an X connection the server drops leaves its lead-up on record.
+    #[cfg(target_os = "linux")]
+    photon_messenger::platform::x11_diag::install();
     // macOS: make the app bundle's Info.plist the embedded one (microphone/camera descriptions) before anything asks for them.
     photon_messenger::platform::mic_permission::repair_bundle_plist();
 
