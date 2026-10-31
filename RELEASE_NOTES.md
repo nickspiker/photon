@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v135
 - **A cleaner wave and beam screen.** The screen is now three bands — the people or the picture, a strip with the name and status, and the buttons — so nothing covers anything else; the microphone and speaker buttons sit in one row and respond to every tap.
 - **Pictures with rounded corners.** Video in a beam, your own preview and each person in a group beam now take the same rounded shape as Photon's window and buttons.
 - **See yourself before they answer.** When you start a beam, your camera shows straight away while it rings, and the other person sees you the moment they answer.
