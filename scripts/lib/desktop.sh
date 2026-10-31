@@ -62,7 +62,8 @@ build_sign_install() {
     # CHAMELEON (the Calibrate plugin, docs/beams.md §5d; Nick 2026-10-31, desktop cameras too: "that should work for all platforms"): VERICHROME's scanner is closed source, so photon never links it — it ships as its own library beside each installed binary, where src/platform/chameleon_plugin.rs looks. Built only where the private sibling checkout exists, as the Android build does; anywhere else there is no Calibrate button. Never a stale copy: no checkout, no library.
     local cham_so="libchameleon.so"
     [ "$(uname -s)" = "Darwin" ] && cham_so="libchameleon.dylib"
-    local cham_dirs=("$dir" "$dirB")
+    # Beside the main copy only: the storage census sweeps every file but the vault and the log out of $dirB (photon_data_dir), copy B included — an open question for the resilient-launch layout (2026-10-31).
+    local cham_dirs=("$dir")
     [ "$(uname -s)" = "Darwin" ] && [ -d "$HOME/Applications/Photon Messenger.app/Contents/MacOS" ] && cham_dirs+=("$HOME/Applications/Photon Messenger.app/Contents/MacOS")
     if [ -f "../chameleon/Cargo.toml" ]; then
         echo "Building chameleon (the Calibrate plugin)..."
@@ -72,7 +73,7 @@ build_sign_install() {
             install -m644 "$cham_built" "$d/$cham_so.new"
             mv -f "$d/$cham_so.new" "$d/$cham_so"
         done
-        echo "Installed $cham_so beside each copy (Calibrate on)"
+        echo "Installed $cham_so beside $dir/photon-messenger (Calibrate on)"
     else
         for d in "${cham_dirs[@]}"; do
             rm -f "$d/$cham_so"
