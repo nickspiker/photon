@@ -618,6 +618,32 @@ impl PhotonApp {
         }
         // THE READOUT (Nick 2026-09-28, the round trip mouth to ear and back; moved off the stage into the strip 2026-10-31): a pair talking without a picture.
         let wave_readout = wave_fullscreen && wave_phase_now == Some(crate::wave::WavePhase::Active) && !picture_up && !group_layout;
+        // THE DEVICE NUMBERS (Nick 2026-10-31: "show cam and mic stats for wave and beam"): while talking, the microphone and speaker this end opened (and the microphone's own rate), and on a beam what the camera delivers, what goes out and what arrives — measured, not what the drivers claim.
+        let wave_stats: Vec<String> = if wave_fullscreen && wave_phase_now == Some(crate::wave::WavePhase::Active) {
+            let mut v = Vec::new();
+            let (mic, speaker) = crate::platform::audio::opened();
+            let rate = crate::platform::audio::capture_rate().map_or(String::new(), |r| format!(" \u{00B7} {} Hz", crate::fmt_num(r)));
+            v.push(format!("\u{1F3A4} {}{}   \u{1F50A} {}", mic.unwrap_or_else(|| "\u{2014}".into()), rate, speaker.unwrap_or_else(|| "\u{2014}".into())));
+            if let Some(s) = crate::wave::beam_session::send_stats() {
+                v.push(format!(
+                    "\u{1F4F7} {} {}\u{00D7}{} \u{00B7} {} fps   \u{2191} {}\u{00D7}{} \u{00B7} {} fps \u{00B7} {} kbit/s",
+                    crate::wave::beam_session::camera_name().unwrap_or_default(),
+                    crate::fmt_num(s.cam_w as u32),
+                    crate::fmt_num(s.cam_h as u32),
+                    crate::fmt_num(s.cam_fps),
+                    crate::fmt_num(s.sent_w as u32),
+                    crate::fmt_num(s.sent_h as u32),
+                    crate::fmt_num(s.sent_fps),
+                    crate::fmt_num(s.kbps)
+                ));
+            }
+            if let Some(r) = crate::wave::beam_session::recv_stats().filter(|_| !group_layout) {
+                v.push(format!("\u{2193} {}\u{00D7}{} \u{00B7} {} fps", crate::fmt_num(r.w as u32), crate::fmt_num(r.h as u32), crate::fmt_num(r.fps)));
+            }
+            v
+        } else {
+            Vec::new()
+        };
         // THE DOCK'S SECONDARY ROW, one row of equal pills above the diagonal — the same gates drive the paint, the hit stamp and `visit_app_widgets`.
         // Ringing: the other answer.
         // Talking or ringing out: the speaker and mic pickers on a desktop (the route pill holds the diagonal's right slot on a phone, so there the row carries the mic and the Beam toggle), and Calibrate while it can run.
@@ -628,7 +654,7 @@ impl PhotonApp {
         let dock_beam2 = wave_live && cfg!(target_os = "android");
         let dock_cal = wave_phase_now == Some(crate::wave::WavePhase::Active) && crate::wave::beam_calibrate::available();
         let dock_secondary = dock_other || dock_out || dock_mic || dock_beam2 || dock_cal;
-        let wave_layout = wave_fullscreen.then(|| super::wave_field::wave_layout(buf_w, buf_h, wave_unit, !picture_up, wave_status_lines.len() + wave_readout as usize, dock_secondary));
+        let wave_layout = wave_fullscreen.then(|| super::wave_field::wave_layout(buf_w, buf_h, wave_unit, !picture_up, wave_status_lines.len() + wave_readout as usize + wave_stats.len(), dock_secondary));
         // THE WAVE FIELD (wave_field.rs), prepared here for the same reason: the square inside the stage, its per-pixel ages (rebuilt only when the square changes size), this paint's live snapshot as colour tables, and both avatars at the field's diameter.
         // ONE WAVE SCREEN (Nick 2026-09-29): ringing in, ringing out and talking all lay out on the same square — only who is shown changes.
         let field_geom = wave_layout.map(|l| super::wave_field::field_geom(buf_w, buf_h, wave_unit, l.stage));
@@ -1039,6 +1065,14 @@ impl PhotonApp {
                     let line = format!("\u{2193} {} \u{00B7} {} \u{00B7} \u{2191} {}", rung(crate::wave::LAST_PEER_TIER.load(Relaxed)), round_trip, rung(crate::wave::LAST_LINK_TIER.load(Relaxed)));
                     let st = TextStyle::new(unit * 0.5, *theme::LABEL_COLOUR).font("Oxanium");
                     ctx.text.draw_text_center(&mut canvas, &line, w * 0.5, l.text_y + wave_status_lines.len() as f32 * l.line, &st, None, None);
+                }
+                // The device numbers under it, each line shrunk to fit 90% of the window rather than run off it.
+                let stats_y = l.text_y + (wave_status_lines.len() + wave_readout as usize) as f32 * l.line;
+                for (i, line) in wave_stats.iter().enumerate() {
+                    let want = unit * 0.5;
+                    let width = ctx.text.measure_text(line, &TextStyle::new(want, *theme::LABEL_COLOUR).font("Oxanium"));
+                    let size = if width > w * 0.9 { want * w * 0.9 / width } else { want };
+                    ctx.text.draw_text_center(&mut canvas, line, w * 0.5, stats_y + i as f32 * l.line, &TextStyle::new(size, *theme::LABEL_COLOUR).font("Oxanium"), None, None);
                 }
                 // ── THE DOCK ──
                 // ONE BOTTOM ROW, three slots, every phase (Nick 2026-09-29): the main action always in the middle, so the thumb that answers is already on End wave. Ringing in: Reject (silent — nothing leaves the fleet) · Wave back · Decline (tells them). Ringing out and talking: ‹ Contact (minimise) · End wave · Beam (desktop) or the route (Android). Bottom-anchored so a heads-up banner (which owns the top) never covers them.

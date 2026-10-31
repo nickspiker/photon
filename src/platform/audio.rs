@@ -1243,6 +1243,7 @@ mod desktop {
     static SPEAKER_PICK: Mutex<Option<String>> = Mutex::new(None);
     /// What the live session actually opened, by name — the label the wave screen shows.
     static MIC_OPEN: Mutex<Option<String>> = Mutex::new(None);
+    static CAPTURE_RATE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     static SPEAKER_OPEN: Mutex<Option<String>> = Mutex::new(None);
     /// A pick changed: the session thread drops its streams and opens the new devices, the session itself staying up.
     static REBUILD: AtomicBool = AtomicBool::new(false);
@@ -1318,6 +1319,11 @@ mod desktop {
 
     pub fn opened() -> (Option<String>, Option<String>) {
         (MIC_OPEN.lock().unwrap().clone(), SPEAKER_OPEN.lock().unwrap().clone())
+    }
+
+    /// The open microphone's own sample rate (it is resampled to 48 kHz), for the wave screen's numbers; None before a capture opens.
+    pub fn capture_rate() -> Option<u32> {
+        Some(CAPTURE_RATE.load(Ordering::Relaxed)).filter(|&r| r != 0)
     }
 
     pub fn has_render() -> bool {
@@ -1533,6 +1539,7 @@ mod desktop {
             super::set_mic_identity(format!("mic:{name}"));
             let sc = dev.default_input_config().ok()?;
             let src_rate = sc.sample_rate();
+            CAPTURE_RATE.store(src_rate, Ordering::Relaxed);
             let channels = sc.channels() as usize;
             let fmt = sc.sample_format();
             crate::logf!(
@@ -1619,9 +1626,9 @@ pub use desktop::{route, start, stop};
 pub use ferros::{route, start, stop};
 /// The wave screen's mic and speaker pickers (desktop: cpal's devices by name).
 #[cfg(not(any(target_os = "android", target_os = "ferros")))]
-pub use desktop::{has_render, input_names, opened, output_names, picks, set_mic_pick, set_picks, set_speaker_pick};
+pub use desktop::{capture_rate, has_render, input_names, opened, output_names, picks, set_mic_pick, set_picks, set_speaker_pick};
 #[cfg(target_os = "ferros")]
-pub use ferros::{has_render, input_names, opened, output_names, picks, set_mic_pick, set_picks, set_speaker_pick};
+pub use ferros::{capture_rate, has_render, input_names, opened, output_names, picks, set_mic_pick, set_picks, set_speaker_pick};
 
 // ferros: no audio devices are driven yet (the kernel has no sound path; drivers move to userspace in time), so there is nothing to open, pick or start.
 #[cfg(target_os = "ferros")]
@@ -1652,6 +1659,10 @@ mod ferros {
 
     pub fn opened() -> (Option<String>, Option<String>) {
         (None, None)
+    }
+
+    pub fn capture_rate() -> Option<u32> {
+        None
     }
 
     pub fn has_render() -> bool {
@@ -1767,6 +1778,10 @@ mod android {
         (MIC_OPEN.lock().unwrap().clone(), None)
     }
 
+    pub fn capture_rate() -> Option<u32> {
+        None
+    }
+
     /// The AAudio device id for the picked mic, 0 (Android routes) for Auto or a pick that is gone.
     pub(crate) fn picked_mic_id() -> i32 {
         let Some(want) = MIC_PICK.lock().unwrap().clone() else { return 0 };
@@ -1824,7 +1839,7 @@ pub use android::{route, start, stop};
 pub(crate) use android::{on_mic_granted, on_mic_mirror, on_route_mirror, on_volume_mirror};
 /// The wave screen's mic picker on a phone (its speaker is the route pill).
 #[cfg(target_os = "android")]
-pub use android::{input_names, opened, output_names, picks, set_mic_pick, set_picks, set_speaker_pick};
+pub use android::{capture_rate, input_names, opened, output_names, picks, set_mic_pick, set_picks, set_speaker_pick};
 #[cfg(target_os = "android")]
 pub(crate) use android::{note_mic_opened, picked_mic_id, set_mic_list};
 

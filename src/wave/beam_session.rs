@@ -51,6 +51,45 @@ pub fn self_picture() -> Option<Picture> {
     SELF_PICTURE.lock().unwrap().clone()
 }
 
+/// THE BEAM'S NUMBERS for the wave screen (Nick 2026-10-31: "show cam and mic stats for wave and beam"): what the camera delivers and what goes out, measured by the sender; what arrives, measured by the pair's decoder. Each is a window's average, published at the window's end and cleared when its thread stops.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SendStats {
+    /// The camera's frame as captured, and the frames per second it actually delivered.
+    pub cam_w: usize,
+    pub cam_h: usize,
+    pub cam_fps: u32,
+    /// The coded size on the wire, the frames per second sent, and the bits per second they took.
+    pub sent_w: usize,
+    pub sent_h: usize,
+    pub sent_fps: u32,
+    pub kbps: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecvStats {
+    pub w: usize,
+    pub h: usize,
+    pub fps: u32,
+}
+
+static SEND_STATS: Mutex<Option<SendStats>> = Mutex::new(None);
+static RECV_STATS: Mutex<Option<RecvStats>> = Mutex::new(None);
+
+pub fn send_stats() -> Option<SendStats> {
+    *SEND_STATS.lock().unwrap()
+}
+
+pub fn recv_stats() -> Option<RecvStats> {
+    *RECV_STATS.lock().unwrap()
+}
+
+/// Events per second over `ms` milliseconds, rounded.
+fn per_second(n: u64, ms: u64) -> u32 {
+    // WHY/PROOF: a window can close inside one millisecond — a camera's queued buffers all hand over at once after a stall — and a zero divisor would panic the thread that measured it; one millisecond is the clock's own resolution here.
+    let ms = ms.max(1);
+    ((n * 1000 + ms / 2) / ms) as u32
+}
+
 /// The self-view: the camera frame thru the receiver's chain, turned to this screen's orientation (the same quarter turns the far side applies), and MIRRORED for a front camera — you see yourself as a mirror shows you; the far side gets the true image.
 fn post_self(conv: &Converter, frame: &h264::I420, gains: Gains, n: u32, rgb: &mut Vec<u8>, quarter_turns: u8, mirror: bool) {
     conv.convert(frame, gains, n, rgb);
@@ -160,6 +199,9 @@ pub struct Receiver {
 impl Drop for Receiver {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        if self.slot == 0 {
+            *RECV_STATS.lock().unwrap() = None;
+        }
         // The stop is an edge, not a poll: wake the decoder parked on the frame queue so the join returns at once (it used to wait out a 250 ms timeout at every hangup, on the thread hanging up).
         self._rx.shared.wake();
         if let Some(t) = self.thread.take() {
@@ -381,6 +423,9 @@ fn decode_loop(stop: Arc<AtomicBool>, shared: Arc<beam::RxShared>, slot: usize) 
     let mut pending: std::collections::BTreeMap<u32, beam::Frame> = std::collections::BTreeMap::new();
     let mut next: Option<u32> = None;
     const REORDER: u32 = 6;
+    // The pair's receive stats (slot 0): frames decoded since the window opened (counted from `decoded` at its start); it closes every RECV_WINDOW frames.
+    const RECV_WINDOW: u64 = 1 << 5;
+    let (mut win_t, mut win_base) = (std::time::Instant::now(), 0u64);
     while !stop.load(Ordering::Relaxed) {
         let frames = shared.take_frames_wait(&stop);
         if frames.is_empty() {
@@ -446,6 +491,10 @@ fn decode_loop(stop: Arc<AtomicBool>, shared: Arc<beam::RxShared>, slot: usize) 
             }
         }
         if let Some((pic, gains, n)) = shown {
+            if slot == 0 && decoded - win_base >= RECV_WINDOW {
+                *RECV_STATS.lock().unwrap() = Some(RecvStats { w: pic.w, h: pic.h, fps: per_second(decoded - win_base, win_t.elapsed().as_millis() as u64) });
+                (win_t, win_base) = (std::time::Instant::now(), decoded);
+            }
             conv.convert(&pic, gains, n, &mut rgb);
             // The sender's rotation, applied here at display (the wire stays sensor-native).
             let rot = shared.rotation();
@@ -558,12 +607,20 @@ pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_b
             let cam = camera_name().unwrap_or_default();
             let mut turns = super::beam_settings::turns_for(&cam);
             let mut turns_seen = super::beam_settings::generation();
+            // The stats window: camera frames, frames sent and their bytes since it opened; it closes after a nominal second's worth of camera frames (an edge on the count — the clock only measures how long that took).
+            let (mut win_t, mut win_cam, mut win_sent, mut win_bytes) = (std::time::Instant::now(), 0u64, 0u64, 0u64);
             tx.send_orient(turns);
             while !stop2.load(Ordering::Relaxed) {
                 let Some((frame, gains)) = source.next() else {
                     crate::log("BEAM: camera gone — sender stops");
                     break;
                 };
+                win_cam += 1;
+                if win_cam >= cam_fps as u64 {
+                    let ms = win_t.elapsed().as_millis() as u64;
+                    *SEND_STATS.lock().unwrap() = Some(SendStats { cam_w: sw, cam_h: sh, cam_fps: per_second(win_cam, ms), sent_w: coded.w, sent_h: coded.h, sent_fps: per_second(win_sent, ms), kbps: per_second(win_bytes * 8, ms) / 1000 });
+                    (win_t, win_cam, win_sent, win_bytes) = (std::time::Instant::now(), 0, 0, 0);
+                }
                 if super::beam_settings::generation() != turns_seen {
                     turns_seen = super::beam_settings::generation();
                     let t = super::beam_settings::turns_for(&cam);
@@ -631,6 +688,8 @@ pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_b
                 match enc.encode(&coded) {
                     Ok(au) if !au.is_empty() => {
                         sent_bytes += au.len() as u64;
+                        win_sent += 1;
+                        win_bytes += au.len() as u64;
                         tx.send_frame(frame_no, gains, &au);
                     }
                     Ok(_) => {}
@@ -642,6 +701,7 @@ pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_b
                     crate::logf!("BEAM: sent {} frames, {} KB, {} datagrams ({} refused); ladder {}×{} soft {} @ {} fps", frame_no, sent_bytes / 1024, sent, fail, coded.w, coded.h, plan.soft, plan.fps);
                 }
             }
+            *SEND_STATS.lock().unwrap() = None;
             clear_self();
             tx.park(key, frame_no);
         })
