@@ -128,7 +128,8 @@ impl PhotonApp {
                             crate::wave::beam_session::ask_camera_early();
                             self.beam_armed = true;
                             self.start_wave(ci);
-                            crate::log("BEAM: wave started from the Beam button — the camera follows the engine");
+                            crate::wave::beam_session::preview_start();
+                            crate::log("BEAM: wave started from the Beam button — the camera shows now and sends once they answer");
                             any = true;
                         }
                     } else if let Some(gi) = self.active_molecule().filter(|_| crate::wave::beam_session::can_send()) {
@@ -136,6 +137,7 @@ impl PhotonApp {
                         crate::wave::beam_session::ask_camera_early();
                         self.beam_armed = true;
                         self.start_group_wave(gi);
+                        crate::wave::beam_session::preview_start();
                         crate::log("BEAM: group wave started from the Beam button — the camera follows the first link");
                         any = true;
                     }
@@ -763,6 +765,7 @@ impl PhotonApp {
             self.toggle_beam();
         } else if self.active_wave.is_none() && self.group_wave.is_none() {
             self.beam_armed = false;
+            crate::wave::beam_session::preview_stop();
         }
     }
 
@@ -1617,6 +1620,7 @@ impl PhotonApp {
         }
         self.beam_armed = false;
         crate::wave::beam_session::android_stop();
+        crate::wave::beam_session::preview_stop();
         let engine_thread = self.active_wave.as_ref().and_then(|wave| {
             let e = wave.engine.as_ref()?;
             e.stop(); // the engine thread zeroizes its chains, clears the sink, and releases audio

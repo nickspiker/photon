@@ -5283,6 +5283,8 @@ dependencies = [
  "x11",
  "x25519-dalek",
  "zeroize",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]

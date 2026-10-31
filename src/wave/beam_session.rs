@@ -995,8 +995,15 @@ pub fn start_desktop_async(target: Target) -> std::sync::mpsc::Receiver<Result<S
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     let spawned = std::thread::Builder::new().name("beam-open".into()).spawn(move || {
         await_retired();
-        reenumerate_desktop_cameras();
-        let started = open_desktop_camera().and_then(|source| {
+        // The camera the preview already holds, when a beam we placed rang with it open; else open it now.
+        let opened = match take_preview_source() {
+            Some(s) => Ok(s),
+            None => {
+                reenumerate_desktop_cameras();
+                open_desktop_camera()
+            }
+        };
+        let started = opened.and_then(|source| {
             let (w, h) = source.dimensions();
             let s = start_sender(target, source, bitrate_for(w, h))?;
             crate::logf!("BEAM: sending {}×{} from {}", w, h, camera_name().unwrap_or_default());
@@ -1011,6 +1018,90 @@ pub fn start_desktop_async(target: Target) -> std::sync::mpsc::Receiver<Result<S
     rx
 }
 
+
+/// THE PREVIEW (Nick 2026-10-31: "Should show your video before it connects, seems to only start the cam after the other party beams back"): a beam we place opens the camera at once and shows the self-view while it rings; nothing is encoded or sent until the wave is live and its secret exists.
+/// The sender then takes the SAME open camera (`take_preview_source`), so the far side's first frame does not wait on a second open.
+#[cfg(not(target_os = "android"))]
+struct Preview {
+    stop: Arc<AtomicBool>,
+    /// The capture thread; it hands back the open camera when stopped, or nothing when the camera never opened or went away.
+    thread: std::thread::JoinHandle<Option<Box<dyn FrameSource>>>,
+}
+
+#[cfg(not(target_os = "android"))]
+static PREVIEW: Mutex<Option<Preview>> = Mutex::new(None);
+
+/// Open the camera for the self-view only, on its own thread (the UI thread never opens a camera); a preview already running is left alone.
+#[cfg(not(target_os = "android"))]
+pub fn preview_start() {
+    let mut slot = PREVIEW.lock().unwrap();
+    // A preview whose camera never opened (a Mac still asking for it) has finished: a later start tries again.
+    if slot.as_ref().is_some_and(|p| !p.thread.is_finished()) {
+        return;
+    }
+    let stop = Arc::new(AtomicBool::new(false));
+    let stop2 = stop.clone();
+    let spawned = std::thread::Builder::new().name("beam-preview".into()).spawn(move || {
+        await_retired();
+        reenumerate_desktop_cameras();
+        let mut source = match open_desktop_camera() {
+            Ok(s) => s,
+            Err(e) => {
+                crate::logf!("BEAM: preview — {}", e);
+                return None;
+            }
+        };
+        let (w, h) = source.dimensions();
+        crate::logf!("BEAM: preview {}×{} from {} while the beam rings", w, h, camera_name().unwrap_or_default());
+        let conv = Converter::new(Characterization::from_entry(&source.characterization()));
+        let mut rgb = Vec::new();
+        let mut n = 0u32;
+        while !stop2.load(Ordering::Relaxed) {
+            let Some((frame, gains)) = source.next() else {
+                crate::log("BEAM: preview — camera gone");
+                clear_self();
+                return None;
+            };
+            n = n.wrapping_add(1);
+            // Every other camera frame, as the sender's self-view does.
+            if n % 2 == 0 {
+                post_self(&conv, &frame, gains, n, &mut rgb, 0, true);
+            }
+        }
+        Some(source)
+    });
+    match spawned {
+        Ok(thread) => *slot = Some(Preview { stop, thread }),
+        Err(e) => crate::logf!("BEAM: no preview thread: {}", e),
+    }
+}
+
+/// Stop the preview without a sender to hand the camera to (the beam ended before it went live): closed off the UI thread, the self-view cleared.
+#[cfg(not(target_os = "android"))]
+pub fn preview_stop() {
+    let Some(p) = PREVIEW.lock().unwrap().take() else {
+        return;
+    };
+    p.stop.store(true, Ordering::Relaxed);
+    retire_with(move || {
+        drop(p.thread.join());
+        clear_self();
+    });
+}
+
+/// The camera a running preview holds, for the sender (a worker thread: the join waits at most one camera frame, or out a camera still opening).
+#[cfg(not(target_os = "android"))]
+fn take_preview_source() -> Option<Box<dyn FrameSource>> {
+    let p = PREVIEW.lock().unwrap().take()?;
+    p.stop.store(true, Ordering::Relaxed);
+    p.thread.join().ok().flatten()
+}
+
+/// A phone's camera opens with its sender (Kotlin's capture pipeline); there is no desktop preview to start or stop.
+#[cfg(target_os = "android")]
+pub fn preview_start() {}
+#[cfg(target_os = "android")]
+pub fn preview_stop() {}
 /// The stopping that runs off the UI thread, in order: each retirement joins the one before it, and a camera open waits for the last.
 static RETIRING: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
 

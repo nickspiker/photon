@@ -538,6 +538,8 @@ impl PhotonApp {
             } else {
                 crate::wave::beam_session::picture().is_some()
             };
+        // RINGING OUT WITH THE CAMERA ON (Nick 2026-10-31: "Should show your video before it connects"): a pair's beam we placed shows our own camera across the stage until theirs arrives, where the inset takes it; the name and status stay in the strip.
+        let self_stage = wave_fullscreen && !group_layout && !picture_up && wave_phase_now == Some(crate::wave::WavePhase::Outgoing) && crate::wave::beam_session::self_picture().is_some();
         // CALIBRATION on the status line (beam_calibrate.rs): "looking" while the scan runs; the outcome until the next poke after it — an edge, never a timer.
         let cal_line: Option<String> = {
             use crate::wave::beam_calibrate::Status;
@@ -962,7 +964,7 @@ impl PhotonApp {
                             }
                         }
                     }
-                } else if !picture_up {
+                } else if !picture_up && !self_stage {
                     // A PAIR without their picture: both parties, theirs top-right and ours bottom-left, each ringed in the colour of its field at age 0 — the newest audio, exactly as the ripple leaves the avatar (Nick 2026-09-28; the path quality lives in the top-left orb) — at the usual fixed ring width (Nick: no stroke width changes). Drawn before the field, so they sit on top of it.
                     // Each party is shown once it is IN the wave (Nick 2026-09-29): ringing out, only ours; ringing in, only theirs (they are already waving); talking, both.
                     let show_theirs = !matches!(phase, crate::wave::WavePhase::Outgoing);
@@ -1187,7 +1189,10 @@ impl PhotonApp {
                     let peer = crate::wave::beam_session::picture();
                     // The picture's drawn height (fit to width first), so the inset hugs its corner rather than the stage's.
                     let ph = peer.as_ref().map_or(sh, |p| if p.w * sh >= p.h * sw { (p.h * sw / p.w.max(1)).min(sh) } else { sh });
-                    if let Some(me) = crate::wave::beam_session::self_picture() {
+                    if let Some(me) = crate::wave::beam_session::self_picture().filter(|_| self_stage) {
+                        // Ringing out: our camera across the stage, top-anchored like theirs will be, its name in the strip's status line already.
+                        super::wave_field::paint_picture_rect(&mut canvas, sx, sy, sw, sh, &me, true);
+                    } else if let Some(me) = crate::wave::beam_session::self_picture() {
                         let s = sw.min(ph) / 4;
                         let m = s / 8;
                         // WHY/PROOF: `ph` follows the PEER's picture shape — a sliver of a picture is shorter than the inset and its margin, and the inset then sits at the stage's top rather than a wrapped row past the buffer.
@@ -1213,7 +1218,7 @@ impl PhotonApp {
                     }
                 }
                 // The field goes UNDER everything drawn so far in this panel (avatars, rings, text, buttons): fluor composites front to back. It is translucent; the panel paints NO backdrop of its own (Nick 2026-09-28: it must not hide things) — what lands under it is the chrome group's speckle layer, flattened last, and the chrome itself stays on top (flattened first).
-                if let (Some(m), false, false) = (self.wave_field_map.as_ref(), picture_up, group_layout) {
+                if let (Some(m), false, false, false) = (self.wave_field_map.as_ref(), picture_up, self_stage, group_layout) {
                     super::wave_field::paint_field(&mut canvas, &g, m, &self.wave_field_tabs);
                 }
             } else if let Some((phase, name, direct, _pi, _dur)) = &wave_overlay {

@@ -182,6 +182,9 @@ openh264-sys2 = { version = "0.9.8", default-features = false, features = ["sour
 [target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
 # BEAMS (docs/beams.md stage 5): the desktop camera on x86_64 Linux — V4L2, YUYV frames converted to I420 in integer (platform/camera_v4l2.rs); the same crate opsin's live path uses. x86_64 only, like the codec: v4l2-sys generates bindings from the host's kernel headers with bindgen, which fails for the aarch64 cross build (the v117 deploy, 2026-10-10), and ARM Linux has no codec to beam with yet.
 v4l = "0.14"
+# A camera that offers only Motion-JPEG (Nick's Sigma fp, 2026-10-31: 3840×2160 MJPG and nothing raw): each frame decoded to YCbCr — JPEG's own 601 full range, the beam pipeline's input — then shrunk to I420. Already in the graph (opsin, image); decode only, ingest of a foreign stream.
+zune-jpeg = "0.5"
+zune-core = "0.5"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 x11 = { version = "2.21.0", features = ["xlib"] }
