@@ -176,7 +176,7 @@ pub struct EngineParams {
     pub cal: Option<CalSnapshot>,
     /// The peer sits on a LAN-class direct path — the ladder may climb past 128 kbps to the raw PCM plaid rung.
     pub plaid_allowed: bool,
-    /// The far slot this engine captures from and plays into (platform::audio FAR_SLOTS): 0 for a 1:1 wave, a claimed slot for a group link.
+    /// The far slot this engine captures from and plays into (platform::audio PARTIES): 0 for a 1:1 wave, a claimed slot for a group link.
     pub slot: usize,
     /// A GROUP LINK (docs/group-waves.md): the audio session belongs to the group wave, not this engine, and only the lead link does the session-wide work. `None` = a 1:1 wave, which owns the session and is its own lead.
     pub group: Option<GroupLink>,
@@ -188,6 +188,72 @@ pub struct GroupLink {
     pub lead: Arc<AtomicBool>,
     /// The generation the group claimed this engine's far slot under: the engine releases the slot at teardown only while it still holds it.
     pub slot_gen: u64,
+    /// The group's one encode: the lead link publishes every frame into it, and every link sends from it.
+    pub tx: Arc<GroupTx>,
+}
+
+/// ONE ENCODE FOR THE GROUP (docs/group-media-scale.md, step 1b): a device in a wave with N others ran N microphones' worth of level plan and encoder, one per link; now the lead link encodes once and every link seals and sends the same frames.
+/// The encoder runs at the lowest rung any link's ladder wants, so the worst path sets everyone's quality (each link's repair and loss loop stay its own); a link on a plaid path sends the frame's samples bare.
+pub struct GroupTx {
+    inner: std::sync::Mutex<GroupTxInner>,
+}
+
+struct GroupTxInner {
+    /// The newest published frames: (count, grid name, the rung it was encoded at, the wire frame's samples, its encoded bytes).
+    frames: std::collections::VecDeque<(u64, i64, usize, Vec<i16>, Vec<u8>)>,
+    /// Frames ever published — a link's cursor counts against it.
+    published: u64,
+    /// Each live link's wanted rung, by its far slot.
+    wants: Vec<(usize, usize)>,
+}
+
+/// Frames a lagging link can still catch up on: 64 × 5 ms, past any engine loop pass.
+const GROUP_TX_FRAMES: usize = 1 << 6;
+
+impl GroupTx {
+    pub fn new() -> Self {
+        GroupTx { inner: std::sync::Mutex::new(GroupTxInner { frames: std::collections::VecDeque::new(), published: 0, wants: Vec::new() }) }
+    }
+
+    fn publish(&self, k0: i64, tier: usize, pcm: Vec<i16>, enc: Vec<u8>) {
+        let mut g = self.inner.lock().unwrap();
+        if g.frames.len() >= GROUP_TX_FRAMES {
+            g.frames.pop_front();
+        }
+        let n = g.published;
+        g.frames.push_back((n, k0, tier, pcm, enc));
+        g.published += 1;
+    }
+
+    /// Every frame published since `cursor` (a link too slow to keep up skips the ones already gone), and the cursor moved past them.
+    fn since(&self, cursor: &mut u64) -> Vec<(i64, usize, Vec<i16>, Vec<u8>)> {
+        let g = self.inner.lock().unwrap();
+        let out = g.frames.iter().filter(|f| f.0 >= *cursor).map(|f| (f.1, f.2, f.3.clone(), f.4.clone())).collect();
+        *cursor = g.published;
+        out
+    }
+
+    /// Where a new link starts: the next frame published.
+    fn cursor_now(&self) -> u64 {
+        self.inner.lock().unwrap().published
+    }
+
+    fn want(&self, far: usize, tier: usize) {
+        let mut g = self.inner.lock().unwrap();
+        match g.wants.iter_mut().find(|w| w.0 == far) {
+            Some(w) => w.1 = tier,
+            None => g.wants.push((far, tier)),
+        }
+    }
+
+    fn drop_want(&self, far: usize) {
+        self.inner.lock().unwrap().wants.retain(|w| w.0 != far);
+    }
+
+    /// The encoder's rung: the lowest any link wants, plaid read as the top coded rung (a plaid link sends samples, not the encoder's bytes).
+    fn rung(&self) -> usize {
+        self.inner.lock().unwrap().wants.iter().map(|w| w.1.min(RAW_TIER - 1)).min().unwrap_or(0)
+    }
 }
 
 /// The stored voice profile for this mic: `voiced` sets the fixed TX makeup for the whole wave, `floor` seeds it when no voiced level exists yet.
@@ -298,6 +364,13 @@ fn run(
     let release = params.group.as_ref().map(|g| (far, g.slot_gen));
     let lead_flag = params.group.as_ref().map(|g| g.lead.clone());
     let is_lead = || lead_flag.as_ref().map_or(true, |l| l.load(Ordering::Relaxed));
+    // The group's one encode (GroupTx): where this link reads from, the last name it sent, and — while it is the lead — the rung its encoder runs at and, for a 1:1 wave, how far into the current window the encoder is.
+    let group_tx = params.group.as_ref().map(|g| g.tx.clone());
+    let grouped = group_tx.is_some();
+    let mut tx_cursor = group_tx.as_ref().map_or(0, |g| g.cursor_now());
+    let mut last_sent_k0 = i64::MIN;
+    let mut enc_tier: usize = 0;
+    let mut enc_fill = 0usize;
 
     // THE ARCHIVE ENCODER (the ordering fix, Nick 2026-09-12: "save the encoded stream… ideally before the duck(s)"): one high-end Opus encode of the CLEAN mic runs live beside the wire encoder — 10ms frames, VBR 160k, complexity 6 — and THAT is what the spool keeps. Plaid raw-PCM spooling dies (it ate ~5.5MB/min), the keep repackages these packets verbatim (no second lossy generation), and the ducking rides as a profile, not a second stream.
     let mut arch_enc = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).ok().map(|mut e| {
@@ -577,8 +650,8 @@ fn run(
     if solo { super::MEDIA_START_OSC.store(vsf::eagle_time_oscillations(), Ordering::Relaxed); }
     if solo { super::LAST_MEDIA_RX_OSC.store(0, Ordering::Relaxed); }
     if solo { let _ = super::take_peer_redirect(); }
-    super::SLOT_START_OSC[far].store(vsf::eagle_time_oscillations(), Ordering::Relaxed);
-    super::SLOT_RX_OSC[far].store(0, Ordering::Relaxed);
+    super::SLOT_LINKS.at(far).start_osc.store(vsf::eagle_time_oscillations(), Ordering::Relaxed);
+    super::SLOT_LINKS.at(far).rx_osc.store(0, Ordering::Relaxed);
     crate::platform::audio::set_local_source(false);
     // THE CONNECT SWEEP (Nick 2026-09-29, wave/sweep.rs): one second of 10 Hz → 20 kHz over the wave on our own speaker — the connect indicator, and the mic's copy of it measures our speaker→mic path. Never held: TX runs from the first captured frame as before.
     // A group wave sweeps once, from its lead link: a link joining later is the same wave on the same speaker.
@@ -591,6 +664,10 @@ fn run(
     let mut sweep_retry_left: u8 = 1;
 
     loop {
+        // This link's ladder says where it wants the group's one encoder (GroupTx::rung takes the lowest).
+        if let Some(g) = group_tx.as_ref() {
+            g.want(far, pending_tier);
+        }
         // STOP → DRAIN (recording fills): audio is over, but a fill-capable peer can still hand us the windows we lost — and wants ours. Both engines stay up on the fill plane until both are satisfied or the deadline passes. A peer that never spoke the fill plane ends the engine at once, exactly as before.
         if stop.load(Ordering::Relaxed) && draining.is_none() {
             // The far side is done from here: frames the render names and never gets are not this wave's misses (platform::audio::far_done).
@@ -646,7 +723,15 @@ fn run(
             aligner.timestamp(cap_pos, cap_osc);
             aligner.push(&frame, cap_pos, &mut aligned);
         }
+        // ONE ENCODE FOR THE GROUP (docs/group-media-scale.md, step 1b): in a group wave only the lead link runs the level plan and the encoder, and publishes every frame to the group's GroupTx; every link, the lead included, sends from there.
+        // A 1:1 wave encodes inline, exactly as before — its frames go straight to the send below.
+        let encoding = solo || is_lead();
+        // The frames this pass sends: (grid name, the rung the encoder ran at, the wire frame's samples, its encoded bytes).
+        let mut outgoing: Vec<(i64, usize, Vec<i16>, Vec<u8>)> = Vec::new();
         for (k0, frame) in aligned {
+            if !encoding {
+                continue; // the lead's encode carries this link; our copy of the microphone is only kept current for the day the lead passes to us
+            }
             // The connect sweep's mic copy (raw 24-bit → 16-bit, before mute and makeup: this measures the room, it is never sent).
             if let Some((c0, buf)) = sweep_cap.as_mut() {
                 if *c0 == i64::MIN {
@@ -718,22 +803,31 @@ fn run(
                 }
                 tx_stage.set_carry(carry);
             }
-            let pre_frame: Vec<i16> = frame.clone();
-            let proc_verdict: u8 = 0;
             // Rung switches land only between windows — a window's slot geometry is fixed at its first frame.
-            if frames_in_window == 0 && pending_tier != tier {
-                tier = pending_tier;
-                if is_lead() { super::LAST_LINK_TIER.store(tier as u32, Ordering::Relaxed); }
-                if tier != RAW_TIER {
-                    let _ = encoder.set_bitrate(opus::Bitrate::Bits(TIER_RATES[tier]));
+            // A group's one encoder runs at the lowest rung any of its links wants (GroupTx::rung), and moves only on the grid's eight-frame boundaries, where every link's window ends (every TIER_FRAMES entry divides eight).
+            match group_tx.as_ref() {
+                Some(g) => {
+                    if frame_no(k0) % TIER_FRAMES[0] as u32 == 0 {
+                        let r = g.rung();
+                        if r != enc_tier {
+                            enc_tier = r;
+                            let _ = encoder.set_bitrate(opus::Bitrate::Bits(TIER_RATES[enc_tier]));
+                        }
+                    }
+                }
+                None => {
+                    if enc_fill == 0 && pending_tier != enc_tier {
+                        enc_tier = pending_tier;
+                        if enc_tier != RAW_TIER {
+                            let _ = encoder.set_bitrate(opus::Bitrate::Bits(TIER_RATES[enc_tier]));
+                        }
+                    }
                 }
             }
             // Wire level: the health tally ("tx(mic)" now reads the PLAN level, comparable to the far side's rx tally), and the level the SPEAKER duck reads (post-makeup, so the duck's FULL constant is in plan units; muted zeros read as silence and never duck the speaker).
             let frame_sum = frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>();
             // The field's TX side: exactly the frame the far side is getting.
             if is_lead() { crate::wave::live::push_tx(k0, &frame); }
-            tx_energy += frame_sum;
-            tx_frames += 1;
             // SILENT MIC (field 2026-10-10): three seconds of unmuted zeros is a capture that is not capturing — a denied grant on a Mac hands silence with no error. An edge both ways, never a timer: the count is of frames.
             if muted.load(Ordering::Relaxed) {
                 silent_run = 0;
@@ -751,138 +845,194 @@ fn run(
                 silent_run = 0;
             }
             if is_lead() { crate::platform::audio::note_near_level(crate::platform::audio::mean_abs(&frame) as u32); }
-            let (enc, n) = if tier == RAW_TIER {
+            let enc = if enc_tier == RAW_TIER {
                 // Plaid: the frame IS the payload — little-endian i16, no codec in the path.
-                let mut raw = Vec::with_capacity(RAW_FRAME_BYTES);
-                for s in &frame {
-                    raw.extend_from_slice(&s.to_le_bytes());
-                }
-                raw_out += 1;
-                (raw, RAW_FRAME_BYTES)
+                frame.iter().flat_map(|s| s.to_le_bytes()).collect()
             } else {
-                let mut enc = vec![0u8; TIER_MAX_ENC[tier]];
+                let mut enc = vec![0u8; TIER_MAX_ENC[enc_tier]];
                 match encoder.encode(&frame, &mut enc) {
-                    Ok(n) => (enc, n),
+                    Ok(n) => {
+                        enc.truncate(n);
+                        enc
+                    }
                     Err(e) => {
                         crate::logf!("WAVE: opus encode error: {}", e);
                         continue;
                     }
                 }
             };
-            if frames_in_window == 0 {
-                window_fno = frame_no(k0);
-                window_k0 = k0;
-            }
-            if let Some(w) = spool.as_mut() {
-                // The record's stamp is the frame's NAME in true time — the instant the microphone heard its first sample — never the moment it was spooled.
-                let osc = vsf::grid::sample_to_eagle(k0);
-                let gain_q8: u16 = 256;
-                // The archive stream: clean mic pairs encode once at the high rung, the ducking profile rides the record's proc fields (10ms resolution — the gain slews far slower than that).
-                // A group wave keeps ONE archive stream, the lead link's (docs/group-waves.md): packets from two encoders cannot be spliced, so the others write none, and the keep follows the lead as it passes.
-                if !is_lead() {
-                    arch_buf.clear();
-                    arch_meta = None;
-                } else {
-                    if arch_buf.is_empty() {
-                        arch_meta = Some((osc, window_id, frames_in_window as u8));
+            match group_tx.as_ref() {
+                Some(g) => g.publish(k0, enc_tier, frame, enc),
+                None => {
+                    // The send below opens and closes this wave's windows on exactly these counts.
+                    enc_fill += 1;
+                    if enc_fill == TIER_FRAMES[enc_tier] {
+                        enc_fill = 0;
                     }
-                    arch_buf.extend_from_slice(&pre_frame);
-                    if arch_buf.len() >= 480 {
-                        if let (Some(enc2), Some((osc0, wid0, slot0))) = (arch_enc.as_mut(), arch_meta.take()) {
-                            if let Ok(an) = enc2.encode(&arch_buf[..480], &mut arch_pkt) {
-                                if let Some(at) = w.append_seq_proc(super::spool::ARCH_CHAN | super::spool::PROC_FLAG, osc0, Some((wid0, slot0)), Some((gain_q8, proc_verdict)), &arch_pkt[..an]) {
-                                    if arch_index.len() >= TX_INDEX_CAP {
-                                        arch_index.pop_front();
+                    outgoing.push((k0, enc_tier, frame, enc));
+                }
+            }
+        }
+        // Every group link sends what the lead published since it last looked, its own frames among them for the lead; once the wave is over nothing more goes out.
+        if let (Some(g), None) = (group_tx.as_ref(), draining) {
+            outgoing = g.since(&mut tx_cursor);
+        }
+        for (k0, ftier, pre_frame, fenc) in outgoing {
+            // A name this link already sent never goes again (the lead passed, and the new lead's microphone can name a frame the old one already published).
+            if k0 <= last_sent_k0 {
+                continue;
+            }
+            last_sent_k0 = k0;
+            let fno = frame_no(k0);
+            // This link's rung for the frame: the encoder's, or plaid where this link's own ladder climbed there (a group's one encode never runs plaid, so the frame's samples ride bare).
+            let link_tier = if group_tx.is_some() && pending_tier == RAW_TIER { RAW_TIER } else { ftier };
+            let raw_bytes: Vec<u8>;
+            let body: &[u8] = if link_tier == RAW_TIER && ftier != RAW_TIER {
+                raw_bytes = pre_frame.iter().flat_map(|s| s.to_le_bytes()).collect();
+                &raw_bytes
+            } else {
+                &fenc
+            };
+            let n = body.len();
+            let proc_verdict: u8 = 0;
+            tx_energy += pre_frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>();
+            tx_frames += 1;
+            // A frame at another rung than the open window's closes that window first, cut short (only a group's lead changing hands does this); then the frame opens the next.
+            let mut appended = false;
+            loop {
+                let close = if appended {
+                    false
+                } else if frames_in_window > 0 && link_tier != tier {
+                    true
+                } else {
+                    if frames_in_window == 0 {
+                        tier = link_tier;
+                        if is_lead() { super::LAST_LINK_TIER.store(tier as u32, Ordering::Relaxed); }
+                        window_fno = fno;
+                        window_k0 = k0;
+                    }
+                    if tier == RAW_TIER {
+                        raw_out += 1;
+                    }
+                    if let Some(w) = spool.as_mut() {
+                        // The record's stamp is the frame's NAME in true time — the instant the microphone heard its first sample — never the moment it was spooled.
+                        let osc = vsf::grid::sample_to_eagle(k0);
+                        let gain_q8: u16 = 256;
+                        // The archive stream: clean mic pairs encode once at the high rung, the ducking profile rides the record's proc fields (10ms resolution — the gain slews far slower than that).
+                        // A group wave keeps ONE archive stream, the lead link's (docs/group-waves.md): packets from two encoders cannot be spliced, so the others write none, and the keep follows the lead as it passes.
+                        if !is_lead() {
+                            arch_buf.clear();
+                            arch_meta = None;
+                        } else {
+                            if arch_buf.is_empty() {
+                                arch_meta = Some((osc, window_id, frames_in_window as u8));
+                            }
+                            arch_buf.extend_from_slice(&pre_frame);
+                            if arch_buf.len() >= 480 {
+                                if let (Some(enc2), Some((osc0, wid0, slot0))) = (arch_enc.as_mut(), arch_meta.take()) {
+                                    if let Ok(an) = enc2.encode(&arch_buf[..480], &mut arch_pkt) {
+                                        if let Some(at) = w.append_seq_proc(super::spool::ARCH_CHAN | super::spool::PROC_FLAG, osc0, Some((wid0, slot0)), Some((gain_q8, proc_verdict)), &arch_pkt[..an]) {
+                                            if arch_index.len() >= TX_INDEX_CAP {
+                                                arch_index.pop_front();
+                                            }
+                                            arch_index.push_back((wid0, slot0, at));
+                                        }
                                     }
-                                    arch_index.push_back((wid0, slot0, at));
                                 }
+                                arch_buf.clear();
                             }
                         }
-                        arch_buf.clear();
-                    }
-                }
-                // The wire copy spools ONLY when compressed (bit-exact fill service, small); a plaid window reconstructs from its archive record at serve time.
-                if tier != RAW_TIER {
-                    if let Some(at) = w.append_seq(0, osc, Some((window_id, frames_in_window as u8)), &enc[..n]) {
-                        if tx_index.len() >= TX_INDEX_CAP {
-                            tx_index.pop_front();
+                        // The wire copy spools ONLY when compressed (bit-exact fill service, small); a plaid window reconstructs from its archive record at serve time.
+                        if tier != RAW_TIER {
+                            if let Some(at) = w.append_seq(0, osc, Some((window_id, frames_in_window as u8)), body) {
+                                if tx_index.len() >= TX_INDEX_CAP {
+                                    tx_index.pop_front();
+                                }
+                                tx_index.push_back(SentFrame { seq: window_id, slot: frames_in_window as u8, tier: tier as u8, at });
+                            }
                         }
-                        tx_index.push_back(SentFrame { seq: window_id, slot: frames_in_window as u8, tier: tier as u8, at });
                     }
-                }
-            }
-            window_buf.extend_from_slice(&(n as u16).to_le_bytes());
-            window_buf.extend_from_slice(&enc[..n]);
-            window_buf.resize((frames_in_window + 1) * tier_slot(tier), 0);
-            frames_in_window += 1;
-
-            if frames_in_window == TIER_FRAMES[tier] {
-                // PIGGYBACK BUNDLE (flag day, 2026-08-20): ONE datagram per window — sealed payload [ctrl:1][source(N)][repair(N−1)]. Halves the packet rate (per-packet header cost was 19% of the floor wire), and the window's two copies now ride datagrams one window APART, so a burst must kill two consecutive datagrams to lose audio — strictly better than the old back-to-back pair. Steady-state latency unchanged: the source still ships the instant the window closes; only loss RECOVERY waits one extra window. seq = window id (the nonce, the step index, everything); ctrl = tier_src:3 | rep_present:1<<3 | tier_rep:3<<4 — THREE-bit tier fields so the ladder can grow to 8 rungs (survival rung below, stereo rung above) WITHOUT another flag day; a rung switch between windows makes the two symbols different sizes, which is why the tiers ride explicitly at all.
-                // Plaid ships the window bare (no fountain, no repair — a lost datagram is a skipped 5 ms); every other rung is one source symbol + the repair of two windows back.
-                let (source, own_repair): (Vec<u8>, Vec<u8>) = if tier == RAW_TIER {
-                    (window_buf.clone(), Vec::new())
-                } else {
-                    let fec = raptorq::Encoder::new(&window_buf, oti(tier));
-                    let pkts = fec.get_encoded_packets(REPAIR_PACKETS);
-                    (pkts[0].data().to_vec(), pkts[1].data().to_vec())
+                    window_buf.extend_from_slice(&(n as u16).to_le_bytes());
+                    window_buf.extend_from_slice(body);
+                    window_buf.resize((frames_in_window + 1) * tier_slot(tier), 0);
+                    frames_in_window += 1;
+                    appended = true;
+                    // A group link's windows end on the grid (the frame before a multiple of the window's length), so the one encoder's rung moves between every link's windows at once.
+                    frames_in_window == TIER_FRAMES[tier] || (group_tx.is_some() && fno.wrapping_add(1) % TIER_FRAMES[tier] as u32 == 0)
                 };
-                // An empty entry is a plaid window's placeholder: it keeps the two-back spacing honest and never flags a repair.
-                let rep = if repair_queue.len() >= 2 { repair_queue.pop_front() } else { None };
-                let rep = rep.filter(|(_, _, r)| !r.is_empty());
-                let mut payload = Vec::with_capacity(9 + tier_window_bytes(tier) * 2);
-                let ctrl = tier as u8
-                    | rep
-                        .as_ref()
-                        .map_or(0, |(rt, _, _)| 0b1000 | ((*rt as u8) << 4));
-                payload.push(ctrl);
-                // The windows' NAMES: the source window's first frame number, then the repaired window's.
-                payload.extend_from_slice(&window_fno.to_le_bytes());
-                if let Some((_, rf, _)) = &rep {
-                    payload.extend_from_slice(&rf.to_le_bytes());
-                }
-                payload.extend_from_slice(&source);
-                if let Some((_, _, r)) = &rep {
-                    payload.extend_from_slice(r);
-                }
-                // LINK TAIL: our stamp, the peer's newest stamp echoed, and how long we held it — the receiver subtracts the hold from its own round trip.
-                {
-                    let now_us = start_instant.elapsed().as_micros() as u32; // the algorithm: a wrapping µs stamp, differences taken modulo 2^32
-                    let (echo, hold) = match peer_stamp {
-                        Some((st, at)) => (st, at.elapsed().as_micros().min(u16::MAX as u128) as u16), // saturates: the receiver skips a saturated hold rather than trust it
-                        None => (0, 0),
+                if close {
+                    // A window cut short keeps its full geometry: the empty slots carry length zero, which the receiver skips.
+                    window_buf.resize(TIER_FRAMES[tier] * tier_slot(tier), 0);
+                    // PIGGYBACK BUNDLE (flag day, 2026-08-20): ONE datagram per window — sealed payload [ctrl:1][source(N)][repair(N−1)]. Halves the packet rate (per-packet header cost was 19% of the floor wire), and the window's two copies now ride datagrams one window APART, so a burst must kill two consecutive datagrams to lose audio — strictly better than the old back-to-back pair. Steady-state latency unchanged: the source still ships the instant the window closes; only loss RECOVERY waits one extra window. seq = window id (the nonce, the step index, everything); ctrl = tier_src:3 | rep_present:1<<3 | tier_rep:3<<4 — THREE-bit tier fields so the ladder can grow to 8 rungs (survival rung below, stereo rung above) WITHOUT another flag day; a rung switch between windows makes the two symbols different sizes, which is why the tiers ride explicitly at all.
+                    // Plaid ships the window bare (no fountain, no repair — a lost datagram is a skipped 5 ms); every other rung is one source symbol + the repair of two windows back.
+                    let (source, own_repair): (Vec<u8>, Vec<u8>) = if tier == RAW_TIER {
+                        (window_buf.clone(), Vec::new())
+                    } else {
+                        let fec = raptorq::Encoder::new(&window_buf, oti(tier));
+                        let pkts = fec.get_encoded_packets(REPAIR_PACKETS);
+                        (pkts[0].data().to_vec(), pkts[1].data().to_vec())
                     };
-                    // Capture → send on OUR clock: how long the window's first frame waited from the microphone to the wire.
-                    budget_cap_sum += vsf::grid::eagle_to_sample(crate::network::time_base::now_osc()) - window_k0;
-                    budget_cap_n += 1;
-                    payload.extend_from_slice(&now_us.to_le_bytes());
-                    payload.extend_from_slice(&echo.to_le_bytes());
-                    payload.extend_from_slice(&hold.to_le_bytes());
-                    // The peer-loss byte: OUR windows lost over the last second (the 1 s cadence resets the baseline) — what the peer's tier should answer to.
-                    // `tail_lost_base` is a snapshot of this same monotone counter, so the difference is exact.
-                    // WHY `.min(255)`: the peer-loss field is ONE BYTE on the wire, and a stalled cadence can span more than a second's windows (200 at the 5 ms rung, more after a stall).
-                    // PROOF: the byte saturates at "at least 255 lost" rather than wrapping a heavy loss into a light one.
-                    payload.push((windows_lost - tail_lost_base).min(255) as u8);
-                    // Once a second, the latency tail: our l in whole ms (saturating — an l past 65 s is a broken stream, never a wrapped short one).
-                    if send_l_tail {
-                        send_l_tail = false;
-                        let l_ms = crate::platform::audio::play_latency_slot(far).map_or(u16::MAX, |l| (l.max(0) / 48).min(u16::MAX as i64 - 1) as u16);
-                        payload.extend_from_slice(&l_ms.to_le_bytes());
+                    // An empty entry is a plaid window's placeholder: it keeps the two-back spacing honest and never flags a repair.
+                    let rep = if repair_queue.len() >= 2 { repair_queue.pop_front() } else { None };
+                    let rep = rep.filter(|(_, _, r)| !r.is_empty());
+                    let mut payload = Vec::with_capacity(9 + tier_window_bytes(tier) * 2);
+                    let ctrl = tier as u8
+                        | rep
+                            .as_ref()
+                            .map_or(0, |(rt, _, _)| 0b1000 | ((*rt as u8) << 4));
+                    payload.push(ctrl);
+                    // The windows' NAMES: the source window's first frame number, then the repaired window's.
+                    payload.extend_from_slice(&window_fno.to_le_bytes());
+                    if let Some((_, rf, _)) = &rep {
+                        payload.extend_from_slice(&rf.to_le_bytes());
                     }
-                }
-                let seq = window_id;
-                tx_chain.advance_to(StepChain::step_for_seq(seq));
-                if let Some(wire) = packet::seal(&tx_chain, seq, &payload) {
-                    if !super::send_media(wire, peer) {
-                        crate::log("WAVE: media TX channel gone — engine stopping");
-                        stop.store(true, Ordering::SeqCst);
+                    payload.extend_from_slice(&source);
+                    if let Some((_, _, r)) = &rep {
+                        payload.extend_from_slice(r);
                     }
-                    pkts_out += 1;
+                    // LINK TAIL: our stamp, the peer's newest stamp echoed, and how long we held it — the receiver subtracts the hold from its own round trip.
+                    {
+                        let now_us = start_instant.elapsed().as_micros() as u32; // the algorithm: a wrapping µs stamp, differences taken modulo 2^32
+                        let (echo, hold) = match peer_stamp {
+                            Some((st, at)) => (st, at.elapsed().as_micros().min(u16::MAX as u128) as u16), // saturates: the receiver skips a saturated hold rather than trust it
+                            None => (0, 0),
+                        };
+                        // Capture → send on OUR clock: how long the window's first frame waited from the microphone to the wire.
+                        budget_cap_sum += vsf::grid::eagle_to_sample(crate::network::time_base::now_osc()) - window_k0;
+                        budget_cap_n += 1;
+                        payload.extend_from_slice(&now_us.to_le_bytes());
+                        payload.extend_from_slice(&echo.to_le_bytes());
+                        payload.extend_from_slice(&hold.to_le_bytes());
+                        // The peer-loss byte: OUR windows lost over the last second (the 1 s cadence resets the baseline) — what the peer's tier should answer to.
+                        // `tail_lost_base` is a snapshot of this same monotone counter, so the difference is exact.
+                        // WHY `.min(255)`: the peer-loss field is ONE BYTE on the wire, and a stalled cadence can span more than a second's windows (200 at the 5 ms rung, more after a stall).
+                        // PROOF: the byte saturates at "at least 255 lost" rather than wrapping a heavy loss into a light one.
+                        payload.push((windows_lost - tail_lost_base).min(255) as u8);
+                        // Once a second, the latency tail: our l in whole ms (saturating — an l past 65 s is a broken stream, never a wrapped short one).
+                        if send_l_tail {
+                            send_l_tail = false;
+                            let l_ms = crate::platform::audio::play_latency_slot(far).map_or(u16::MAX, |l| (l.max(0) / 48).min(u16::MAX as i64 - 1) as u16);
+                            payload.extend_from_slice(&l_ms.to_le_bytes());
+                        }
+                    }
+                    let seq = window_id;
+                    tx_chain.advance_to(StepChain::step_for_seq(seq));
+                    if let Some(wire) = packet::seal(&tx_chain, seq, &payload) {
+                        if !super::send_media(wire, peer) {
+                            crate::log("WAVE: media TX channel gone — engine stopping");
+                            stop.store(true, Ordering::SeqCst);
+                        }
+                        pkts_out += 1;
+                    }
+                    // The repair symbol rides the NEXT window's datagram. The final window's repair never ships (the wave ended); its ~20-40ms tail is protected only by its source — accepted.
+                    repair_queue.push_back((tier, window_fno, own_repair));
+                    window_id = window_id.wrapping_add(1);
+                    window_buf.clear();
+                    frames_in_window = 0;
                 }
-                // The repair symbol rides the NEXT window's datagram. The final window's repair never ships (the wave ended); its ~20-40ms tail is protected only by its source — accepted.
-                repair_queue.push_back((tier, window_fno, own_repair));
-                window_id = window_id.wrapping_add(1);
-                window_buf.clear();
-                frames_in_window = 0;
+                if appended {
+                    break;
+                }
             }
         }
 
@@ -1017,7 +1167,7 @@ fn run(
             if solo {
                 super::LAST_MEDIA_RX_OSC.store(vsf::eagle_time_oscillations(), Ordering::Relaxed);
             }
-            super::SLOT_RX_OSC[far].store(vsf::eagle_time_oscillations(), Ordering::Relaxed);
+            super::SLOT_LINKS.at(far).rx_osc.store(vsf::eagle_time_oscillations(), Ordering::Relaxed);
             // Authenticated source: the peer's address follows its packets (NAT rebind / future handoff, no signaling needed).
             // FORWARD-PROGRESS GATE (2026-09-07, the address-trust doctrine): the step ratchet already kills cross-step replays, but a CURRENT-step packet replayed from an attacker's address would open fine and re-point our TX — so only a strictly-newer seq may steer. An off-path attacker never has a newer authentic packet; an on-path one could already drop the stream, gaining nothing.
             let newer = rx_max_seq.map_or(true, |m| header.seq > m);
@@ -1321,9 +1471,9 @@ fn run(
                     let need = if pending_tier == RAW_TIER { PLAID_LOSSES_TO_DROP } else { LOSSES_TO_DROP };
                     let drop_held = last_tier_drop.map_or(true, |t| now.duration_since(t) >= DROP_HOLD);
                     // Against a loss-byte peer, OUR rx loss no longer drops OUR tier (the cross-wired loop that flapped Nick's innocent tx while his rx drowned) — the peer's byte drives the drop in the 1 s cadence below. A v96 peer keeps the old local governance.
-                    if !peer_sends_loss && recent_losses.len() >= need && pending_tier > 0 && drop_held {
+                    if !peer_sends_loss && recent_losses.len() >= need && drop_from(pending_tier, tier, grouped) > 0 && drop_held {
                         // WHY/PROOF: the ladder's floor — a loss at the bottom rung stays at the bottom rung (0), never wraps to a rung that does not exist.
-                        pending_tier = pending_tier.saturating_sub(DROP_RUNGS_ON_LOSS);
+                        pending_tier = drop_from(pending_tier, tier, grouped).saturating_sub(DROP_RUNGS_ON_LOSS);
                         tier_downs += 1;
                         last_tier_change = now;
                         last_tier_drop = Some(now);
@@ -1597,9 +1747,9 @@ fn run(
                 if peer_loss_sec_max >= LOSSES_TO_DROP as u32 && pending_tier > 0 && drop_held && !queue_agrees && peer_loss_sec_max < PEER_LOSS_CATASTROPHIC {
                     crate::logf!("WAVE: peer reported {} lost with a flat queue (ema {:.0} over floor {}) — radio loss, holding {} kbps", peer_loss_sec_max, rtt_ema, if rtt_min == u32::MAX { 0 } else { rtt_min }, TIER_RATES[pending_tier] / 1000);
                 }
-                if peer_loss_sec_max >= LOSSES_TO_DROP as u32 && pending_tier > 0 && drop_held && (queue_agrees || peer_loss_sec_max >= PEER_LOSS_CATASTROPHIC) {
+                if peer_loss_sec_max >= LOSSES_TO_DROP as u32 && drop_from(pending_tier, tier, grouped) > 0 && drop_held && (queue_agrees || peer_loss_sec_max >= PEER_LOSS_CATASTROPHIC) {
                     // WHY/PROOF: the ladder's floor — a loss at the bottom rung stays at the bottom rung (0), never wraps to a rung that does not exist.
-                    pending_tier = pending_tier.saturating_sub(DROP_RUNGS_ON_LOSS);
+                    pending_tier = drop_from(pending_tier, tier, grouped).saturating_sub(DROP_RUNGS_ON_LOSS);
                     tier_downs += 1;
                     last_tier_change = now;
                     last_tier_drop = Some(now);
@@ -1607,12 +1757,12 @@ fn run(
                     crate::logf!("WAVE: tier down → {} kbps (the peer reported {} lost in their last second — their receive governs our tier)", TIER_RATES[pending_tier] / 1000, peer_loss_sec_max);
                 }
                 // DELAY-GRADIENT DROP: the slope convicts a building queue and C = R/(1+s) names the rung — one right-sized jump, fired while the queue is still growing (see SLOPE_DROP_MS_PER_SEC).
-                if slope_buckets.len() >= 5 && last_slope_drop.elapsed() >= std::time::Duration::from_secs(2) && pending_tier > 0 {
+                if slope_buckets.len() >= 5 && last_slope_drop.elapsed() >= std::time::Duration::from_secs(2) && drop_from(pending_tier, tier, grouped) > 0 {
                     let (f, b) = (*slope_buckets.front().unwrap() as f32, *slope_buckets.back().unwrap() as f32);
                     let slope_ms = (b - f) / ((slope_buckets.len() - 1) as f32 * 0.1);
                     if slope_ms > SLOPE_DROP_MS_PER_SEC {
                         let s = slope_ms / 1000.0;
-                        let r = TIER_RATES[pending_tier] as f32;
+                        let r = TIER_RATES[drop_from(pending_tier, tier, grouped)] as f32;
                         let budget = r / (1.0 + s) * SLOPE_CAPACITY_MARGIN;
                         let mut target = 0usize;
                         for (i, &rate) in TIER_RATES.iter().enumerate() {
@@ -1620,7 +1770,7 @@ fn run(
                                 target = i;
                             }
                         }
-                        if target < pending_tier {
+                        if target < drop_from(pending_tier, tier, grouped) {
                             tier_downs += 1;
                             pending_tier = target;
                             last_tier_change = now;
@@ -1846,6 +1996,9 @@ fn run(
         spk_frames,
         spk_half
     );
+    if let Some(g) = group_tx.as_ref() {
+        g.drop_want(far);
+    }
     teardown(sink_gen, release);
     // tx_chain/rx_chain drop here — zeroized; the wave is cryptographically gone.
 }
@@ -1887,6 +2040,12 @@ fn teardown(sink_gen: u64, release: Option<(usize, u64)>) {
 
 /// One frame this side SENT: where it sits in the spool, so the peer's request for its window can be served from disk.
 /// A frame's number on the wire: its grid sample over the frame length, mod 2^32 (a u32 turns over every ~248 days at 200 frames a second — the receiver unwraps it against its own true clock).
+/// Where a rung drop steps down from: the link's own wish, or in a group the rung it actually sends at when that is lower.
+/// WHY/PROOF: a group's one encoder runs at the lowest rung any link wants (GroupTx::rung), so a clean link's wish climbs above what it sends; a loss on that link dropping from the wish would land at or above the encoder's rung and never reach it — the loss would go unanswered for as long as the wave runs.
+fn drop_from(pending: usize, sending: usize, grouped: bool) -> usize {
+    if grouped { pending.min(sending) } else { pending }
+}
+
 fn frame_no(k0: i64) -> u32 {
     k0.div_euclid(super::align::FRAME) as u32 // the algorithm: the wire keeps the low 32 bits
 }
@@ -2293,6 +2452,49 @@ mod tests {
             t = loss_loop_step(0, &mut bits, &mut pos, &mut integ, false, 2);
         }
         assert_eq!(t, 2, "a clean link returns to the floor");
+    }
+
+    /// ONE ENCODE FOR THE GROUP (docs/group-media-scale.md, step 1b): the encoder runs at the lowest rung any link wants, plaid counting as the top coded rung; every link reads every frame once, from where it joined; a link that fell behind skips what is gone.
+    #[test]
+    fn the_group_encodes_once_at_the_lowest_wanted_rung() {
+        let g = GroupTx::new();
+        assert_eq!(g.rung(), 0, "no link yet: the bottom rung");
+        g.want(1, 3);
+        g.want(2, RAW_TIER);
+        assert_eq!(g.rung(), 3, "a plaid link asks only for the top coded rung");
+        g.want(3, 1);
+        assert_eq!(g.rung(), 1, "the worst path sets the rung");
+        g.drop_want(3);
+        assert_eq!(g.rung(), 3, "and its leaving lifts it");
+        let mut early = g.cursor_now();
+        g.publish(0, 3, vec![1; FRAME_SAMPLES], vec![9; 4]);
+        let mut late = g.cursor_now();
+        g.publish(240, 3, vec![2; FRAME_SAMPLES], vec![8; 4]);
+        let a = g.since(&mut early);
+        assert_eq!(a.iter().map(|f| f.0).collect::<Vec<_>>(), vec![0, 240]);
+        assert!(g.since(&mut early).is_empty(), "each frame is read once");
+        assert_eq!(g.since(&mut late).iter().map(|f| f.0).collect::<Vec<_>>(), vec![240], "a link starts at the frame after it joined");
+        let mut lagging = g.cursor_now();
+        for i in 0..(GROUP_TX_FRAMES + 3) {
+            g.publish(i as i64 * 240, 0, Vec::new(), Vec::new());
+        }
+        assert_eq!(g.since(&mut lagging).len(), GROUP_TX_FRAMES, "a link that fell behind gets what is still held");
+    }
+
+    /// In a group a loss drops from the rung the link actually sends at, never from a wish above it.
+    #[test]
+    fn a_group_drop_steps_from_the_sent_rung() {
+        assert_eq!(drop_from(3, 1, true), 1);
+        assert_eq!(drop_from(1, 3, true), 1);
+        assert_eq!(drop_from(3, 1, false), 3, "a 1:1 wave's ladder is untouched");
+    }
+
+    /// Every rung's window length divides eight, so a group's encoder switching on eight-frame grid boundaries always lands between every link's windows.
+    #[test]
+    fn every_window_length_divides_the_rung_switch_boundary() {
+        for &f in TIER_FRAMES.iter() {
+            assert_eq!(TIER_FRAMES[0] % f, 0);
+        }
     }
 
     #[test]

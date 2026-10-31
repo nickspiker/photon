@@ -62,7 +62,7 @@ struct Live {
 
 impl Live {
     fn new() -> Self {
-        Live { tx: Side::new(), rx: Side::new(), slots: (0..crate::platform::audio::FAR_SLOTS).map(|_| Side::new()).collect() }
+        Live { tx: Side::new(), rx: Side::new(), slots: Vec::new() }
     }
 }
 
@@ -105,8 +105,12 @@ pub fn push_rx_slot(slot: usize, k0: i64, pcm: &[i16]) {
     if let Some(l) = LIVE.lock().unwrap().as_mut() {
         if slot == 0 {
             l.rx.push(k0, pcm);
-        } else if let Some(s) = l.slots.get_mut(slot) {
-            s.push(k0, pcm);
+        } else {
+            // A party's ring is made the first time it hears anything: a wave holds as many as it has links.
+            while l.slots.len() <= slot {
+                l.slots.push(Side::new());
+            }
+            l.slots[slot].push(k0, pcm);
         }
     }
 }

@@ -1,6 +1,6 @@
 //! GROUP WAVES (docs/group-waves.md) — a wave in a molecule, any size: one offer on the group's lane, a join per member device, and a media link between every pair of joined devices.
 //!
-//! Each link is a whole 1:1 wave engine (keys, ladder, loss loop, fills) on its own far slot of the one audio session (platform::audio FAR_SLOTS); the speaker mixes the slots, the microphone feeds them all.
+//! Each link is a whole 1:1 wave engine (keys, ladder, loss loop, fills) on its own far party of the one audio session (platform::audio PARTIES, as many as the wave has); the speaker mixes the slots, the microphone feeds them all.
 //! Signalling is the 1:1 vocabulary riding the group's lane: the Offer is the origin's join, an Answer is a member's join, a Hangup is a member leaving — the frame's signing device says who.
 //! The doctrine carries over: no ring timer, ring on direct decrypt only, the offer's lane key is the basket's doomed egg, and every link derives its own secret from it bound to both devices.
 
@@ -85,6 +85,8 @@ pub(crate) struct GroupWave {
     /// Spools of links that have ended (with their engine threads, which the keep joins first), and how many spools this wave has minted (each link's file is named apart).
     pub spent: Vec<(crate::wave::spool::SpoolTicket, Option<std::thread::JoinHandle<()>>)>,
     pub spools_minted: u8,
+    /// The wave's one encode, shared by every link (engine::GroupTx).
+    pub tx: std::sync::Arc<crate::wave::engine::GroupTx>,
 }
 
 impl GroupWave {
@@ -143,6 +145,7 @@ impl PhotonApp {
             beam_opening: None,
             spent: Vec::new(),
             spools_minted: 0,
+            tx: std::sync::Arc::new(crate::wave::engine::GroupTx::new()),
         });
         self.dialed_wave_ids.insert(wave_id);
         let sig = WaveSignal::Offer { wave_id, nonce, device: Some(device) };
@@ -165,7 +168,7 @@ impl PhotonApp {
         }
         // A join or a leave also goes express (an offer waits for its egg: capture_group_offer_key).
         if !matches!(sig, WaveSignal::Offer { .. }) {
-            self.send_group_express(gid, &sig, ts, None);
+            self.send_group_express(gid, &sig, ts, None, None);
         }
         let row = self.conv_by_id(id).and_then(|v| v.messages.iter().find(|m| m.is_outgoing && m.timestamp == ts && m.control.as_ref() == Some(&ctl)).cloned());
         if let Some(row) = row {
@@ -175,7 +178,8 @@ impl PhotonApp {
     }
 
     /// THE GROUP EXPRESS COPY (docs/group-waves.md): the same signal as a sealed datagram under the group's express key, signed by our device, to every other member's devices — straight to each device's addresses and over the relay, so a ring, a join or a leave beats the group's lane as a pair's does. Every signal also seals under the retired era (a member one cutover behind still opens it).
-    pub(super) fn send_group_express(&self, gid: MoleculeId, sig: &WaveSignal, ts: i64, lane_key: Option<[u8; 32]>) {
+    /// `to` names one device instead of every member's: the roll call answers only the newcomer.
+    pub(super) fn send_group_express(&self, gid: MoleculeId, sig: &WaveSignal, ts: i64, lane_key: Option<[u8; 32]>, to: Option<[u8; 32]>) {
         let Some(kp) = self.device_keypair.clone() else {
             return;
         };
@@ -201,7 +205,10 @@ impl PhotonApp {
         let Some((_, roster)) = self.molecule_rosters.iter().find(|(g, _)| *g == gid) else {
             return;
         };
-        let devices: Vec<[u8; 32]> = roster.standing().into_iter().filter(|p| Some(*p) != us).flat_map(|p| super::molecules::member_devices(&self.contacts, &self.molecule_peers, &p)).collect();
+        let devices: Vec<[u8; 32]> = match to {
+            Some(dev) => vec![dev],
+            None => roster.standing().into_iter().filter(|p| Some(*p) != us).flat_map(|p| super::molecules::member_devices(&self.contacts, &self.molecule_peers, &p)).collect(),
+        };
         let mut direct = 0usize;
         for dev in &devices {
             for a in self.device_addresses(dev) {
@@ -277,7 +284,7 @@ impl PhotonApp {
                 // The egg is ours now, so the offer's express copy can carry it: every member rings at datagram speed, the lane row following as the record.
                 let (gid, ts, nonce) = (w.gid, w.offer_osc, w.our_nonce);
                 if let (Some(nonce), Some(device)) = (nonce, self.our_device()) {
-                    self.send_group_express(gid, &WaveSignal::Offer { wave_id: *wave_id, nonce, device: Some(device) }, ts, Some(key));
+                    self.send_group_express(gid, &WaveSignal::Offer { wave_id: *wave_id, nonce, device: Some(device) }, ts, Some(key), None);
                 }
                 true
             }
@@ -417,8 +424,9 @@ impl PhotonApp {
                 if joined_here {
                     self.group_link_up(device);
                     // ROLL CALL: the newcomer knows only the joins that reached it, and a member it never heard of could never link with it — everyone already in says so again (a device already known is ignored, so this never cascades).
+                    // To the newcomer alone, by express (docs/group-media-scale.md, "A thousand people"): our own join is already a row on the lane, so a second row and a copy to every device made each join cost the square of the group — a thousand joins, a million answers.
                     if let (Some(nonce), Some(dev)) = (our_nonce, self.our_device()) {
-                        let _ = self.send_group_wave_signal(gid, WaveSignal::Answer { wave_id, nonce, device: Some(dev) }, vsf::eagle_time_oscillations());
+                        self.send_group_express(gid, &WaveSignal::Answer { wave_id, nonce, device: Some(dev) }, vsf::eagle_time_oscillations(), None, Some(device));
                     }
                 }
                 self.scene_dirty = true;
@@ -507,6 +515,7 @@ impl PhotonApp {
             beam_opening: None,
             spent: Vec::new(),
             spools_minted: 0,
+            tx: std::sync::Arc::new(crate::wave::engine::GroupTx::new()),
         }
     }
 
@@ -545,11 +554,8 @@ impl PhotonApp {
                 w.session = gen;
             }
         }
-        // A slot only after the session is open: its queue hygiene clears every slot.
-        let Some((slot, slot_gen)) = crate::platform::audio::claim_slot() else {
-            crate::logf!("WAVE: no far slot left for {} — {} is the most one wave can hold", crate::fp(&device), crate::platform::audio::FAR_SLOTS - 1);
-            return;
-        };
+        // A party only after the session is open: its queue hygiene clears every party.
+        let (slot, slot_gen) = crate::platform::audio::claim_slot();
         self.start_group_link(device, secret, our_device, slot, slot_gen);
     }
 
@@ -571,6 +577,10 @@ impl PhotonApp {
             }
             None => (None, None),
         };
+        let group_tx = match self.group_wave.as_ref() {
+            Some(w) => w.tx.clone(),
+            None => std::sync::Arc::new(crate::wave::engine::GroupTx::new()),
+        };
         let engine = crate::wave::engine::start(crate::wave::engine::EngineParams {
             secret,
             we_are_origin: origin,
@@ -579,7 +589,7 @@ impl PhotonApp {
             cal: self.cal_snapshot(),
             plaid_allowed: self.is_lan_for_plaid(addr),
             slot,
-            group: Some(crate::wave::engine::GroupLink { lead: lead.clone(), slot_gen }),
+            group: Some(crate::wave::engine::GroupLink { lead: lead.clone(), slot_gen, tx: group_tx }),
         });
         crate::logf!("WAVE: group link up with {} on slot {} — media aimed at {}", crate::fp(&device), slot, addr);
         // No address for this device: push ours to it now (its answer is its record), as a 1:1 wave does when it starts without a route.
@@ -702,8 +712,8 @@ impl PhotonApp {
             .links
             .iter()
             .map(|l| {
-                let start = crate::wave::SLOT_START_OSC[l.slot].load(Relaxed);
-                let heard = crate::wave::SLOT_RX_OSC[l.slot].load(Relaxed);
+                let start = crate::wave::SLOT_LINKS.at(l.slot).start_osc.load(Relaxed);
+                let heard = crate::wave::SLOT_LINKS.at(l.slot).rx_osc.load(Relaxed);
                 (l.slot, l.reconnecting, start, heard)
             })
             .collect();

@@ -19,43 +19,160 @@ pub const FRAME_SAMPLES: usize = 240;
 
 /// Mic frames waiting for the engine (drop-oldest past ~500ms): (true time its FIRST sample was captured, that sample's position in the stream's 48 kHz sample count, samples). The time is the HAL's boot-clock timestamp on Android and the callback instant less the device's reported capture delay on desktop, both mapped thru TrueClock (docs/lock.md §5.1); the position is what the sender's rate regression fits against.
 /// Captured mic frames at 24-BIT depth (i32 holding −2^23..2^23−1; a 16-bit source is shifted up 8 — Nick 2026-09-14: "are we not doing 24 bit voice capture?"). The engine's fixed makeup consumes the extra bits directly (acc >> 40 into the i16 wire), so a calibrated Unprocessed mic at 40 LSB16 arrives as 10240 LSB24 and the makeup lifts SIGNAL, not dither.
-/// One queue per FAR SLOT (see FAR_SLOTS): every engine of a group wave drains its own copy of the one microphone; slot 0 is the 1:1 wave's and every non-wave reader's (ringback, probes, measure).
-static CAPTURE_Q: [Mutex<VecDeque<(i64, i64, Vec<i32>)>>; FAR_SLOTS] = [const { Mutex::new(VecDeque::new()) }; FAR_SLOTS];
+/// One queue per PARTY (see PARTIES): every engine of a group wave drains its own copy of the one microphone; party 0 is the 1:1 wave's and every non-wave reader's (ringback, probes, measure).
+type CaptureQ = Mutex<VecDeque<(i64, i64, Vec<i32>)>>;
 
-/// THE FAR SLOTS (group waves, docs/group-waves.md): a wave with N others runs N engines over the one audio session, each with its own capture queue and its own far channel, mixed at the render.
-/// Slot 0 is the 1:1 wave's, exactly as before; a group wave's links take slots as they come up.
-pub const FAR_SLOTS: usize = 8;
-/// Which slots are live (bit s = slot s): the render mixes these far channels and the capture fans out to these queues. Slot 0 always captures.
-static FAR_ACTIVE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-/// Each slot's generation: an engine releases its slot only while that generation still holds it, so a link that ends and a link that reuses its slot never tear each other down.
-static SLOT_GEN: [std::sync::atomic::AtomicU64; FAR_SLOTS] = [const { std::sync::atomic::AtomicU64::new(0) }; FAR_SLOTS];
-
-/// Claim a free far slot for a group link: its queues start clean and the render mixes it from here. `None` when all are taken.
-pub fn claim_slot() -> Option<(usize, u64)> {
-    for s in 1..FAR_SLOTS {
-        let bit = 1u32 << s;
-        if FAR_ACTIVE.fetch_or(bit, Ordering::SeqCst) & bit == 0 {
-            reset_slot(s);
-            let gen = SLOT_GEN[s].fetch_add(1, Ordering::SeqCst) + 1;
-            return Some((s, gen));
-        }
-    }
-    None
+/// A table that grows to any number of parties (docs/group-media-scale.md, Stage 1): one entry per far party, addressed by its slot number, never shrinking while the process runs — a slot a link gave back is claimed again by the next one, so the table only ever holds as many as were ever live at once.
+/// Every per-party table (playout here, the link stamps in wave/mod.rs, the beam pictures) is one of these; none has a fixed size.
+pub struct PartyTable<T> {
+    rows: std::sync::RwLock<Vec<std::sync::Arc<T>>>,
+    make: fn() -> T,
 }
 
-/// Release a far slot, only while `gen` still holds it; true when it did.
+impl<T> PartyTable<T> {
+    pub const fn new(make: fn() -> T) -> Self {
+        PartyTable { rows: std::sync::RwLock::new(Vec::new()), make }
+    }
+
+    /// The row for `slot`, made (with every row before it) the first time any reader names it.
+    pub fn at(&self, slot: usize) -> std::sync::Arc<T> {
+        if let Some(r) = self.rows.read().unwrap().get(slot) {
+            return r.clone();
+        }
+        let mut rows = self.rows.write().unwrap();
+        while rows.len() <= slot {
+            rows.push(std::sync::Arc::new((self.make)()));
+        }
+        rows[slot].clone()
+    }
+
+    /// Every row made so far, slot order.
+    pub fn rows(&self) -> Vec<std::sync::Arc<T>> {
+        self.rows.read().unwrap().clone()
+    }
+}
+
+/// ONE FAR PARTY's audio (docs/group-media-scale.md, Stage 1; was eight fixed slot arrays, docs/group-waves.md): its copy of the microphone, its decoded frames by name and its playout cursor.
+/// Party 0 is the 1:1 wave's, exactly as before; a group wave's links claim parties as they come up, as many as the wave has.
+struct Party {
+    /// Claimed by a live link (party 0 always counts as live): the render mixes it and the capture fans out to it.
+    live: AtomicBool,
+    /// The claim's generation: a link releases its party only while its generation still holds it, so a link that ends and a link that reuses the party never tear each other down.
+    gen: std::sync::atomic::AtomicU64,
+    capture_q: CaptureQ,
+    /// The loss loop's margin over the path floor, frames.
+    jitter_target: AtomicUsize,
+    /// Decoded frames by grid name (k0 of the frame's first sample), ascending.
+    wave_rx: Mutex<VecDeque<(i64, Vec<i16>)>>,
+    /// L, the TARGET playout latency in samples (engine-set: the 1-in-256 point of arrival ages plus the repair copy's offset); `i64::MIN` until the engine sets it.
+    play_target: AtomicI64,
+    /// l, the ACTUAL playout latency in samples at the start of the last rendered frame (DAC true instant minus the name being played); `i64::MIN` before the first render.
+    play_l: AtomicI64,
+    /// The read cursor: the next grid name the speaker plays. Names before it have had their instant (played, or slipped past) and are never played again.
+    play_next: AtomicI64,
+    /// Some far audio has reached the speaker this wave — misses count only after it has.
+    played_any: AtomicBool,
+    /// Named-playout misses (a frame with samples due that never arrived in time), logged at session teardown.
+    underruns: AtomicUsize,
+    /// Far frames that arrived after their instant had passed — never played (the honest "frames shed").
+    late_dropped: AtomicUsize,
+    /// The DAC instant of the previous render: a gap of more than two frames between renders means the callback was away (a stream rebuild), and the cursor it left behind would read as that much latency.
+    last_dac_k: AtomicI64,
+    /// Playout slips this wave: samples dropped (l shortened) and repeated (l lengthened) — the trace line prints them.
+    slip_drops: AtomicUsize,
+    slip_repeats: AtomicUsize,
+    /// Set when the far side is done (the engine's drain began): the render keeps naming frames that will never come, and those are not misses of the wave (2026-10-02: 195 of a wave's 199 "misses" were the second after the hangup).
+    far_done: AtomicBool,
+    /// The name and the hole count of the last named frame — named_frame leaves them for the render pull to trace.
+    named_last_p: AtomicI64,
+    named_last_missing: AtomicUsize,
+    /// Playout re-anchors this wave (see `reanchor_playout`).
+    reanchors: AtomicUsize,
+}
+
+impl Party {
+    fn new() -> Self {
+        Party {
+            live: AtomicBool::new(false),
+            gen: std::sync::atomic::AtomicU64::new(0),
+            capture_q: Mutex::new(VecDeque::new()),
+            jitter_target: AtomicUsize::new(JITTER_FLOOR),
+            wave_rx: Mutex::new(VecDeque::new()),
+            play_target: AtomicI64::new(i64::MIN),
+            play_l: AtomicI64::new(i64::MIN),
+            play_next: AtomicI64::new(i64::MIN),
+            played_any: AtomicBool::new(false),
+            underruns: AtomicUsize::new(0),
+            late_dropped: AtomicUsize::new(0),
+            last_dac_k: AtomicI64::new(i64::MIN),
+            slip_drops: AtomicUsize::new(0),
+            slip_repeats: AtomicUsize::new(0),
+            far_done: AtomicBool::new(false),
+            named_last_p: AtomicI64::new(i64::MIN),
+            named_last_missing: AtomicUsize::new(0),
+            reanchors: AtomicUsize::new(0),
+        }
+    }
+
+    /// Clean for a new link: queues empty, cursor unset, counters zero.
+    fn reset(&self) {
+        self.capture_q.lock().unwrap().clear();
+        self.wave_rx.lock().unwrap().clear();
+        self.play_target.store(i64::MIN, Ordering::Relaxed);
+        self.play_l.store(i64::MIN, Ordering::Relaxed);
+        self.play_next.store(i64::MIN, Ordering::Relaxed);
+        self.played_any.store(false, Ordering::Relaxed);
+        // Each wave starts fresh at the least margin — never inheriting the last wave's grown latency.
+        self.jitter_target.store(JITTER_FLOOR, Ordering::Relaxed);
+        self.underruns.store(0, Ordering::Relaxed);
+        self.late_dropped.store(0, Ordering::Relaxed);
+        self.far_done.store(false, Ordering::Relaxed);
+        self.slip_drops.store(0, Ordering::Relaxed);
+        self.slip_repeats.store(0, Ordering::Relaxed);
+        self.named_last_p.store(i64::MIN, Ordering::Relaxed);
+        self.named_last_missing.store(0, Ordering::Relaxed);
+        self.reanchors.store(0, Ordering::Relaxed);
+        self.last_dac_k.store(i64::MIN, Ordering::Relaxed);
+    }
+}
+
+/// THE PARTIES (group waves, docs/group-waves.md): a wave with N others runs N engines over the one audio session, each with its own capture queue and its own far channel, mixed at the render.
+static PARTIES: PartyTable<Party> = PartyTable::new(Party::new);
+
+fn party(slot: usize) -> std::sync::Arc<Party> {
+    PARTIES.at(slot)
+}
+
+/// Claim a free party for a group link: its queues start clean and the render mixes it from here. A wave holds as many as it has links.
+pub fn claim_slot() -> (usize, u64) {
+    party(0);
+    let mut slot = 1;
+    loop {
+        let p = party(slot);
+        if p.live.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            p.reset();
+            let gen = p.gen.fetch_add(1, Ordering::SeqCst) + 1;
+            return (slot, gen);
+        }
+        slot += 1;
+    }
+}
+
+/// Release a party, only while `gen` still holds it; true when it did.
 pub fn release_slot(slot: usize, gen: u64) -> bool {
-    if slot == 0 || slot >= FAR_SLOTS || SLOT_GEN[slot].load(Ordering::SeqCst) != gen {
+    let p = party(slot);
+    if slot == 0 || p.gen.load(Ordering::SeqCst) != gen {
         return false;
     }
-    FAR_ACTIVE.fetch_and(!(1u32 << slot), Ordering::SeqCst);
-    reset_slot(slot);
+    p.live.store(false, Ordering::SeqCst);
+    p.reset();
     true
 }
 
-/// Slots live right now, slot 0 included while named playout runs.
-fn active_slots() -> u32 {
-    FAR_ACTIVE.load(Ordering::Relaxed) | 1
+/// Parties live right now, party 0 first and always (it plays while named playout runs).
+fn live_parties() -> Vec<std::sync::Arc<Party>> {
+    party(0);
+    PARTIES.rows().into_iter().enumerate().filter(|(s, p)| *s == 0 || p.live.load(Ordering::Relaxed)).map(|(_, p)| p).collect()
 }
 /// Decoded far-end frames waiting for the device (drop-oldest past ~1s).
 static PLAYBACK_Q: Mutex<VecDeque<Vec<i16>>> = Mutex::new(VecDeque::new());
@@ -79,7 +196,6 @@ static RENDER_ENV_TOTAL: AtomicUsize = AtomicUsize::new(0);
 // L (target) = the engine's 1-in-256 point of arrival ages plus the repair copy's offset (spec §7.1 as amended 2026-09-28); l (actual) follows it one sample at a time at the stream's zero-slope and sign-change points (named_frame). It absorbs a peer whose clock is off (spec §7.5) because the offset is part of every age.
 const JITTER_FLOOR: usize = 1; // the loss loop's least margin: one 5 ms frame over the path floor
 const JITTER_CAP: usize = 24; // 120 ms of margin — the most the engine's loop may ask for, even on a bad relay
-static JITTER_TARGET: [AtomicUsize; FAR_SLOTS] = [const { AtomicUsize::new(JITTER_FLOOR) }; FAR_SLOTS];
 
 /// Engine hook: the loss-rate loop's margin over the path floor, in frames.
 pub fn set_jitter_target(frames: usize) {
@@ -89,28 +205,17 @@ pub fn set_jitter_target(frames: usize) {
 /// The same, for one far slot.
 pub fn set_jitter_target_slot(slot: usize, frames: usize) {
     // WHY/PROOF: the margin's physical range — under one frame every jitter spike is a miss, past the cap the latency is a phone call from the moon; the loss controller's output is held to it here, at the one store.
-    JITTER_TARGET[slot].store(frames.clamp(JITTER_FLOOR, JITTER_CAP), Ordering::Relaxed);
+    party(slot).jitter_target.store(frames.clamp(JITTER_FLOOR, JITTER_CAP), Ordering::Relaxed);
 }
 
 /// Named playout is live (a wave's far channel); off = the plain FIFO for local sources.
 static NAMED: AtomicBool = AtomicBool::new(false);
-/// Each far party's decoded frames by grid name (k0 of the frame's first sample), ascending — one store per slot.
-static WAVE_RX: [Mutex<VecDeque<(i64, Vec<i16>)>>; FAR_SLOTS] = [const { Mutex::new(VecDeque::new()) }; FAR_SLOTS];
-/// L, the TARGET playout latency in samples (engine-set: the 1-in-256 point of arrival ages plus the repair copy's offset); `i64::MIN` until the engine sets it.
-static PLAY_TARGET: [AtomicI64; FAR_SLOTS] = [const { AtomicI64::new(i64::MIN) }; FAR_SLOTS];
-/// l, the ACTUAL playout latency in samples at the start of the last rendered frame (DAC true instant minus the name being played); `i64::MIN` before the first render.
-static PLAY_L: [AtomicI64; FAR_SLOTS] = [const { AtomicI64::new(i64::MIN) }; FAR_SLOTS];
-/// The read cursor: the next grid name the speaker plays. Names before it have had their instant (played, or slipped past) and are never played again.
-static PLAY_NEXT: [AtomicI64; FAR_SLOTS] = [const { AtomicI64::new(i64::MIN) }; FAR_SLOTS];
 
 /// The grid sample the speaker plays next, or None before named playout has begun — the wave screen's RX field ripples from here.
 /// A group wave's slots each keep their own cursor; the field follows the first one that has begun.
 pub fn play_head() -> Option<i64> {
-    let live = active_slots();
-    (0..FAR_SLOTS).filter(|s| live & (1 << s) != 0).map(|s| PLAY_NEXT[s].load(Ordering::Relaxed)).find(|k| *k != i64::MIN)
+    live_parties().iter().map(|p| p.play_next.load(Ordering::Relaxed)).find(|k| *k != i64::MIN)
 }
-/// Some far audio has reached the speaker this wave — misses count only after it has.
-static PLAYED_ANY: [AtomicBool; FAR_SLOTS] = [const { AtomicBool::new(false) }; FAR_SLOTS];
 /// Missing samples a frame may have before it counts as a miss: the DAC's own drift against true time opens a one-sample gap now and then, which is not the network losing anything.
 const MISS_SLACK: usize = 2;
 
@@ -126,7 +231,7 @@ pub fn set_play_target(samples: i64) {
 
 /// The same, for one far slot.
 pub fn set_play_target_slot(slot: usize, samples: i64) {
-    PLAY_TARGET[slot].store(samples, Ordering::Relaxed);
+    party(slot).play_target.store(samples, Ordering::Relaxed);
 }
 
 /// One decoded far frame, named by the grid sample of its first sample. A frame whose instant has already passed is dropped here — it would never play.
@@ -136,11 +241,12 @@ pub fn queue_named(k0: i64, frame: Vec<i16>) {
 
 /// The same, into one far slot's store.
 pub fn queue_named_slot(slot: usize, k0: i64, frame: Vec<i16>) {
-    if k0 + frame.len() as i64 <= PLAY_NEXT[slot].load(Ordering::Relaxed) {
-        LATE_DROPPED[slot].fetch_add(1, Ordering::Relaxed);
+    let pt = party(slot);
+    if k0 + frame.len() as i64 <= pt.play_next.load(Ordering::Relaxed) {
+        pt.late_dropped.fetch_add(1, Ordering::Relaxed);
         return;
     }
-    let mut q = WAVE_RX[slot].lock().unwrap();
+    let mut q = pt.wave_rx.lock().unwrap();
     let at = q.partition_point(|(k, _)| *k < k0);
     if q.get(at).is_some_and(|(k, _)| *k == k0) {
         return; // the same name twice (a fill racing the live copy) — the first one stands
@@ -178,37 +284,37 @@ fn named_mix(at_osc: i64) -> Vec<i16> {
     OUT_AHEAD_LAST.store(ahead.max(0), Ordering::Relaxed);
     OUT_AHEAD_SUM.fetch_add(ahead, Ordering::Relaxed);
     OUT_AHEAD_N.fetch_add(1, Ordering::Relaxed);
-    let live = active_slots();
-    if live == 1 {
-        return named_frame(0, at_osc);
+    let live = live_parties();
+    if live.len() == 1 {
+        return named_frame(&live[0], at_osc);
     }
     let mut sum = vec![0i32; FRAME_SAMPLES];
-    for s in (0..FAR_SLOTS).filter(|s| live & (1 << s) != 0) {
-        for (acc, v) in sum.iter_mut().zip(named_frame(s, at_osc)) {
+    for pt in &live {
+        for (acc, v) in sum.iter_mut().zip(named_frame(pt, at_osc)) {
             *acc += v as i32;
         }
     }
-    // WHY/PROOF: the sum of up to eight i16 voices fits i32 with room to spare, and two loud talkers at once can pass the i16 rail — the clamp pins that peak to the rail instead of wrapping its sign.
+    // WHY/PROOF: the sum of i16 voices fits i32 for up to 2^16 of them, and two loud talkers at once can pass the i16 rail — the clamp pins that peak to the rail instead of wrapping its sign.
     sum.into_iter().map(|v| v.clamp(i16::MIN as i32, i16::MAX as i32) as i16).collect()
 }
 
-fn named_frame(slot: usize, at_osc: i64) -> Vec<i16> {
+fn named_frame(pt: &Party, at_osc: i64) -> Vec<i16> {
     let mut out = vec![0i16; FRAME_SAMPLES];
-    let target = PLAY_TARGET[slot].load(Ordering::Relaxed);
+    let target = pt.play_target.load(Ordering::Relaxed);
     if target == i64::MIN {
         return out; // no target yet — nothing can be due
     }
     let dac_k = vsf::grid::eagle_to_sample(at_osc);
-    let mut p = PLAY_NEXT[slot].load(Ordering::Relaxed);
+    let mut p = pt.play_next.load(Ordering::Relaxed);
     // A render gap (the callback was away: a stream rebuilt on a route change) or a cursor far from L is an EVENT, not jitter: the cursor re-anchors by the first-arrival rule (see REANCHOR_SAMPLES).
-    let last_dac = LAST_DAC_K[slot].swap(dac_k, Ordering::Relaxed);
+    let last_dac = pt.last_dac_k.swap(dac_k, Ordering::Relaxed);
     if p != i64::MIN {
         let gap = last_dac != i64::MIN && dac_k - last_dac > 2 * FRAME_SAMPLES as i64;
         // WHY/PROOF: `dac_k` comes from the device's timestamp, which can jump anywhere — `(x).abs()` of a far value wraps to i64::MIN and reads as "near"; abs_diff is exact for every pair.
         let far = (dac_k - p).abs_diff(target) > REANCHOR_SAMPLES as u64;
         if gap || far {
             p = i64::MIN;
-            REANCHORS[slot].fetch_add(1, Ordering::Relaxed);
+            pt.reanchors.fetch_add(1, Ordering::Relaxed);
         }
     }
     // The first frame starts exactly on L. After that nothing but slips ever moves the cursor — however far L moves, l walks to it (Nick 2026-09-28: no hardcoded timings, no jumps).
@@ -217,14 +323,14 @@ fn named_frame(slot: usize, at_osc: i64) -> Vec<i16> {
     }
     // The walk's pace this frame: one slip over audio, two when far from L (see WALK_FAR_SAMPLES).
     let pace = if (dac_k - p - target).abs() > WALK_FAR_SAMPLES { 2 * SLIPS_PER_FRAME } else { SLIPS_PER_FRAME };
-    NAMED_LAST_P[slot].store(p, Ordering::Relaxed);
+    pt.named_last_p.store(p, Ordering::Relaxed);
     // The names this frame can reach: the one before the cursor (for the slope), and at most two per output sample (a drop per sample in a silent stretch).
     let lo = p - 1;
     let span = 2 * FRAME_SAMPLES + 3;
     let mut win = vec![0i16; span];
     let mut have = vec![false; span];
     {
-        let q = WAVE_RX[slot].lock().unwrap();
+        let q = pt.wave_rx.lock().unwrap();
         for (k0, f) in q.iter() {
             if *k0 >= lo + span as i64 {
                 break;
@@ -271,24 +377,24 @@ fn named_frame(slot: usize, at_osc: i64) -> Vec<i16> {
             p += 1;
         }
     }
-    SLIP_DROPS[slot].fetch_add(drops, Ordering::Relaxed);
-    SLIP_REPEATS[slot].fetch_add(repeats, Ordering::Relaxed);
-    PLAY_L[slot].store(dac_k + FRAME_SAMPLES as i64 - p, Ordering::Relaxed); // the lag the next sample will play at
-    PLAY_NEXT[slot].store(p, Ordering::Relaxed);
+    pt.slip_drops.fetch_add(drops, Ordering::Relaxed);
+    pt.slip_repeats.fetch_add(repeats, Ordering::Relaxed);
+    pt.play_l.store(dac_k + FRAME_SAMPLES as i64 - p, Ordering::Relaxed); // the lag the next sample will play at
+    pt.play_next.store(p, Ordering::Relaxed);
     // Every name before the cursor has had its instant.
     {
-        let mut q = WAVE_RX[slot].lock().unwrap();
+        let mut q = pt.wave_rx.lock().unwrap();
         while q.front().is_some_and(|(k0, f)| *k0 + f.len() as i64 <= p) {
             q.pop_front();
         }
     }
     let got = FRAME_SAMPLES - missing;
-    NAMED_LAST_MISSING[slot].store(missing, Ordering::Relaxed);
-    if PLAYED_ANY[slot].load(Ordering::Relaxed) && missing > MISS_SLACK && !FAR_DONE[slot].load(Ordering::Relaxed) {
-        JITTER_UNDERRUNS[slot].fetch_add(1, Ordering::Relaxed);
+    pt.named_last_missing.store(missing, Ordering::Relaxed);
+    if pt.played_any.load(Ordering::Relaxed) && missing > MISS_SLACK && !pt.far_done.load(Ordering::Relaxed) {
+        pt.underruns.fetch_add(1, Ordering::Relaxed);
     }
     if got > 0 {
-        PLAYED_ANY[slot].store(true, Ordering::Relaxed);
+        pt.played_any.store(true, Ordering::Relaxed);
     }
     out
 }
@@ -305,10 +411,6 @@ pub fn set_rx_trim_stops(stops: i32) {
     // WHY/PROOF: the trim is a HUMAN's input (the Wave page's steppers, a synced setting) — held to the ± range the shift math below is sized for.
     RX_TRIM_STOPS.store(stops.clamp(-RX_TRIM_MAX_STOPS, RX_TRIM_MAX_STOPS), Ordering::Relaxed);
 }
-// Telemetry: named-playout misses (a frame with samples due that never arrived in time), reset per wave in clear_queues, logged at session teardown.
-static JITTER_UNDERRUNS: [AtomicUsize; FAR_SLOTS] = [const { AtomicUsize::new(0) }; FAR_SLOTS];
-/// Far frames that arrived after their instant had passed — never played (the honest "frames shed").
-static LATE_DROPPED: [AtomicUsize; FAR_SLOTS] = [const { AtomicUsize::new(0) }; FAR_SLOTS];
 /// THE WALK'S PACE (Nick 2026-10-03, "do we have an accumulator on our latency adjustment? … sounds like the playback speed is oscillating"): l followed every move of L at one slip per zero crossing, and on a jittery LAN L stepped 5 to 10 ms every second or two, so each step was walked inside 100 ms — a 5% speed change, a third of a semitone, every couple of seconds. Over audio the walk now takes at most ONE slip per 5 ms frame (0.4%, seven cents, under the ear's notice); in digital silence, where a dropped or repeated zero costs nothing, it stays uncapped and l meets L at once.
 const SLIPS_PER_FRAME: usize = 1;
 /// THE DEAD BAND (2026-10-03, the Nick/Emma wave after the pace cap: 400 slips a second with l and L a millisecond apart): L is re-set every window with the output lead's jitter in it, so the cursor sat a sample or two off its target every frame and the walk dropped one and repeated one, forever — a micro time-stretch under every word. Within a millisecond of L the walk rests.
@@ -317,11 +419,6 @@ const WALK_DEAD_BAND: i64 = 48;
 const WALK_FAR_SAMPLES: i64 = 960;
 /// Past THIS far from L nothing is walked: a 200 ms discrepancy is not jitter but an event (an output stream rebuilt on a route change, a window that collapsed), and the cursor re-anchors by the first-arrival rule (field 2026-10-03: Brittany's l sat 580 ms over L after two route changes, walking down at the single pace for the rest of the wave).
 const REANCHOR_SAMPLES: i64 = 9600;
-/// The DAC instant of the previous render: a gap of more than two frames between renders means the callback was away (a stream rebuild), and the cursor it left behind would read as that much latency.
-static LAST_DAC_K: [AtomicI64; FAR_SLOTS] = [const { AtomicI64::new(i64::MIN) }; FAR_SLOTS];
-/// Playout slips this wave: samples dropped (l shortened) and repeated (l lengthened) — the trace line prints them.
-static SLIP_DROPS: [AtomicUsize; FAR_SLOTS] = [const { AtomicUsize::new(0) }; FAR_SLOTS];
-static SLIP_REPEATS: [AtomicUsize; FAR_SLOTS] = [const { AtomicUsize::new(0) }; FAR_SLOTS];
 
 /// Samples dropped and repeated by the walk since the last audio reset.
 pub fn slips() -> (usize, usize) {
@@ -330,11 +427,10 @@ pub fn slips() -> (usize, usize) {
 
 /// The same, for one far slot.
 pub fn slips_slot(slot: usize) -> (usize, usize) {
-    (SLIP_DROPS[slot].load(Ordering::Relaxed), SLIP_REPEATS[slot].load(Ordering::Relaxed))
+    let pt = party(slot);
+    (pt.slip_drops.load(Ordering::Relaxed), pt.slip_repeats.load(Ordering::Relaxed))
 }
 
-/// Set when the far side is done (the engine's drain began): the render keeps naming frames that will never come, and those are not misses of the wave (2026-10-02: 195 of a wave's 199 "misses" were the second after the hangup).
-static FAR_DONE: [AtomicBool; FAR_SLOTS] = [const { AtomicBool::new(false) }; FAR_SLOTS];
 
 /// The engine's drain edge: the far side has stopped sending; nothing due from here on is a miss.
 pub fn far_done() {
@@ -343,7 +439,7 @@ pub fn far_done() {
 
 /// The same, for one far slot (a group link whose peer left).
 pub fn far_done_slot(slot: usize) {
-    FAR_DONE[slot].store(true, Ordering::Relaxed);
+    party(slot).far_done.store(true, Ordering::Relaxed);
 }
 
 /// Per-wave playout diagnostics: (the loss loop's margin frames — telemetry only now, far frames waiting, misses, frames too late to play).
@@ -353,7 +449,9 @@ pub fn jitter_stats() -> (usize, usize, usize, usize) {
 
 /// The same, for one far slot.
 pub fn jitter_stats_slot(slot: usize) -> (usize, usize, usize, usize) {
-    (JITTER_TARGET[slot].load(Ordering::Relaxed), WAVE_RX[slot].lock().unwrap().len(), JITTER_UNDERRUNS[slot].load(Ordering::Relaxed), LATE_DROPPED[slot].load(Ordering::Relaxed))
+    let pt = party(slot);
+    let waiting = pt.wave_rx.lock().unwrap().len();
+    (pt.jitter_target.load(Ordering::Relaxed), waiting, pt.underruns.load(Ordering::Relaxed), pt.late_dropped.load(Ordering::Relaxed))
 }
 
 /// l, the actual playout latency in samples; `None` before the first far frame.
@@ -363,7 +461,7 @@ pub fn play_latency() -> Option<i64> {
 
 /// The same, for one far slot.
 pub fn play_latency_slot(slot: usize) -> Option<i64> {
-    let l = PLAY_L[slot].load(Ordering::Relaxed);
+    let l = party(slot).play_l.load(Ordering::Relaxed);
     (l != i64::MIN).then_some(l)
 }
 
@@ -374,7 +472,7 @@ pub fn play_target() -> Option<i64> {
 
 /// The same, for one far slot.
 pub fn play_target_slot(slot: usize) -> Option<i64> {
-    let l = PLAY_TARGET[slot].load(Ordering::Relaxed);
+    let l = party(slot).play_target.load(Ordering::Relaxed);
     (l != i64::MIN).then_some(l)
 }
 
@@ -429,11 +527,6 @@ static PROFILE_ON: AtomicBool = AtomicBool::new(false);
 static PROFILE_RING: Mutex<VecDeque<RenderTrace>> = Mutex::new(VecDeque::new());
 /// Two seconds of 5 ms frames: the engine drains every loop pass; a ring this deep only ever matters if the engine stalls, and then the newest frames are the ones worth having.
 const PROFILE_RING_MAX: usize = 400;
-/// The name and the hole count of the last named frame — named_frame leaves them for the render pull to trace.
-static NAMED_LAST_P: [AtomicI64; FAR_SLOTS] = [const { AtomicI64::new(i64::MIN) }; FAR_SLOTS];
-static NAMED_LAST_MISSING: [AtomicUsize; FAR_SLOTS] = [const { AtomicUsize::new(0) }; FAR_SLOTS];
-/// Playout re-anchors this wave (see `reanchor_playout`).
-static REANCHORS: [AtomicUsize; FAR_SLOTS] = [const { AtomicUsize::new(0) }; FAR_SLOTS];
 
 /// THE PHONE'S VOICE PROCESSING (Nick 2026-10-03, "we never actually tried the voice-call DSP to get real numbers"): on, the input opens with the VoiceCommunication preset — the vendor's echo canceller, noise suppressor and gain control in front of our mic — instead of Unprocessed. Device-local, default off, the Wave page's checkbox; applies at the next stream open. The sweep and the trace then say what it costs and what it cancels.
 pub static VOICE_DSP: AtomicBool = AtomicBool::new(false);
@@ -485,13 +578,13 @@ pub fn reanchor_playout() {
 
 /// The same, for one far slot.
 pub fn reanchor_playout_slot(slot: usize) {
-    PLAY_NEXT[slot].store(i64::MIN, Ordering::Relaxed);
-    REANCHORS[slot].fetch_add(1, Ordering::Relaxed);
+    party(slot).play_next.store(i64::MIN, Ordering::Relaxed);
+    party(slot).reanchors.fetch_add(1, Ordering::Relaxed);
 }
 
 /// Playout re-anchors since the last audio reset.
 pub fn reanchors() -> usize {
-    REANCHORS[0].load(Ordering::Relaxed)
+    party(0).reanchors.load(Ordering::Relaxed)
 }
 
 /// One step of the follower: fast on the way up, Nick's seven-eighths on the way down.
@@ -626,7 +719,8 @@ pub fn captured_frames() -> Vec<(i64, i64, Vec<i32>)> {
 
 /// The same, from one far slot's copy of the microphone.
 pub fn captured_frames_slot(slot: usize) -> Vec<(i64, i64, Vec<i32>)> {
-    let mut q = CAPTURE_Q[slot].lock().unwrap();
+    let pt = party(slot);
+    let mut q = pt.capture_q.lock().unwrap();
     q.drain(..).collect()
 }
 
@@ -815,16 +909,16 @@ pub fn stop_owned(gen: u64) {
 }
 
 pub(crate) fn push_captured(at_osc: i64, pos: i64, frame: Vec<i32>) {
-    // Every live slot gets the frame: one microphone, one copy per engine of a group wave.
-    let live = active_slots();
-    for s in (1..FAR_SLOTS).filter(|s| live & (1 << s) != 0) {
-        let mut q = CAPTURE_Q[s].lock().unwrap();
+    // Every live party gets the frame: one microphone, one copy per engine of a group wave.
+    let live = live_parties();
+    for pt in &live[1..] {
+        let mut q = pt.capture_q.lock().unwrap();
         if q.len() >= CAPTURE_Q_MAX {
             q.pop_front();
         }
         q.push_back((at_osc, pos, frame.clone()));
     }
-    let mut q = CAPTURE_Q[0].lock().unwrap();
+    let mut q = live[0].capture_q.lock().unwrap();
     if q.len() >= CAPTURE_Q_MAX {
         q.pop_front();
     }
@@ -1043,15 +1137,15 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
     mix_overlay(&mut frame, at_osc);
     // The render trace: the frame exactly as the DAC gets it (see RenderTrace); only a named far frame is traced, and only while profiling.
     // A frame rendered before the first far frame was due has no name yet: the cursor is unset (i64::MIN), and tracing it under that name wrapped into a garbage stamp that wrecked the answering phone's keep (2026-10-02, Jeff's one-stream keep). Nothing to trace it under; nothing traced.
-    if PROFILE_ON.load(Ordering::Relaxed) && NAMED.load(Ordering::Relaxed) && !LOCAL_SOURCE.load(Ordering::Relaxed) && NAMED_LAST_P[0].load(Ordering::Relaxed) != i64::MIN {
+    if PROFILE_ON.load(Ordering::Relaxed) && NAMED.load(Ordering::Relaxed) && !LOCAL_SOURCE.load(Ordering::Relaxed) && party(0).named_last_p.load(Ordering::Relaxed) != i64::MIN {
         let mut r = PROFILE_RING.lock().unwrap();
         if r.len() >= PROFILE_RING_MAX {
             r.pop_front();
         }
         r.push_back(RenderTrace {
-            name: NAMED_LAST_P[0].load(Ordering::Relaxed),
+            name: party(0).named_last_p.load(Ordering::Relaxed),
             gain_q32: traced_gain,
-            missing: NAMED_LAST_MISSING[0].load(Ordering::Relaxed).min(u16::MAX as usize) as u16,
+            missing: party(0).named_last_missing.load(Ordering::Relaxed).min(u16::MAX as usize) as u16,
             pcm: frame.clone(),
         });
     }
@@ -1101,27 +1195,6 @@ pub fn render_env_since(cursor: usize) -> (Vec<(i64, f32)>, usize) {
     (out, total)
 }
 
-/// One far slot back to a fresh wave's state: its microphone copy, its far store, its cursor and L, its telemetry.
-fn reset_slot(s: usize) {
-    CAPTURE_Q[s].lock().unwrap().clear();
-    WAVE_RX[s].lock().unwrap().clear();
-    PLAY_TARGET[s].store(i64::MIN, Ordering::Relaxed);
-    PLAY_L[s].store(i64::MIN, Ordering::Relaxed);
-    PLAY_NEXT[s].store(i64::MIN, Ordering::Relaxed);
-    PLAYED_ANY[s].store(false, Ordering::Relaxed);
-    // Each wave starts fresh at the least margin — never inheriting the last wave's grown latency.
-    JITTER_TARGET[s].store(JITTER_FLOOR, Ordering::Relaxed);
-    JITTER_UNDERRUNS[s].store(0, Ordering::Relaxed);
-    LATE_DROPPED[s].store(0, Ordering::Relaxed);
-    FAR_DONE[s].store(false, Ordering::Relaxed);
-    SLIP_DROPS[s].store(0, Ordering::Relaxed);
-    SLIP_REPEATS[s].store(0, Ordering::Relaxed);
-    NAMED_LAST_P[s].store(i64::MIN, Ordering::Relaxed);
-    NAMED_LAST_MISSING[s].store(0, Ordering::Relaxed);
-    REANCHORS[s].store(0, Ordering::Relaxed);
-    LAST_DAC_K[s].store(i64::MIN, Ordering::Relaxed);
-}
-
 /// Reset all queues — session start/stop hygiene so a new wave never hears the last wave's tail.
 /// Logs the session's jitter diagnostics FIRST (this runs at both start and stop; the stop edge is the one whose numbers matter, and a start against zeroed stats logs nothing).
 fn clear_queues() {
@@ -1130,10 +1203,10 @@ fn clear_queues() {
         let _ = margin;
         crate::logf!("WAVE: playout — l {} samples against L {}, {} far frame(s) left waiting, {} miss(es), {} too late to play (5 ms frames)", play_latency().map_or("?".to_string(), |l| l.to_string()), play_target().map_or("?".to_string(), |l| l.to_string()), waiting, misses, late);
     }
-    // Every far slot, and with them every group link's claim: a session edge ends the whole wave.
-    FAR_ACTIVE.store(0, Ordering::SeqCst);
-    for s in 0..FAR_SLOTS {
-        reset_slot(s);
+    // Every party, and with them every group link's claim: a session edge ends the whole wave.
+    for pt in PARTIES.rows() {
+        pt.live.store(false, Ordering::SeqCst);
+        pt.reset();
     }
     PLAYBACK_Q.lock().unwrap().clear();
     OVERLAY.lock().unwrap().clear();
@@ -1957,7 +2030,7 @@ mod tests {
         assert!((met - (f - 100)).abs() <= WALK_DEAD_BAND, "silence lets l meet L at once, to within the dead band ({met} vs {})", f - 100);
         // Speech-like audio (a 1 kHz tone, two peaks per 48 samples, no flat runs): l moves exactly one sample per peak or trough.
         let tone = |n: i64| (8000.0 * (2.0 * std::f64::consts::PI * n as f64 / 48.0 + 0.3).sin()) as i16;
-        let start = PLAY_NEXT[0].load(Ordering::Relaxed);
+        let start = party(0).play_next.load(Ordering::Relaxed);
         for fr in 0..4 {
             let k0 = start + fr * f;
             queue_named(k0, (k0..k0 + f).map(tone).collect());
@@ -1977,7 +2050,7 @@ mod tests {
         queue_named(k, vec![5; FRAME_SAMPLES]);
         assert_eq!(jitter_stats().3, 1, "counted as too late");
         // A CLOCK STEP RE-ANCHOR: the far names jump six seconds ahead; the engine restarts L from the stepped arrival and forgets the cursor, and the next render is the first frame again — exactly on the new L, no walk.
-        let stepped = PLAY_NEXT[0].load(Ordering::Relaxed) + 6 * 48_000;
+        let stepped = party(0).play_next.load(Ordering::Relaxed) + 6 * 48_000;
         queue_named(stepped, vec![77; FRAME_SAMPLES]);
         set_play_target(-6 * 48_000 + f); // the stepped arrival alone sets L (names ahead of our clock read as a negative age)
         reanchor_playout();
@@ -1989,7 +2062,7 @@ mod tests {
         // THE RENDER TRACE: armed, every named far frame lands in the ring as the DAC got it, with its name and holes.
         set_profile(true);
         let _ = take_render_trace();
-        let p0 = PLAY_NEXT[0].load(Ordering::Relaxed);
+        let p0 = party(0).play_next.load(Ordering::Relaxed);
         queue_named(p0, vec![31; FRAME_SAMPLES]);
         let _ = next_render_frame_at(dac(p0 + play_latency().unwrap()));
         let tr = take_render_trace();
@@ -2077,6 +2150,24 @@ mod tests {
         queue_playback(vec![10000i16; FRAME_SAMPLES]);
         let held = next_render_frame();
         assert!(held.iter().all(|&s| s <= 1), "the next frame starts where the ramp ended");
+        // THE PARTY TABLE (docs/group-media-scale.md, Stage 1): a wave holds as many links as it has, past the eight fixed slots there were; a released party is claimed again under a new generation, and the old generation cannot release it.
+        clear_queues();
+        let claims: Vec<(usize, u64)> = (0..(1 << 4)).map(|_| claim_slot()).collect();
+        let mut slots: Vec<usize> = claims.iter().map(|c| c.0).collect();
+        slots.sort();
+        assert_eq!(slots, (1..=(1 << 4)).collect::<Vec<_>>(), "sixteen links, sixteen distinct parties after party 0");
+        let (s, g) = claims[3];
+        assert!(release_slot(s, g));
+        let (s2, g2) = claim_slot();
+        assert_eq!(s2, s, "the next link takes the freed party");
+        assert!(g2 > g);
+        assert!(!release_slot(s, g), "the old generation cannot tear down the new link");
+        // Every live party hears the microphone.
+        push_captured(0, 0, vec![7; FRAME_SAMPLES]);
+        assert_eq!(captured_frames_slot(claims[15].0).len(), 1);
+        assert_eq!(live_parties().len(), 1 + (1 << 4));
+        clear_queues();
+        assert_eq!(live_parties().len(), 1, "a session edge ends every link");
         clear_queues();
     }
 }

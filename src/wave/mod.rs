@@ -311,9 +311,21 @@ pub static LAST_MEDIA_RX_OSC: std::sync::atomic::AtomicI64 = std::sync::atomic::
 /// Eagle osc at engine start — the drought baseline before the first packet ever arrives (0 = no engine).
 pub static MEDIA_START_OSC: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
-/// The same two stamps per far slot, for a group wave's links (docs/group-waves.md): the last authenticated packet each link opened, and when its engine started.
-pub static SLOT_RX_OSC: [std::sync::atomic::AtomicI64; crate::platform::audio::FAR_SLOTS] = [const { std::sync::atomic::AtomicI64::new(0) }; crate::platform::audio::FAR_SLOTS];
-pub static SLOT_START_OSC: [std::sync::atomic::AtomicI64; crate::platform::audio::FAR_SLOTS] = [const { std::sync::atomic::AtomicI64::new(0) }; crate::platform::audio::FAR_SLOTS];
+/// One group link's stamps and addresses, per far party (docs/group-waves.md; a table of any size, platform::audio::PartyTable): the last authenticated packet the link opened, when its engine started, where it is sending right now, and a fresh address waiting for it.
+pub struct SlotLink {
+    pub rx_osc: std::sync::atomic::AtomicI64,
+    pub start_osc: std::sync::atomic::AtomicI64,
+    tx_addr: Mutex<Option<SocketAddr>>,
+    redirect: Mutex<Option<SocketAddr>>,
+}
+
+impl SlotLink {
+    fn new() -> Self {
+        SlotLink { rx_osc: std::sync::atomic::AtomicI64::new(0), start_osc: std::sync::atomic::AtomicI64::new(0), tx_addr: Mutex::new(None), redirect: Mutex::new(None) }
+    }
+}
+
+pub static SLOT_LINKS: crate::platform::audio::PartyTable<SlotLink> = crate::platform::audio::PartyTable::new(SlotLink::new);
 
 /// A fresh peer address for the LIVE engine's TX, set by an authenticated express Anchor's source (drain_express_signals) and drained by the engine loop. The media-plane "address follows authenticated packets" rule can't heal a both-sides-moved deadlock — this is the signal-plane override that can.
 static PEER_REDIRECT: Mutex<Option<SocketAddr>> = Mutex::new(None);
@@ -330,15 +342,12 @@ pub fn wave_tx_addr() -> Option<SocketAddr> {
     *WAVE_TX_ADDR.lock().unwrap()
 }
 
-/// The same per far slot: where each group link's engine is sending right now (docs/group-waves.md) — the link's beam transport and the wave screen follow it.
-static SLOT_TX_ADDR: [Mutex<Option<SocketAddr>>; crate::platform::audio::FAR_SLOTS] = [const { Mutex::new(None) }; crate::platform::audio::FAR_SLOTS];
-
 pub fn set_slot_tx_addr(slot: usize, addr: Option<SocketAddr>) {
-    *SLOT_TX_ADDR[slot].lock().unwrap() = addr.map(|a| SocketAddr::new(a.ip().to_canonical(), a.port()));
+    *SLOT_LINKS.at(slot).tx_addr.lock().unwrap() = addr.map(|a| SocketAddr::new(a.ip().to_canonical(), a.port()));
 }
 
 pub fn slot_tx_addr(slot: usize) -> Option<SocketAddr> {
-    *SLOT_TX_ADDR[slot].lock().unwrap()
+    *SLOT_LINKS.at(slot).tx_addr.lock().unwrap()
 }
 
 /// A device that just pushed us its new address mid-wave, so the UI pushes ours back to it on the next tick (the network thread cannot: our freshest reflexive lives in the app).
@@ -371,13 +380,10 @@ pub fn take_peer_redirect() -> Option<SocketAddr> {
     PEER_REDIRECT.lock().unwrap().take()
 }
 
-/// A fresh address for one group link's engine (docs/group-waves.md): the group's drought walk aims a link that has never heard its peer at the device's next candidate, as `set_peer_redirect` does for a 1:1 wave.
-static SLOT_REDIRECT: [Mutex<Option<SocketAddr>>; crate::platform::audio::FAR_SLOTS] = [const { Mutex::new(None) }; crate::platform::audio::FAR_SLOTS];
-
 pub fn set_slot_redirect(slot: usize, addr: SocketAddr) {
-    *SLOT_REDIRECT[slot].lock().unwrap() = Some(addr);
+    *SLOT_LINKS.at(slot).redirect.lock().unwrap() = Some(addr);
 }
 
 pub fn take_slot_redirect(slot: usize) -> Option<SocketAddr> {
-    SLOT_REDIRECT[slot].lock().unwrap().take()
+    SLOT_LINKS.at(slot).redirect.lock().unwrap().take()
 }

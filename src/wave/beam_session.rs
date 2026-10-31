@@ -24,8 +24,12 @@ pub struct Picture {
     pub holes: Option<Vec<u8>>,
 }
 
-/// One picture per far slot (platform::audio FAR_SLOTS): slot 0 is the 1:1 wave's peer, a group wave's links show theirs in their own slots.
-static PICTURES: [Mutex<Option<Picture>>; crate::platform::audio::FAR_SLOTS] = [const { Mutex::new(None) }; crate::platform::audio::FAR_SLOTS];
+/// One picture per far party (platform::audio::PartyTable): slot 0 is the 1:1 wave's peer, a group wave's links show theirs in their own slots.
+static PICTURES: crate::platform::audio::PartyTable<Mutex<Option<Picture>>> = crate::platform::audio::PartyTable::new(no_picture);
+
+fn no_picture() -> Mutex<Option<Picture>> {
+    Mutex::new(None)
+}
 /// Bumped on every new picture: the paint compares it with what it last drew.
 pub static PICTURE_GEN: AtomicU64 = AtomicU64::new(0);
 
@@ -36,12 +40,12 @@ pub fn picture() -> Option<Picture> {
 
 /// The newest picture one far slot's beam produced (a group link's peer).
 pub fn picture_slot(slot: usize) -> Option<Picture> {
-    PICTURES[slot].lock().unwrap().clone()
+    PICTURES.at(slot).lock().unwrap().clone()
 }
 
 /// Is any beam picture up (theirs or our own inset)? The wave screen's switch to the beam layout, without cloning a frame.
 pub fn showing() -> bool {
-    PICTURES.iter().any(|p| p.lock().unwrap().is_some()) || SELF_PICTURE.lock().unwrap().is_some()
+    PICTURES.rows().iter().any(|p| p.lock().unwrap().is_some()) || SELF_PICTURE.lock().unwrap().is_some()
 }
 
 /// THE SELF-VIEW (2026-10-10, Nick: "when you choose beam, still no video shows"): what this device's camera is sending, converted thru the same chain the receiver runs — so the inset shows the colour the far side gets, tungsten-yellow included.
@@ -207,7 +211,7 @@ impl Drop for Receiver {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
-        *PICTURES[self.slot].lock().unwrap() = None;
+        *PICTURES.at(self.slot).lock().unwrap() = None;
         // The parked transport is the 1:1 wave's; a group link's receiver leaves it alone.
         if self.slot == 0 {
             *PARKED_TX.lock().unwrap() = None;
@@ -502,7 +506,7 @@ fn decode_loop(stop: Arc<AtomicBool>, shared: Arc<beam::RxShared>, slot: usize) 
             // THE SWIPE IN (Nick 2026-10-14: "the swipe to start is really nice… Nice and empty!"): what the intra refresh has not reached yet shows the screen's own background, not the decoder's green.
             let holes = pic.unpainted_mask().map(|m| super::beam_colour::rotate_px(&m, pic.w / 2, pic.h / 2, rot, 1).0);
             holey += holes.is_some() as u64;
-            *PICTURES[slot].lock().unwrap() = Some(Picture { w, h, frame_no: n, rgb: out, holes });
+            *PICTURES.at(slot).lock().unwrap() = Some(Picture { w, h, frame_no: n, rgb: out, holes });
             PICTURE_GEN.fetch_add(1, Ordering::Relaxed);
         }
     }

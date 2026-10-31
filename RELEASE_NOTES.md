@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Group waves past eight people.** A group wave used to stop at eight devices; it now takes as many as join.
+- **Lighter group waves.** In a group wave your device now encodes your voice once for everyone instead of once per person, and when someone joins, the others answer only them instead of the whole group, so a large wave no longer floods every device.
 
 ## v135
 - **A cleaner wave and beam screen.** The screen is now three bands — the people or the picture, a strip with the name and status, and the buttons — so nothing covers anything else; the microphone and speaker buttons sit in one row and respond to every tap.
