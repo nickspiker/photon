@@ -2325,221 +2325,70 @@ pub fn parse_chain_pull_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32], Opt
     Ok((token, sender_pubkey, held_era, held_tag))
 }
 
-/// Build a `depart_req` — the LEAVING device's sibling-to-sibling removal request (bilateral removal, the mirror of the add ceremony). Carries the departure stamp `t` and the device's signature over `fgtw::fleet::departreq_signing_bytes(hp, device, t)`; the frame itself is signed by the same device key, so the receiver's sibling gate + the consent verify both pin the same identity. A surviving member's user approves on their screen; that device countersigns and publishes the consented Remove chain op.
-/// The departure request's section, as a `#[derive(Vsf)]` declaration — the derive's photon flagship (2026-09-08): one struct IS both codec halves, byte-identical to the retired hand codec (pinned by test). Field order here IS the wire order the signature covers.
-#[derive(vsf::Vsf, Debug, Clone, Default, PartialEq)]
-#[vsf(section = "depart_req")]
-pub struct DepartReqBody {
-    /// Consent stamp — the eagle time the leaver's signature covers.
-    #[vsf(eagle, name = "t")]
-    pub t: i64,
-    /// The leaver's signature over departreq_signing_bytes(hp, device, t).
-    #[vsf(kind = "ge", name = "cs")]
-    pub cs: Vec<u8>,
-    /// Departure INTENT (2026-09-04, the retire/Release incident): 1 = new owner (approve countersigns AND releases the brand), 2 = desk (brand kept, retired row = inventory). None/absent = a pre-intent build; the approver treats it as desk. Authenticated by the file signature like every field.
-    #[vsf(name = "it")]
-    pub intent: Option<u64>,
-    /// The approval-words COMMITMENT (blake3 of the lowercased words): the leaver's screen shows the words; the approver must type them — proof of live contact with the departing device's screen (the mirror of add's words ceremony). The words themselves never ride the wire.
-    #[vsf(kind = "hp", name = "wc")]
-    pub words_commit: Option<[u8; 32]>,
+// ── The fleet's frames between devices: the departure request, the membership chain and fan-out over the mesh (docs/peers-are-fgtw.md), and the binding request handed straight to a sponsor (docs/pairing-v2.md over the mesh). Their codec is fgtw's (`fgtw::protocol`, fgtw MIGRATION.md step 5, 2026-10-31) — one codec for photon, ferros and every other fleet client; these are photon's call shapes over it, the device's installed signer chosen as `sign_device_envelope` chooses it, stamped now. ──
+
+/// The signer for an envelope from `device_pubkey`: the installed signer when this is that device, else the bare Ed25519 key from `device_secret` (`fleet::sign_device_envelope`'s rule).
+fn envelope_signer(device_secret: &[u8; 32]) -> crate::network::fgtw::fleet::DeviceSigner {
+    crate::network::fgtw::fleet::signer_for(&fgtw::keys::Keypair::from_seed(device_secret))
 }
 
+/// Build a `depart_req` — the LEAVING device's sibling-to-sibling removal request (bilateral removal, the mirror of the add ceremony): the stamp `t`, the device's consent eggs over `fgtw::fleet::departreq_signing_bytes(hp, device, t)`, the intent (1 new owner, 2 desk, 0 none on the wire) and the approval words' commitment, signed by the same device key. A surviving member's user approves on their screen; that device countersigns and publishes the consented Remove chain op.
 pub fn build_depart_req_vsf(
     t_osc: i64,
     consent_sig: &[u8],
-    device_pubkey: &[u8; 32],
+    _device_pubkey: &[u8; 32],
     device_secret: &[u8; 32],
     intent: u8,
     words_commit: Option<&[u8; 32]>,
 ) -> Result<Vec<u8>, String> {
-    use vsf::VsfBuilder;
-    let section = DepartReqBody {
-        t: t_osc,
-        cs: consent_sig.to_vec(),
-        intent: (intent != 0).then_some(intent as u64),
-        words_commit: words_commit.copied(),
-    }
-    .to_section();
-    let unsigned = VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
-        .add_section_direct(section)
-        .build()
-        .map_err(|e| format!("Failed to build depart_req VSF: {}", e))?;
-    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
+    let req = fgtw::protocol::DepartReq { t: t_osc, consent_sig: consent_sig.to_vec(), intent, words_commit: words_commit.copied() };
+    fgtw::protocol::depart_req(&req, &envelope_signer(device_secret), vsf::eagle_time_oscillations())
 }
 
 /// Parse + verify a `depart_req`. Returns (consent_t, consent_sig, sender device pubkey = the leaving device, intent, words_commit). Intent 0 + no commitment = a pre-intent build's request — approve treats it as desk with no words gate.
 pub fn parse_depart_req_vsf(vsf_bytes: &[u8]) -> Result<(i64, Vec<u8>, [u8; 32], u8, Option<[u8; 32]>), String> {
-    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
-        .map_err(|e| format!("depart_req verification failed: {}", e))?;
-    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
-    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
-    if section_name != "depart_req" {
-        return Err(format!("Expected 'depart_req' section, got '{}'", section_name));
-    }
-    // The derive's decode half replaces ~40 lines of field walks; intent defaults 0 (pre-intent build ⇒ desk) at this seam so callers keep their u8 shape.
-    let body = DepartReqBody::from_section(&section)?;
-    let intent = body.intent.and_then(|n| u8::try_from(n).ok()).unwrap_or(0);
-    Ok((body.t, body.cs, sender_pubkey, intent, body.words_commit))
+    let (r, sender) = fgtw::protocol::parse_depart_req(vsf_bytes)?;
+    Ok((r.t, r.consent_sig, sender, r.intent, r.words_commit))
 }
 
-// ── The membership chain over the peer mesh (docs/peers-are-fgtw.md; Nick 2026-10-26). Until these two frames, a fleet's membership chain lived only on the seed: a friend learning of our new device had to fetch it from fgtw.org, and a joiner could only be bound through it. `fleet_req` asks a device for the chain of one handle; `fleet_resp` carries it — as the answer, or UNASKED as a push (a sponsor handing the extended chain to its siblings and to the device it just bound). The chain is self-verifying (every op member-signed, consent eggs inside), so the carrier earns no trust: the receiver folds, checks the slot and the genesis pin, and adopts only a newer tip. Both are device-signed envelopes like every sibling frame. ──
-
-/// Build a `fleet_req` — "send me the membership chain of handle `hp`". Signed by the asking device; the answerer gates on knowing that device (a friend's or a sibling's), the chain being public but a 10–50 KB answer being amplification bait.
-pub fn build_fleet_req_vsf(handle_proof: &[u8; 32], device_pubkey: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
-    use vsf::file_format::VsfSection;
-    use vsf::VsfBuilder;
-    let mut section = VsfSection::new("fleet_req");
-    section.add_field("hp", VsfType::hP(handle_proof.to_vec()));
-    let unsigned = VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
-        .add_section_direct(section)
-        .build()
-        .map_err(|e| format!("Failed to build fleet_req VSF: {}", e))?;
-    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
+/// Build a `fleet_req` — "send me the membership chain of handle `hp`". The answerer gates on knowing the asking device (a friend's or a sibling's), the chain being public but a 10–50 KB answer being amplification bait.
+pub fn build_fleet_req_vsf(handle_proof: &[u8; 32], _device_pubkey: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
+    fgtw::protocol::fleet_req(handle_proof, &envelope_signer(device_secret), vsf::eagle_time_oscillations())
 }
 
 /// Parse + verify a `fleet_req`. Returns (handle proof asked for, sender device pubkey).
 pub fn parse_fleet_req_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32]), String> {
-    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
-        .map_err(|e| format!("fleet_req verification failed: {}", e))?;
-    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
-    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
-    if section_name != "fleet_req" {
-        return Err(format!("Expected 'fleet_req' section, got '{}'", section_name));
-    }
-    let hp = field_handle_proof(&section.fields, "hp").ok_or("fleet_req missing hp")?;
-    Ok((hp, sender_pubkey))
+    fgtw::protocol::parse_fleet_req(vsf_bytes)
 }
 
-/// Build a `fleet_resp` — the membership chain of handle `hp`, as `MembershipBlob::to_vsf_bytes` produced it (a complete VSF document inside this one's `ch` field). The answer to a `fleet_req`, and the push a sponsor sends after extending the chain.
-pub fn build_fleet_resp_vsf(handle_proof: &[u8; 32], chain: &[u8], device_pubkey: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
-    use vsf::file_format::VsfSection;
-    use vsf::VsfBuilder;
-    let mut section = VsfSection::new("fleet_resp");
-    section.add_field("hp", VsfType::hP(handle_proof.to_vec()));
-    section.add_field("ch", VsfType::ge(chain.to_vec()));
-    let unsigned = VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
-        .add_section_direct(section)
-        .build()
-        .map_err(|e| format!("Failed to build fleet_resp VSF: {}", e))?;
-    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
+/// Build a `fleet_resp` — the membership chain of handle `hp` (`MembershipBlob::to_vsf_bytes`): the answer to a `fleet_req`, and the push a sponsor sends after extending the chain. The chain is self-verifying; the carrier earns no trust.
+pub fn build_fleet_resp_vsf(handle_proof: &[u8; 32], chain: &[u8], _device_pubkey: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
+    fgtw::protocol::fleet_resp(handle_proof, chain, &envelope_signer(device_secret), vsf::eagle_time_oscillations())
 }
 
 /// Parse + verify a `fleet_resp`. Returns (handle proof, the chain's bytes, sender device pubkey). The chain itself is NOT verified here — `fleet::adopt_chain_bytes` parses and folds it.
 pub fn parse_fleet_resp_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], Vec<u8>, [u8; 32]), String> {
-    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
-        .map_err(|e| format!("fleet_resp verification failed: {}", e))?;
-    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
-    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
-    if section_name != "fleet_resp" {
-        return Err(format!("Expected 'fleet_resp' section, got '{}'", section_name));
-    }
-    let hp = field_handle_proof(&section.fields, "hp").ok_or("fleet_resp missing hp")?;
-    let chain = match section.get_field("ch").and_then(|f| f.values.first()) {
-        Some(VsfType::ge(b)) => b.clone(),
-        _ => return Err("fleet_resp missing ch".into()),
-    };
-    Ok((hp, chain, sender_pubkey))
+    fgtw::protocol::parse_fleet_resp(vsf_bytes)
 }
 
-/// Build a `bind_req` — the JOINING device's binding request handed straight to a sponsor device it heard on the LAN (docs/pairing-v2.md over the mesh): the registry entry's fields (dk, t, ds consent eggs, is identity co-sign, kb bundle, nh NFC commitment) for fleet `hp`, in an envelope signed by the same device key. The sponsor verifies the request exactly as it verifies a registry row (`BindRequest::verify` + freshness) and screens it with the words as always.
+/// Build a `bind_req` — the JOINING device's binding request handed straight to a sponsor device it heard on the LAN, signed by the request's own device. The sponsor verifies the request exactly as a registry row (`BindRequest::verify` + freshness) and screens it with the words as always.
 pub fn build_bind_req_vsf(req: &crate::network::fgtw::fleet::BindRequest, handle_proof: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
-    use vsf::file_format::VsfSection;
-    use vsf::VsfBuilder;
-    let mut section = VsfSection::new("bind_req");
-    section.add_field("hp", VsfType::hP(handle_proof.to_vec()));
-    section.add_field("dk", VsfType::ke(req.device_pubkey.to_vec()));
-    section.add_field("t", VsfType::e(vsf::types::EtType::e6(req.t)));
-    section.add_field("ds", VsfType::ge(crate::network::fgtw::fleet::eggs_to_bytes(&req.device_sig)));
-    section.add_field("is", VsfType::ge(req.identity_sig.clone()));
-    if let Some(b) = &req.bundle {
-        section.add_field("kb", VsfType::ge(b.to_bytes()));
-    }
-    section.add_field("nh", VsfType::hb(req.nfc_hash.to_vec()));
-    let unsigned = VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signed_only_eggs(VsfType::ke(req.device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(&req.device_pubkey))
-        .add_section_direct(section)
-        .build()
-        .map_err(|e| format!("Failed to build bind_req VSF: {}", e))?;
-    crate::network::fgtw::fleet::sign_device_envelope(unsigned, &req.device_pubkey, device_secret)
+    fgtw::protocol::bind_req(req, handle_proof, &envelope_signer(device_secret), vsf::eagle_time_oscillations())
 }
 
 /// Parse + verify a `bind_req` envelope. Returns (handle proof, the request, sender device pubkey). The request's own signatures are checked by the receiver (`BindRequest::verify` needs the identity pubkey); the envelope signer must be the request's device.
 pub fn parse_bind_req_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], crate::network::fgtw::fleet::BindRequest, [u8; 32]), String> {
-    use crate::network::fgtw::fleet::{eggs_from_bytes, BindRequest, KeyBundle};
-    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
-        .map_err(|e| format!("bind_req verification failed: {}", e))?;
-    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
-    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
-    if section_name != "bind_req" {
-        return Err(format!("Expected 'bind_req' section, got '{}'", section_name));
-    }
-    let hp = field_handle_proof(&section.fields, "hp").ok_or("bind_req missing hp")?;
-    let first = |name: &str| section.get_field(name).and_then(|f| f.values.first());
-    let device_pubkey: [u8; 32] = match first("dk") {
-        Some(VsfType::ke(b)) if b.len() == 32 => b.as_slice().try_into().unwrap(),
-        _ => return Err("bind_req missing dk".into()),
-    };
-    if device_pubkey != sender_pubkey {
-        return Err("bind_req envelope signer is not the request's device".into());
-    }
-    let t = section.eagle("t").ok_or("bind_req missing t")?;
-    let device_sig = match first("ds") {
-        Some(VsfType::ge(b)) => eggs_from_bytes(b)?,
-        _ => return Err("bind_req missing ds".into()),
-    };
-    let identity_sig = match first("is") {
-        Some(VsfType::ge(b)) => b.clone(),
-        _ => return Err("bind_req missing is".into()),
-    };
-    let bundle = match first("kb") {
-        Some(VsfType::ge(b)) => Some(KeyBundle::from_bytes(b)?),
-        _ => None,
-    };
-    let nfc_hash: [u8; 32] = match first("nh") {
-        Some(VsfType::hb(h)) if h.len() == 32 => h.as_slice().try_into().unwrap(),
-        _ => [0u8; 32],
-    };
-    Ok((hp, BindRequest { device_pubkey, t, device_sig, bundle, identity_sig, nfc_hash }, sender_pubkey))
+    fgtw::protocol::parse_bind_req(vsf_bytes)
 }
 
-/// Build a `fanout_resp` — a fan-out blob (`fanout_to_bytes`) for fleet `hp`, handed by the device that sealed it to the newcomer it was grown for and to the siblings. The receiver opens it with its own ira; nothing in it is secret to anyone else, and a header the recovered key does not reproduce is refused.
-pub fn build_fanout_resp_vsf(handle_proof: &[u8; 32], blob: &[u8], device_pubkey: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
-    use vsf::file_format::VsfSection;
-    use vsf::VsfBuilder;
-    let mut section = VsfSection::new("fanout_resp");
-    section.add_field("hp", VsfType::hP(handle_proof.to_vec()));
-    section.add_field("bl", VsfType::ge(blob.to_vec()));
-    let unsigned = VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
-        .add_section_direct(section)
-        .build()
-        .map_err(|e| format!("Failed to build fanout_resp VSF: {}", e))?;
-    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
+/// Build a `fanout_resp` — a fan-out blob (`fanout_to_bytes`) for fleet `hp`, handed by the device that sealed it to the newcomer it was grown for and to the siblings. The receiver opens it with its own ira; a header the recovered key does not reproduce is refused.
+pub fn build_fanout_resp_vsf(handle_proof: &[u8; 32], blob: &[u8], _device_pubkey: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
+    fgtw::protocol::fanout_resp(handle_proof, blob, &envelope_signer(device_secret), vsf::eagle_time_oscillations())
 }
 
 /// Parse + verify a `fanout_resp`. Returns (handle proof, blob bytes, sender device pubkey).
 pub fn parse_fanout_resp_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], Vec<u8>, [u8; 32]), String> {
-    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
-        .map_err(|e| format!("fanout_resp verification failed: {}", e))?;
-    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
-    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
-    if section_name != "fanout_resp" {
-        return Err(format!("Expected 'fanout_resp' section, got '{}'", section_name));
-    }
-    let hp = field_handle_proof(&section.fields, "hp").ok_or("fanout_resp missing hp")?;
-    let blob = match section.get_field("bl").and_then(|f| f.values.first()) {
-        Some(VsfType::ge(b)) => b.clone(),
-        _ => return Err("fanout_resp missing bl".into()),
-    };
-    Ok((hp, blob, sender_pubkey))
+    fgtw::protocol::parse_fanout_resp(vsf_bytes)
 }
 
 /// A 32-byte handle proof field (`hP`, the fgtw sections' type for it; `hp`/`hb` accepted too).
@@ -4586,17 +4435,9 @@ mod pong_seal_tests {
         assert!(parse_attach_none_vsf(&have).is_err());
     }
 
-    /// The derive flagship's migration guarantee: DepartReqBody's section is BYTE-IDENTICAL to the retired hand codec (same fields, same order, same variants), and the full signed build/parse round-trips thru the derive with intent/commitment surviving and pre-intent absence defaulting.
+    /// The departure request through photon's call shapes over fgtw's codec: the signed build/parse round-trips with intent and commitment surviving, and pre-intent absence defaulting. The section's bytes against the hand codec are pinned in fgtw (protocol.rs `depart_req_matches_the_hand_codec_and_round_trips`).
     #[test]
-    fn depart_req_derive_is_byte_identical_and_round_trips() {
-        let body = DepartReqBody { t: 9_999, cs: vec![7u8; 64], intent: Some(1), words_commit: Some([3u8; 32]) };
-        let mut hand = vsf::VsfSection::new("depart_req");
-        hand.add_field("t", VsfType::e(vsf::types::EtType::e6(9_999)));
-        hand.add_field("cs", VsfType::ge(vec![7u8; 64]));
-        hand.add_field("it", VsfType::u(1, false));
-        hand.add_field("wc", VsfType::hp(vec![3u8; 32]));
-        assert_eq!(body.to_section().encode(), hand.encode(), "derive bytes must match the hand codec exactly");
-
+    fn depart_req_round_trips() {
         let kp = fgtw::keys::Keypair::from_seed(&[0x5Au8; 32]);
         let frame = build_depart_req_vsf(9_999, &[7u8; 64], &kp.public.to_bytes(), kp.secret.as_bytes(), 1, Some(&[3u8; 32])).unwrap();
         let (t, cs, pk, it, wc) = parse_depart_req_vsf(&frame).unwrap();

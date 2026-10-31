@@ -164,86 +164,22 @@ fn get_broadcast_from_system(local_ip: &std::net::Ipv4Addr) -> Option<std::net::
     None
 }
 
-/// Parse LAN discovery packet Returns (handle_proof, ip, port, device_pubkey) if valid, None otherwise handle_proof is extracted from the VSF header's provenance hash (hp) device_pubkey (ke) is None on beacons from builds that predate it; receivers use it to drop their OWN looped-back beacon (a fleet shares one handle_proof, so the handle alone can't tell self from sibling).
+/// Parse a LAN discovery packet: (handle_proof, ip, port, device_pubkey) if valid, None otherwise. The beacon's codec is fgtw's (`fgtw::protocol::parse_beacon`, shared with ferros and every fleet client); this adds the sender's address, IPv4 or IPv4-mapped. The device key is None on beacons from builds that predate it; receivers use it to drop their OWN looped-back beacon (a fleet shares one handle_proof, so the handle alone can't tell self from sibling).
 pub fn parse_lan_discovery(
     packet: &[u8],
     src_addr: SocketAddr,
 ) -> Option<([u8; 32], std::net::Ipv4Addr, u16, Option<[u8; 32]>)> {
-    use vsf::file_format::VsfHeader;
-    use vsf::VsfType;
-
-    // Parse header to get provenance hash (sender identity) and find section start Note: No is_original() check - LAN discovery is a simple unsigned broadcast
-    let (header, header_end) = VsfHeader::decode(packet).ok()?;
-
-    // Extract handle_proof from header provenance hash (by ref — the header is still needed below to resolve the TOC-named section)
-    let handle_proof = match &header.provenance_hash {
-        VsfType::hp(bytes) if bytes.len() == 32 => {
-            let mut hp = [0u8; 32];
-            hp.copy_from_slice(bytes);
-            hp
-        }
-        _ => return None,
-    };
-
-    // Resolve the section via `primary_section`, NOT a bare `VsfSection::parse`: the section NAME lives in the header TOC (near-form), so a body parse returns `section.name == ""` and the `== "pt_disc"` check below silently rejected EVERY beacon on EVERY device — LAN discovery dead fleet-wide, no log line anywhere, same-LAN peers stuck learning each other from (WAN-only-when-multi-homed) registry records and parking on relay (field, 2026-08-11). Third documented victim of this trap after the relay pipe and the hub push accelerator (see relay.rs).
-    let section = header.primary_section(packet, header_end).ok()?;
-
-    if section.name != "pt_disc" {
-        return None;
-    }
-
-    // Extract port — width-agnostic: a writer may auto-size, and a port under 256 legitimately encodes as u3.
-    let port = match section.get_field("port") {
-        Some(field) => match field
-            .values
-            .first()
-            .and_then(|v| v.as_u64())
-            .and_then(|n| u16::try_from(n).ok())
-        {
-            Some(p) => p,
-            None => return None,
-        },
-        None => return None,
-    };
-
-    // Sender's device pubkey (ke) — optional for wire compat with pre-ke beacons
-    let device_pubkey = section
-        .get_field("ke")
-        .and_then(|f| match f.values.first() {
-            Some(VsfType::ke(bytes)) if bytes.len() == 32 => {
-                let mut k = [0u8; 32];
-                k.copy_from_slice(bytes);
-                Some(k)
-            }
-            _ => None,
-        });
-
-    // Handle both native IPv4 and IPv4-mapped IPv6 addresses
+    let (handle_proof, port, device_pubkey) = fgtw::protocol::parse_beacon(packet)?;
     let src_ip = match src_addr.ip() {
         std::net::IpAddr::V4(ip) => ip,
         std::net::IpAddr::V6(ip6) => ip6.to_ipv4_mapped()?,
     };
-
     Some((handle_proof, src_ip, port, device_pubkey))
 }
 
-/// Build LAN discovery broadcast packet handle_proof is stored in VSF header as provenance hash (hp) for identity One-shot broadcast - no rolling hash needed (provenance_only) device_pubkey rides along (ke) so receivers can tell WHICH fleet device is beaconing — and in particular drop their own looped-back beacon instead of learning themselves as a peer.
+/// Build the LAN discovery broadcast, stamped now (`fgtw::protocol::beacon`): the handle proof as the header's provenance, the frame port and the device key in the section; unsigned, provenance only.
 pub fn build_lan_discovery(handle_proof: [u8; 32], port: u16, device_pubkey: [u8; 32]) -> Vec<u8> {
-    use vsf::{VsfBuilder, VsfType};
-
-    VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .provenance_hash(handle_proof) // Identity in header - no registry lookup needed
-        .provenance_only() // No rolling hash - one-shot broadcast
-        .add_section(
-            "pt_disc",
-            vec![
-                ("port".to_string(), VsfType::u(port as usize, false)),
-                ("ke".to_string(), VsfType::ke(device_pubkey.to_vec())),
-            ],
-        )
-        .build()
-        .unwrap_or_default()
+    fgtw::protocol::beacon(handle_proof, port, device_pubkey, vsf::eagle_time_oscillations())
 }
 
 #[cfg(test)]

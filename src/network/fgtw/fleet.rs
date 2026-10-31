@@ -281,22 +281,7 @@ impl FleetSigner for DeviceSigner {
 
 /// This device's binding request for fleet `handle_proof`: "I consent to join", signed by the device key with one egg per scheme it holds (its bundle rides along), co-signed by `Ed25519(identity_seed)` (the registry's handle-knowledge gate), stamped now. The same bytes the seed's `bindreq_put` would mint — built here so the LAN copy and the registry copy are ONE request with one `t` (the Add's `consent_t`, and the BLE beacon's stamp).
 pub fn make_bind_request(device_key: &impl FleetSigner, identity_seed: &[u8; 32], handle_proof: &[u8; 32], nfc_secret: &[u8; 32]) -> BindRequest {
-    use ed25519_dalek::Signer;
-    let now = vsf::eagle_time_oscillations();
-    let me = device_key.keypair().public.to_bytes();
-    let nfc_hash = if *nfc_secret == [0u8; 32] { [0u8; 32] } else { fgtw::pair::nfc_secret_hash(nfc_secret, &me, now) };
-    let msg = bindreq_signing_bytes(handle_proof, &me, now);
-    let bundle = device_key.bundle();
-    let mask = bundle.as_ref().map(|b| b.mask()).unwrap_or(scheme::MASK_BASE);
-    let identity_key = ed25519_dalek::SigningKey::from_bytes(identity_seed);
-    BindRequest {
-        device_pubkey: me,
-        t: now,
-        device_sig: device_key.eggs(&msg, mask),
-        bundle,
-        identity_sig: identity_key.sign(&msg).to_bytes().to_vec(),
-        nfc_hash,
-    }
+    fgtw::protocol::bind_request(device_key, identity_seed, handle_proof, vsf::eagle_time_oscillations(), nfc_secret)
 }
 
 /// Post an already-built binding request to the seed's registry (the `bindreq_put` body, field for field). `Err("device_owned…")` is the seed's one-owner verdict and stays a verdict; any other error is the seed being unreachable — the LAN copy carries the request regardless.
