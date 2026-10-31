@@ -752,6 +752,8 @@ pub fn encoded_sender_live() -> bool {
 /// The Beam button armed a send on the phone: the wave secret and our side, waiting for Kotlin's pipeline-up edge (`android_started`). Cleared by `android_stop`.
 static ANDROID_ARMED: Mutex<Option<Target>> = Mutex::new(None);
 /// What Kotlin's camera pipeline last reported when it came up (the pipeline-up edge's arguments): a preview holds them so the sender can start on the same open camera when the wave goes live.
+// Read only by `android_arm` (the phone); the desktop compiles the pipeline-up edge but never arms a phone send.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
 #[derive(Clone)]
 struct PipelineUp {
     w: usize,

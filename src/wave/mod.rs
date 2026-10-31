@@ -181,6 +181,14 @@ pub enum WavePhase {
 /// Live wave playback runs this many stops below full scale (1 stop = x2 amplitude = one bit-shift): the headset default while the speaker toggle is parked (Nick 2026-09-03, field waves 1-2 — the loudspeaker at max media volume ran ~2.5 stops hot). Shared so the ringback lands at the SAME loudness as the conversation that follows it.
 pub const OUTPUT_PAD_STOPS: u32 = 4;
 
+/// The desktop's alert chirps — message chirps, molecule chimes, the incoming ring — play this many stops below the clip's full scale (Nick 2026-10-31: "The chirps are pretty loud. can we make those 8x quieter?"; 3 stops = 1/8).
+pub const CHIRP_PAD_STOPS: u32 = 3;
+
+/// [`CHIRP_PAD_STOPS`] as the gain the player takes.
+pub fn chirp_gain() -> f32 {
+    1. / (1u32 << CHIRP_PAD_STOPS) as f32
+}
+
 /// Silences the desktop ring loop when dropped (or explicitly). The loop thread replays the relationship ring cadence (`chirp::Chirp::ring_from_hash`) until this flag flips; holding the guard inside [`ActiveWave`] makes every teardown edge — decline, sibling answer, origin hangup, wave overwrite — a ring-stop edge for free, honoring the no-timers rule (the flag IS an edge).
 pub struct RingGuard(pub std::sync::Arc<std::sync::atomic::AtomicBool>);
 

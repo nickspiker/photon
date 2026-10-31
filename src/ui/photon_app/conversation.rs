@@ -2310,7 +2310,7 @@ impl PhotonApp {
                     let digest = relationship_digest(&from_handle_hash, &our_handle_hash);
                     std::thread::spawn(move || {
                         chirp::Chirp::from_hash(digest)
-                            .play_blocking()
+                            .play_blocking_at(crate::wave::chirp_gain())
                             .unwrap_or_else(|e| crate::logf!("CHIME: {}", e));
                     });
                 }

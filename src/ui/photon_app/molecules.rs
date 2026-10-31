@@ -279,7 +279,7 @@ impl PhotonApp {
             crate::platform::desktop_notify::notify_new_message(&alert_hp, &sender, &body, None);
             if crate::platform::notify_prefs::chime() {
                 std::thread::spawn(move || {
-                    chirp::Chirp::from_hash(digest).play_blocking().unwrap_or_else(|e| crate::logf!("CHIME: {}", e));
+                    chirp::Chirp::from_hash(digest).play_blocking_at(crate::wave::chirp_gain()).unwrap_or_else(|e| crate::logf!("CHIME: {}", e));
                 });
             }
         }

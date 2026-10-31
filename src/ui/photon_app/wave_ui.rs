@@ -1178,6 +1178,7 @@ impl PhotonApp {
                 let Some(wave) = self.active_wave.as_mut() else {
                     // A sibling with no ring in progress (came online mid-wave, or its ring row hasn't landed): the fleet's outgoing answer row still lights the chip.
                     if row_is_outgoing {
+                        self.remember_ended_wave(wave_id);
                         self.fleet_wave_elsewhere = Some((wave_id, device, peer));
                         self.scene_dirty = true;
                         return;
@@ -1202,6 +1203,8 @@ impl PhotonApp {
                     // OUR FLEET answered somewhere. If that somewhere isn't here, stop this device's ring and light the chip — the wave lives on the answering device.
                     if wave.phase == WavePhase::Ringing && wave.answer_nonce != Some(nonce) {
                         crate::log("WAVE: a sibling answered — ring stops here");
+                        // ANSWERED ELSEWHERE IS OVER HERE (Emma's Arch desktop 2026-10-31: her phone's Beam back stopped its ring, then the offer's chain row landed a second later — after the express copy — found no wave and rang again until the 20 s lease lapsed): the id joins the ended set, so no later copy of this offer rings.
+                        self.remember_ended_wave(wave_id);
                         self.active_wave = None;
                         self.fleet_wave_elsewhere = Some((wave_id, device, peer));
                         Self::stop_ring_alert_platform();
@@ -1675,15 +1678,21 @@ impl PhotonApp {
     }
 
     /// Mint THE WAVE ROW (offer_osc+1 — the shared stamp both fleets agree on, +1 clear of the hidden offer row) with its typed outcome on EVERY end edge, stop the engine, and hand a live wave's spool to the keep transcode. The wave card (2026-09-09): one row per wave; the recording, when it lands, REFERENCES this row and folds into its card — so the card exists at hangup, before the transcode finishes, and a sibling that only rang still shows the same event.
+    /// Remember a wave as over on this device, so no late copy of its offer — express or the chain row — rings again; bounded, since a session sees few waves.
+    pub(super) fn remember_ended_wave(&mut self, wave_id: [u8; 16]) {
+        if self.ended_waves.len() > 256 {
+            self.ended_waves.clear();
+        }
+        self.ended_waves.insert(wave_id);
+    }
+
     fn end_wave(&mut self, outcome: WaveOutcome, offer_osc: i64) {
         // The live rings may have been opened by the ringback alone (a wave that never connected); the field has nothing to show once the wave is over.
         crate::wave::live::stop();
         if let Some(wave) = &self.active_wave {
             // Remember the id so a late copy of its offer never rings again; bounded, since a session sees few waves.
-            if self.ended_waves.len() > 256 {
-                self.ended_waves.clear();
-            }
-            self.ended_waves.insert(wave.wave_id);
+            let id = wave.wave_id;
+            self.remember_ended_wave(id);
         }
         // WHO tore the wave down (field 2026-09-02: Brittany's active wave died at ~3s the instant an inbound text landed, no wave signal from Nick — the trigger wasn't in any obvious path, so every teardown now names itself). The outcome doubles as the reason tag here.
         if let Some(wave) = &self.active_wave {
@@ -1867,7 +1876,7 @@ impl PhotonApp {
             std::thread::spawn(move || {
                 let ring = chirp::Chirp::ring_from_hash(digest);
                 while !flag.load(Ordering::Relaxed) {
-                    if let Err(e) = ring.clone().play_blocking() {
+                    if let Err(e) = ring.clone().play_blocking_at(crate::wave::chirp_gain()) {
                         crate::logf!("WAVE ring chirp: {}", e);
                         break;
                     }
