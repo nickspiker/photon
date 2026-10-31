@@ -8,11 +8,18 @@ One sentence per line, however long; plain language for the person who installs 
 ## Upcoming
 - **A cleaner wave and beam screen.** The screen is now three bands — the people or the picture, a strip with the name and status, and the buttons — so nothing covers anything else; the microphone and speaker buttons sit in one row and respond to every tap.
 - **Pictures with rounded corners.** Video in a beam, your own preview and each person in a group beam now take the same rounded shape as Photon's window and buttons.
-- **See yourself before they answer.** When you start a beam from a computer, your camera shows straight away while it rings, and the other person sees you the moment they answer.
+- **See yourself before they answer.** When you start a beam, your camera shows straight away while it rings, and the other person sees you the moment they answer.
 - **More cameras work, and the right one is picked.** Cameras that only send Motion-JPEG now work on Linux, and a real camera is chosen ahead of virtual ones from OBS or similar programs.
 - **Turn your camera.** Settings → Beam can turn the picture from each camera by a quarter, half or three-quarter turn, for a camera mounted sideways or upside down; it is kept per camera on that device.
 - **Microphone and speaker choices never get stuck.** The buttons always cycle back to Auto, and a chosen microphone or speaker that won't work switches to the system default for that wave instead of leaving you unheard or hearing nothing.
 - **The numbers behind a wave.** The wave screen now shows which microphone and speaker are in use and, on a beam, what your camera delivers, what is being sent and what is arriving.
+- **Permissions come first.** Starting or answering a wave now asks for the microphone, and a beam for the camera too, before anything is sent; if one is switched off, Photon says which and opens the settings page where you can turn it on, instead of starting a call nobody can hear or see.
+- **Answer in kind, at a glance.** An incoming ring now leads with a large button for what is coming — Beam back for a beam, Wave back for a wave — with Reject and Decline smaller beside it; if your camera is off or missing, an incoming beam is answered with Wave back.
+- **A beam rings three times.** A beam's ring has three quicker bursts in the same time a wave's ring has two, so you can tell them apart without looking.
+- **Quieter alerts on computers.** Message chirps, group chimes and the ring now play at an eighth of their old loudness on Linux, Mac and Windows.
+- **One device answers, every device stops ringing.** When you answered on one device, another of yours could start ringing again a moment later for the same call and keep going for twenty seconds; it now stays quiet.
+- **Phone video no longer freezes at high quality.** Some phones' video encoders stall at their largest size, which froze your picture on the other end until you switched cameras; Photon now keeps to the sizes the phone's encoder can sustain and recovers by itself if it stalls.
+- **Try your camera and microphone in Settings.** Settings → Beam shows a live preview of your camera, with its turn applied, and lets you switch cameras; Settings → Wave has a microphone test with a live level and waveform, and buttons to pick the microphone and speaker.
 
 ## v134
 - **Sending a big attachment no longer chokes your connection.** Photon used to fire large files at the other device as fast as it could, which filled your upload link and could make everything else fail meanwhile; it now watches how long its packets take to come back, slows down the moment a queue starts building, and leaves room for everything else.

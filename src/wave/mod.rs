@@ -189,6 +189,17 @@ pub fn chirp_gain() -> f32 {
     1. / (1u32 << CHIRP_PAD_STOPS) as f32
 }
 
+/// THE BEAM RINGS THREE TIMES (Nick 2026-10-31: "three ring beam, maybe same duration but quicker bursts"): the express path marks the offer it hands on as a beam's here, and the ring alert consumes the mark — a beam's ring is three bursts in a wave's two-burst span.
+pub static RING_IS_BEAM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// The ring sounding now is a beam's, so a beam flag that arrives after a plain copy of the offer started a wave's ring knows to restart it.
+pub static RING_SOUNDING_BEAM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The relationship ring for a wave (two bursts) or a beam (three).
+#[cfg(not(target_os = "ferros"))]
+pub fn ring_chirp(digest: [u8; 32], beam: bool) -> chirp::Chirp {
+    if beam { chirp::Chirp::beam_ring_from_hash(digest) } else { chirp::Chirp::ring_from_hash(digest) }
+}
+
 /// Silences the desktop ring loop when dropped (or explicitly). The loop thread replays the relationship ring cadence (`chirp::Chirp::ring_from_hash`) until this flag flips; holding the guard inside [`ActiveWave`] makes every teardown edge — decline, sibling answer, origin hangup, wave overwrite — a ring-stop edge for free, honoring the no-timers rule (the flag IS an edge).
 pub struct RingGuard(pub std::sync::Arc<std::sync::atomic::AtomicBool>);
 

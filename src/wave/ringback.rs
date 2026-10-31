@@ -63,7 +63,7 @@ fn to_wave_rate(src: &[f32], src_rate: u32) -> Vec<f32> {
 
 /// Start the ringback for a wave we are placing. `digest` is the relationship digest — the SAME seed as the answering side's own ring, so what we hear is genuinely their cadence.
 /// Returns `None` when the audio session won't open (a mic-less/speaker-less box still waves, just silently).
-pub fn start(digest: [u8; 32]) -> Option<RingbackGuard> {
+pub fn start(digest: [u8; 32], beam: bool) -> Option<RingbackGuard> {
     let Some(gen) = crate::platform::audio::start_owned() else {
         crate::log("WAVE: ringback — audio session refused, waving silently");
         return None;
@@ -73,7 +73,7 @@ pub fn start(digest: [u8; 32]) -> Option<RingbackGuard> {
     let flag = stop.clone();
     let spawned = std::thread::Builder::new()
         .name("wave-ringback".into())
-        .spawn(move || run(digest, flag, gen))
+        .spawn(move || run(digest, beam, flag, gen))
         .is_ok();
     if !spawned {
         crate::log("WAVE: ringback thread spawn failed");
@@ -85,14 +85,14 @@ pub fn start(digest: [u8; 32]) -> Option<RingbackGuard> {
 
 /// No chime synthesis on ferros yet (chirp is desktop and Android).
 #[cfg(target_os = "ferros")]
-fn run(_digest: [u8; 32], _stop: Arc<AtomicBool>, _gen: u64) {}
+fn run(_digest: [u8; 32], _beam: bool, _stop: Arc<AtomicBool>, _gen: u64) {}
 
 #[cfg(not(target_os = "ferros"))]
-fn run(digest: [u8; 32], stop: Arc<AtomicBool>, gen: u64) {
+fn run(digest: [u8; 32], beam: bool, stop: Arc<AtomicBool>, gen: u64) {
     use crate::platform::audio;
 
     // One cadence, resampled to the wave rate and padded to the headset level — the ring is a full-scale clip and the wave that follows is 4 stops down; landing them at the same loudness is the whole point of routing it thru the wave path.
-    let ring = chirp::Chirp::ring_from_hash(digest);
+    let ring = super::ring_chirp(digest, beam);
     let cadence = to_wave_rate(ring.samples(), chirp::SAMPLE_RATE_HZ);
     let pad = 1.0 / (1u32 << super::OUTPUT_PAD_STOPS) as f32;
     // Synthesis is float; the CAST is the boundary and it carries its remainder (floor + fraction to the next sample, zero-mean) like every other quantize in the path.

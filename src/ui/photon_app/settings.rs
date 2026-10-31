@@ -1252,6 +1252,11 @@ impl PhotonApp {
             16..=19 => self.write_beam("beam.bitrate_cap", num(BITRATE_CAPS[(slot - 16) as usize])),
             20 | 21 => self.write_beam("beam.keep_detail", VsfType::u0(slot == 21)),
             22..=25 => self.set_camera_turns((slot - 22) as u8),
+            26 => self.toggle_settings_preview(),
+            27 => self.settings_next_camera(),
+            28 => {
+                crate::wave::beam_calibrate::request();
+            }
             _ => {}
         }
         self.scene_dirty = true;
@@ -1716,3 +1721,137 @@ impl PhotonApp {
         });
     }
 }
+
+impl PhotonApp {
+    /// Settings → Beam's Preview pill: the camera on the page, thru the grants gate (a refused camera opens its settings and says so), or off again.
+    pub(super) fn toggle_settings_preview(&mut self) {
+        if self.settings_preview {
+            self.settings_preview = false;
+            crate::wave::beam_session::preview_stop();
+            crate::log("SETTINGS: camera preview stopped");
+            self.scene_dirty = true;
+            return;
+        }
+        if self.active_wave.is_some() || self.group_wave.is_some() {
+            return;
+        }
+        if !self.settings_grant(crate::platform::grants::Need::Camera) {
+            return;
+        }
+        self.settings_preview = true;
+        crate::wave::beam_session::preview_start();
+        crate::log("SETTINGS: camera preview started");
+        self.scene_dirty = true;
+    }
+
+    /// Settings → Beam's Next camera pill: the next lens or device, the preview reopening on it.
+    pub(super) fn settings_next_camera(&mut self) {
+        #[cfg(target_os = "android")]
+        {
+            let _ = crate::platform::jni_android::wave_service_void("cycleBeamCamera");
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let Some(next) = crate::wave::beam_session::next_desktop_camera() else {
+                crate::log("SETTINGS: one camera — nothing to switch to");
+                return;
+            };
+            crate::logf!("SETTINGS: camera → {}", crate::wave::beam_session::camera_name().unwrap_or_default());
+            self.store_device_pick("beam.camera", &Some(next));
+            if self.settings_preview {
+                crate::wave::beam_session::preview_stop();
+                crate::wave::beam_session::preview_start();
+            }
+        }
+        self.scene_dirty = true;
+    }
+
+    /// Settings → Wave's Test pill: the microphone opened and metered on the page (nothing is sent anywhere), or closed again.
+    pub(super) fn toggle_mic_test(&mut self) {
+        if self.mic_test {
+            self.stop_mic_test();
+            return;
+        }
+        if self.active_wave.is_some() || self.group_wave.is_some() {
+            return;
+        }
+        if !self.settings_grant(crate::platform::grants::Need::Mic) {
+            return;
+        }
+        if crate::platform::audio::start() {
+            self.mic_test = true;
+            self.mic_levels.clear();
+            crate::log("SETTINGS: microphone test started");
+        } else {
+            crate::log("SETTINGS: microphone test — no audio device opened");
+        }
+        self.scene_dirty = true;
+    }
+
+    fn stop_mic_test(&mut self) {
+        if self.mic_test {
+            self.mic_test = false;
+            crate::platform::audio::stop();
+            crate::log("SETTINGS: microphone test stopped");
+            self.scene_dirty = true;
+        }
+    }
+
+    /// A grant for a settings test: granted (or none on this platform) goes on; not yet asked raises the prompt (the next tap starts it); refused opens its settings and says so.
+    fn settings_grant(&mut self, need: crate::platform::grants::Need) -> bool {
+        use crate::platform::grants;
+        use crate::platform::mic_permission::MicAccess;
+        match grants::status(need) {
+            MicAccess::Granted | MicAccess::Unknown => true,
+            MicAccess::Undetermined => {
+                grants::request(need);
+                false
+            }
+            MicAccess::Denied => {
+                grants::open_settings(need);
+                self.ready_toast = Some(tr(match need {
+                    grants::Need::Mic => Msg::GrantMicOff,
+                    grants::Need::Camera => Msg::GrantCameraOff,
+                })
+                .into_owned());
+                self.ready_toast_screen = None;
+                false
+            }
+        }
+    }
+
+    /// The tests' edges on the tick: each stops when its page is left or a wave takes the device, and the microphone test drains what it captured into its level ring (nothing else reads those frames while no wave runs).
+    pub(super) fn settings_tests_tick(&mut self) {
+        let wave = self.active_wave.is_some() || self.group_wave.is_some();
+        if self.settings_preview && (wave || self.state != AppState::Settings(SettingsPage::Beam)) {
+            self.settings_preview = false;
+            // A wave placed from this page took the camera over (beam_session hands the preview to its sender); otherwise the preview closes.
+            if !wave {
+                crate::wave::beam_session::preview_stop();
+            }
+            self.scene_dirty = true;
+        }
+        if self.mic_test && (wave || self.state != AppState::Settings(SettingsPage::Wave)) {
+            // A wave reuses the open session; only a page left closes it.
+            if wave {
+                self.mic_test = false;
+            } else {
+                self.stop_mic_test();
+            }
+        }
+        if self.mic_test {
+            for (_, _, frame) in crate::platform::audio::captured_frames() {
+                let sum: u64 = frame.iter().map(|s| s.unsigned_abs() as u64).sum();
+                // Every captured frame is FRAME_SAMPLES long (the capture path cuts them so), never empty.
+                let mean = (sum / frame.len() as u64) as u32;
+                if self.mic_levels.len() >= MIC_LEVEL_FRAMES {
+                    self.mic_levels.pop_front();
+                }
+                self.mic_levels.push_back(mean);
+            }
+        }
+    }
+}
+
+/// The waveform's length in 5 ms frames (about 1.3 s).
+pub(super) const MIC_LEVEL_FRAMES: usize = 1 << 8;

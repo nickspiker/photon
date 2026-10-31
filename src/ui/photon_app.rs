@@ -2173,6 +2173,10 @@ pub struct PhotonApp {
     pending_grant: Option<(wave_ui::GrantIntent, u64)>,
     /// Why the ring on screen cannot be answered the way it was asked (a refused grant), shown on the ringing status line.
     wave_grant_note: Option<String>,
+    /// THE SETTINGS PAGES' DEVICE TESTS (Nick 2026-10-31: "a video preview/calibration on the beam settings page and for waves, probably show the waveform and/or levels and allow to cycle thru devices"): the camera preview Settings → Beam started (it stops when the page is left or a wave takes the camera), the microphone test Settings → Wave runs, and that test's recent per-frame levels (mean |sample| at 24-bit scale, oldest first) for the waveform.
+    settings_preview: bool,
+    mic_test: bool,
+    mic_levels: std::collections::VecDeque<u32>,
     /// Reject — the silent dismissal on the ring panel (no signal to the origin; the wave row's Rejected outcome stops every sibling's ring on merge).
     wave_reject_btn: Option<Button>,
     /// Beam back / Beam toggle — the ring panel's video answer and the active panel's video switch, both STUBS rendered disabled until video lands (Nick 2026-09-09: choose audio-only while they beam, switchable in-wave). Never dispatches.
@@ -3221,6 +3225,9 @@ impl PhotonApp {
             beam_armed: false,
             pending_grant: None,
             wave_grant_note: None,
+            settings_preview: false,
+            mic_test: false,
+            mic_levels: std::collections::VecDeque::new(),
             beam_back_btn: None,
             wave_reject_btn: None,
             wave_action_btn: None,

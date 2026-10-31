@@ -547,7 +547,56 @@ fn ceiling(bands: &[(u16, u16)]) -> usize {
     if let Some(cap) = super::beam_settings::current().size_cap {
         top = top.min(super::beam_ladder::top_within(bands, cap as usize));
     }
+    // The phone's encoder: no wider than it can actually keep up with (ENCODER_CAP_W).
+    let enc = ENCODER_CAP_W.load(Ordering::Relaxed);
+    if enc != u32::MAX {
+        top = top.min(super::beam_ladder::top_within(bands, enc as usize));
+    }
     top
+}
+
+/// THE PHONE ENCODER'S CEILING (Emma's phone 2026-10-31, c2.qti.avc.encoder: at 2592×1944 it took 95 frames and then offered no input slot again — the camera ran, nothing was encoded, the far side froze, and a camera switch revived it only until the ladder climbed back). The widest coded frame this run may ask of the encoder: lowered by the encoder's own capability report at pipeline-up and by every stall (`android_encoder_stalled`); u32::MAX until either speaks. Kept for the run — the encoder does not get faster.
+static ENCODER_CAP_W: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+
+/// Kotlin's capability report: the widest band of this capture the encoder says it can encode at the capture's rate.
+pub fn android_encoder_cap(width: u32) {
+    let was = ENCODER_CAP_W.fetch_min(width, Ordering::Relaxed);
+    if width < was {
+        crate::logf!("BEAM: the phone's encoder supports at most {} wide at this rate — the ladder stops there", width);
+        android_reclamp();
+    }
+}
+
+/// The encoder stopped taking frames: the ceiling drops below the band it hung on, and the ladder moves down so Kotlin restarts the encoder at the smaller size. False when it is already on the smallest band (Kotlin then restarts it where it is).
+pub fn android_encoder_stalled() -> bool {
+    let mut g = ANDROID_LADDER.lock().unwrap();
+    let Some((ladder, _, _)) = g.as_mut() else { return false };
+    let p = ladder.plan();
+    if p.band == 0 {
+        crate::logf!("BEAM: the phone's encoder stalled at {}×{}, the smallest band — restarting it there", p.w, p.h);
+        return false;
+    }
+    let below = ladder.bands()[p.band - 1].0 as u32;
+    ENCODER_CAP_W.fetch_min(below, Ordering::Relaxed);
+    let top = ceiling(ladder.bands());
+    ladder.set_max_band(top);
+    let q = ladder.plan();
+    crate::logf!("BEAM: the phone's encoder stalled at {}×{} — ceiling now {} wide, restarting at {}×{}", p.w, p.h, below, q.w, q.h);
+    // The new size goes out now (android_plan announces only the changes it makes itself); same lock order as android_plan: the ladder, then the feed.
+    if let Some((tx, info, _)) = ENCODED_TX.lock().unwrap().as_mut() {
+        info.width = q.w;
+        info.height = q.h;
+        tx.send_info(info);
+    }
+    true
+}
+
+/// Re-apply the ceiling to a live phone ladder.
+fn android_reclamp() {
+    if let Some((ladder, _, _)) = ANDROID_LADDER.lock().unwrap().as_mut() {
+        let top = ceiling(ladder.bands());
+        ladder.set_max_band(top);
+    }
 }
 
 /// A new ladder for a capture's bands, tuned to the beam settings; returns it with the settings generation it read.
@@ -1185,20 +1234,35 @@ pub fn preview_start() {
             }
         };
         let (w, h) = source.dimensions();
-        crate::logf!("BEAM: preview {}×{} from {} while the beam rings", w, h, camera_name().unwrap_or_default());
-        let conv = Converter::new(Characterization::from_entry(&source.characterization()));
+        let cam = camera_name().unwrap_or_default();
+        crate::logf!("BEAM: preview {}×{} from {}", w, h, cam);
+        // The preview calibrates like the sender (Settings → Beam, a beam ringing out): this camera registered, its frames offered, a landed calibration recolouring the self-view.
+        let base = source.characterization();
+        super::beam_calibrate::set_desktop_camera(Some((&cam, base.transfer)));
+        let entry = super::beam_calibrate::calibration_for(&cam).map_or(base, |(e, _)| e);
+        let mut conv = Converter::new(Characterization::from_entry(&entry));
+        let mut landed = super::beam_calibrate::LANDED.load(Ordering::Relaxed);
         let mut rgb = Vec::new();
         let mut n = 0u32;
         while !stop2.load(Ordering::Relaxed) {
             let Some((frame, gains)) = source.next() else {
                 crate::log("BEAM: preview — camera gone");
+                super::beam_calibrate::set_desktop_camera(None);
                 clear_self();
                 return None;
             };
+            super::beam_calibrate::offer_frame(&frame);
+            let now_landed = super::beam_calibrate::LANDED.load(Ordering::Relaxed);
+            if now_landed != landed {
+                landed = now_landed;
+                if let Some((e, _)) = super::beam_calibrate::calibration_for(&cam) {
+                    conv.set_characterization(Characterization::from_entry(&e));
+                }
+            }
             n = n.wrapping_add(1);
             // Every other camera frame, as the sender's self-view does.
             if n % 2 == 0 {
-                post_self(&conv, &frame, gains, n, &mut rgb, super::beam_settings::turns_for(&camera_name().unwrap_or_default()), true);
+                post_self(&conv, &frame, gains, n, &mut rgb, super::beam_settings::turns_for(&cam), true);
             }
         }
         Some(source)
@@ -1207,6 +1271,16 @@ pub fn preview_start() {
         Ok(thread) => *slot = Some(Preview { stop, thread }),
         Err(e) => crate::logf!("BEAM: no preview thread: {}", e),
     }
+}
+
+/// Is a preview showing the camera now (Settings → Beam's Preview button, a beam ringing out)?
+#[cfg(not(target_os = "android"))]
+pub fn preview_running() -> bool {
+    PREVIEW.lock().unwrap().as_ref().is_some_and(|p| !p.thread.is_finished())
+}
+#[cfg(target_os = "android")]
+pub fn preview_running() -> bool {
+    ANDROID_PIPELINE.lock().unwrap().is_some() && !android_sending()
 }
 
 /// Stop the preview without a sender to hand the camera to (the beam ended before it went live): closed off the UI thread, the self-view cleared.
@@ -1219,6 +1293,7 @@ pub fn preview_stop() {
     retire_with(move || {
         drop(p.thread.join());
         clear_self();
+        super::beam_calibrate::set_desktop_camera(None);
     });
 }
 

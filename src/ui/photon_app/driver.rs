@@ -1219,6 +1219,9 @@ impl FluorApp<Px> for PhotonApp {
                         0 => self.step_rx_trim(-1),
                         1 => self.step_rx_trim(1),
                         2 => self.start_voice_measure(),
+                        20 => self.toggle_mic_test(),
+                        21 => self.cycle_mic(),
+                        22 => self.cycle_speaker(),
                         8..=13 => {
                             let mic = self.wave_profiles.get((slot - 8) as usize).map(|p| p.0.clone());
                             if let Some(mic) = mic {

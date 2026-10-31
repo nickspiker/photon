@@ -61,10 +61,10 @@ pub fn notify_new_message(msg_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &str
 /// The wave flavor of [`notify_new_message`]: same relationship digest, but rendered as the RING — the identity instrument held in the wave cadence (`chirp::Chirp::ring_from_hash`) instead of the one-shot ding.
 /// Kotlin LOOPS this one until a ring-stop edge (a phone rings until answered); we hand over one cadence plus the repeat gap in ms, and it appends the silence itself rather than marshalling 2 s of zeros per ring.
 #[cfg(target_os = "android")]
-pub fn notify_incoming_wave(ring_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &str, text: &str, audible: bool) {
+pub fn notify_incoming_wave(ring_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &str, text: &str, audible: bool, beam: bool) {
     notify_with_chirp_via(
         ring_hp,
-        chirp::Chirp::ring_from_hash(*chirp_seed),
+        crate::wave::ring_chirp(*chirp_seed, beam),
         sender,
         text,
         // WAVE-CLASS notification (CATEGORY_CALL + fullScreenIntent + Answer/Decline actions) — the OS's blessed incoming-wave surface (CATEGORY_CALL is the API name, nothing more) for a backgrounded/locked app.
@@ -83,11 +83,11 @@ fn ring_gap_ms() -> i32 {
 
 /// Foreground ring: the full-screen panel is on screen, so play the relationship ring chirp + haptic WITHOUT posting any notification (the heads-up banner used to cover the answer button).
 #[cfg(target_os = "android")]
-pub fn play_ring_chirp(chirp_seed: &[u8; 32]) {
+pub fn play_ring_chirp(chirp_seed: &[u8; 32], beam: bool) {
     let Some((vm, svc)) = MESSAGE_NOTIFIER.get() else {
         return;
     };
-    let chirp = chirp::Chirp::ring_from_hash(*chirp_seed);
+    let chirp = crate::wave::ring_chirp(*chirp_seed, beam);
     let wav = chirp.to_wav();
     let (timings, amplitudes) = chirp.haptic_waveform(60);
     if let Ok(mut env) = vm.attach_current_thread() {
@@ -2259,4 +2259,16 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOpenConversatio
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeGrants(_env: JNIEnv<'_>, _this: JObject<'_>, mic: jint, camera: jint) {
     crate::platform::grants::android_report(mic as u8, camera as u8);
+}
+
+/// BEAMS: the encoder's capability report at pipeline-up — the widest band of this capture it supports at the capture's rate (beam_session::android_encoder_cap).
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonBeam_nativeBeamEncoderCap(_env: JNIEnv<'_>, _this: JObject<'_>, width: jint) {
+    crate::wave::beam_session::android_encoder_cap(width as u32);
+}
+
+/// BEAMS: the encoder stopped taking frames — true when the ladder moved down (the next plan restarts the encoder smaller), false when Kotlin should restart it where it is.
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonBeam_nativeBeamEncoderStalled(_env: JNIEnv<'_>, _this: JObject<'_>) -> jni::sys::jboolean {
+    crate::wave::beam_session::android_encoder_stalled() as jni::sys::jboolean
 }

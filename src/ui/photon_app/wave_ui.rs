@@ -106,6 +106,17 @@ impl PhotonApp {
     pub(super) fn request_wave(&mut self, intent: GrantIntent) {
         self.pending_grant = None;
         self.wave_grant_note = None;
+        // The settings pages' tests give way: the microphone test closes so the wave opens its own session; a camera preview is handed to a beam placed from the Beam page (its sender takes the open camera) and closed for anything else.
+        if self.mic_test {
+            self.mic_test = false;
+            crate::platform::audio::stop();
+        }
+        if self.settings_preview {
+            self.settings_preview = false;
+            if !matches!(intent, GrantIntent::Place { beam: true, .. } | GrantIntent::PlaceGroup { beam: true, .. }) {
+                crate::wave::beam_session::preview_stop();
+            }
+        }
         self.run_grant_intent(intent);
     }
 
@@ -525,7 +536,8 @@ impl PhotonApp {
         };
         // Ringback: the ANSWERER's ring in OUR ear (their identity cadence, so we hear who we're waving), padded to the same headset level as the wave that follows. It also probes the room's coupling (the chirp anchor) so the echo filter has a fit when media lands.
         if ring_audible {
-            let rb = crate::wave::ringback::start(ringback_digest);
+            // A beam we place rings back three times, as it rings at the far end.
+            let rb = crate::wave::ringback::start(ringback_digest, self.beam_armed);
             if let Some(wave) = self.active_wave.as_mut() {
                 wave.ringback = rb;
             }
@@ -1597,6 +1609,11 @@ impl PhotonApp {
                 hex::encode(&sig.wave_id()[..4]),
                 self.active_wave.as_ref().map_or("none".to_string(), |c| hex::encode(&c.wave_id[..4]))
             );
+            // A beam's offer rings three times: marked for the ring alert this offer may start.
+            if matches!(sig, WaveSignal::Offer { .. }) {
+                crate::wave::RING_IS_BEAM.store(beam_flag, std::sync::atomic::Ordering::SeqCst);
+            }
+            let mut restart_ring = false;
             self.on_wave_signal(ci, sig, lane_key, ts, false, false);
             // An express offer beat for the ringing wave: the lease may run on the express cadence from here on.
             if matches!(sig, WaveSignal::Offer { .. }) {
@@ -1606,6 +1623,8 @@ impl PhotonApp {
                         if beam_flag && !wave.beam {
                             wave.beam = true;
                             crate::log("BEAM: the incoming wave carries a beam");
+                            // A plain copy of the offer started a wave's two-burst ring before this flag: it restarts as the beam's three.
+                            restart_ring = wave.ring.is_some() && !crate::wave::RING_SOUNDING_BEAM.load(std::sync::atomic::Ordering::SeqCst);
                         }
                         wave.express_beats += 1; // u32 per express frame during one ring
                         // THE ORIGIN'S OWN KEY WINS (2026-10-29, Nick's MacBook waving Josh: every media packet failed to open both ways): the express offer carries the lane key the origin captured when its offer committed, the one its secret derives from. A copy of the offer row on ANOTHER lane — a sibling's fleet forward, a re-serve on a rotated lane — can ring us first and leave a different key behind; until we answer, the origin's word replaces it.
@@ -1619,6 +1638,11 @@ impl PhotonApp {
                         }
                     }
                 }
+            }
+            if restart_ring {
+                crate::log("BEAM: the ring restarts as a beam's three bursts");
+                crate::wave::RING_IS_BEAM.store(true, std::sync::atomic::Ordering::SeqCst);
+                self.ring_alert(ci);
             }
             // Remember the era that opened it — replies for this wave seal under it first (send_express_signal).
             if let Some(wave) = self.active_wave.as_mut() {
@@ -1824,6 +1848,9 @@ impl PhotonApp {
     /// The ring for anyone — a contact, or a group member we never friended (docs/group-waves.md): their name and party id, our own party id beside it for the relationship ring.
     pub(super) fn ring_alert_for(&mut self, sender_name: String, from_hh: &[u8; 32], us: &[u8; 32]) -> Option<crate::wave::RingGuard> {
         let digest = relationship_digest(from_hh, us);
+        // A beam's ring is three bursts: the express path marked this offer (RING_IS_BEAM), consumed here.
+        let beam = crate::wave::RING_IS_BEAM.swap(false, std::sync::atomic::Ordering::SeqCst);
+        crate::wave::RING_SOUNDING_BEAM.store(beam, std::sync::atomic::Ordering::SeqCst);
         let ring_hp = *blake3::hash(&digest).as_bytes();
         // No ring on ferros yet: no notification surface and no audio engine.
         #[cfg(target_os = "ferros")]
@@ -1843,7 +1870,7 @@ impl PhotonApp {
             // App on screen → the full-screen ring panel IS the alert (and the in-process chirp below rings) — posting the notification too was the double-alert whose heads-up banner covered the old top-bar Answer button. Backgrounded/locked → the WAVE-CLASS notification (fullScreenIntent + Answer/Decline actions) is the whole surface.
             if crate::platform::jni_android::app_in_foreground() {
                 if ring_audible {
-                    crate::platform::jni_android::play_ring_chirp(&digest);
+                    crate::platform::jni_android::play_ring_chirp(&digest, beam);
                 } else {
                     crate::log("WAVE: ring muted by notify.ring_wave — panel only");
                 }
@@ -1855,6 +1882,7 @@ impl PhotonApp {
                     &sender_name,
                     &tr(Msg::IncomingWave),
                     ring_audible,
+                    beam,
                 );
             }
         }
@@ -1874,7 +1902,7 @@ impl PhotonApp {
             let stop = std::sync::Arc::new(AtomicBool::new(false));
             let flag = stop.clone();
             std::thread::spawn(move || {
-                let ring = chirp::Chirp::ring_from_hash(digest);
+                let ring = crate::wave::ring_chirp(digest, beam);
                 while !flag.load(Ordering::Relaxed) {
                     if let Err(e) = ring.clone().play_blocking_at(crate::wave::chirp_gain()) {
                         crate::logf!("WAVE ring chirp: {}", e);
@@ -2162,7 +2190,7 @@ impl PhotonApp {
     }
 
     /// Remember a device pick on THIS device (device-local, never linked — another machine's devices are not ours): empty = Auto.
-    fn store_device_pick(&mut self, key: &str, pick: &Option<String>) {
+    pub(super) fn store_device_pick(&mut self, key: &str, pick: &Option<String>) {
         let now = vsf::eagle_time_oscillations();
         if self.ensure_fleet_settings() {
             let fs = self.fleet_settings.as_mut().unwrap();

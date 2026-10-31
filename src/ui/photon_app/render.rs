@@ -1087,20 +1087,23 @@ impl PhotonApp {
                 let [ly, by, ry] = l.rows;
                 match phase {
                     crate::wave::WavePhase::Ringing => {
+                        // THE RING LEADS WITH WHAT IS COMING (Nick 2026-10-31: "it needs to focus on the incoming type and that should be the larger more prominent button"): the answer in kind is the big one; Reject and Decline step back. The answer is 1.15 buttons wide and the sides 0.85, so on the diagonal their facing edges stay exactly one gap apart; the answer's 1.4 height still clears the dock's top and the screen's bottom margin.
+                        let (side_w, side_h) = (bw * 0.85, bh * 0.85);
+                        let (main_w, main_h) = (bw * 1.15, bh * 1.4);
                         if let Some(b) = self.wave_reject_btn.as_mut() {
-                            b.set_rect(lx, ly, bw, bh);
+                            b.set_rect(lx, ly, side_w, side_h);
                             b.set_label(tr(Msg::Reject));
-                            b.set_font_size_fitted(bfont * 0.9, ctx.text);
+                            b.set_font_size_fitted(bfont * 0.8, ctx.text);
                             b.set_fill(Some(theme::PILL_GREY.0));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
                         if let Some(b) = self.wave_action_btn.as_mut() {
-                            b.set_rect(cx, by, bw, bh);
+                            b.set_rect(cx, by, main_w, main_h);
                             // The big button answers in KIND (Nick 2026-10-10): what is coming at us — Beam back on an incoming beam this device can return, Wave back otherwise ("Wave back" = answering is choosing AUDIO, 2026-09-09).
                             let beam_in = self.active_wave.as_ref().is_some_and(|w| w.beam) && can_beam;
                             b.set_label(tr(if beam_in { Msg::BeamBack } else { Msg::WaveBack }));
-                            b.set_font_size_fitted(bfont, ctx.text);
+                            b.set_font_size_fitted(bfont * 1.3, ctx.text);
                             b.set_enabled(true);
                             b.set_fill(Some(*theme::WAVE_ACCEPT_FILL));
                             b.set_hover_fill(Some(*theme::WAVE_ACCEPT_HOVER));
@@ -1109,9 +1112,9 @@ impl PhotonApp {
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
                         if let Some(b) = self.wave_decline_btn.as_mut() {
-                            b.set_rect(rx, ry, bw, bh);
+                            b.set_rect(rx, ry, side_w, side_h);
                             b.set_label(tr(Msg::Decline));
-                            b.set_font_size_fitted(bfont, ctx.text);
+                            b.set_font_size_fitted(bfont * 0.8, ctx.text);
                             b.set_fill(Some(*theme::WAVE_DANGER_FILL));
                             b.set_hover_fill(Some(*theme::WAVE_DANGER_HOVER));
                             b.set_held_fill(Some(*theme::WAVE_DANGER_HOVER));
@@ -6479,6 +6482,49 @@ impl PhotonApp {
                             (&tr(Msg::WaveLouder), (btn_base + 1), can_up, None),
                         ], "Open Sans");
                     }
+                    // ── TEST YOUR MICROPHONE (Nick 2026-10-31: "for waves, probably show the waveform and/or levels and allow to cycle thru devices"): the microphone opened on the page and nothing sent, its level in stops below full scale and the last ~1.3 s as a waveform, the microphone and speaker pickers beside it (the same picks a wave uses).
+                    {
+                        flow.gap(hspan2 * 0.6);
+                        flow.line(&mut canvas, ctx.text, &tr(Msg::WaveTestHead), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
+                        let (mic_pick, out_pick) = crate::platform::audio::picks();
+                        let (mic_open, out_open) = crate::platform::audio::opened();
+                        let test_label = tr(if self.mic_test { Msg::WaveTestStop } else { Msg::WaveTestStart }).into_owned();
+                        let mic_label = Self::device_label("\u{1F3A4}", mic_pick, mic_open);
+                        let out_label = Self::device_label("\u{1F50A}", out_pick, out_open);
+                        let green = |on: bool| if on { Some(*theme::PILL_GREEN) } else { None };
+                        let mut row: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = vec![(test_label.as_str(), btn_base + 20, true, green(self.mic_test)), (mic_label.as_str(), btn_base + 21, true, None)];
+                        // A phone's output is its route (the wave screen's route pill), not a named device.
+                        if cfg!(not(target_os = "android")) {
+                            row.push((out_label.as_str(), btn_base + 22, true, None));
+                        }
+                        flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &row, "Open Sans");
+                        if self.mic_test {
+                            // Level in stops below the 24-bit full scale (1 stop = ×2), from the newest frame; halves, so a talker's swing reads.
+                            let full = (1u32 << 23) as f32;
+                            let stops_of = |m: u32| if m == 0 { 24.0 } else { (full / m as f32).log2() };
+                            let now = self.mic_levels.back().copied().unwrap_or(0);
+                            let level = crate::fmt_halves((2.0 * stops_of(now)).round() as i32);
+                            flow.line(&mut canvas, ctx.text, &tr(Msg::WaveTestLevel(&level)), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
+                            // The waveform: one column per 5 ms frame, oldest at the left, height by stops — full scale fills it, 12 stops down is the floor.
+                            let band = flow.band(hspan2 * 4.0);
+                            let n = super::settings::MIC_LEVEL_FRAMES;
+                            let page_clip = Some(fluor::paint::Clip::new(inset.x as usize, inset.y as usize, (inset.x + inset.w) as usize, (inset.y + inset.h) as usize));
+                            let colw = band.w / n as f32;
+                            let floor_stops = (1u32 << 3) as f32 + (1u32 << 2) as f32;
+                            for (i, &m) in self.mic_levels.iter().enumerate() {
+                                let fill = 1.0 - stops_of(m) / floor_stops;
+                                if fill <= 0.0 {
+                                    continue;
+                                }
+                                // The capture is clamped to the 24-bit rails, so a frame's mean is at most full scale: 0 stops, a full column.
+                                let hgt = band.h * fill;
+                                let x = band.x + (n - self.mic_levels.len() + i) as f32 * colw;
+                                paint::fill_rect(&mut canvas, x as isize, (band.y + band.h - hgt) as isize, colw.ceil() as isize, hgt as isize, *theme::SEARCH_FOUND_COLOUR, page_clip, None);
+                            }
+                            // The meter moves: the next frame draws the next audio.
+                            ctx.window.request_redraw();
+                        }
+                    }
                     // ── Voice: the profiles.
                     flow.gap(hspan2 * 0.6);
                     flow.line(&mut canvas, ctx.text, &tr(Msg::WaveVoiceHead), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
@@ -6879,6 +6925,53 @@ impl PhotonApp {
                         }
                         let row: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = pills.iter().map(|(l, s, en, on)| (l.as_str(), btn_base + *s, *en, green(*on))).collect();
                         flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &row, "Oxanium");
+                    }
+                    // ── YOUR CAMERA (Nick 2026-10-31: "a video preview/calibration on the beam settings page"): the camera previewed on the page, the next camera, and Calibrate with its outcome — the picture shows the turn and the calibration exactly as a beam would carry them.
+                    {
+                        flow.gap(hspan2 * 0.6);
+                        flow.line(&mut canvas, ctx.text, &tr(Msg::BeamPreviewHead), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
+                        if let Some(cam) = crate::wave::beam_session::camera_name() {
+                            flow.prose(&mut canvas, ctx.text, &cam, hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                        }
+                        let running = self.settings_preview;
+                        use crate::wave::beam_calibrate::Status;
+                        let (cal_status, _) = crate::wave::beam_calibrate::status();
+                        let cal_ok = running && crate::wave::beam_calibrate::available() && cal_status != Status::Scanning;
+                        let preview_label = tr(if running { Msg::BeamPreviewStop } else { Msg::BeamPreviewStart }).into_owned();
+                        let next_label = tr(Msg::BeamNextCamera).into_owned();
+                        let cal_label = tr(Msg::Calibrate).into_owned();
+                        let row: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = vec![
+                            (preview_label.as_str(), btn_base + 26, crate::wave::beam_session::can_send(), green(running)),
+                            (next_label.as_str(), btn_base + 27, true, None),
+                            (cal_label.as_str(), btn_base + 28, cal_ok, None),
+                        ];
+                        flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &row, "Oxanium");
+                        let cal_line = match cal_status {
+                            Status::Scanning => Some(tr(Msg::CalScanning).into_owned()),
+                            Status::Done { serial, warning } => {
+                                let line = tr(Msg::Calibrated(&serial.to_string())).into_owned();
+                                Some(match warning.lines().map(str::trim).find(|l| !l.is_empty()) {
+                                    Some(w) => format!("{line} \u{00B7} \u{26A0} {w}"),
+                                    None => line,
+                                })
+                            }
+                            Status::Failed(why) => Some(tr(Msg::CalFailed(why.lines().next().unwrap_or("").trim())).into_owned()),
+                            Status::Idle => None,
+                        };
+                        if let Some(line) = cal_line.filter(|_| running) {
+                            flow.prose(&mut canvas, ctx.text, &line, hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                        }
+                        if running {
+                            let band = flow.band(hspan2 * 14.0);
+                            // Drawn only while the whole box is inside the page: the blit has no clip, and a scrolled-off box must not paint over the page header.
+                            if band.y >= inset.y && band.y + band.h <= inset.y + inset.h {
+                                if let Some(me) = crate::wave::beam_session::self_picture() {
+                                    super::wave_field::paint_picture_rect(&mut canvas, band.x as usize, band.y as usize, band.w as usize, band.h as usize, &me, false);
+                                }
+                            }
+                            // The picture moves: the next frame paints the next one.
+                            ctx.window.request_redraw();
+                        }
                     }
                     // ── TEST PATTERNS: the buffer's own codes (g2t: white at 194, 9.7× at 255), so what shows is exactly what the display path makes of them.
                     flow.gap(hspan2 * 1.2);

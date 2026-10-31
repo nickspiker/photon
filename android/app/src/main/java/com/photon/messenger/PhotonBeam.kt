@@ -52,6 +52,8 @@ class PhotonBeam(
         // The CAPTURE caps ([pickCapture]); the CODED size is the ladder's band, every band an exact half of the capture (beam_ladder.rs bands_for), resampled in Rust (beam_scale.rs).
         const val MAX_PIXELS = 5_100_000L
         const val MAX_FPS = 30
+        /** Kept frames in a row with no free encoder input that mean the encoder has hung: 64, about two seconds at the full rate. */
+        const val STALL_KEPT = 1 shl 6
         /** The self-view inset's width target: the camera is subsampled by a whole factor to about this. */
         const val SELF_W = 320
         /** The lens the last beam was on (this app run): the next beam starts there. */
@@ -96,6 +98,8 @@ class PhotonBeam(
     private var frames = 0L
     private var dropped = 0L
     private var fed = 0L
+    // Kept frames in a row that found no free encoder input: STALL_KEPT of them is a hung encoder (a count of frames, never a timer).
+    private var starved = 0
     // THE SLOT LEDGER (field 2026-10-21, Emma's Samsung on c2.qti.avc.encoder: 45 fed, 898 dropped, encoded = fed — every drop was a camera frame that found no free encoder input while the encoder sat idle): when each input went in, how long its slot took to come back, the longest an output was held.
     private val queuedAtNs = LongArray(64)
     @Volatile private var slotsOffered = 0L
@@ -114,6 +118,9 @@ class PhotonBeam(
     private var codedKbps = 0
     private var tierUsed = 0
     private external fun nativeBeamPlan(timestampNs: Long): Long
+    // THE ENCODER'S CEILING (beam_session::android_encoder_cap / _stalled; Emma's phone 2026-10-31: c2.qti.avc.encoder took 95 frames at 2592x1944 and then never offered an input slot again — the far side froze until a camera switch restarted it).
+    private external fun nativeBeamEncoderCap(width: Int)
+    private external fun nativeBeamEncoderStalled(): Boolean
     private external fun nativeBeamFill(
         sy: java.nio.ByteBuffer, su: java.nio.ByteBuffer, sv: java.nio.ByteBuffer, sYRow: Int, sYPx: Int, sUVRow: Int, sUVPx: Int, sw: Int, sh: Int,
         dy: java.nio.ByteBuffer, du: java.nio.ByteBuffer, dv: java.nio.ByteBuffer, dYRow: Int, dYPx: Int, dUVRow: Int, dUVPx: Int, dw: Int, dh: Int, soft: Int
@@ -364,6 +371,7 @@ class PhotonBeam(
                 codec = c
                 tierUsed = tier
                 PhotonLog.i(TAG, "encoder ${c.name} configured at tier $tier (0 = full low-latency + intra refresh, 1 = no latency keys, 2 = keyframes every 2 s, 3 = plainest)")
+                reportEncoderCap(c)
                 return
             } catch (e: Throwable) {
                 lastErr = e
@@ -372,6 +380,35 @@ class PhotonBeam(
             }
         }
         throw lastErr ?: IllegalStateException("no encoder tier took")
+    }
+
+    /** The widest band of this capture (the ladder's bands are exact halves, beam_ladder.rs bands_for) the encoder says it can encode at the capture's rate — areSizeAndRateSupported, and the measured rate where the codec publishes one — reported to Rust once per encoder. */
+    private fun reportEncoderCap(c: MediaCodec) {
+        try {
+            val vc = c.codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC).videoCapabilities
+            var k = 0
+            while ((w shr k) >= 16 && (h shr k) >= 16) {
+                val bw = (w shr k) and 1.inv()
+                val bh = (h shr k) and 1.inv()
+                val sized = vc.areSizeAndRateSupported(bw, bh, fps.toDouble())
+                val measured = if (sized) try { vc.getAchievableFrameRatesFor(bw, bh)?.upper?.let { it >= fps } ?: true } catch (_: Throwable) { true } else false
+                if (sized && measured) {
+                    PhotonLog.i(TAG, "encoder  supports x at  fps — the widest band it is asked for")
+                    nativeBeamEncoderCap(bw)
+                    return
+                }
+                k++
+            }
+        } catch (e: Throwable) {
+            PhotonLog.w(TAG, "encoder capabilities unreadable", e)
+        }
+    }
+
+    /** The encoder stopped offering inputs: Rust drops the ladder below this band (the next plan restarts the encoder smaller), or — already on the smallest band — it restarts here. */
+    private fun onEncoderStall() {
+        PhotonLog.w(TAG, "encoder stalled:  kept frames found no free input at x ( fed)")
+        val lowered = try { nativeBeamEncoderStalled() } catch (_: Throwable) { false }
+        if (!lowered) reconfigure(codedW, codedH, codedKbps)
     }
 
     private fun setCallbacks(c: MediaCodec) {
@@ -547,7 +584,16 @@ class PhotonBeam(
             } catch (e: Throwable) { PhotonLog.w(TAG, "ladder: bitrate change refused", e) }
         }
         val mc = codec ?: return
-        val idx = freeInputs.poll() ?: run { dropped++; return }
+        val idx = freeInputs.poll() ?: run {
+            dropped++
+            starved++
+            if (starved >= STALL_KEPT) {
+                starved = 0
+                onEncoderStall()
+            }
+            return
+        }
+        starved = 0
         val dst = try { mc.getInputImage(idx) } catch (e: Throwable) { null }
         if (dst == null) {
             try { mc.queueInputBuffer(idx, 0, 0, 0, 0) } catch (_: Throwable) {}

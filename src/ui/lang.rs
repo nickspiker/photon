@@ -850,6 +850,15 @@ pub enum Msg<'a> {
     /// The grants gate's refusals: a wave or beam not sent because the microphone or camera is switched off for Photon.
     GrantMicOff,
     GrantCameraOff,
+    /// The settings pages' device tests: the Beam page's camera preview and the Wave page's microphone meter.
+    BeamPreviewHead,
+    BeamPreviewStart,
+    BeamPreviewStop,
+    BeamNextCamera,
+    WaveTestHead,
+    WaveTestStart,
+    WaveTestStop,
+    WaveTestLevel(&'a str),
     BeamTestHead,
     BeamScreenHdr { allowed: &'a str, asked: &'a str },
     BeamScreenHdrNone,
