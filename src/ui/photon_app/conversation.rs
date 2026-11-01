@@ -3097,6 +3097,20 @@ impl PhotonApp {
                 self.catch_up_alert(conv_pos, &fresh, from_sibling);
                 self.clear_unread_on_reply(conv_pos, &fresh);
             }
+            // A LIVE PHOTON THAT CAME BY HISTORY (2026-11-01, Emma's Pixel: screen off, Nick's photon five seconds later, nothing): it arrived ahead of its chain, waited in the gap buffer, and the history walk delivered its row — where every friend row lands already flagged as recovered, so it never rang. A row the gap buffer saw arrive live rings as a live one does, unless this conversation is being looked at.
+            if !from_sibling {
+                let conv_id = self.conversations[conv_pos].id();
+                let live: Vec<i64> = fresh.iter().filter(|m| !m.is_outgoing && self.live_gap_rows.contains(&(conv_id, m.timestamp))).map(|m| m.timestamp).collect();
+                if !live.is_empty() {
+                    self.live_gap_rows.retain(|(c, t)| !(*c == conv_id && live.contains(t)));
+                    if self.looking_at(conv_pos) {
+                        crate::logf!("NOTIFY: {} live photon(s) came by history while this conversation is open — silent", live.len());
+                    } else {
+                        crate::logf!("NOTIFY: {} live photon(s) came by history (they arrived ahead of their chain) — ringing as live", live.len());
+                        self.summary_chirp_and_flag(conv_pos, &live);
+                    }
+                }
+            }
             // WAVE signals via sibling merge are STOP edges ONLY (docs/waves.md): our sibling's answer/decline row stops this device's ring; replayed catch-up signals correctly ring nothing (a ring requires the DIRECT offer decrypt — which is also what kills the stale-offer-rings-days-later class).
             if from_sibling {
                 // A sibling's REJECT (a wave row with outcome Rejected) stops this device's ring for that offer; a FETCH HINT makes this device hold the recording now.
@@ -3173,6 +3187,12 @@ impl PhotonApp {
             }
             self.scene_dirty = true;
         }
+    }
+
+    /// Is the human looking at this conversation on this device right now — the live alert's `looking` (the receive path): open here, the platform says it is seen, this device holds fleet attention, and it was touched recently.
+    pub(super) fn looking_at(&self, conv_pos: usize) -> bool {
+        let open = matches!(self.state, AppState::Conversation | AppState::ConversationPanel(_)) && self.active_conversation == self.conversations.get(conv_pos).map(|c| c.id());
+        open && crate::platform::attended_here() && self.attention_is_ours() && self.last_poke.is_some_and(|t| t.elapsed() <= ATTENTION_RECENCY)
     }
 
     /// Who a conversation's alert speaks as, any size: a pair's friend by name and relationship digest, a group by its title and its id — so one conversation sounds the same on every device.

@@ -1490,6 +1490,17 @@ impl PhotonApp {
                         // Strict in-order processing (Layer 1). The receiver decrypts at CURRENT_KEY_INDEX, which is only correct when this message is the immediate successor of the last one we processed. So verify_chain_link is now HARD: on a mismatch the message is "ahead" (its predecessor hasn't arrived yet) — buffer it on the `prev_msg_hp` it awaits and SKIP decrypt. It gets replayed when that predecessor lands (see the gap-buffer drain after a successful advance below). "Behind"/duplicate is already handled by is_duplicate above; an unrelated stale prev_msg_hp simply waits in the buffer (and the retransmit path re-sends).
                         if let Err(expected) = chains.verify_chain_link(&lane, &prev_msg_hp) {
                             crate::logf!("CHAT: Hash chain gap from {} - expected prev {}..., got {}... — buffering (ahead of us)", crate::fp(&from_handle_hash), hex::encode(&expected[..8]), hex::encode(&prev_msg_hp[..8]));
+                            // A friend's frame seen arriving LIVE: if the history walk ends up delivering its row, that row rings as live (conversation.rs) — it is news, not recovery.
+                            // WHY: the list must stay bounded — a frame whose row never arrives by history is never removed — so the oldest goes past 64 (a gap buffer that deep is already a lane in trouble).
+                            if contact_idx.is_some_and(|ci| !self.contacts[ci].is_sibling) {
+                                let key = (self.conversations[conv_pos].id(), timestamp);
+                                if !self.live_gap_rows.contains(&key) {
+                                    if self.live_gap_rows.len() >= 1 << 6 {
+                                        self.live_gap_rows.remove(0);
+                                    }
+                                    self.live_gap_rows.push(key);
+                                }
+                            }
                             // GAPS ARE TRANSPORT, NEVER FORK EVIDENCE: a missing predecessor means a frame is in flight, lost (anti-entropy re-serves it on the next pong edge), or a stale-era straggler — none of which a re-key repairs and all of which a re-key destroys (the ≥8-streak trigger here nuked healthy weaves all week, 2026-08-03→07, and masked the actual salt bug). Fork evidence lives solely in the decrypt-fail streak: a fill that arrives and still produces garbage is the only proof both heads committed differently.
                             // A member who is no contact has no presence row to collapse: their frames wait on the retransmit and the member relay.
                             if let Some(c) = contact_idx.map(|ci| &mut self.contacts[ci]) {
