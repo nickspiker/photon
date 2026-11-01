@@ -4233,25 +4233,7 @@ fn rect_center_dims(r: PixelRect) -> (Coord, Coord, Coord, Coord) {
 
 /// True if `ip` is a private / non-routable address that must NOT be stored as a contact's public (`ip`) address — it belongs in `local_ip` instead. Covers IPv4 RFC1918 (10/8, 172.16/12, 192.168/16), link-local (169.254/16), loopback; IPv6 loopback, link-local (fe80::/10), unique-local (fc00::/7); and IPv4-mapped IPv6 (`::ffff:a.b.c.d`) by unwrapping to the embedded v4 (the ping/pong path reports LAN sources in exactly this mapped form, e.g. `::ffff:a.b.c.d`).
 fn is_private_addr(ip: &std::net::IpAddr) -> bool {
-    fn v4_private(o: [u8; 4]) -> bool {
-        o[0] == 10
-            || (o[0] == 172 && (16..=31).contains(&o[1]))
-            || (o[0] == 192 && o[1] == 168)
-            || (o[0] == 169 && o[1] == 254) // link-local
-            || o[0] == 127 // loopback
-    }
-    match ip {
-        std::net::IpAddr::V4(v4) => v4_private(v4.octets()),
-        std::net::IpAddr::V6(v6) => {
-            if let Some(mapped) = v6.to_ipv4_mapped() {
-                return v4_private(mapped.octets());
-            }
-            let seg = v6.segments();
-            v6.is_loopback()
-                || (seg[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
-                || (seg[0] & 0xfe00) == 0xfc00 // unique-local fc00::/7
-        }
-    }
+    crate::types::contact::is_private_ip(ip)
 }
 
 /// CONTENT hit stamps RIDE THE PAINT DECISION (Nick 2026-10-01: "when we paint under we get a bool; if we never painted that pixel because something was there, skip the hit map"). fluor is front to back: the chrome is flattened into `target` before any content, opaque where it owns a pixel (the controls strip, the orb), and the under-blend's early-out skips exactly those pixels when content paints. These two stampers take the same decision from the same bit — a pixel already opaque is not ours — and so must run BEFORE the content they stamp for paints (its own paint would make the pixel opaque). The blind forms below stay for CLEARS and for the deliberate after-paint re-wins (a button reclaiming its silhouette over the widget it overlays), which cannot read opacity by then. The modal full-screen wave wipe fills the map directly.

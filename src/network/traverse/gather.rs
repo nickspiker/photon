@@ -32,11 +32,19 @@ pub fn gather_device_candidates_from(contact: &Contact, device: &[u8; 32], our_v
         .device_endpoints
         .iter()
         .filter(|ep| ep.pubkey == *device)
-        .map(|ep| PeerEndpoint { public: ep.public, lan: ep.lan })
+        .flat_map(endpoint_peers)
         .collect();
     // `contact.ip` / `p2p_addr` are the contact's own first-met pair; they belong to the device we first met, so they only join when that is the device we are asking about.
     let p2p = (contact.device_key() == Some(*device)).then_some(contact.p2p_addr).flatten();
     fgtw::traverse::gather::gather_peer_candidates(&eps, p2p, LanPolicy::SameSubnetAs(our_v4))
+}
+
+/// Every address a device is known at, one candidate endpoint each, most recently heard first (the candidate sort is stable, so within a kind the freshest is tried first).
+fn endpoint_peers(ep: &crate::types::DeviceEndpoint) -> Vec<PeerEndpoint> {
+    ep.addrs
+        .iter()
+        .map(|a| if crate::types::contact::is_private_ip(&a.addr.ip()) { PeerEndpoint { public: None, lan: Some(a.addr) } } else { PeerEndpoint { public: Some(a.addr), lan: None } })
+        .collect()
 }
 
 fn contact_endpoints(contact: &Contact) -> Vec<PeerEndpoint> {
@@ -49,10 +57,7 @@ fn contact_endpoints(contact: &Contact) -> Vec<PeerEndpoint> {
         },
     });
     for ep in &contact.device_endpoints {
-        eps.push(PeerEndpoint {
-            public: ep.public,
-            lan: ep.lan,
-        });
+        eps.extend(endpoint_peers(ep));
     }
     eps
 }
@@ -95,14 +100,29 @@ mod tests {
     }
 
     fn endpoint(public: Option<SocketAddr>, lan: Option<SocketAddr>) -> DeviceEndpoint {
-        DeviceEndpoint {
-            pubkey: [9u8; 32],
-            public,
-            lan,
-            public_seen: 0,
-            online: true,
-            braid: crate::crypto::chain::BRAID_V1,
+        let mut ep = DeviceEndpoint::new([9u8; 32]);
+        ep.online = true;
+        for a in [lan, public].into_iter().flatten() {
+            ep.note(a, crate::types::contact::AddrSource::Heard);
         }
+        ep
+    }
+
+    /// Several addresses per device (Nick 2026-11-01: "I could have two ipv6 addy's per device, or four"): every one is a candidate, and a device heard at a LAN address and two public ones keeps all three.
+    #[test]
+    fn every_address_a_device_is_heard_at_is_a_candidate() {
+        let mut ep = DeviceEndpoint::new([9u8; 32]);
+        ep.note(a("[2001:db8::1]:4383"), crate::types::contact::AddrSource::Heard);
+        ep.note(a("[2001:db8::2]:4383"), crate::types::contact::AddrSource::Record);
+        ep.note(a("192.168.1.5:4383"), crate::types::contact::AddrSource::Beacon);
+        ep.note(a("[2001:db8::1]:4383"), crate::types::contact::AddrSource::Heard);
+        assert_eq!(ep.addrs.len(), 3, "a re-heard address is refreshed, never duplicated");
+        assert_eq!(ep.public(), Some(a("[2001:db8::1]:4383")), "the most recently heard public address leads");
+        assert_eq!(ep.lan(), Some(a("192.168.1.5:4383")));
+        let eps = endpoint_peers(&ep);
+        assert_eq!(eps.len(), 3);
+        ep.forget(a("[2001:db8::2]:4383"));
+        assert_eq!(ep.addrs.len(), 2);
     }
 
     /// The active device's `ip` + `local_ip`/`local_port` pair must flatten into the same candidates a per-device endpoint would produce — that equivalence is the whole basis for collapsing the two former gathers onto one core.

@@ -511,20 +511,109 @@ pub enum ClutchState {
     Complete,      // Proofs exchanged and verified
 }
 
+/// How a device's address was learned (DeviceEndpoint::addrs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AddrSource {
+    /// The device's own traffic arrived from it (a pong, a chat or CLUTCH frame): proven to reach us from there just now.
+    Heard,
+    /// A LAN discovery beacon naming the device came from it.
+    Beacon,
+    /// A signed phonebook or gossip record the device published.
+    Record,
+}
+
+/// One address a device has been known at, and when it was last heard there (Eagle oscillations).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SeenAddr {
+    pub addr: SocketAddr,
+    pub how: AddrSource,
+    pub heard: i64,
+}
+
+/// The most addresses kept per device: every interface it has (a phone on Wi-Fi with two or four IPv6 addresses, a laptop on Wi-Fi and Ethernet and a VPN), plus the ones it has moved off lately.
+pub const DEVICE_ADDRS_MAX: usize = 1 << 4;
+
+/// True if `ip` is private / non-routable: IPv4 RFC1918 (10/8, 172.16/12, 192.168/16), link-local (169.254/16), loopback; IPv6 loopback, link-local (fe80::/10), unique-local (fc00::/7); and IPv4-mapped IPv6 (`::ffff:a.b.c.d`) by its embedded v4 (the ping/pong path reports LAN sources in exactly that mapped form).
+pub fn is_private_ip(ip: &std::net::IpAddr) -> bool {
+    fn v4_private(o: [u8; 4]) -> bool {
+        o[0] == 10
+            || (o[0] == 172 && (16..=31).contains(&o[1]))
+            || (o[0] == 192 && o[1] == 168)
+            || (o[0] == 169 && o[1] == 254) // link-local
+            || o[0] == 127 // loopback
+    }
+    match ip {
+        std::net::IpAddr::V4(v4) => v4_private(v4.octets()),
+        std::net::IpAddr::V6(v6) => {
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return v4_private(mapped.octets());
+            }
+            let seg = v6.segments();
+            v6.is_loopback()
+                || (seg[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
+                || (seg[0] & 0xfe00) == 0xfc00 // unique-local fc00::/7
+        }
+    }
+}
+
 /// One fleet device's known addresses + liveness, learned from ITS OWN traffic (pong source, FGTW peer row). Runtime only — never persisted; presence rediscovers every session.
 #[derive(Clone, Debug)]
 pub struct DeviceEndpoint {
     pub pubkey: [u8; 32],
-    /// Public (WAN) address, from a pong arriving off-LAN or an FGTW peer row.
-    pub public: Option<SocketAddr>,
-    /// LAN address, from a pong arriving from a private source.
-    pub lan: Option<SocketAddr>,
+    /// EVERY ADDRESS this device has been known at (Nick 2026-11-01: "I could have two ipv6 addy's per device, or four"), most recently heard first — public and LAN alike, told apart by the address itself (`is_private_ip`).
+    /// One public and one LAN slot used to be overwritten by whichever answered last, so a device with several interfaces kept one and lost the rest. At most DEVICE_ADDRS_MAX; the least recently heard goes first.
+    pub addrs: Vec<SeenAddr>,
     /// When the record that set `public` was current (its signed stamp, floored to our clock). Runtime only. One public ip:port is one NAT mapping, so when two devices of a contact claim the same one, the newer claim keeps it (peers.rs adopt_endpoint_into).
     pub public_seen: i64,
     /// This device answered its own ping within the timeout window.
     pub online: bool,
     /// The newest braid this device's last sealed pong said it weaves (crypto::chain::BRAID_*). Runtime only: v1 until a pong says otherwise, so an unheard device never lets us claim v2.
     pub braid: u8,
+}
+
+impl DeviceEndpoint {
+    pub fn new(pubkey: [u8; 32]) -> Self {
+        DeviceEndpoint { pubkey, addrs: Vec::new(), public_seen: 0, online: false, braid: crate::crypto::chain::BRAID_V1 }
+    }
+
+    /// The device was just known at `addr`: it moves to the front, stamped now. An address it was already known at is refreshed, never duplicated.
+    pub fn note(&mut self, addr: SocketAddr, how: AddrSource) {
+        let addr = SocketAddr::new(addr.ip().to_canonical(), addr.port());
+        self.addrs.retain(|a| a.addr != addr);
+        self.addrs.insert(0, SeenAddr { addr, how, heard: vsf::eagle_time_oscillations() });
+        // WHY: a phone that roams gathers a new address per network it touches; without a bound the set grows for as long as the app runs.
+        // PROOF: the least recently heard address is the one most likely gone, and a device's live interfaces are far fewer than DEVICE_ADDRS_MAX.
+        self.addrs.truncate(DEVICE_ADDRS_MAX);
+    }
+
+    /// The device is no longer at `addr` (another device of the contact holds that mapping now).
+    pub fn forget(&mut self, addr: SocketAddr) {
+        let addr = SocketAddr::new(addr.ip().to_canonical(), addr.port());
+        self.addrs.retain(|a| a.addr != addr);
+    }
+
+    /// The most recently heard public (routable) address.
+    pub fn public(&self) -> Option<SocketAddr> {
+        self.addrs.iter().find(|a| !is_private_ip(&a.addr.ip())).map(|a| a.addr)
+    }
+
+    /// The most recently heard LAN (private) address.
+    pub fn lan(&self) -> Option<SocketAddr> {
+        self.addrs.iter().find(|a| is_private_ip(&a.addr.ip())).map(|a| a.addr)
+    }
+
+    /// Every address, LAN first then public, the most recently heard first within each.
+    pub fn all(&self) -> Vec<SocketAddr> {
+        let lan = self.addrs.iter().filter(|a| is_private_ip(&a.addr.ip())).map(|a| a.addr);
+        let public = self.addrs.iter().filter(|a| !is_private_ip(&a.addr.ip())).map(|a| a.addr);
+        lan.chain(public).collect()
+    }
+
+    /// Does the device answer at `addr`?
+    pub fn has(&self, addr: SocketAddr) -> bool {
+        let addr = SocketAddr::new(addr.ip().to_canonical(), addr.port());
+        self.addrs.iter().any(|a| a.addr == addr)
+    }
 }
 
 /// Cycles an online contact may go punched-but-unvalidated before it's treated as direct-unreachable — read by the relay tiering AND the seed-registry resolve (a contact stuck here needs FRESH addresses, whatever stale `ip` it carries: the 2026-08-17 flap — a cross-subnet LAN path validating and dying over and over — kept a perfectly-reachable WAN v6 from ever being resolved, because the resolve gated on "has an address").
@@ -1008,7 +1097,7 @@ impl Contact {
     pub fn offer_device_addrs(&self) -> Option<([u8; 32], SocketAddr, Option<SocketAddr>)> {
         let dev = self.clutch_slots.iter().filter_map(|s| s.offer_device).find(|d| self.device_endpoints.iter().any(|e| e.pubkey == *d))?;
         let ep = self.device_endpoints.iter().find(|e| e.pubkey == dev)?;
-        match (ep.lan, ep.public) {
+        match (ep.lan(), ep.public()) {
             (Some(l), p) => Some((dev, l, p)),
             (None, Some(p)) => Some((dev, p, None)),
             (None, None) => None,
@@ -1023,14 +1112,7 @@ impl Contact {
         {
             return &mut self.device_endpoints[i];
         }
-        self.device_endpoints.push(DeviceEndpoint {
-            pubkey: *pubkey,
-            public: None,
-            lan: None,
-            public_seen: 0,
-            online: false,
-            braid: crate::crypto::chain::BRAID_V1,
-        });
+        self.device_endpoints.push(DeviceEndpoint::new(*pubkey));
         self.device_endpoints.last_mut().unwrap()
     }
 

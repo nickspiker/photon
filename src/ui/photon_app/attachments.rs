@@ -507,8 +507,8 @@ impl PhotonApp {
                     if Some(ep.pubkey) == primary || c.refused_devices.contains(&ep.pubkey) {
                         continue;
                     }
-                    let Some(addr) = ep.lan.or(ep.public) else { continue };
-                    let alt = if ep.lan.is_some() { ep.public } else { None };
+                    let Some(addr) = ep.lan().or(ep.public()) else { continue };
+                    let alt = if ep.lan().is_some() { ep.public() } else { None };
                     targets.push((ranked(ep.pubkey, if ep.online { 1 } else { 3 }), addr, alt, ep.pubkey, vec![ep.pubkey]));
                 }
             }
@@ -640,7 +640,7 @@ impl PhotonApp {
                     || addr.is_some_and(|a| {
                         self.contacts.iter().any(|c| {
                             (c.device_key() == Some(*d) && (c.ip.is_some_and(|i| same(i, a)) || c.validated_path.is_some_and(|(p, _)| same(p, a))))
-                                || c.device_endpoints.iter().any(|ep| ep.pubkey == *d && (ep.lan.is_some_and(|l| same(l, a)) || ep.public.is_some_and(|p| same(p, a))))
+                                || c.device_endpoints.iter().any(|ep| ep.pubkey == *d && (ep.addrs.iter().any(|s| same(s.addr, a))))
                         })
                     })
             })

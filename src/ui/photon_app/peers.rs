@@ -449,21 +449,21 @@ pub(super) fn adopt_endpoint_into(contacts: &mut [crate::types::Contact], locked
             continue;
         }
         // Another device of this contact already holds this mapping on a NEWER record: this claim is the stale one.
-        if contact.device_endpoints.iter().any(|e| e.pubkey != dev && e.public == Some(pubaddr) && e.public_seen > seen) {
+        if contact.device_endpoints.iter().any(|e| e.pubkey != dev && e.has(pubaddr) && e.public_seen > seen) {
             continue;
         }
         // An older claim by another device yields: the mapping is this device's now.
-        for e in contact.device_endpoints.iter_mut().filter(|e| e.pubkey != dev && e.public == Some(pubaddr)) {
-            e.public = None;
+        for e in contact.device_endpoints.iter_mut().filter(|e| e.pubkey != dev && e.has(pubaddr)) {
+            e.forget(pubaddr);
             crate::logf!("PHONEBOOK: {} belongs to dev {} (newer record) — cleared from dev {}", pubaddr, crate::fp(&dev), crate::fp(&e.pubkey));
         }
         let lan_ok = lan.filter(|a| !crate::network::traverse::gather::is_bogus_addr(a));
         let ep = contact.endpoint_mut(&dev);
         ep.public_seen = ep.public_seen.max(seen);
-        let changed = ep.public != Some(pubaddr) || (lan_ok.is_some() && ep.lan != lan_ok);
-        ep.public = Some(pubaddr);
+        let changed = !ep.has(pubaddr) || lan_ok.is_some_and(|l| !ep.has(l));
+        ep.note(pubaddr, crate::types::contact::AddrSource::Record);
         if let Some(l) = lan_ok {
-            ep.lan = Some(l);
+            ep.note(l, crate::types::contact::AddrSource::Record);
         }
         if !changed {
             continue;
@@ -500,7 +500,7 @@ mod adopt_tests {
         let old: std::net::SocketAddr = "71.36.49.132:4383".parse().unwrap();
         let new: std::net::SocketAddr = "65.131.199.121:4383".parse().unwrap();
         c.ip = Some(old);
-        c.endpoint_mut(&dev).public = Some(old);
+        c.endpoint_mut(&dev).note(old, crate::types::contact::AddrSource::Record);
         c.punch_unvalidated_cycles = 9;
         let mut contacts = vec![c];
         assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, dev, new, None, 1, true), 1, "the differing record adopts");
@@ -525,7 +525,7 @@ mod adopt_tests {
         let mapping: std::net::SocketAddr = "174.45.252.101:49189".parse().unwrap();
         assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, a, mapping, None, 100, false), 1);
         assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, b, mapping, None, 200, false), 1, "the newer claim adopts");
-        let public_of = |cs: &[Contact], d: [u8; 32]| cs[0].device_endpoints.iter().find(|e| e.pubkey == d).and_then(|e| e.public);
+        let public_of = |cs: &[Contact], d: [u8; 32]| cs[0].device_endpoints.iter().find(|e| e.pubkey == d).and_then(|e| e.public());
         assert_eq!(public_of(&contacts, a), None, "the older claim is cleared");
         assert_eq!(public_of(&contacts, b), Some(mapping));
         assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, a, mapping, None, 150, false), 0, "an older record than the held claim is not adopted");

@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Devices with several addresses connect.** Photon now remembers every address each of a friend's devices answers at — several IPv6 addresses, Wi-Fi and Ethernet, a VPN — instead of only the last one, and learns each device's own LAN address even when one person has several devices on the same network, so group waves between devices in the same house find each other.
 - **One person, one stream.** Joining a group wave or beam from a second device now moves you there: your first device leaves, everyone else switches to the new one, and you never show up twice or echo yourself; tap Join on the first device to move back.
 - **Smoother video from phones whose encoder stalls.** Some phones' video encoders choke on their low-latency setting, and Photon used to answer by shrinking the picture to a postage stamp; it now turns that setting off first and keeps the size.
 - **Leave, not End.** The red button in a wave or beam now says Leave: nobody ends a wave for everyone — each person leaves, and it is over when the last one does.

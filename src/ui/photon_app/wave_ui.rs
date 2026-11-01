@@ -1482,10 +1482,7 @@ impl PhotonApp {
                 if !contact.knows_device(&ep.pubkey) {
                     continue;
                 }
-                if let Some(a) = ep.lan {
-                    push(&mut targets, a);
-                }
-                if let Some(a) = ep.public {
+                for a in ep.all() {
                     push(&mut targets, a);
                 }
             }
@@ -1500,10 +1497,7 @@ impl PhotonApp {
                     }
                     if let Some(dev) = wave.peer_device {
                         if let Some(ep) = contact.device_endpoints.iter().find(|e| e.pubkey == dev) {
-                            if let Some(a) = ep.lan {
-                                push(&mut targets, a);
-                            }
-                            if let Some(a) = ep.public {
+                            for a in ep.all() {
                                 push(&mut targets, a);
                             }
                         }

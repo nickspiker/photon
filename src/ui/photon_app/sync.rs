@@ -359,7 +359,7 @@ impl PhotonApp {
                 contact
                     .device_endpoints
                     .iter()
-                    .find(|ep| ep.public == Some(addr) || ep.lan == Some(addr))
+                    .find(|ep| ep.has(addr))
                     .map(|ep| crate::types::DevicePubkey::from_bytes(ep.pubkey))
                     .unwrap_or_else(|| primary_dev.clone())
             };
@@ -427,7 +427,7 @@ impl PhotonApp {
                     continue;
                 }
                 let dev = crate::types::DevicePubkey::from_bytes(ep.pubkey);
-                for addr in [ep.lan, ep.public].into_iter().flatten() {
+                for addr in ep.all().into_iter() {
                     checker.ping(addr, dev.clone(), Vec::new(), Vec::new(), false);
                 }
             }
@@ -2147,10 +2147,10 @@ impl PhotonApp {
                     if ep.pubkey == primary || contact.refused_devices.contains(&ep.pubkey) {
                         continue;
                     }
-                    let ep_addr = ep.lan.or(ep.public);
+                    let ep_addr = ep.lan().or(ep.public());
                     let Some(ep_addr) = ep_addr else { continue };
                     let ep_punch: Vec<std::net::SocketAddr> =
-                        [ep.lan, ep.public].into_iter().flatten().collect();
+                        ep.all().into_iter().collect();
                     checker.ping(
                         ep_addr,
                         crate::types::DevicePubkey::from_bytes(ep.pubkey),

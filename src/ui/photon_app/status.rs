@@ -876,11 +876,7 @@ impl PhotonApp {
                                 let private = is_private_addr(&addr.ip());
                                 {
                                     let ep = contact.endpoint_mut(&peer_pubkey.key);
-                                    if private {
-                                        ep.lan = Some(addr);
-                                    } else {
-                                        ep.public = Some(addr);
-                                    }
+                                    ep.note(addr, crate::types::contact::AddrSource::Heard);
                                 }
                                 if contact.active_device.is_none() {
                                     contact.active_device = Some(peer_pubkey.key);
@@ -1052,10 +1048,10 @@ impl PhotonApp {
                                         Some(ep.pubkey) != cur
                                             // Never rotate onto the device whose timeout this is.
                                             && ep.pubkey != peer_pubkey.key
-                                            && (ep.public.is_some() || ep.lan.is_some())
+                                            && (ep.public().is_some() || ep.lan().is_some())
                                             && !locked_device_set.contains(&ep.pubkey)
                                     })
-                                    .map(|ep| (ep.pubkey, ep.public, ep.lan))
+                                    .map(|ep| (ep.pubkey, ep.public(), ep.lan()))
                                     .next();
                                 if let Some((pk, public, lan)) = next {
                                     crate::logf!("Status: active device {} unreachable — rotating to fleet member {}", hex::encode(&cur.unwrap_or(peer_pubkey.key)[..4]), hex::encode(&pk[..4]));
@@ -2065,13 +2061,8 @@ impl PhotonApp {
                                 contact.reached_via_relay = false;
                                 contact.ip = Some(sender_addr);
                                 contact.active_device = Some(sender_pubkey);
-                                let pub_src = !is_private_addr(&sender_addr.ip());
                                 let ep = contact.endpoint_mut(&sender_pubkey);
-                                if pub_src {
-                                    ep.public = Some(sender_addr);
-                                } else {
-                                    ep.lan = Some(sender_addr);
-                                }
+                                ep.note(sender_addr, crate::types::contact::AddrSource::Heard);
                             }
                             // Authenticated CLUTCH traffic from them ⇒ reachable right now ⇒ show online immediately, don't wait for the next pong.
                             if !contact.is_online {
@@ -2699,13 +2690,8 @@ impl PhotonApp {
                                 contact.reached_via_relay = false;
                                 contact.ip = Some(sender_addr);
                                 contact.active_device = Some(sender_pubkey);
-                                let pub_src = !is_private_addr(&sender_addr.ip());
                                 let ep = contact.endpoint_mut(&sender_pubkey);
-                                if pub_src {
-                                    ep.public = Some(sender_addr);
-                                } else {
-                                    ep.lan = Some(sender_addr);
-                                }
+                                ep.note(sender_addr, crate::types::contact::AddrSource::Heard);
                             }
                             // Authenticated CLUTCH traffic from them ⇒ reachable right now ⇒ show online immediately, don't wait for the next pong.
                             if !contact.is_online {
@@ -2900,13 +2886,8 @@ impl PhotonApp {
                                 contact.reached_via_relay = false;
                                 contact.ip = Some(sender_addr);
                                 contact.active_device = Some(sender_pubkey);
-                                let pub_src = !is_private_addr(&sender_addr.ip());
                                 let ep = contact.endpoint_mut(&sender_pubkey);
-                                if pub_src {
-                                    ep.public = Some(sender_addr);
-                                } else {
-                                    ep.lan = Some(sender_addr);
-                                }
+                                ep.note(sender_addr, crate::types::contact::AddrSource::Heard);
                             }
                             // Authenticated CLUTCH traffic from them ⇒ reachable right now ⇒ show online immediately, don't wait for the next pong.
                             if !contact.is_online {
@@ -3209,6 +3190,10 @@ impl PhotonApp {
                                     wfd_beacon_reply = Some(addr);
                                 }
                                 break;
+                            }
+                            // PER DEVICE (2026-11-01, Emma's desktop and phone on one LAN): the beacon names its device, and that device's own address set takes the LAN address — the contact-level slot below holds one address for the whole person, so two devices on one network overwrote each other and group links never learned either.
+                            if let Some(dk) = device_pubkey.filter(|dk| contact.knows_device(dk)) {
+                                contact.endpoint_mut(&dk).note(std::net::SocketAddr::from((local_ip, port)), crate::types::contact::AddrSource::Beacon);
                             }
                             let old_local = contact.local_ip;
                             let old_port = contact.local_port;

@@ -1038,7 +1038,7 @@ impl PhotonApp {
         let Ok(frame) = crate::network::fgtw::protocol::build_fleet_req_vsf(&hp, &kp.public.to_bytes(), kp.secret.as_bytes()) else { return false };
         let mut sent = 0usize;
         for ep in c.device_endpoints.iter().filter(|e| !c.refused_devices.contains(&e.pubkey)) {
-            let (addr, alt) = match (ep.lan, ep.public) {
+            let (addr, alt) = match (ep.lan(), ep.public()) {
                 (Some(l), p) => (l, p),
                 (None, Some(p)) => (p, None),
                 (None, None) => continue,
