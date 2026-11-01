@@ -270,6 +270,10 @@ pub enum Msg<'a> {
     WaveUnmute,
     /// The in-wave camera pill while our camera goes out: a tap turns it off, the wave goes on (the label says what a tap does, as Mute does).
     CameraOff,
+    /// The in-wave red button (Nick 2026-11-01: "Should be leave beam/wave, not end beam/wave. Nobody can end it, everyone can leave, thus ending it."): we leave; the wave ends for us, and for everyone once the last one leaves.
+    LeaveWave,
+    /// The same, while video is in the wave.
+    LeaveBeam,
     /// The wave card's "wave back" in the same state.
     WaveBackNoPath,
     WaveActiveNoPath(&'a str),

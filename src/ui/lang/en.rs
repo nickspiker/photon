@@ -62,6 +62,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::WaveMute => "\u{1F3A4} Mute".into(),
         Msg::WaveUnmute => "\u{1F507} Unmute".into(),
         Msg::CameraOff => "\u{1F4F9} Camera off".into(),
+        Msg::LeaveWave => "Leave wave".into(),
+        Msg::LeaveBeam => "Leave beam".into(),
         Msg::WaveBackNoPath => "no direct path".into(),
         Msg::WaveActiveNoPath(dur) => format!("\u{260E} {dur} \u{2014} \u{26A0} no direct path").into(),
         Msg::AnswerFailedReconnecting(name) => format!("\u{26A0} can\u{2019}t answer yet \u{2014} reconnecting with {name}").into(),

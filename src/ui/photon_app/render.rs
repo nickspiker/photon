@@ -1141,7 +1141,7 @@ impl PhotonApp {
                             let beaming = crate::wave::beam_session::showing()
                                 || self.active_wave.as_ref().is_some_and(|w| w.beam_tx.is_some() || w.beam_opening.is_some())
                                 || group_beaming;
-                            b.set_label(tr(if beaming { Msg::EndBeam } else { Msg::EndWave }));
+                            b.set_label(tr(if beaming { Msg::LeaveBeam } else { Msg::LeaveWave }));
                             b.set_font_size_fitted(bfont, ctx.text);
                             b.set_enabled(true);
                             b.set_fill(Some(*theme::WAVE_DANGER_FILL));
