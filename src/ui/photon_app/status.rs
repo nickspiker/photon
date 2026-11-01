@@ -5510,6 +5510,8 @@ impl PhotonApp {
         // Era observations, decided outside the chains borrow.
         if owner_edge {
             self.recompute_ceremony_owners("presence verdict");
+            // A sibling that went dark no longer counts toward an open era_pull's quorum: check them again on this edge.
+            self.conclude_era_pulls();
         }
         // THE ERA-MISMATCH HEAL first (bonds.rs): a friend's device advertising an era our chains never held is healed by the lower party, no handshake to wait on; what it takes, the ordinary repair below leaves alone.
         let mut healed: Vec<crate::types::friendship::FriendshipId> = Vec::new();

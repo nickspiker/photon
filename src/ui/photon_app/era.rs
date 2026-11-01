@@ -563,12 +563,29 @@ impl PhotonApp {
 
     /// One sibling's era_pull answer was a MISS (an explicit chain_pull_miss, or a served blob that did not move our era — 2026-09-10). When every LIVE sibling has missed, the pull concludes and the repair table decides from FleetAllMissed.
     pub(super) fn era_pull_miss_from(&mut self, token: [u8; 32], sender_key: [u8; 32]) {
+        if !self.era_pull_sent.contains_key(&token) {
+            return;
+        }
+        let set = self.chain_pull_misses.entry(token).or_default();
+        if !set.contains(&sender_key) {
+            set.push(sender_key);
+        }
+        self.conclude_era_pull(token);
+    }
+
+    /// A sibling's presence verdict landed: every open era_pull is checked again (2026-11-01, the Mac's pull: the phone counted as present until its probe failed, the desktop's miss had already arrived, and with no further miss to come the pull waited forever).
+    pub(super) fn conclude_era_pulls(&mut self) {
+        let open: Vec<[u8; 32]> = self.era_pull_sent.iter().map(|(t, _)| *t).collect();
+        for token in open {
+            self.conclude_era_pull(token);
+        }
+    }
+
+    /// The pull concludes when every LIVE sibling has missed, and at least one answered — a fleet that is all away has said nothing, and the device waits for one to come back.
+    fn conclude_era_pull(&mut self, token: [u8; 32]) {
         let Some(&held) = self.era_pull_sent.get(&token) else { return };
         let all_missed = {
-            let set = self.chain_pull_misses.entry(token).or_default();
-            if !set.contains(&sender_key) {
-                set.push(sender_key);
-            }
+            let Some(set) = self.chain_pull_misses.get(&token).filter(|s| !s.is_empty()) else { return };
             // The quorum is the LIVE fleet: a sibling probed offline (a phone in a desk for a week, or a wiped device never released) cannot answer and needs nothing from this answer — replication carries the era to it on its return. Counting it froze every repair on "era_pull in flight" for as long as it stayed dark (2026-09-09).
             self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out && !(c.presence_probed && !c.is_online)).all(|c| set.iter().any(|d| c.knows_device(d)))
         };
