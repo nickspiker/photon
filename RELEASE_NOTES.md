@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Smoother waves right after Photon starts.** Photon no longer fetches files from your other devices and friends while a wave or beam is live — those transfers were crowding out the wave's audio and video on the phone — and picks up where it left off once you leave.
+- **Video from phones whose encoder stalls really recovers now.** The fix for stalling video encoders restarted them on the same setting that stalled, so the picture froze every few seconds; it now switches the setting off as intended.
 - **The screen stays on in a wave or beam.** The screen used to go dark at the phone's normal timeout in the middle of a beam; it now stays on until you leave, and still turns off when you hold the phone to your ear.
 - **Quiet chimes during a wave.** A photon or a second wave arriving while you are in a wave or beam no longer chimes or rings at full volume from the loudspeaker; it plays once, softly, wherever the wave is playing (the earpiece or your headset).
 - **Every address a device has is published.** Each device now tells the phonebook every address it can be reached at — all its IPv6 addresses, its Wi-Fi and Ethernet addresses, a VPN — so friends' devices can find it on whichever one works.

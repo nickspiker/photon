@@ -430,6 +430,7 @@ class PhotonBeam(
         // THE LATENCY KEYS FIRST (2026-11-01, Emma's phone, c2.qti.avc.encoder at tier 0: it stalled at 648, 324 and 162 wide alike — the size was never the cause): a stall on the low-latency tier rebuilds the encoder one tier down at the SAME size, still rolling intra refresh and never a keyframe; only a stall below that hands the ladder a smaller band.
         if (tierUsed == 0) {
             tierFloor = 1
+            tierUsed = 1 // reconfigure() builds from tierUsed: without this the rebuild re-applied tier 0 and stalled again (2026-11-01, Emma: 8 stalls in 32 s, every one "tier 0")
             PhotonLog.w(TAG, "encoder stalled on the low-latency tier — rebuilding without the latency keys at the same size; this run keeps tier 1 from here")
             reconfigure(codedW, codedH, codedKbps)
             return

@@ -892,8 +892,11 @@ impl PhotonApp {
     }
 
     pub(super) fn wave_drought_tick(&mut self) {
-        self.replicate_sweep();
-        self.attach_fetch_retry_tick();
+        // MEDIA FIRST (2026-11-01, Nick and Emma's jerky beam): a launch's replication asked for 214 files and the answers — 263 KB chunks at ~35 Mbit/s — held the receive loop 20-56 ms at a time while the wave's packets waited behind them. No file is asked for while a wave or beam is live; the asks resume on the tick after it ends.
+        if self.active_wave.is_none() && self.group_wave.is_none() {
+            self.replicate_sweep();
+            self.attach_fetch_retry_tick();
+        }
         self.pigeon_repair_tick();
         #[cfg(target_os = "android")]
         if crate::platform::jni_android::take_network_changed() {
