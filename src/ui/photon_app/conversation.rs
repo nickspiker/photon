@@ -2750,8 +2750,9 @@ impl PhotonApp {
                             }
                         };
                         // Our fleet's wave rows in this group (docs/group-waves.md): a sibling's join stops this device's ring for the same wave.
-                        for sig in page.rows.iter().filter(|r| group.is_some() && from_sibling && r.sender_outgoing).filter_map(|r| r.control.as_ref().and_then(|c| c.wave()).copied()) {
-                            self.on_group_wave_merge(sig);
+                        let fleet_waves: Vec<(crate::wave::signal::WaveSignal, i64)> = page.rows.iter().filter(|r| group.is_some() && from_sibling && r.sender_outgoing).filter_map(|r| r.control.as_ref().and_then(|c| c.wave()).copied().map(|s| (s, r.timestamp))).collect();
+                        for (sig, ts) in fleet_waves {
+                            self.on_group_wave_merge(sig, ts);
                         }
                         // A wave row our fleet minted (a decline, a reject, a wave lived on another device) ends this device's ring for the same offer.
                         for ts in page.rows.iter().filter(|r| group.is_some() && from_sibling && r.wave.is_some()).map(|r| r.timestamp) {

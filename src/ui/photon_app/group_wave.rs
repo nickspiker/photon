@@ -25,6 +25,8 @@ pub(crate) struct GroupMember {
     pub party: [u8; 32],
     /// Its join nonce (the origin's offer nonce for the origin).
     pub nonce: [u8; 32],
+    /// The stamp of the row that joined it: a person is ONE device in a wave, and only a newer join from the same person moves them (the hand-off).
+    pub at: i64,
 }
 
 /// A GROUP WAVE RUNNING WITHOUT US (Nick 2026-11-01: "We need a way for a member to join in after the beam or wave has started. Leave/join at will."): what joining it needs — the offer's key and who is in.
@@ -354,7 +356,9 @@ impl PhotonApp {
     /// A join on the group's lane: the device is in (a fresh nonce replaces its old one — it left and came back).
     fn note_live_join(&mut self, gid: MoleculeId, wave_id: [u8; 16], m: GroupMember) {
         if let Some(l) = self.live_group_waves.iter_mut().find(|l| l.gid == gid && l.wave_id == wave_id) {
-            match l.joined.iter_mut().find(|j| j.device == m.device) {
+            // One device per person, the newer join winning (the hand-off).
+            match l.joined.iter_mut().find(|j| j.device == m.device || j.party == m.party) {
+                Some(j) if j.at > m.at => {}
                 Some(j) => *j = m,
                 None => l.joined.push(m),
             }
@@ -393,14 +397,18 @@ impl PhotonApp {
             return;
         };
         let l = self.live_group_waves.remove(pos);
-        let Some(origin) = l.joined.first().copied() else {
+        // Our own devices are never linked to: if one of them is in, our join moves the wave here (the hand-off) and it leaves.
+        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let others: Vec<GroupMember> = l.joined.iter().copied().filter(|m| Some(m.party) != us).collect();
+        let Some(origin) = others.first().copied() else {
+            crate::log("WAVE: the running group wave holds only our own devices — nothing to join here");
             return;
         };
         self.ended_waves.remove(&l.wave_id);
         self.rejected_waves.remove(&l.wave_id);
         self.freshen_clock_for_wave();
         let mut w = Self::ringing_group_wave(gid, l.wave_id, l.offer_osc, l.key, origin);
-        w.joined = l.joined;
+        w.joined = others;
         crate::logf!("WAVE: joining the running group wave {} in {} — {} device(s) in", hex::encode(&l.wave_id[..4]), hex::encode(&gid.0[..4]), w.joined.len());
         self.group_wave = Some(w);
         self.join_group_wave();
@@ -431,6 +439,17 @@ impl PhotonApp {
     /// A wave row in a molecule (docs/group-waves.md): `party` the sending member, `ci` their contact when we friended them (a member is a person, not a contact), `device` the device that signed the frame.
     pub(super) fn on_group_wave_signal(&mut self, gid: MoleculeId, party: [u8; 32], ci: Option<usize>, device: [u8; 32], sig: WaveSignal, rx_lane_key: Option<[u8; 32]>, row_ts: i64) {
         if ci.is_some_and(|ci| self.contacts.get(ci).is_none_or(|c| c.is_sibling)) {
+            match sig {
+                // Our own other device joining the wave we are in, by express: the hand-off (one stream per person).
+                WaveSignal::Answer { wave_id, .. } => self.hand_off_group_wave(wave_id, Some(device), row_ts),
+                // A wave our own other device started: never a ring here, but joinable (the wave moves here when we join).
+                WaveSignal::Offer { wave_id, nonce, .. } => {
+                    if let Some(key) = rx_lane_key {
+                        self.note_live_offer(gid, wave_id, row_ts, key, GroupMember { device, party, nonce, at: row_ts });
+                    }
+                }
+                _ => {}
+            }
             return;
         }
         if Some(device) == self.our_device() {
@@ -440,7 +459,7 @@ impl PhotonApp {
             WaveSignal::Offer { wave_id, nonce, .. } => {
                 // Every offer seen in the group is its running wave, whether it rings here or not: a member who missed, declined or left joins it later.
                 if let Some(key) = rx_lane_key {
-                    self.note_live_offer(gid, wave_id, row_ts, key, GroupMember { device, party, nonce });
+                    self.note_live_offer(gid, wave_id, row_ts, key, GroupMember { device, party, nonce, at: row_ts });
                 }
                 if self.ended_waves.contains(&wave_id) || self.rejected_waves.contains(&wave_id) {
                     return;
@@ -455,7 +474,7 @@ impl PhotonApp {
                             crate::logf!("WAVE: group glare — folding our {} into joining {}", hex::encode(&ours[..4]), hex::encode(&wave_id[..4]));
                             self.send_group_wave_signal(gid, WaveSignal::Hangup { wave_id: ours }, vsf::eagle_time_oscillations());
                             self.ended_waves.insert(ours);
-                            self.group_wave = Some(Self::ringing_group_wave(gid, wave_id, row_ts, key, GroupMember { device, party, nonce }));
+                            self.group_wave = Some(Self::ringing_group_wave(gid, wave_id, row_ts, key, GroupMember { device, party, nonce, at: row_ts }));
                             self.join_group_wave();
                         }
                     }
@@ -472,7 +491,7 @@ impl PhotonApp {
                             return;
                         }
                         self.freshen_clock_for_wave();
-                        self.group_wave = Some(Self::ringing_group_wave(gid, wave_id, row_ts, key, GroupMember { device, party, nonce }));
+                        self.group_wave = Some(Self::ringing_group_wave(gid, wave_id, row_ts, key, GroupMember { device, party, nonce, at: row_ts }));
                         let guard = match ci {
                             Some(ci) => self.ring_alert_guard(ci),
                             None => {
@@ -493,9 +512,15 @@ impl PhotonApp {
                 }
             }
             WaveSignal::Answer { wave_id, nonce, .. } => {
-                self.note_live_join(gid, wave_id, GroupMember { device, party, nonce });
+                self.note_live_join(gid, wave_id, GroupMember { device, party, nonce, at: row_ts });
                 let Some(w) = self.group_wave.as_mut().filter(|w| w.wave_id == wave_id) else {
                     return;
+                };
+                // ONE DEVICE PER PERSON (the hand-off, Nick 2026-11-01): a join from another device of a person already in moves them there — the newer join wins and its predecessor's link goes; an older one (a late roll call from the device they left) is ignored.
+                let moved_from = match w.joined.iter().position(|m| m.party == party && m.device != device) {
+                    Some(i) if w.joined[i].at > row_ts => return,
+                    Some(i) => Some(w.joined.remove(i).device),
+                    None => None,
                 };
                 // A device already in with a DIFFERENT nonce left and came back (its leave may never have reached us): its old link goes, the fresh nonce brings a fresh secret.
                 let rejoin = match w.joined.iter_mut().find(|m| m.device == device) {
@@ -505,7 +530,7 @@ impl PhotonApp {
                         true
                     }
                     None => {
-                        w.joined.push(GroupMember { device, party, nonce });
+                        w.joined.push(GroupMember { device, party, nonce, at: row_ts });
                         false
                     }
                 };
@@ -514,6 +539,10 @@ impl PhotonApp {
                 crate::logf!("WAVE: {} {} group wave {} ({} in besides us)", crate::fp(&party), if rejoin { "came back to" } else { "joined" }, hex::encode(&wave_id[..4]), w.joined.len());
                 if rejoin {
                     self.group_link_down(device);
+                }
+                if let Some(old) = moved_from {
+                    crate::logf!("WAVE: {} moved to device {} — the link to {} goes", crate::fp(&party), crate::fp(&device), crate::fp(&old));
+                    self.group_link_down(old);
                 }
                 if joined_here {
                     self.group_link_up(device);
@@ -552,16 +581,33 @@ impl PhotonApp {
     }
 
     /// OUR FLEET's row for a group wave, merged from a sibling: our identity answered on another device, so this one stops ringing.
-    pub(super) fn on_group_wave_merge(&mut self, sig: WaveSignal) {
-        if let WaveSignal::Answer { wave_id, .. } = sig {
+    pub(super) fn on_group_wave_merge(&mut self, sig: WaveSignal, row_ts: i64) {
+        if let WaveSignal::Answer { wave_id, device, .. } = sig {
             if self.group_wave.as_ref().is_some_and(|w| w.wave_id == wave_id && w.phase == GroupPhase::Ringing) {
                 crate::log("WAVE: a sibling joined the group wave — ring stops here");
                 self.ended_waves.insert(wave_id);
                 self.group_wave = None;
                 Self::stop_group_ring_platform();
                 self.scene_dirty = true;
+                return;
             }
+            self.hand_off_group_wave(wave_id, device, row_ts);
         }
+    }
+
+    /// HAND-OFF (Nick 2026-11-01: "handoff is proper. per identity seems as tho we should only have one stream"): another of our devices joined the wave this device is in, LATER than we did — the wave moves there.
+    /// We leave on the wire (our hangup takes this device's links down everywhere; the members already swapped us for the newer device on its join), the camera and microphone close here, and the wave stays joinable on this device (a Join pulls it back).
+    /// Only a NEWER join moves it: a copy of an older one (a sibling's history arriving late) never sends the wave backwards.
+    fn hand_off_group_wave(&mut self, wave_id: [u8; 16], device: Option<[u8; 32]>, row_ts: i64) {
+        let ours = self.our_device();
+        let Some(w) = self.group_wave.as_ref().filter(|w| w.wave_id == wave_id && w.phase == GroupPhase::Joined) else {
+            return;
+        };
+        if device.is_none() || device == ours || row_ts <= w.phase_osc {
+            return;
+        }
+        crate::logf!("WAVE: our other device {} joined group wave {} — the wave moves there; leaving here", crate::fp(&device.unwrap_or_default()), hex::encode(&wave_id[..4]));
+        self.leave_group_wave();
     }
 
     /// A wave ROW from our own fleet for the offer we are ringing for (stamped offer_osc + 1): another of our devices declined it, or lived it — the ring stops here too, silently.
