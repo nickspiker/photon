@@ -117,6 +117,8 @@ class PhotonBeam(
     private var codedH = 0
     private var codedKbps = 0
     private var tierUsed = 0
+    /// The lowest tier this run will configure: raised to 1 after a stall on the low-latency tier (onEncoderStall), for every encoder after it — the next camera, the next band, the next beam.
+    private var tierFloor = 0
     private external fun nativeBeamPlan(timestampNs: Long): Long
     // THE ENCODER'S CEILING (beam_session::android_encoder_cap / _stalled; Emma's phone 2026-10-31: c2.qti.avc.encoder took 95 frames at 2592x1944 and then never offered an input slot again — the far side froze until a camera switch restarted it).
     private external fun nativeBeamEncoderCap(width: Int)
@@ -380,7 +382,7 @@ class PhotonBeam(
 
     private fun startCodec() {
         var lastErr: Throwable? = null
-        for (tier in 0..3) {
+        for (tier in tierFloor..3) {
             val c = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
             try {
                 setCallbacks(c)
@@ -411,7 +413,7 @@ class PhotonBeam(
                 val sized = vc.areSizeAndRateSupported(bw, bh, fps.toDouble())
                 val measured = if (sized) try { vc.getAchievableFrameRatesFor(bw, bh)?.upper?.let { it >= fps } ?: true } catch (_: Throwable) { true } else false
                 if (sized && measured) {
-                    PhotonLog.i(TAG, "encoder  supports x at  fps — the widest band it is asked for")
+                    PhotonLog.i(TAG, "encoder ${c.name} supports ${bw}x$bh at $fps fps — the widest band it is asked for")
                     nativeBeamEncoderCap(bw)
                     return
                 }
@@ -424,7 +426,14 @@ class PhotonBeam(
 
     /** The encoder stopped offering inputs: Rust drops the ladder below this band (the next plan restarts the encoder smaller), or — already on the smallest band — it restarts here. */
     private fun onEncoderStall() {
-        PhotonLog.w(TAG, "encoder stalled:  kept frames found no free input at x ( fed)")
+        PhotonLog.w(TAG, "encoder stalled: $STALL_KEPT kept frames found no free input at ${codedW}x$codedH ($fed fed, tier $tierUsed)")
+        // THE LATENCY KEYS FIRST (2026-11-01, Emma's phone, c2.qti.avc.encoder at tier 0: it stalled at 648, 324 and 162 wide alike — the size was never the cause): a stall on the low-latency tier rebuilds the encoder one tier down at the SAME size, still rolling intra refresh and never a keyframe; only a stall below that hands the ladder a smaller band.
+        if (tierUsed == 0) {
+            tierFloor = 1
+            PhotonLog.w(TAG, "encoder stalled on the low-latency tier — rebuilding without the latency keys at the same size; this run keeps tier 1 from here")
+            reconfigure(codedW, codedH, codedKbps)
+            return
+        }
         val lowered = try { nativeBeamEncoderStalled() } catch (_: Throwable) { false }
         if (!lowered) reconfigure(codedW, codedH, codedKbps)
     }
