@@ -1057,6 +1057,12 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         }
     }
 
+    /** The screen stays on for the whole wave (Nick 2026-11-01: "screen turns off in a beam"): the screen timeout was the only thing deciding, so a beam blanked mid-sentence. At the ear the proximity lock still blanks it — a proximity wake lock overrides this flag — so only the timeout is held off. Cleared at hangup; re-applied in onResume for an Activity recreated mid-wave. */
+    fun setWaveKeepScreenOn(on: Boolean) {
+        if (on) window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
     override fun onPause() {
         super.onPause()
         inForeground = false
@@ -1076,6 +1082,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED) micRefused = false
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED) cameraRefused = false
         reportGrants()
+        setWaveKeepScreenOn(PhotonConnectionService.live?.waveAudioRunning == true)
         if (!networkCallbackRegistered) {
             try {
                 (getSystemService(CONNECTIVITY_SERVICE) as android.net.ConnectivityManager).registerDefaultNetworkCallback(networkCallback)

@@ -887,6 +887,8 @@ class PhotonConnectionService : Service() {
     private fun startRingLoop(wav: ByteArray, gapMs: Int) {
         stopRingLoop() // a re-posted offer replaces the loop rather than stacking a second one
         if (wav.size <= 44) return
+        // ALREADY IN A WAVE: a second ring is a call-waiting tick, not a ringtone over the voice in your ear — one soft cadence on the wave's own stream (playChirp's in-wave path), never a loop.
+        if (waveAudioRunning) { playChirp(wav); return }
         try {
             val sampleRate = (wav[24].toInt() and 0xFF) or
                 ((wav[25].toInt() and 0xFF) shl 8) or
@@ -939,6 +941,20 @@ class PhotonConnectionService : Service() {
         }
     }
 
+    /** How much quieter a chirp plays inside a wave, in stops (1 stop = half the amplitude). */
+    private val IN_WAVE_STOPS = 2
+
+    /** Scale 16-bit little-endian mono PCM down by IN_WAVE_STOPS, in place: an arithmetic shift per sample, so the sign is kept and nothing can overflow. */
+    private fun quieter(pcm: ByteArray) {
+        var i = 0
+        while (i + 1 < pcm.size) {
+            val s = ((pcm[i].toInt() and 0xFF) or (pcm[i + 1].toInt() shl 8)) shr IN_WAVE_STOPS
+            pcm[i] = s.toByte()
+            pcm[i + 1] = (s shr 8).toByte()
+            i += 2
+        }
+    }
+
     private fun playChirp(wav: ByteArray) {
         if (wav.size <= 44) return
         try {
@@ -947,10 +963,12 @@ class PhotonConnectionService : Service() {
                 ((wav[25].toInt() and 0xFF) shl 8) or
                 ((wav[26].toInt() and 0xFF) shl 16) or
                 ((wav[27].toInt() and 0xFF) shl 24)
-            val pcm = wav.copyOfRange(44, wav.size)
+            val inWave = waveAudioRunning
+            val pcm = wav.copyOfRange(44, wav.size).also { if (inWave) quieter(it) }
 
+            // IN A WAVE (Nick 2026-11-01: "lets things ring me obnoxiously loud"): the chirp rides the wave's voice stream, so it plays where the wave plays (earpiece, headset) at the wave's rocker volume, IN_WAVE_STOPS quieter — not at notification volume from the loudspeaker.
             val attrs = AudioAttributes.Builder()
-                .setUsage(AudioAttributes.USAGE_NOTIFICATION)
+                .setUsage(if (inWave) AudioAttributes.USAGE_VOICE_COMMUNICATION else AudioAttributes.USAGE_NOTIFICATION)
                 .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
                 .build()
             val format = AudioFormat.Builder()
@@ -1108,7 +1126,8 @@ class PhotonConnectionService : Service() {
         PhotonLog.i(TAG, "beam: capture stopped")
     }
 
-    @Volatile private var waveAudioRunning = false
+    @Volatile var waveAudioRunning = false
+        private set
 
     /** The capture leg's Android half (2026-09-09, AAudio move): the device loop lives in Rust now (platform/audio_aaudio.rs, exclusive low-latency streams with HAL timestamps). Kotlin's part is the permission and the foreground-service microphone type: missing permission → prompt at THIS wave (PhotonActivity.requestMicPermission), whose grant callback re-enters here so the prompting call goes hot. Public for that callback. */
     fun startCapture() {
@@ -1266,6 +1285,7 @@ class PhotonConnectionService : Service() {
     fun startWaveAudio() {
         if (waveAudioRunning) return
         waveAudioRunning = true
+        PhotonActivity.live?.let { a -> a.runOnUiThread { a.setWaveKeepScreenOn(true) } }
         // Mic introspection for the level plan (Nick 2026-09-13: "how are we getting absolute levels on the mic in question?"): does this vendor DECLARE the CDD Unprocessed calibration, and what sensitivity does each input report. Mirrored to Rust, logged there, and the makeup's second-priority source after the stored per-input voiced profile.
         try {
             val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
@@ -1305,6 +1325,7 @@ class PhotonConnectionService : Service() {
         // RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY: the screen comes back only once the sensor clears — a bare release() mid-cover flashed the screen on against the ear at hangup.
         try { proximityLock?.let { if (it.isHeld) it.release(PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY) } } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock release failed", e) }
         // The wave surface no longer needs to sit over the keyguard.
+        PhotonActivity.live?.let { a -> a.runOnUiThread { a.setWaveKeepScreenOn(false) } }
         PhotonActivity.live?.let { a -> a.runOnUiThread { a.setWaveLockScreenFlags(false) } }
         // Drop the microphone FGS type the moment the wave ends — back to dataSync-only (privacy indicator off, Android 14 mic-FGS accounting closed).
         promoteForeground(false)
