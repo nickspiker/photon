@@ -205,7 +205,7 @@ impl PhotonApp {
         if !to_persist.is_empty() {
             if let Some(storage) = self.storage.as_ref() {
                 for i in to_persist {
-                    let _ = crate::storage::contacts::save_contact(&self.contacts[i], storage);
+                    crate::log_err!(crate::storage::contacts::save_contact(&self.contacts[i], storage), "the contact save after an era change");
                 }
             }
             self.spawn_roster_push();
@@ -366,7 +366,7 @@ impl PhotonApp {
     }
 
     /// An era row landed (conversation.rs control ladder, post-decrypt, post-commit). `kem` is the package's typed KEM material; `ts` the row's eagle time.
-    pub(super) fn on_era_signal(&mut self, ci: usize, sig: EraSignal, kem: Option<EraKemWire>, ts: i64) {
+    pub(super) fn on_era_signal(&mut self, ci: usize, sig: EraSignal, kem: Option<EraKemWire>, _ts: i64) {
         let Some(contact) = self.contacts.get(ci) else { return };
         let fp = crate::fp(&contact.handle_proof);
         // The era machinery runs on the BOND (docs/conversations.md §7); a conversation's eras are minted and delivered over bonds.
@@ -491,7 +491,6 @@ impl PhotonApp {
                     }
                     None => crate::logf!("ERA: {} Resp accepted but nothing to cut over — no current root?", fp),
                 }
-                let _ = ts;
             }
             EraSignal::Nudge { prior_tag } => {
                 let ours = self.friendship_chains[pos].1.era_tag();
@@ -552,13 +551,13 @@ impl PhotonApp {
             return;
         }
         let Some(storage) = self.storage.clone() else { return };
-        let _ = std::thread::Builder::new().name("contacts-save".into()).spawn(move || {
+        crate::log_err!(std::thread::Builder::new().name("contacts-save".into()).spawn(move || {
             for c in &contacts {
                 if let Err(e) = crate::storage::contacts::save_contact(c, &storage) {
                     crate::logf!("ERA: contact save failed off-thread: {}", e);
                 }
             }
-        });
+        }), "the contacts-save thread spawn");
     }
 
     /// One sibling's era_pull answer was a MISS (an explicit chain_pull_miss, or a served blob that did not move our era — 2026-09-10). When every LIVE sibling has missed, the pull concludes and the repair table decides from FleetAllMissed.

@@ -943,6 +943,7 @@ pub fn gripe_status_blocking(token: &[u8], id: &[u8; 32], state: &str, note: &st
     sec.add_field_multi("version", vec![VsfType::a(version.to_string())]);
     let bytes = gripe_post(sec, "gripe_status")?;
     let schema = vsf::schema::SectionSchema::new("gripe_status_ack").field("state", vsf::schema::TypeConstraint::AsciiText);
-    let _ = gripe_ack(&bytes, schema)?;
+    // Only the parse matters here: a gripe_status_ack that does not validate is the error, its fields are not needed.
+    gripe_ack(&bytes, schema)?;
     Ok(())
 }

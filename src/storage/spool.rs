@@ -200,6 +200,7 @@ fn pwrite_all(f: &File, mut buf: &[u8], mut off: u64) -> io::Result<()> {
     // No positional file writes where there are no files (ferros: the spool belongs in the vault).
     #[cfg(not(any(unix, windows)))]
     {
+        // WHY: not a Result — this only marks the params used on a target with no positional file I/O.
         let _ = (f, &buf, off);
         Err(io::Error::new(io::ErrorKind::Unsupported, "no spool files on this target"))
     }
@@ -223,6 +224,7 @@ fn pwrite_all(f: &File, mut buf: &[u8], mut off: u64) -> io::Result<()> {
 fn pread_exact(f: &File, buf: &mut [u8], off: u64) -> io::Result<()> {
     #[cfg(not(any(unix, windows)))]
     {
+        // WHY: not a Result — this only marks the params used on a target with no positional file I/O.
         let _ = (f, &buf, off);
         Err(io::Error::new(io::ErrorKind::Unsupported, "no spool files on this target"))
     }
@@ -352,7 +354,7 @@ mod tests {
         for i in 0..lens.len() {
             assert_eq!(miss[i], !held.contains(&i), "slot {i}: the scan must equal the write-set complement");
         }
-        let _ = std::fs::remove_file(&p);
+        std::fs::remove_file(&p).expect("remove scratch spool");
     }
 
     /// The prelude is judged by ITS OWN HASH, not the zero rule (plaintext VSF may hold honest zero runs): a torn prelude fails `read_verified` and resume says fresh — never a wrong layout.
@@ -368,7 +370,7 @@ mod tests {
         std::fs::write(&p, &bytes).expect("write back");
         assert!(resume(&p).expect("io").is_none(), "a torn prelude must read as no spool, not as a guessed layout");
         assert!(resume(&scratch("never-existed")).expect("io").is_none(), "absent file is fresh, not an error");
-        let _ = std::fs::remove_file(&p);
+        std::fs::remove_file(&p).expect("remove scratch spool");
     }
 
     /// Crash model: a torn write lands a sector-grained prefix and the rest stays zero. The end-aligned tail window catches it, so a torn slot honestly reads missing and gets re-fetched whole — idempotent, since the same sealed bytes rewrite.
@@ -384,7 +386,7 @@ mod tests {
         let miss = missing(&f, &lay).expect("scan");
         assert!(miss[0], "a torn prefix must read missing");
         assert!(miss[1], "a lost interior page must read missing");
-        let _ = std::fs::remove_file(&p);
+        std::fs::remove_file(&p).expect("remove scratch spool");
     }
 
     /// THE COUNTEREXAMPLE the module header promises: plaintext breaks the zero rule, because real files contain honest zero runs. An all-zero "chunk" — think executable padding — writes successfully and still reads missing, which in a plaintext design would be a fetch-forever livelock. This test exists so the seal is never "optimized" away: it is the bitmap.
@@ -394,7 +396,7 @@ mod tests {
         let (f, lay) = create(&p, &desc_of(4056, 4056)).expect("create");
         write_slot(&f, &lay, 0, &vec![0u8; 4096]).expect("write zeros");
         assert!(missing(&f, &lay).expect("scan")[0], "written zeros are indistinguishable from absence — encryption is the load-bearing premise, not an add-on");
-        let _ = std::fs::remove_file(&p);
+        std::fs::remove_file(&p).expect("remove scratch spool");
     }
 
     /// Boundary honesty: slots pack tight after the prelude, so total is base plus the sealed sum, and a slot under one window is refused at layout (an AEAD seal is ≥ 40 bytes, so only a caller bug reaches this).

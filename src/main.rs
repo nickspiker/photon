@@ -115,6 +115,7 @@ fn main() {
         // We ARE the instance: park the control listener for the app to serve once its event proxy exists. Unix gets a dedicated socket (safe to create only now, under the flock); Windows reuses the lock's own TcpListener — so `lock` is genuinely used only under cfg(not(unix)): the unix arm consumes it explicitly or the per-target unused lint whipsaws (the 2026-09-08 deploy tear: a Linux-side `_lock` rename broke the Windows leg).
         #[cfg(unix)]
         {
+            // WHY: `lock` is a reference, so drop() would trip the dropping_references lint; this binding is the explicit consume the comment above describes.
             let _ = lock;
             photon_messenger::platform::control::install_unix_listener(&dir);
         }

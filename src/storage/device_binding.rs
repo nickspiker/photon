@@ -59,7 +59,7 @@ pub fn bind(handle_proof: &[u8; 32]) {
 /// Unbind (wipe path). Deleting an absent entry is the goal state, not an error.
 pub fn clear() {
     if let Some(vault) = crate::storage::device_vault() {
-        let _ = vault.delete_device(ENTRY);
+        crate::log_err!(vault.delete_device(ENTRY), "BINDING: marker delete");
     }
 }
 

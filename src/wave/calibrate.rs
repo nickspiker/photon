@@ -48,7 +48,8 @@ static LEARNED: Mutex<Vec<LearnedResult>> = Mutex::new(Vec::new());
 static WAKE: std::sync::OnceLock<Box<dyn Fn() + Send + Sync>> = std::sync::OnceLock::new();
 
 pub fn register_wake(f: impl Fn() + Send + Sync + 'static) {
-    let _ = WAKE.set(Box::new(f));
+    // First registration wins by design: a later one is refused and its closure dropped.
+    drop(WAKE.set(Box::new(f)));
 }
 
 /// Post measured profiles; fires the UI wake so the drain stores them now, not at the next unrelated event.

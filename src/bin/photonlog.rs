@@ -302,7 +302,9 @@ fn main() {
         let cache_dir = std::env::var("HOME")
             .map(|h| std::path::PathBuf::from(h).join(".cache/photon-logs"))
             .unwrap_or_else(|_| std::path::PathBuf::from(".photon-log-cache"));
-        let _ = std::fs::create_dir_all(&cache_dir);
+        if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+            eprintln!("photonlog: cache dir {} not made ({e}); every log is fetched", cache_dir.display());
+        }
         let cache_path = |k: &str| cache_dir.join(k.replace('/', "_"));
         let mut fetched = 0usize;
         let mut cached = 0usize;
@@ -316,11 +318,15 @@ fn main() {
             match log_get_blocking(k) {
                 Ok(ct) => {
                     fetched += 1;
-                    let _ = std::fs::write(&path, &ct);
+                    if let Err(e) = std::fs::write(&path, &ct) {
+                        eprintln!("photonlog: caching {} failed: {e}", path.display());
+                    }
                     Some(ct)
                 }
                 Err(_) => {
-                    let _ = std::fs::write(&path, b"");
+                    if let Err(e) = std::fs::write(&path, b"") {
+                        eprintln!("photonlog: caching the absent verdict at {} failed: {e}", path.display());
+                    }
                     None
                 }
             }

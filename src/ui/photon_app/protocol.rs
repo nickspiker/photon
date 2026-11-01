@@ -786,7 +786,7 @@ impl PhotonApp {
                                         return; // screen left — nobody waiting
                                     }
                                     if let Some(w) = wake.as_ref() {
-                                        let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                                        wake_ui(w);
                                     }
                                     return;
                                 }

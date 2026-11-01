@@ -40,7 +40,9 @@ static WAKE: std::sync::OnceLock<std::sync::Arc<dyn fluor::host::WakeSender<crat
 static PENDING_OPEN: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
 
 pub fn set_wake(proxy: std::sync::Arc<dyn fluor::host::WakeSender<crate::ui::PhotonEvent>>) {
-    let _ = WAKE.set(proxy);
+    if WAKE.set(proxy).is_err() {
+        crate::log("NOTIFY: the wake handle was already set — the first one stays");
+    }
 }
 
 /// One-shot take of the conversation a notification click asked to open.
@@ -56,7 +58,7 @@ fn clicked(conversation: Option<[u8; 32]>) {
     }
     crate::log("NOTIFY: desktop alert clicked — surfacing the window");
     if let Some(w) = WAKE.get() {
-        let _ = w.send(crate::ui::PhotonEvent::ShowWindow);
+        crate::log_err!(w.send(crate::ui::PhotonEvent::ShowWindow), "NOTIFY: waking the UI to show the window");
     }
 }
 
@@ -96,11 +98,11 @@ fn post(title: &str, body: &str, conversation: Option<[u8; 32]>) {
                 }
             }
             Ok(_) => {
-                let _ = std::process::Command::new("notify-send")
-                    .args(["--app-name=Photon", &title, &body])
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn();
+                // The Child handle drops on the spot, which detaches the notifier rather than waiting on it.
+                crate::log_err!(
+                    std::process::Command::new("notify-send").args(["--app-name=Photon", &title, &body]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn(),
+                    "NOTIFY: notify-send launch"
+                );
             }
             Err(e) => crate::logf!("NOTIFY: the system notifier failed to launch: {}", e),
         }
@@ -114,12 +116,11 @@ fn post(title: &str, body: &str, _conversation: Option<[u8; 32]>) {
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
     let (title, body) = (esc(title), esc(body));
     let script = format!("display notification \"{body}\" with title \"{title}\"");
-    let _ = std::process::Command::new("osascript")
-        .args(["-e", &script])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| crate::logf!("NOTIFY: the system notifier failed to launch: {}", e));
+    // The Child handle drops on the spot, which detaches the notifier rather than waiting on it.
+    crate::log_err!(
+        std::process::Command::new("osascript").args(["-e", &script]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn(),
+        "NOTIFY: the system notifier launch"
+    );
 }
 
 #[cfg(target_os = "windows")]
@@ -136,12 +137,11 @@ fn post(title: &str, body: &str, _conversation: Option<[u8; 32]>) {
          $t.Item(1).AppendChild($x.CreateTextNode('{body}')) | Out-Null; \
          [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Microsoft.Windows.PowerShell').Show([Windows.UI.Notifications.ToastNotification]::new($x))"
     );
-    let _ = std::process::Command::new("powershell")
-        .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| crate::logf!("NOTIFY: the system notifier failed to launch: {}", e));
+    // The Child handle drops on the spot, which detaches the notifier rather than waiting on it.
+    crate::log_err!(
+        std::process::Command::new("powershell").args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn(),
+        "NOTIFY: the system notifier launch"
+    );
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]

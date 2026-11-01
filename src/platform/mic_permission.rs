@@ -161,10 +161,11 @@ pub fn repair_bundle_plist() {
         }
         match std::fs::write(&plist, EMBEDDED) {
             Ok(()) => {
-                let _ = std::process::Command::new("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister")
-                    .arg("-f")
-                    .arg(bundle)
-                    .status();
+                crate::log_err!(
+                    std::process::Command::new("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister").arg("-f").arg(bundle).status(),
+                    "macOS: LaunchServices re-register of {}",
+                    bundle.display()
+                );
                 crate::logf!("macOS: the app bundle's Info.plist was stale (no microphone/camera description, and not the plist the signature records) — rewrote it from the embedded one and re-registered {}", bundle.display());
             }
             Err(e) => crate::logf!("macOS: could not rewrite the bundle's Info.plist ({}): {}", plist.display(), e),

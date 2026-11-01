@@ -1164,7 +1164,7 @@ pub fn save_messages(
         for pk in pks {
             if let Pk::Int(t) = pk {
                 if reput_times.contains(&t) {
-                    let _ = db.delete_row_in(&table, pk);
+                    crate::log_err!(db.delete_row_in(&table, pk), "STORAGE: stale legacy-key twin delete");
                 }
             }
         }
@@ -1576,6 +1576,13 @@ mod tests {
     use super::*;
     use vsf::VsfSection;
 
+    /// Test cleanup of one vault ring file: absent is already clean, any other failure fails the test loud.
+    fn remove_test_ring_file(p: std::path::PathBuf) {
+        if let Err(e) = std::fs::remove_file(&p) {
+            assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "remove test vault ring file {}: {}", p.display(), e);
+        }
+    }
+
     /// THE self-conversation storage seam (the notes black-hole class): rows saved under the DEDUPED self participant set must serve back thru the page reader's [pid, pid] degenerate addressing — save table == serve table, or a sibling asking for our notes gets an empty page while both UIs claim "synchronized".
     #[test]
     fn self_conversation_pages_serve_like_any_other() {
@@ -1852,8 +1859,8 @@ mod tests {
 
         // Clean up the on-disk vault so reruns start fresh.
         if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {
-            let _ = std::fs::remove_file(primary);
-            let _ = std::fs::remove_file(shadow);
+            remove_test_ring_file(primary);
+            remove_test_ring_file(shadow);
         }
     }
 
@@ -1909,8 +1916,8 @@ mod tests {
 
         // Clean up the on-disk vault so reruns start fresh.
         if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {
-            let _ = std::fs::remove_file(primary);
-            let _ = std::fs::remove_file(shadow);
+            remove_test_ring_file(primary);
+            remove_test_ring_file(shadow);
         }
     }
 
@@ -1961,8 +1968,8 @@ mod tests {
         assert!(loaded.blind_deposited);
 
         if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {
-            let _ = std::fs::remove_file(primary);
-            let _ = std::fs::remove_file(shadow);
+            remove_test_ring_file(primary);
+            remove_test_ring_file(shadow);
         }
     }
 
@@ -2016,8 +2023,8 @@ mod tests {
         assert!(fresh.consent_mutual, "absent consent field = grandfathered mutual");
 
         if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {
-            let _ = std::fs::remove_file(primary);
-            let _ = std::fs::remove_file(shadow);
+            remove_test_ring_file(primary);
+            remove_test_ring_file(shadow);
         }
     }
 
@@ -2073,8 +2080,8 @@ mod tests {
         }
 
         if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {
-            let _ = std::fs::remove_file(primary);
-            let _ = std::fs::remove_file(shadow);
+            remove_test_ring_file(primary);
+            remove_test_ring_file(shadow);
         }
     }
 
@@ -2161,8 +2168,8 @@ mod tests {
 
         // Clean up the on-disk vault so reruns start fresh.
         if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {
-            let _ = std::fs::remove_file(primary);
-            let _ = std::fs::remove_file(shadow);
+            remove_test_ring_file(primary);
+            remove_test_ring_file(shadow);
         }
     }
 }

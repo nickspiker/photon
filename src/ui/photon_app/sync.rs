@@ -522,7 +522,7 @@ impl PhotonApp {
                 c.clutch_proof_retry_lifetime = 0;
                 c.clutch_proof_gave_up = false;
                 if let Some(storage) = self.storage.as_ref() {
-                    let _ = crate::storage::contacts::save_contact(&self.contacts[i], storage);
+                    crate::log_err!(crate::storage::contacts::save_contact(&self.contacts[i], storage), "save a contact after discarding its CLUTCH round");
                 }
             }
         }
@@ -1266,14 +1266,14 @@ impl PhotonApp {
                     }
                 };
                 for (primary, alt, pk, relay_to) in &targets {
-                    let _ = dispatch.send(crate::network::status::HistorySendRequest {
+                    crate::log_err!(dispatch.send(crate::network::status::HistorySendRequest {
                         peer_addr: *primary,
                         alt_addr: *alt,
                         recipient_pubkey: *pk,
                         relay_to: relay_to.clone(),
                         vsf_bytes: frame.clone(),
                         tag: None,
-                    });
+                    }), "queue a history page to a sibling");
                 }
             }
         });
@@ -1335,7 +1335,7 @@ impl PhotonApp {
     pub(super) fn push_history_rows_to_siblings(&self, token: [u8; 32], label: &str, hist_rows: Vec<crate::network::history_pages::HistoryRow>, exclude_device: Option<[u8; 32]>) {
         use crate::network::history_pages::{seal_history_page, HistoryPagePlain};
         // The B-arc re-seal: live fleet pages seal under the EPOCH hist_page key, never the raw fleet key. No spine yet = the bounded bootstrap window — hold the push (the sibling-online history sweep re-covers these rows) rather than fork the seal, exactly the chain_sync rule.
-        let (Some((epoch_k, epoch)), Some(kp), Some(checker), Some(session)) = (
+        let (Some((epoch_k, epoch)), Some(kp), Some(checker), Some(_)) = (
             self.fleet_epoch,
             self.device_keypair.as_ref(),
             self.status_checker.as_ref(),
@@ -1347,7 +1347,6 @@ impl PhotonApp {
         if hist_rows.is_empty() {
             return;
         }
-        let _ = session;
         let page = HistoryPagePlain {
             oldest_osc: hist_rows.iter().map(|r| r.timestamp).min().unwrap_or(0),
             more: false,
@@ -1435,14 +1434,14 @@ impl PhotonApp {
                 }
             };
             for (primary, alt, pk, relay_to) in targets {
-                let _ = dispatch.send(crate::network::status::HistorySendRequest {
+                crate::log_err!(dispatch.send(crate::network::status::HistorySendRequest {
                     peer_addr: primary,
                     alt_addr: alt,
                     recipient_pubkey: pk,
                     relay_to,
                     vsf_bytes: vsf_bytes.clone(),
                     tag: None,
-                });
+                }), "queue a history page to a sibling");
             }
         });
     }
@@ -1505,7 +1504,7 @@ impl PhotonApp {
             contact.chain_fail_streak = 0;
             contact.last_chain_reset_nonce = Some(nonce);
             if let Some(storage) = self.storage.as_ref() {
-                let _ = crate::storage::contacts::save_contact(contact, storage);
+                crate::log_err!(crate::storage::contacts::save_contact(contact, storage), "save a contact after a chain reset");
             }
         }
         if echo {
@@ -1580,7 +1579,7 @@ impl PhotonApp {
             c.roster_updated = vsf::eagle_time_oscillations();
         }
         if let Some(storage) = self.storage.as_ref() {
-            let _ = crate::storage::contacts::save_contact(&self.contacts[idx], storage);
+            crate::log_err!(crate::storage::contacts::save_contact(&self.contacts[idx], storage), "save a contact's ceremony owner");
         }
     }
 

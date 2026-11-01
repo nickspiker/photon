@@ -413,7 +413,7 @@ impl RxShared {
 /// Recv-worker side: one beam datagram, to every running receiver. Cheap when none is up (one mutex + an empty list).
 pub fn deliver(bytes: &[u8]) {
     for (_, tx) in BEAM_SINKS.lock().unwrap().iter() {
-        let _ = tx.send(bytes.to_vec());
+        crate::log_err!(tx.send(bytes.to_vec()), "BEAM: handing a datagram to a receiver");
     }
 }
 
@@ -431,7 +431,8 @@ impl Drop for RxHandle {
         // Removing the sink drops the only sender, so the thread's blocking recv returns at once with the stop.
         BEAM_SINKS.lock().unwrap().retain(|(id, _)| *id != self.id);
         if let Some(t) = self.thread.take() {
-            let _ = t.join();
+            // A panicked thread's Err is the panic the hook already logged; the join is for the ordering.
+            drop(t.join());
         }
     }
 }
@@ -520,7 +521,7 @@ mod tests {
         for n in 0..300 {
             for d in sealed_datagrams(&mut tx_b, n, Gains::NONE, &frame) {
                 assert!(rx_a.push(&d).is_none(), "A must refuse B's datagrams");
-                let _ = rx_b.push(&d);
+                rx_b.push(&d);
             }
         }
         assert_eq!(rx_b.frames_done, 300);

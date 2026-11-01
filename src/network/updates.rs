@@ -380,7 +380,7 @@ fn download_verified(
     std::fs::write(dest, &bytes).map_err(|e| format!("artefact write: {e}"))?;
     if check_binary_sig {
         crate::crypto::self_verify::verify_file(dest).map_err(|e| {
-            let _ = std::fs::remove_file(dest);
+            crate::log_err!(crate::storage::absent_ok(std::fs::remove_file(dest)), "UPDATE: unsigned artefact remove");
             format!("binary signature: {e}")
         })?;
     }
@@ -460,7 +460,7 @@ fn mirror_into(src: &std::path::Path, dest: &std::path::Path) -> Result<(), Stri
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755));
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755)).map_err(|e| format!("chmod: {e}"))?;
     }
     std::fs::rename(&tmp, dest).map_err(|e| format!("rename: {e}"))?;
     Ok(())
@@ -491,11 +491,13 @@ pub fn apply_desktop_blocking(
     #[cfg(windows)]
     {
         let old = exe.with_extension("old");
-        let _ = std::fs::remove_file(&old);
+        crate::log_err!(crate::storage::absent_ok(std::fs::remove_file(&old)), "UPDATE: previous .old remove");
         std::fs::rename(&exe, &old).map_err(|e| format!("shuffle aside: {e}"))?;
         if let Err(e) = std::fs::rename(&staged, &exe) {
-            // Roll back so the install stays runnable.
-            let _ = std::fs::rename(&old, &exe);
+            // Roll back so the install stays runnable; a failed rollback leaves no exe at the install path, so the error names where the previous build sits.
+            if let Err(re) = std::fs::rename(&old, &exe) {
+                return Err(format!("swap: {e}; rollback also failed: {re} — the previous build is at {}", old.display()));
+            }
             return Err(format!("swap: {e}"));
         }
     }
@@ -538,14 +540,14 @@ pub fn sweep_old_binary() {
     let Ok(exe) = installed_exe_path() else { return };
     for junk in [exe.with_extension("old"), exe.with_extension("update-staged")] {
         if junk.exists() {
-            let _ = std::fs::remove_file(&junk);
+            crate::log_err!(crate::storage::absent_ok(std::fs::remove_file(&junk)), "UPDATE: swap leftover remove");
         }
     }
     if let Some(s) = exe.to_str() {
         for name in [format!("{s} (deleted)"), format!("{s} (deleted).update-staged")] {
             let p = PathBuf::from(&name);
             if p.exists() {
-                let _ = std::fs::remove_file(&p);
+                crate::log_err!(crate::storage::absent_ok(std::fs::remove_file(&p)), "UPDATE: deleted-suffix leftover remove");
             }
         }
     }

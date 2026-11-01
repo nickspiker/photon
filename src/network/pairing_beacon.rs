@@ -359,7 +359,7 @@ mod imp {
                 _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
             }
         }
-        let _ = central.stop_scan().await;
+        crate::log_err!(central.stop_scan().await, "BEACON: btleplug stop scan");
         crate::log("BEACON: btleplug scan stopped");
         Ok(())
     }
@@ -398,9 +398,8 @@ mod imp {
 
         fn run(uuid: [u8; BEACON_UUID_LEN], stop: Arc<AtomicBool>) -> windows::core::Result<()> {
             // MTA: no message pump needed while the thread parks holding the publisher.
-            unsafe {
-                let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
-            }
+            // No apartment means no WinRT activation, so a refused init ends the run with its own reason (logged by the spawner) and skips the CoUninitialize it never earned.
+            unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.ok()?;
             let result = (|| -> windows::core::Result<()> {
                 let publisher = BluetoothLEAdvertisementPublisher::new()?;
                 // Windows REFUSES service UUIDs from app publishers (ServiceUuids().Append → Start = 0x80070057 E_INVALIDARG, seen in the field): the OS owns every AD section except MANUFACTURER DATA. So this one courier carries the same 16 beacon bytes as manufacturer data under company id 0xFFFF (the Bluetooth SIG internal-use id) — every scanner matches BOTH carriers (UUID from mac/Linux/Android advertisers, this from Windows).

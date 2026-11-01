@@ -174,7 +174,9 @@ fn main() {
                 if !ok {
                     std::process::exit(1);
                 }
-                let _ = storage.delete_addr(&addr);
+                if let Err(e) = storage.delete_addr(&addr) {
+                    eprintln!("  {:>4} MB: delete failed: {}", size / (1024 * 1024), e);
+                }
             }
             Err(e) => {
                 eprintln!("FATAL: {} MB write failed: {}", size / (1024 * 1024), e);

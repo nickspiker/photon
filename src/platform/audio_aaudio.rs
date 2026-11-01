@@ -187,7 +187,8 @@ fn start_output() -> Result<AudioStream, String> {
     let fast = matches!(s.performance_mode(), AudioPerformanceMode::LowLatency);
     super::audio::set_voice_path_slow(!fast);
     // The service reports the route this voice stream is routed to (the communication device) — synchronously, so route_id() below is its answer.
-    let _ = crate::platform::jni_android::wave_service_void("renderUsageVoice");
+    // The wave_service_* calls log their own failures.
+    crate::platform::jni_android::wave_service_void("renderUsageVoice");
     if !fast {
         // THE EARPIECE IS THE DEFAULT (Nick 2026-10-01: "default to earpiece unless the user has chosen or chooses otherwise or the hardware bringup fails, that's it"): a slow voice path is not a bring-up failure, so the wave stays on the earpiece (or the headset) on voice usage, marked "slower" on the pill. Only the loudspeaker — picked, or the fallback when no earpiece could be routed — takes the fast media path.
         let route = super::audio::route_id();
@@ -202,15 +203,15 @@ fn start_output() -> Result<AudioStream, String> {
         }
     }
     // Two bursts of buffer: the smallest ask that still absorbs one late callback (the tester's own default).
-    let _ = s.set_buffer_size_in_frames(s.frames_per_burst() * 2);
+    crate::log_err!(s.set_buffer_size_in_frames(s.frames_per_burst() * 2), "AUDIO: output buffer size set");
     s.request_start().map_err(|e| format!("start: {e:?}"))?;
     describe(&s, "out");
     // Tell the service which USAGE the render actually opened with, so the volume mirror and the rocker follow the stream that truly governs it.
     let voice = OUTPUT_VOICE.load(Ordering::Relaxed);
-    let _ = crate::platform::jni_android::wave_service_void(if voice { "renderUsageVoice" } else { "renderUsageMedia" });
+    crate::platform::jni_android::wave_service_void(if voice { "renderUsageVoice" } else { "renderUsageMedia" });
     // The route keeps its volume: put back what the user last set on this route + usage.
     if let Some(idx) = super::audio::route_volume(&super::audio::route_id(), voice) {
-        let _ = crate::platform::jni_android::wave_service_int("setWaveVolume", idx);
+        crate::platform::jni_android::wave_service_int("setWaveVolume", idx);
     }
     Ok(s)
 }
@@ -220,13 +221,17 @@ pub fn rebuild() {
     if REOPENING.swap(true, Ordering::SeqCst) {
         return;
     }
-    let _ = std::thread::Builder::new().name("aaudio-reopen".into()).spawn(|| {
+    // The rebuilder runs detached (its JoinHandle is dropped); one that cannot spawn releases the latch so the next edge can try again.
+    let rebuilder = std::thread::Builder::new().name("aaudio-reopen".into()).spawn(|| {
         if super::audio::is_active() {
             stop();
             start();
         }
         REOPENING.store(false, Ordering::SeqCst);
     });
+    if !crate::log_err!(rebuilder, "AUDIO: AAudio rebuild thread spawn") {
+        REOPENING.store(false, Ordering::SeqCst);
+    }
 }
 
 fn start_input() -> Result<AudioStream, String> {
@@ -239,7 +244,7 @@ fn start_input() -> Result<AudioStream, String> {
     super::audio::VOICE_DSP_ACTIVE.store(vendor, Ordering::Relaxed);
     super::audio::VOICE_DSP_CANCELS.store(vendor, Ordering::Relaxed); // the phone's canceller and gain control come as one
     crate::logf!("AUDIO: input opened {} (route \"{}\")", if vendor { "thru the phone's voice processing" } else { "unprocessed, calibrated" }, super::audio::route_id());
-    let _ = s.set_buffer_size_in_frames(s.frames_per_burst() * 2);
+    crate::log_err!(s.set_buffer_size_in_frames(s.frames_per_burst() * 2), "AUDIO: input buffer size set");
     s.request_start().map_err(|e| format!("start: {e:?}"))?;
     describe(&s, "in");
     Ok(s)
@@ -312,9 +317,9 @@ pub fn stop() {
     let Some(s) = g.take() else { return };
     let out_x = s.output.0.x_run_count();
     let in_x = s.input.as_ref().map(|i| i.0.x_run_count()).unwrap_or(-1);
-    let _ = s.output.0.request_stop();
+    crate::log_err!(s.output.0.request_stop(), "AUDIO: AAudio output stop");
     if let Some(i) = s.input.as_ref() {
-        let _ = i.0.request_stop();
+        crate::log_err!(i.0.request_stop(), "AUDIO: AAudio input stop");
     }
     crate::logf!("AUDIO: AAudio down — out xruns {}, in xruns {}", out_x, in_x);
     drop(s);
@@ -327,11 +332,15 @@ fn on_stream_error(direction: AudioDirection, e: ndk::audio::AudioError) {
     if REOPENING.swap(true, Ordering::SeqCst) {
         return;
     }
-    let _ = std::thread::Builder::new().name("aaudio-reopen".into()).spawn(|| {
+    // The rebuilder runs detached (its JoinHandle is dropped); one that cannot spawn releases the latch so the next edge can try again.
+    let rebuilder = std::thread::Builder::new().name("aaudio-reopen".into()).spawn(|| {
         if super::audio::is_active() {
             stop();
             start();
         }
         REOPENING.store(false, Ordering::SeqCst);
     });
+    if !crate::log_err!(rebuilder, "AUDIO: AAudio rebuild thread spawn") {
+        REOPENING.store(false, Ordering::SeqCst);
+    }
 }

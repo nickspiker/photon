@@ -88,10 +88,10 @@ impl Renderer {
             self.dirty_y_min = 0;
             self.dirty_y_max = height;
             self.history = [(0, height); 4];
-            let _ = self.surface.resize(
+            crate::log_err!(self.surface.resize(
                 NonZeroU32::new(width).unwrap(),
                 NonZeroU32::new(height).unwrap(),
-            );
+            ), "softbuffer surface resize");
         }
     }
 

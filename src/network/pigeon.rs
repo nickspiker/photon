@@ -72,7 +72,7 @@ impl PigeonReceiver {
             }
             return Ok((inf.held, inf.layout.lens.len() as u32, false));
         }
-        let _ = std::fs::create_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
         let path = spool_path(dir, &hash);
         let desc = SpoolDesc { name, hash, size, chunk_size, seal_overhead: PIGEON_SEAL_OVERHEAD, peer: Some(from_device) };
         // Resume if a prior session left a spool for this exact transfer; a mismatched or torn one is replaced.
@@ -223,19 +223,19 @@ pub fn finalize_inflight(inf: Inflight, seed: &[u8; 32], dir: &std::path::Path) 
     }
     if *blake3::hash(&whole).as_bytes() != hash {
         crate::logf!("PIGEON: reassembled bytes do not match the announced hash — shedding the poisoned spool");
-        let _ = std::fs::remove_file(&inf.path);
+        crate::log_err!(crate::storage::absent_ok(std::fs::remove_file(&inf.path)), "PIGEON: poisoned spool remove");
         return Ok(None);
     }
     // The bytes are whole and verified. Store them once so land_blob can stream from the vault, then land into the shell directory and shed everything.
     let name = inf.desc.name.clone();
     if let Err(e) = crate::storage::blob_store(seed, &hash, &whole) {
         crate::logf!("PIGEON: could not store the landed bytes: {}", e);
-        let _ = std::fs::remove_file(&inf.path);
+        crate::log_err!(crate::storage::absent_ok(std::fs::remove_file(&inf.path)), "PIGEON: spool remove after a failed store");
         return Ok(None);
     }
     let landed = crate::storage::land_blob(seed, &hash, dir, &name);
     // The pigeon is ephemeral: shed the spool and the vault copy whatever the landing did.
-    let _ = std::fs::remove_file(&inf.path);
+    crate::log_err!(crate::storage::absent_ok(std::fs::remove_file(&inf.path)), "PIGEON: landed spool remove");
     crate::storage::blob_delete(&hash);
     Ok(landed.map(|path| Landed { name, path, from_device: inf.from_device }))
 }
@@ -245,7 +245,7 @@ impl PigeonReceiver {
     /// Forget an in-flight pigeon and shed its spool (a bridge session reset, or the operator withdrawing a drop). A no-op if it already finalized.
     pub fn drop_pigeon(&mut self, hash: &[u8; 32]) {
         if let Some(inf) = self.inflight.remove(hash) {
-            let _ = std::fs::remove_file(&inf.path);
+            crate::log_err!(crate::storage::absent_ok(std::fs::remove_file(&inf.path)), "PIGEON: dropped spool remove");
         }
     }
 }
@@ -256,6 +256,13 @@ mod tests {
 
     fn scratch(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("photon-pigeonrecv-{}-{}", std::process::id(), name))
+    }
+
+    /// Test scratch cleanup: absent is already clean, any other failure fails the test loud.
+    fn clear_dir(p: &std::path::Path) {
+        if let Err(e) = std::fs::remove_dir_all(p) {
+            assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "clear scratch dir {}: {}", p.display(), e);
+        }
     }
 
     /// The whole receive arc against in-memory sealed chunks: announce, feed chunks OUT OF ORDER, complete only when the last lands, then finalize — the bytes match, the file lands under its name, and both the spool and the vault copy are shed. Everything but the wire is exercised.
@@ -275,8 +282,8 @@ mod tests {
 
         let spool_dir = scratch("spool");
         let land_dir = scratch("land");
-        let _ = std::fs::remove_dir_all(&spool_dir);
-        let _ = std::fs::remove_dir_all(&land_dir);
+        clear_dir(&spool_dir);
+        clear_dir(&land_dir);
 
         let mut rx = PigeonReceiver::default();
         rx.open(&spool_dir, hash, "dropped.bin".into(), plain.len() as u64, chunk_size, wire_key, from).expect("open");
@@ -302,8 +309,8 @@ mod tests {
         assert!(!spool_dir.join(format!("pigeon-{}.spool", hex::encode(&hash[..8]))).exists(), "spool shed");
         assert!(!crate::storage::blob_present(&hash), "vault copy shed");
         assert!(rx.take_complete(&hash).is_none() && !rx.holds(&hash), "a finalized pigeon is forgotten");
-        let _ = std::fs::remove_dir_all(&spool_dir);
-        let _ = std::fs::remove_dir_all(&land_dir);
+        clear_dir(&spool_dir);
+        clear_dir(&land_dir);
     }
 
     /// Poisoned completion: every chunk present and individually openable, but one carries the wrong bytes, so the whole-file hash fails. The spool is SHED, not kept — a spool that completed to wrong bytes would resume to the same wrong bytes forever.
@@ -323,7 +330,7 @@ mod tests {
         chunks[1] = crate::storage::encrypt_bytes(&vec![0xFFu8; tail_len], &wire_key).expect("seal");
 
         let spool_dir = scratch("poison");
-        let _ = std::fs::remove_dir_all(&spool_dir);
+        clear_dir(&spool_dir);
         let mut rx = PigeonReceiver::default();
         rx.open(&spool_dir, announced, "x.bin".into(), plain.len() as u64, chunk_size, wire_key, from).expect("open");
         for (i, c) in chunks.iter().enumerate() {
@@ -333,7 +340,7 @@ mod tests {
         let inf = rx.take_complete(&announced).expect("complete");
         assert!(finalize_inflight(inf, &seed, &scratch("poisonland")).ok().flatten().is_none(), "a hash mismatch refuses to land");
         assert!(!spool_dir.join(format!("pigeon-{}.spool", hex::encode(&announced[..8]))).exists(), "the poisoned spool is shed, never resumed");
-        let _ = std::fs::remove_dir_all(&spool_dir);
+        clear_dir(&spool_dir);
     }
 
     /// THE FIELD FAILURE (2026-10-07): chunks that beat their announcement. A self-describing chunk opens a NAMELESS spool, every chunk lands, the whole spool still waits for its name (no landing under an empty name), and the announcement supplies it.
@@ -347,7 +354,7 @@ mod tests {
         let hash = *blake3::hash(&plain).as_bytes();
         let chunks: Vec<Vec<u8>> = plain.chunks(chunk_size as usize).map(|c| crate::storage::encrypt_bytes(c, &wire_key).expect("seal")).collect();
         let dir = scratch("early");
-        let _ = std::fs::remove_dir_all(&dir);
+        clear_dir(&dir);
         let mut rx = PigeonReceiver::default();
         // The first chunk opens the spool from the frame alone — no name yet.
         rx.open(&dir, hash, String::new(), plain.len() as u64, chunk_size, wire_key, from).expect("open from a chunk");
@@ -361,7 +368,7 @@ mod tests {
         assert_eq!(rx.open(&dir, hash, "late.bin".into(), plain.len() as u64, chunk_size, wire_key, from).unwrap(), (2, 2, false));
         assert_eq!(rx.name(&hash), Some("late.bin"));
         assert!(rx.take_complete(&hash).is_some(), "named and whole — it lands");
-        let _ = std::fs::remove_dir_all(&dir);
+        clear_dir(&dir);
     }
 
     /// RESTART: a half-filled spool survives the process; a fresh receiver rediscovers it from the directory alone, knows whom to ask (the device rides the prelude), and asks for exactly what is missing — the count comes back from the file, there is no list to lose.
@@ -375,7 +382,7 @@ mod tests {
         let hash = *blake3::hash(&plain).as_bytes();
         let chunks: Vec<Vec<u8>> = plain.chunks(chunk_size as usize).map(|c| crate::storage::encrypt_bytes(c, &wire_key).expect("seal")).collect();
         let dir = scratch("restart");
-        let _ = std::fs::remove_dir_all(&dir);
+        clear_dir(&dir);
         {
             let mut rx = PigeonReceiver::default();
             rx.open(&dir, hash, "kept.bin".into(), plain.len() as u64, chunk_size, wire_key, from).unwrap();
@@ -390,7 +397,7 @@ mod tests {
         assert_eq!(rx.name(&hash), Some("kept.bin"));
         // A duplicate of a held slot moves nothing.
         assert_eq!(rx.chunk(&hash, 1, &chunks[1], &from).unwrap(), Some((2, 4)));
-        let _ = std::fs::remove_dir_all(&dir);
+        clear_dir(&dir);
     }
 
 }

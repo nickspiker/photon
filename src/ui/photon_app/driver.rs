@@ -101,7 +101,7 @@ impl FluorApp<Px> for PhotonApp {
         {
             let cal_proxy = proxy.clone();
             crate::wave::calibrate::register_wake(move || {
-                let _ = cal_proxy.send(PhotonEvent::NetworkUpdate);
+                super::wake_ui(&cal_proxy);
             });
         }
         self.event_proxy = Some(proxy);
@@ -687,13 +687,14 @@ impl FluorApp<Px> for PhotonApp {
                             Some(lp) => crate::types::Handle::username_to_handle_proof(&typed) == lp,
                             None => false,
                         };
-                        let _ = tx.send(ok);
+                        crate::log_err!(tx.send(ok), "the handle check result to the UI thread");
                         #[cfg(not(target_os = "android"))]
                         if let Some(w) = wake.as_ref() {
-                            let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                            super::wake_ui(w);
                         }
                         #[cfg(target_os = "android")]
-                        let _ = wake;
+                        // Android wakes thru JNI, not the proxy: the clone has nothing to do here.
+                        drop(wake);
                     });
                     self.unattended_verify = Some((rx, target_on));
                     self.unattended_confirm_failed = false;
@@ -1255,7 +1256,7 @@ impl FluorApp<Px> for PhotonApp {
                         // The debug row: a pill IS the chord (see render.rs DEBUG ROW).
                         let key = super::render::DEBUG_PILL_CHORDS[(slot - super::render::DEBUG_PILL_SLOT0) as usize];
                         if let Some(ch) = key.chars().next() {
-                            let _ = self.handle_chord_action(ch, ctx);
+                            self.handle_chord_action(ch, ctx);
                         }
                         self.scene_dirty = true;
                     } else if slot == 3 {
@@ -1599,7 +1600,7 @@ impl FluorApp<Px> for PhotonApp {
                         }
                         // REPLY = a REFERENCE, never a quote: arm the target eagle_time; the compose strip shows the referenced message at half alpha, and the sent row carries only the reference — the renderer resolves it live, so a later edit of the target updates every reply pointing at it.
                         0 => {
-                            let _ = out; // the reference is by eagle_time alone (either direction resolves it)
+                            // The reference is by eagle_time alone (either direction resolves it).
                             self.compose_reply_to = Some(ts);
                             self.compose_edit_of = None;
                             if let Some(tb) = self.message_textbox.as_mut() {
@@ -1659,17 +1660,12 @@ impl FluorApp<Px> for PhotonApp {
                                         .find(|m| m.timestamp == ts && m.is_outgoing == out)
                                 })
                                 .and_then(|m| m.file_parts());
-                            let kind = self
-                                .conv_by_id(sci)
-                                .and_then(|v| v.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out))
-                                .and_then(|m| m.attach.map(|a| a.kind));
                             let is_rec = self
                                 .conv_by_id(sci)
                                 .and_then(|v| v.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out))
                                 .is_some_and(|m| m.is_wave_recording());
                             if let Some((hash, name, _)) = att {
                                 let held = crate::storage::blob_present(&hash);
-                                let _ = kind;
                                 // Opening moved to a tap on the visual itself (2026-09-12); this pill is the file verb: fetch, play a standalone recording, or save.
                                 if !held {
                                     self.attach_fetch_in(sci, &hash);
@@ -1859,7 +1855,6 @@ impl FluorApp<Px> for PhotonApp {
                             let name = self.conv_by_id(id).and_then(|c| c.messages.iter().find_map(|m| m.file_parts().filter(|(h, _, _)| *h == v.hash).map(|(_, n, _)| n))).unwrap_or_default();
                             if v.kind.is_image() || v.kind == crate::types::AttachKind::Document {
                                 // The in-app viewer IS opsin's view now — no separate window, on any platform. A document opens on its page one (the viewer's fallback decoder renders a PDF), Save exports the file itself.
-                                let _ = &name;
                                 self.open_viewer(id, v.hash);
                             } else if v.held {
                                 self.open_reader(v.hash, name);
@@ -1874,7 +1869,6 @@ impl FluorApp<Px> for PhotonApp {
                 }
                 // A tap inside a wave card's band: the glyph toggles play/stop (or fetches the blob); the waveform itself was handled as a scrub on the release edge — never a row select either way.
                 // A tap on a wave's band is a ROW tap (select / deselect) — never play (2026-09-12: play is the strip's button, two steps, and fluor's arbiter already drops the release after a scroll). A scrub while playing was handled on the release edge and never reaches here.
-                let _ = self.msg_wave_bands.get(vis);
                 if let (Some(id), Some((ts, out, ref_band))) =
                     (self.active_conversation, self.msg_hit_rows.get(vis).copied().flatten())
                 {
@@ -2207,7 +2201,6 @@ impl FluorApp<Px> for PhotonApp {
             Event::MouseWheel { delta } => {
                 // THE WAVE PANEL IS MODAL (Nick 2026-09-29, "a weird double window"): while the full-screen wave shows, a scroll must not reach the conversation hidden behind it — it moved the conversation, its blind and the speckle under the panel. Nothing on the wave screen scrolls.
                 if self.wave_screen() {
-                    let _ = delta;
                     return EventResponse::Handled;
                 }
                 // The viewer / reader own the wheel while open: pixel deltas (touch drag, trackpads) PAN; line deltas (a wheel) ZOOM the picture or SCROLL the text.
@@ -2274,6 +2267,11 @@ impl FluorApp<Px> for PhotonApp {
                     .as_ref()
                     .map(|c| c.hit_at(ctx.cursor_x, ctx.cursor_y))
                     .unwrap_or(HIT_NONE);
+                // THE GROUP SLATS (2026-11-01, Nick: a group's Beam and Wave pills are lit yet never light on press, on every member's device): what a press in a group conversation lands on, beside the two slats' own ids and enabled state — one line per press, so the next dead tap names its thief.
+                if matches!(self.state, AppState::Conversation) && self.active_molecule().is_some() {
+                    let slat = |b: &Option<Button>| b.as_ref().map_or("none".to_string(), |b| format!("{} enabled {}", b.hit_id(), b.is_enabled()));
+                    crate::logf!("TAP: group conversation press at {} {} lands on hit {} — Beam {}, Wave {}", ctx.cursor_x as i64, ctx.cursor_y as i64, hit_id, slat(&self.beam_btn), slat(&self.wave_start_btn));
+                }
 
                 // CLICK OFF (Nick 2026-10-29: "Click off or moving the window around should deselect the textbox and do whatever the click wants to do at that location"): a press anywhere but the focused textbox takes its focus away and then goes on to do what it does there — select, open, drag, move the window.
                 // The compose box's own buttons are part of it (Send, the link button, the paperclip): pressing one leaves the box focused, so typing carries on.
@@ -2533,7 +2531,6 @@ impl FluorApp<Px> for PhotonApp {
             Event::KeyboardInput { event: kev, .. } => {
                 // The wave screen takes no typing: keys must not reach the conversation's compose box behind it.
                 if self.wave_screen() {
-                    let _ = kev;
                     return EventResponse::Handled;
                 }
                 // Any keystroke dismisses the standing hints (event-driven — never hover or time).
@@ -2884,7 +2881,6 @@ impl FluorApp<Px> for PhotonApp {
             }
             Event::Ime(Ime::Commit(s)) => {
                 if self.wave_screen() {
-                    let _ = s;
                     return EventResponse::Handled;
                 }
                 // IME typing also dismisses the standing hints (event-driven — never hover or time).
@@ -3560,7 +3556,7 @@ impl FluorApp<Px> for PhotonApp {
                     );
                 }
                 let before = self.scroll_signature();
-                let _ = self.pane_scroll(ctx, v as isize, true, true);
+                self.pane_scroll(ctx, v as isize, true, true);
                 let moved = self.scroll_signature() != before;
                 // A BOUND ENDS THE FLING (2026-10-06 phone log: every fling frame was a full repaint and the list crept at a fraction of the flick — the fling had run into the rubber zone, where each frame moves a resisted sliver, the spring fights it back, and `moved` stays true forever). Past either end the glide is over; the spring eases whatever overshoot the last step left.
                 let in_bounds = self.pane_in_bounds();
@@ -3721,7 +3717,8 @@ impl FluorApp<Px> for PhotonApp {
             }
             #[cfg(not(any(unix, windows)))]
             {
-                let _ = exe;
+                // No re-exec on this platform: the staged image is not launched.
+                drop(exe);
             }
         }
 
@@ -4016,15 +4013,15 @@ impl FluorApp<Px> for PhotonApp {
 fn open_url_in_browser(url: &str) {
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "macos")))]
     {
-        let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+        crate::log_err!(std::process::Command::new("xdg-open").arg(url).spawn(), "the browser launch");
     }
     #[cfg(target_os = "macos")]
     {
-        let _ = std::process::Command::new("open").arg(url).spawn();
+        crate::log_err!(std::process::Command::new("open").arg(url).spawn(), "the browser launch");
     }
     #[cfg(target_os = "windows")]
     {
-        let _ = std::process::Command::new("cmd").args(["/C", "start", url]).spawn();
+        crate::log_err!(std::process::Command::new("cmd").args(["/C", "start", url]).spawn(), "the browser launch");
     }
     #[cfg(target_os = "android")]
     {
@@ -4387,10 +4384,8 @@ impl PhotonApp {
         #[cfg(not(target_os = "android"))]
         let hq = HandleQuery::new(keypair, proxy.clone());
         #[cfg(target_os = "android")]
-        let hq = {
-            let _ = proxy;
-            HandleQuery::new(keypair)
-        };
+        // Android HandleQuery wakes thru JNI, not the proxy.
+        let hq = HandleQuery::new(keypair);
         // ONE shared peer store: HandleQuery populates it from fgtw fetches, the status receiver serves/merges phonebook-gossip records into it, and the app harvests learned addresses from it for stalled contacts. All three hold clones of the same Arc.
         let peer_store = Arc::new(Mutex::new(PeerStore::new()));
         self.peer_store = Some(peer_store.clone());
@@ -4516,7 +4511,7 @@ impl PhotonApp {
                 .and_then(|bytes| tohu::open_reboot_capsule(&bytes))
             {
                 crate::log("RESUME: unattended reboot capsule opened — auto-attesting with no handle (Security toggle is ON)");
-                let _ = tohu::set_session(&cap); // re-arm the normal (boot-locked) session so the rest of this boot behaves like a warm restart
+                crate::log_err!(tohu::set_session(&cap), "the session re-arm from the reboot capsule"); // re-arm the normal (boot-locked) session so the rest of this boot behaves like a warm restart
             }
         }
 
@@ -4538,7 +4533,7 @@ impl PhotonApp {
                 let spawned = std::thread::Builder::new()
                     .name("vault-open".into())
                     .spawn(move || {
-                        let _ = tx.send(crate::storage::open_session_vault(identity_seed, vault_seed, device_secret));
+                        crate::log_err!(tx.send(crate::storage::open_session_vault(identity_seed, vault_seed, device_secret)), "the opened vault to the UI thread");
                     })
                     .is_ok();
                 if spawned {
@@ -4718,7 +4713,7 @@ impl PhotonApp {
                             if let Some(us) = self.session.as_ref().map(|se| crate::crypto::clutch::identity_party_id(&se.identity_seed)) {
                                 if self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == us) {
                                     crate::log("STORAGE: the self row retires — the conversation with only us in it is an atom, its rows stay in their table");
-                                    let _ = crate::storage::contacts::delete_contact(&us, &s);
+                                    crate::log_err!(crate::storage::contacts::delete_contact(&us, &s), "the self row's contact removal");
                                     self.contacts.retain(|c| c.is_sibling || c.handle_hash != us);
                                     let index: Vec<crate::storage::contacts::ContactIdentity> = self.contacts.iter().filter(|c| !c.is_sibling).map(|c| crate::storage::contacts::ContactIdentity { handle_proof: c.handle_proof, party_id: c.handle_hash, avatar_pin: c.avatar_pin }).collect();
                                     if let Err(e) = crate::storage::contacts::save_contact_list(&index, &s) {
@@ -4776,7 +4771,7 @@ impl PhotonApp {
                                 if !stub_hashes.is_empty() {
                                     for hh in &stub_hashes {
                                         crate::logf!("STORAGE: census — PURGING empty self-contact stub (key {}…) — its ceremony queue dies with it", hex::encode(&hh[..4]));
-                                        let _ = crate::storage::contacts::delete_contact(hh, &s);
+                                        crate::log_err!(crate::storage::contacts::delete_contact(hh, &s), "an empty self-contact stub's removal");
                                     }
                                     self.contacts
                                         .retain(|c| !stub_hashes.contains(&c.handle_hash));
@@ -4915,11 +4910,11 @@ impl PhotonApp {
                                             &bytes, &seed,
                                         )
                                         .map(|(_, px)| px);
-                                    let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
+                                    crate::log_err!(tx.send(crate::ui::avatar::AvatarDownloadResult {
                                         owner: None,
                                         pixels,
                                         name: None, // seed-keyed local decode — the name lives in fstate on this path
-                                    });
+                                    }), "the local avatar decode to the UI thread");
                                 });
                                 // Decode failure (poisoned bytes) arms the FGTW recovery in the drain — never here, or the tick would race the in-flight decode into a pointless network fetch every boot.
                             }

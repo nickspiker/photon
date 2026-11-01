@@ -88,7 +88,7 @@ pub fn fit(cap: &[i16], cap_k0: i64, render_k: i64) -> Option<Fit> {
 pub static UNCOVERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub fn finish(cap: Vec<i16>, cap_k0: i64, render_k: i64, route: String) {
-    let _ = std::thread::Builder::new().name("sweep-fit".into()).spawn(move || {
+    let spawned = std::thread::Builder::new().name("sweep-fit".into()).spawn(move || {
         let t0 = std::time::Instant::now();
         let fitted = fit(&cap, cap_k0, render_k);
         match fitted {
@@ -112,6 +112,7 @@ pub fn finish(cap: Vec<i16>, cap_k0: i64, render_k: i64, route: String) {
             crate::platform::audio::set_duck_coupling(if f.coupled { f.gain.max(0.0) } else { 0.0 });
         }
     });
+    crate::log_err!(spawned, "WAVE: spawning the sweep fit thread");
 }
 
 #[cfg(test)]

@@ -453,7 +453,7 @@ pub fn finalize_nchannel(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Optio
         let eh = *blake3::hash(&e).as_bytes();
         crate::storage::blob_store_any(identity_seed, &eh, &e).ok().map(|_| (eh, e))
     });
-    let _ = std::fs::remove_file(&ticket.path);
+    crate::log_err!(std::fs::remove_file(&ticket.path), "WAVE: removing the kept spool file");
     Some(Kept { hash, size, env, secs: t.secs })
 }
 
@@ -473,7 +473,7 @@ pub fn finalize_group(tickets: Vec<SpoolTicket>, identity_seed: &[u8; 32]) -> Op
     let merged = merge_group_records(sets);
     let built = build_container(&merged);
     for t in tickets {
-        let _ = std::fs::remove_file(&t.path);
+        crate::log_err!(std::fs::remove_file(&t.path), "WAVE: removing a kept group spool file");
     }
     let Some(t) = built else {
         crate::logf!("WAVE: group keep failed — {} record(s) built no recording", merged.len());
@@ -577,7 +577,7 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
                 match arch_by_slot.get(slot_out).copied().flatten() {
                     Some(r) => {
                         let mut pcm = vec![0i16; FRAME];
-                        let _ = arch_dec.decode(&r.bytes, &mut pcm, false);
+                        crate::log_err!(arch_dec.decode(&r.bytes, &mut pcm, false), "WAVE keep: decoding an archive packet for the envelope");
                         for (i, &s) in pcm.iter().enumerate() {
                             pyramid.push(0, slot_out * FRAME + i, s);
                         }
@@ -612,8 +612,8 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
                             Some(e) => e,
                             None => {
                                 let mut e = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).ok()?;
-                                let _ = e.set_vbr(true);
-                                let _ = e.set_bitrate(opus::Bitrate::Bits(FALLBACK_KBPS));
+                                crate::log_err!(e.set_vbr(true), "WAVE keep: fallback encoder set_vbr");
+                                crate::log_err!(e.set_bitrate(opus::Bitrate::Bits(FALLBACK_KBPS)), "WAVE keep: fallback encoder set_bitrate");
                                 fallback_encs[ch] = Some(e);
                                 fallback_encs[ch].as_mut()?
                             }
@@ -670,9 +670,9 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
 /// A decoded recording as a stream of interleaved `FRAME × nchan` i16 frames. Bounded memory: the compressed container stays in RAM (~tens of MB/hour) and each 10 ms frame decodes on demand via [`Self::next_frame`] — never the whole PCM at once (a stereo hour is ~700 MB decoded).
 pub struct KeptStream {
     pub nchan: usize,
-    /// Total playable frames (archive slots for a kept blob, grid slots for a live-spool preview) — the scrub bar's denominator.
+    /// Total playable frames (archive slots) — the scrub bar's denominator.
     pub total: usize,
-    /// The fine envelope from the container header (`nchan × env_len × ENV_COMPONENTS`, eighth-stops) — empty for a live-spool preview.
+    /// The fine envelope from the container header (`nchan × env_len × ENV_COMPONENTS`, eighth-stops).
     pub envelope: Vec<u8>,
     pub env_per_sec: u8,
     inner: Inner,
@@ -686,13 +686,6 @@ enum Inner {
         #[cfg(not(target_os = "ferros"))]
         decs: Vec<opus::Decoder>,
         subs: Vec<u8>,
-    },
-    /// Live-spool grid (the Ended-screen PREVIEW path): 5ms input slots, slot-iterated + interleaved on the fly.
-    Grid {
-        grid: Vec<Vec<Option<Cell>>>,
-        #[cfg(not(target_os = "ferros"))]
-        decs: Vec<opus::Decoder>,
-        slot: usize,
     },
 }
 
@@ -708,7 +701,7 @@ fn append_render_profile(profile: &mut Vec<u8>, render: &[&Record], base: i64, s
     let Ok(mut enc) = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio) else {
         return;
     };
-    let _ = enc.set_bitrate(opus::Bitrate::Bits(128_000));
+    crate::log_err!(enc.set_bitrate(opus::Bitrate::Bits(128_000)), "WAVE keep: render profile encoder set_bitrate");
     // Two 5 ms render frames per 10 ms output slot, placed by the NAME each one played under (the same lattice the wire channels use).
     let mut halves: Vec<[Option<&Record>; 2]> = vec![[None, None]; slots_out];
     for r in render {
@@ -854,35 +847,13 @@ pub fn open_blob(bytes: &[u8]) -> Option<KeptStream> {
     Some(KeptStream { nchan, total, envelope, env_per_sec, inner })
 }
 
-/// Build a playable stream directly from drained spool records — the Ended-screen PREVIEW path, so Play works before Keep finalizes a blob.
-#[cfg(target_os = "ferros")]
-pub(crate) fn stream_from_records(_records: &[Record]) -> Option<KeptStream> {
-    None
-}
-
-#[cfg(not(target_os = "ferros"))]
-pub(crate) fn stream_from_records(records: &[Record]) -> Option<KeptStream> {
-    let (nchan, grid) = grid_from_records(records)?;
-    Some(KeptStream {
-        nchan,
-        total: grid[0].len(),
-        envelope: Vec::new(),
-        env_per_sec: 0,
-        inner: Inner::Grid {
-            grid,
-            decs: (0..nchan).map(|_| mono_decoder()).collect::<Option<_>>()?,
-            slot: 0,
-        },
-    })
-}
-
 /// Frames decoded-and-discarded ahead of a seek target so the stateful codec has converged by the time audible output starts (Opus pre-roll is ~80 ms; this is generous).
 const SEEK_PRIME: usize = 8;
 
 impl KeptStream {
-    /// The kept container's Opus packets per channel, VERBATIM — holes as empty packets — with each channel's packets per 10 ms slot (1 = 10 ms packets, 2 = 5 ms). The compressed export reframes these instead of decoding. `None` for a live-spool preview (no container yet).
-    pub fn raw_packets(&self) -> Option<(Vec<u8>, Vec<Vec<Vec<u8>>>)> {
-        let Inner::Multi { bytes, subs, .. } = &self.inner else { return None };
+    /// The kept container's Opus packets per channel, VERBATIM — holes as empty packets — with each channel's packets per 10 ms slot (1 = 10 ms packets, 2 = 5 ms). The compressed export reframes these instead of decoding.
+    pub fn raw_packets(&self) -> (Vec<u8>, Vec<Vec<Vec<u8>>>) {
+        let Inner::Multi { bytes, subs, .. } = &self.inner;
         let mut chans: Vec<Vec<Vec<u8>>> = vec![Vec::new(); self.nchan];
         let mut cur = 0usize;
         'slots: loop {
@@ -898,7 +869,7 @@ impl KeptStream {
                 }
             }
         }
-        Some((subs.clone(), chans))
+        (subs.clone(), chans)
     }
 
     /// Position the stream at archive slot `slot` (clamped to the end): packets before the target are WALKED by their length prefix, never decoded — a two-hour seek is a byte scan, not a two-hour decode — then `SEEK_PRIME` frames prime the decoder. The tap-to-seek path.
@@ -920,13 +891,7 @@ impl KeptStream {
                     }
                 }
                 for d in decs.iter_mut() {
-                    let _ = d.reset_state();
-                }
-            }
-            Inner::Grid { slot: s, decs, .. } => {
-                *s = start;
-                for d in decs.iter_mut() {
-                    let _ = d.reset_state();
+                    crate::log_err!(d.reset_state(), "WAVE playback: resetting a decoder for a seek");
                 }
             }
         }
@@ -964,27 +929,12 @@ impl KeptStream {
                             continue;
                         }
                         let mut pcm = vec![0i16; frame];
-                        let _ = decs[ch].decode(opus, &mut pcm, false);
+                        crate::log_err!(decs[ch].decode(opus, &mut pcm, false), "WAVE playback: decoding a packet");
                         for (i, &s) in pcm.iter().enumerate() {
                             out[(k * frame + i) * nchan + ch] = s;
                         }
                     }
                 }
-                Some(out)
-            }
-            Inner::Grid { grid, decs, slot } => {
-                if *slot >= grid[0].len() {
-                    return None;
-                }
-                let mut out = vec![0i16; FRAME_IN * nchan];
-                for ch in 0..nchan {
-                    // The grid is live spool (preview) — 5ms packets.
-                    let pcm = decode_slot_n(&mut decs[ch], &grid[ch][*slot], FRAME_IN);
-                    for (i, &s) in pcm.iter().enumerate() {
-                        out[i * nchan + ch] = s;
-                    }
-                }
-                *slot += 1;
                 Some(out)
             }
         }

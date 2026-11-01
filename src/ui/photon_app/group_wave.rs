@@ -216,7 +216,7 @@ impl PhotonApp {
                     continue;
                 }
                 for f in &frames {
-                    let _ = crate::wave::send_media(f.clone(), a);
+                    crate::wave::send_media(f.clone(), a);
                 }
                 direct += 1;
             }
@@ -345,7 +345,7 @@ impl PhotonApp {
             self.decline_group_wave();
             return;
         }
-        let _ = self.send_group_wave_signal(gid, WaveSignal::Hangup { wave_id }, vsf::eagle_time_oscillations());
+        self.send_group_wave_signal(gid, WaveSignal::Hangup { wave_id }, vsf::eagle_time_oscillations());
         let outcome = if links > 0 || self.group_wave.as_ref().is_some_and(|w| !w.joined.is_empty()) { WaveOutcome::Answered } else { WaveOutcome::Missed };
         self.end_group_wave(outcome);
     }
@@ -371,7 +371,7 @@ impl PhotonApp {
                             let Some(key) = rx_lane_key else { return };
                             let ours = w.wave_id;
                             crate::logf!("WAVE: group glare — folding our {} into joining {}", hex::encode(&ours[..4]), hex::encode(&wave_id[..4]));
-                            let _ = self.send_group_wave_signal(gid, WaveSignal::Hangup { wave_id: ours }, vsf::eagle_time_oscillations());
+                            self.send_group_wave_signal(gid, WaveSignal::Hangup { wave_id: ours }, vsf::eagle_time_oscillations());
                             self.ended_waves.insert(ours);
                             self.group_wave = Some(Self::ringing_group_wave(gid, wave_id, row_ts, key, GroupMember { device, party, nonce }));
                             self.join_group_wave();
@@ -541,7 +541,8 @@ impl PhotonApp {
         let secret = crate::wave::keys::derive_group_link_secret(&key, &wave_id, (&our_device, &our_nonce), (&device, &their_nonce));
         if w.session.is_none() {
             // The first link opens the session the whole wave shares; the links only claim slots in it.
-            let _ = crate::platform::mic_permission::at_wave_start();
+            // The edge acts on the status itself (asks, or opens Settings and flags MIC_DENIED for the wave screen); the returned copy is not needed here.
+            crate::platform::mic_permission::at_wave_start();
             let gen = crate::platform::audio::start_owned();
             if gen.is_none() {
                 crate::log("WAVE: audio session did NOT open — this group wave has no microphone and no speaker");
@@ -549,7 +550,7 @@ impl PhotonApp {
             crate::platform::audio::set_named_playout(true);
             crate::wave::live::ensure_started();
             #[cfg(target_os = "android")]
-            let _ = crate::platform::jni_android::wave_service_void("waveWentActive");
+            crate::platform::jni_android::wave_service_void("waveWentActive");
             if let Some(w) = self.group_wave.as_mut() {
                 w.session = gen;
             }
@@ -938,19 +939,24 @@ impl PhotonApp {
             .spawn(move || {
                 #[cfg(target_os = "android")]
                 {
-                    let _ = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, -4) };
+                    // SAFETY: setpriority on the calling thread (who 0) takes no pointers.
+                    if unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, -4) } != 0 {
+                        crate::logf!("WAVE: group keep thread priority raise refused: {}", std::io::Error::last_os_error());
+                    }
                 }
                 let mut tickets = Vec::new();
                 for (t, th) in spent {
                     if let Some(th) = th {
-                        let _ = th.join();
+                        if th.join().is_err() {
+                            crate::log("WAVE: a link engine thread panicked before the group keep — its spool merges as it stands");
+                        }
                     }
                     tickets.push(t);
                 }
                 let result = crate::wave::record::finalize_group(tickets, &seed);
-                let _ = tx.send(super::wave_ui::WaveKeepResult { peer: [0u8; 32], offer_osc, wave_id8, result, group: Some(gid) });
+                crate::log_err!(tx.send(super::wave_ui::WaveKeepResult { peer: [0u8; 32], offer_osc, wave_id8, result, group: Some(gid) }), "the group wave keep result to the UI thread");
                 if let Some(w) = wake {
-                    let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                    super::wake_ui(&w);
                 }
             })
             .is_ok();

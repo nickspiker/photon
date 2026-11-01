@@ -93,7 +93,7 @@ fn write_wav<W: std::io::Write + std::io::Seek>(stream: &mut record::KeptStream,
             rpcm.fill(0);
             if let Some(p) = rp.packets.get(rslot) {
                 if !p.is_empty() {
-                    let _ = dec.decode(p, &mut rpcm, false);
+                    crate::log_err!(dec.decode(p, &mut rpcm, false), "WAVE export: decoding a rendered packet");
                 }
             }
             rslot += 1;
@@ -126,7 +126,7 @@ fn write_wav<W: std::io::Write + std::io::Seek>(stream: &mut record::KeptStream,
 fn write_vsf<W: std::io::Write>(stream: &mut record::KeptStream, rendered: Option<record::RenderProfile>, start: Option<i64>, out: &mut W) -> Result<u64, String> {
     use vsf::VsfType;
     // COMPRESSED, not decoded (Nick 2026-09-28: "no need to burn 10x the space when it could just get reframed"): the kept Opus packets exactly as recorded, each one its own `v('o', …)` value, so a VSF reader needs no length-prefix parsing and any audio tool with Opus plays them.
-    let (subs, chans) = stream.raw_packets().ok_or("no packets to export")?;
+    let (subs, chans) = stream.raw_packets();
     let mut builder = vsf::VsfBuilder::new().creation_time_oscillations(vsf::eagle_time_oscillations()).provenance_only();
     let mut wave = vsf::VsfSection::new("wave");
     wave.add_field_multi("rate", vec![VsfType::u(RATE as usize, false)]);
@@ -207,7 +207,7 @@ mod tests {
         let vsf_len = v.len() as u64;
         assert!(vsf_len * 3 < bytes.len() as u64, "the Opus VSF is a fraction of the WAV: {vsf_len} vs {}", bytes.len());
         // Every recorded packet is in it verbatim.
-        let (_, chans) = record::open_blob(&blob).unwrap().raw_packets().unwrap();
+        let (_, chans) = record::open_blob(&blob).unwrap().raw_packets();
         for p in chans.iter().flatten().filter(|p| !p.is_empty()) {
             assert!(v.windows(p.len()).any(|w| w == &p[..]), "a packet is missing from the VSF");
         }

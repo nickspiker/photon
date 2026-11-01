@@ -2052,7 +2052,7 @@ impl FriendshipChains {
         let weave = derive_weave_hash(eagle_time, &msg_hp, plaintext);
         self.last_received_weave = Some(weave);
         self.last_incorporated_hp = Some(msg_hp);
-        let _ = plaintext; // braid strands now come from the message DB at send time, not this snapshot
+        // Braid strands now come from the message DB at send time, not this snapshot.
     }
 
     /// Get the last sent weave hash (what we sent = what they received). Used by receiver to advance their view of our chain with matching entropy.
@@ -3250,7 +3250,7 @@ mod tests {
 
         // Exhaust both by asking far in the future repeatedly.
         for k in 1..20 {
-            let _ = chains.collect_due_retransmits(t0 + one_s * 60 * k);
+            chains.collect_due_retransmits(t0 + one_s * 60 * k);
         }
         let far = t0 + one_s * 1_000_000;
         assert!(
@@ -3294,7 +3294,7 @@ mod tests {
 
         // Exhaust the whole ladder. A LIVE peer still advertising the anchor after the full retry ladder ran without one ACK is a dead lane — even for an anchor-LINKABLE oldest pending (the old "the retransmit can cascade" exemption starved the round-6 field wedge: the peer held the row from the pre-ack_hash era, dedup-skipped every resend without re-ACKing, and the detector insisted the lane was fine forever).
         for k in 1..20 {
-            let _ = sender.collect_due_retransmits(t0 + one_s * 60 * k);
+            sender.collect_due_retransmits(t0 + one_s * 60 * k);
         }
         assert!(sender.our_lane_wedged_at_peer_anchor(0));
 
@@ -3327,7 +3327,7 @@ mod tests {
             .prepare_send(b"two".to_vec(), b"two".to_vec(), t0 + one_s, vec![])
             .unwrap();
         for k in 1..20 {
-            let _ = sender.collect_due_retransmits(t0 + one_s * 60 * k);
+            sender.collect_due_retransmits(t0 + one_s * 60 * k);
         }
         assert!(sender.process_ack(t0, &ph1));
         assert!(sender.our_lane_wedged_at_peer_anchor(0));

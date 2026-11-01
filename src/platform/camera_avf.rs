@@ -56,7 +56,14 @@ define_class!(
         fn did_output(&self, _output: *mut AnyObject, sbuf: *mut c_void, _conn: *mut AnyObject) {
             let Some(frame) = (unsafe { nv12_frame(sbuf) }) else { return };
             if let Some(tx) = FRAME_TX.lock().unwrap().as_ref() {
-                let _ = tx.try_send(frame);
+                // A full queue means the consumer is behind and this frame is dropped by design; only a hung-up receiver is a fault.
+                crate::log_err!(
+                    match tx.try_send(frame) {
+                        Err(std::sync::mpsc::TrySendError::Full(_)) => Ok(()),
+                        r => r,
+                    },
+                    "CAMERA: frame hand-off"
+                );
             }
         }
     }

@@ -1369,7 +1369,7 @@ impl PhotonApp {
                             self.contacts[ci].peer_era_capable = true;
                             crate::logf!("ERA: {} is era-capable (first tagged frame)", crate::fp(&self.contacts[ci].handle_proof));
                             if let Some(storage) = self.storage.as_ref() {
-                                let _ = crate::storage::contacts::save_contact(&self.contacts[ci], storage);
+                                crate::log_err!(crate::storage::contacts::save_contact(&self.contacts[ci], storage), "save a contact's era capability");
                             }
                         }
                         // A group member who is no contact passed this gate in group_member_of (a standing member's folded device).
@@ -1573,7 +1573,7 @@ impl PhotonApp {
                                 &scratch,
                                 &et,
                             );
-                            let _ = tx.send(BraidRxDecrypted {
+                            crate::log_err!(tx.send(BraidRxDecrypted {
                                 conversation_token,
                                 lane,
                                 prev_msg_hp,
@@ -1581,9 +1581,9 @@ impl PhotonApp {
                                 sender_addr,
                                 sender_pubkey,
                                 plaintext,
-                            });
+                            }), "hand a decrypted braid frame to the UI");
                             if let Some(w) = wake.as_ref() {
-                                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                                wake_ui(w);
                             }
                         });
                     } else {
@@ -2729,7 +2729,6 @@ impl PhotonApp {
                                         break;
                                     }
                                     // KEM targets our current keys but we don't have ceremony_id yet — which means we haven't processed THEIR offer yet (ceremony_id derives from both offers). We can't complete without their offer (no offer → can't encapsulate our KEM → our slot never completes). QUEUE the KEM and wait for their offer to arrive; the ClutchOfferReceived path drains clutch_pending_kem once both offers are in and ceremony_id is derived. Their offer is a reliable PT stream now, so it WILL arrive — no deadlock. (The old "adopt ceremony_id + decapsulate + break" shortcut left our own slot incomplete and hung CLUTCH Pending forever.)
-                                    let _ = (our_keys_cloned, received_ceremony_id);
                                     crate::logf!("CLUTCH: KEM from {} arrived before their offer/ceremony_id - queuing until offer arrives", crate::fp(&contact.handle_proof));
                                     contact.clutch_pending_kem = Some(their_kem.clone());
                                     break;
@@ -3316,20 +3315,20 @@ impl PhotonApp {
                                 )
                                 .map(|(_, vsf_rgb)| {
                                     if let Some(st) = storage.as_ref() {
-                                        let _ = crate::ui::avatar::save_avatar_to_cache_from_seed(
+                                        crate::log_err!(crate::ui::avatar::save_avatar_to_cache_from_seed(
                                             &party_id, &avatar_vsf, st,
-                                        );
+                                        ), "cache a peer avatar");
                                     }
                                     vsf_rgb
                                 });
                                 if pixels.is_none() {
                                     crate::log("Avatar: failed to decode peer avatar bytes");
                                 }
-                                let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
+                                crate::log_err!(tx.send(crate::ui::avatar::AvatarDownloadResult {
                                     owner: Some(owner_hp),
                                     pixels,
                                     name,
-                                });
+                                }), "hand a downloaded avatar to the UI");
                             });
                         }
                     }
@@ -3469,7 +3468,7 @@ impl PhotonApp {
                                                     page.more,
                                                     sender_addr
                                                 );
-                                                let _ = dispatch.send(
+                                                crate::log_err!(dispatch.send(
                                                     crate::network::status::HistorySendRequest {
                                                         peer_addr: sender_addr,
                                                         alt_addr: None,
@@ -3480,7 +3479,7 @@ impl PhotonApp {
                                                         vsf_bytes,
                                                         tag: None,
                                                     },
-                                                );
+                                                ), "queue an attachment send");
                                             }
                                             Err(e) => {
                                                 crate::logf!("HISTORY: page build failed: {}", e)
@@ -3579,7 +3578,7 @@ impl PhotonApp {
                                                 Some(raw_hash) => (raw_hash, crate::storage::blob_load(&seed, &raw_hash).map(|raw| crate::types::sniff(&raw, &sniff_name))),
                                                 None => (content_hash, Some(crate::types::sniff(&plain, &sniff_name))),
                                             };
-                                            let _ = tx.send(AttachInstalled {
+                                            crate::log_err!(tx.send(AttachInstalled {
                                                 sniffed,
                                                 manifest: None,
                                                 chunk: None,
@@ -3588,7 +3587,7 @@ impl PhotonApp {
                                                 sender_pubkey,
                                                 sender_addr,
                                                 len: plain.len(),
-                                            });
+                                            }), "hand an installed attachment to the UI");
                                         }
                                         Err(e) => crate::logf!("ATTACH: blob store failed: {}", e),
                                     }
@@ -3647,7 +3646,7 @@ impl PhotonApp {
                                                         Some(raw_hash) => (raw_hash, None),
                                                         None => (content_hash, crate::storage::blob_chunk_load(&m.chunks[0]).map(|first| crate::types::sniff(&first, &sniff_name))),
                                                     };
-                                                    let _ = tx.send(AttachInstalled {
+                                                    crate::log_err!(tx.send(AttachInstalled {
                                                         sniffed,
                                                         manifest: None,
                                                         chunk: Some((total - 1, total, true)),
@@ -3656,11 +3655,11 @@ impl PhotonApp {
                                                         sender_pubkey,
                                                         sender_addr,
                                                         len: m.size as usize,
-                                                    });
+                                                    }), "hand an installed attachment to the UI");
                                                     return;
                                                 }
                                             }
-                                            let _ = tx.send(AttachInstalled {
+                                            crate::log_err!(tx.send(AttachInstalled {
                                                 sniffed: None,
                                                 manifest: Some((held, total)),
                                                 chunk: None,
@@ -3669,7 +3668,7 @@ impl PhotonApp {
                                                 sender_pubkey,
                                                 sender_addr,
                                                 len: 0,
-                                            });
+                                            }), "hand an installed attachment to the UI");
                                         }
                                         Err(e) => crate::logf!("ATTACH: manifest store failed: {}", e),
                                     }
@@ -3841,6 +3840,7 @@ impl PhotonApp {
                             super::AttachServing { set: self.attach_serving.clone(), key: served_key }
                         });
                         queue_job(&self.attach_job_tx, move || {
+                            // Held to the end of the job: its Drop frees this serve's slot.
                             let _serving = serving;
                             // A RAW request for content held WRAPPED (an older build asking by `fh`, until v146): the original is unwrapped thru the verified load and served FROM MEMORY — an in-memory manifest and slices — never re-stored, so the wrapper stays the one copy at rest.
                             let held_wrapped_raw = if crate::storage::blob_manifest(&content_hash).is_none() && crate::storage::wrap_alias(&content_hash).is_some_and(|hb| hb != content_hash) {
@@ -3850,14 +3850,14 @@ impl PhotonApp {
                             };
                             if let Some(raw) = held_wrapped_raw {
                                 let send = |vsf_bytes: Vec<u8>, relay: bool| {
-                                    let _ = dispatch.send(crate::network::status::HistorySendRequest {
+                                    crate::log_err!(dispatch.send(crate::network::status::HistorySendRequest {
                                         peer_addr: sender_addr,
                                         alt_addr: None,
                                         recipient_pubkey: sender_pubkey.key,
                                         vsf_bytes,
                                         relay_to: if relay { vec![sender_pubkey.key] } else { Vec::new() },
                                         tag: None,
-                                    });
+                                    }), "queue an attachment serve");
                                 };
                                 if raw.len() <= crate::storage::BLOB_CHUNK_SIZE {
                                     if let Ok(vsf_bytes) = kete::encrypt_bytes(&raw, &wire_key).and_then(|sealed| crate::network::fgtw::protocol::build_attach_blob_vsf(&conversation_token, &content_hash, sealed, &kp_pub, &kp_sec)) {
@@ -3903,7 +3903,7 @@ impl PhotonApp {
                                     if let Ok(vsf_bytes) = kete::encrypt_bytes(&m.to_bytes(), &wire_key).and_then(|sealed| {
                                         crate::network::fgtw::protocol::build_attach_manifest_vsf(&conversation_token, &content_hash, sealed, &kp_pub, &kp_sec)
                                     }) {
-                                        let _ = dispatch.send(crate::network::status::HistorySendRequest {
+                                        crate::log_err!(dispatch.send(crate::network::status::HistorySendRequest {
                                             peer_addr: sender_addr,
                                             alt_addr: None,
                                             recipient_pubkey: sender_pubkey.key,
@@ -3911,7 +3911,7 @@ impl PhotonApp {
                                             // The relay only when needed (Nick 2026-10-21), the same rule as the chunks below.
                                             relay_to: if relay_needed { vec![sender_pubkey.key] } else { Vec::new() },
                                             tag: None,
-                                        });
+                                        }), "queue an attachment serve");
                                     }
                                 }
                                 for (i, h) in m.chunks.iter().enumerate() {
@@ -3924,14 +3924,14 @@ impl PhotonApp {
                                     if let Ok(vsf_bytes) = kete::encrypt_bytes(&plain, &wire_key).and_then(|sealed| {
                                         crate::network::fgtw::protocol::build_attach_chunk_vsf(&conversation_token, &content_hash, i as u32, sealed, &kp_pub, &kp_sec)
                                     }) {
-                                        let _ = dispatch.send(crate::network::status::HistorySendRequest {
+                                        crate::log_err!(dispatch.send(crate::network::status::HistorySendRequest {
                                             peer_addr: sender_addr,
                                             alt_addr: None,
                                             recipient_pubkey: sender_pubkey.key,
                                             vsf_bytes,
                                             relay_to: if relay_needed { vec![sender_pubkey.key] } else { Vec::new() },
                                             tag: None,
-                                        });
+                                        }), "queue an attachment serve");
                                         sent += 1;
                                     }
                                 }
@@ -3939,7 +3939,7 @@ impl PhotonApp {
                                 // A resume we hold none of the wanted chunks for would otherwise get silence: answer "not held" so the asker moves on.
                                 if sent == 0 && want.is_some() {
                                     if let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_attach_none_vsf(&conversation_token, &content_hash, &kp_pub, &kp_sec) {
-                                        let _ = dispatch.send(crate::network::status::HistorySendRequest {
+                                        crate::log_err!(dispatch.send(crate::network::status::HistorySendRequest {
                                             peer_addr: sender_addr,
                                             alt_addr: None,
                                             recipient_pubkey: sender_pubkey.key,
@@ -3947,7 +3947,7 @@ impl PhotonApp {
                                             // The one answer the asker's fetch waits on rides the relay too, whatever the path: a few hundred bytes, and a lost direct copy stranded the fetch (2026-10-28, right after a restart).
                                             relay_to: vec![sender_pubkey.key],
                                             tag: None,
-                                        });
+                                        }), "queue an attachment serve");
                                     }
                                 }
                                 return;
@@ -3957,7 +3957,7 @@ impl PhotonApp {
                                 // EVERY ASK GETS AN ANSWER (Nick 2026-10-21: "I don't like timers"): "not held" is the edge the asker moves on at, where it used to wait out a silence.
                                 crate::log("ATTACH: requested blob not held here — answering so");
                                 if let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_attach_none_vsf(&conversation_token, &content_hash, &kp_pub, &kp_sec) {
-                                    let _ = dispatch.send(crate::network::status::HistorySendRequest {
+                                    crate::log_err!(dispatch.send(crate::network::status::HistorySendRequest {
                                         peer_addr: sender_addr,
                                         alt_addr: None,
                                         recipient_pubkey: sender_pubkey.key,
@@ -3965,7 +3965,7 @@ impl PhotonApp {
                                         // The one answer the asker's fetch waits on rides the relay too, whatever the path: a few hundred bytes, and a lost direct copy stranded the fetch (2026-10-28, right after a restart).
                                         relay_to: vec![sender_pubkey.key],
                                         tag: None,
-                                    });
+                                    }), "queue an attachment serve");
                                 }
                                 return;
                             };
@@ -3980,15 +3980,14 @@ impl PhotonApp {
                             }) {
                                 Ok(vsf_bytes) => {
                                     // A relay-injected request has no routable src addr — the always-carried relay copy answers back thru the pipe.
-                                    let _ =
-                                        dispatch.send(crate::network::status::HistorySendRequest {
+                                    crate::log_err!(dispatch.send(crate::network::status::HistorySendRequest {
                                             peer_addr: sender_addr,
                                             alt_addr: None,
                                             recipient_pubkey: sender_pubkey.key,
                                             vsf_bytes,
                                             relay_to: if relay_needed { vec![sender_pubkey.key] } else { Vec::new() }, // the relay copy only where the direct leg is unproven (see relay_needed above),
                                             tag: None,
-                                        });
+                                        }), "queue a history page reply");
                                     crate::log("ATTACH: served blob request");
                                 }
                                 Err(e) => {
@@ -4055,13 +4054,13 @@ impl PhotonApp {
                             crate::log("CHAIN-SYNC: inner token mismatch — dropped");
                             return;
                         }
-                        let _ = tx.send(ChainSyncOpened {
+                        crate::log_err!(tx.send(ChainSyncOpened {
                             conversation_token,
                             sender_pubkey,
                             incoming,
-                        });
+                        }), "hand an opened chain sync to the UI");
                         if let Some(w) = wake.as_ref() {
-                            let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                            wake_ui(w);
                         }
                     });
                 }
@@ -4149,7 +4148,7 @@ impl PhotonApp {
                 StatusUpdate::FriendKnockReceived {
                     conversation_token,
                     sender_pubkey,
-                    sender_addr,
+                    sender_addr: _,
                 } => {
                     // THE MUTUALITY EDGE (consent gate, 2026-08-25): a knock resolvable against OUR roster means the knocker is someone WE added — both humans have now entered each other's handles, and the ceremony may finally arm. An unmatched token is a stranger: drop silently, remember nothing (they get no storage, no reply, no evidence they were heard). The knock's whole job ends here; the ceremony pipeline from keygen onward is unchanged.
                     let our_pid = self.session.as_ref().map(|s| {
@@ -4177,7 +4176,6 @@ impl PhotonApp {
                     if !self.sender_trusted_for(&self.contacts[ci], &sender_pubkey.key) {
                         continue; // matched row but an unknown/refused device — same silence
                     }
-                    let _ = sender_addr;
                     // THE KNOCK-BACK HEAL (Nick 2026-10-01, "make get dev auto-heal"): a knock from someone we ALREADY hold mutual consent with means their side never got our offer (it left before they had added us, or was dropped as a stranger's) — they re-knock on every new session while their consent is still false, so answer by re-firing our offer on the next pong edge. Edge-driven, idempotent, nothing re-blasted at anyone who did not knock.
                     if self.contacts[ci].consent_mutual
                         && self.contacts[ci].clutch_state == ClutchState::Pending
@@ -4378,7 +4376,7 @@ impl PhotonApp {
                         kp.public.as_bytes(),
                         kp.secret.as_bytes(),
                     ) {
-                        let _ = checker.history_dispatch().send(
+                        crate::log_err!(checker.history_dispatch().send(
                             crate::network::status::HistorySendRequest {
                                 peer_addr: sender_addr,
                                 alt_addr: None,
@@ -4387,7 +4385,7 @@ impl PhotonApp {
                                 vsf_bytes: frame,
                                 tag: None,
                             },
-                        );
+                        ), "queue a history send");
                         crate::logf!(
                             "CKPT: served spine state k={} to {} (they were at k={})",
                             our_k,
@@ -4604,15 +4602,15 @@ impl PhotonApp {
                         queue_job(&self.seal_job_tx, move || {
                             match crate::network::history_pages::open_history_page(&sealed, &key) {
                                 Ok(page) => {
-                                    let _ = tx.send(HistPageOpened {
+                                    crate::log_err!(tx.send(HistPageOpened {
                                         conversation_token,
                                         request_id,
                                         sender_pubkey,
                                         page: Some(page),
                                         open_key_fp,
-                                    });
+                                    }), "hand an opened history page to the UI");
                                     if let Some(w) = wake.as_ref() {
-                                        let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                                        wake_ui(w);
                                     }
                                 }
                                 Err(e) => {
@@ -4626,15 +4624,15 @@ impl PhotonApp {
                                         hex::encode(open_key_fp),
                                         sealer_fp_str
                                     );
-                                    let _ = tx.send(HistPageOpened {
+                                    crate::log_err!(tx.send(HistPageOpened {
                                         conversation_token,
                                         request_id,
                                         sender_pubkey,
                                         page: None,
                                         open_key_fp,
-                                    });
+                                    }), "hand an opened history page to the UI");
                                     if let Some(w) = wake.as_ref() {
-                                        let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                                        wake_ui(w);
                                     }
                                 }
                             }
@@ -4781,7 +4779,7 @@ impl PhotonApp {
                                             let (primary, alt) = self.contacts[idx]
                                                 .race_addrs()
                                                 .unwrap_or((sender_addr, None));
-                                            let _ = checker.history_dispatch().send(
+                                            crate::log_err!(checker.history_dispatch().send(
                                                 crate::network::status::HistorySendRequest {
                                                     peer_addr: primary,
                                                     alt_addr: alt,
@@ -4791,7 +4789,7 @@ impl PhotonApp {
                                                     vsf_bytes,
                                                     tag: None,
                                                 },
-                                            );
+                                            ), "queue a history send");
                                         }
                                     }
                                     continue;
@@ -4859,7 +4857,7 @@ impl PhotonApp {
                                         kp.secret.as_bytes(),
                                     ) {
                                         Ok(vsf_bytes) => {
-                                            let _ = dispatch.send(
+                                            crate::log_err!(dispatch.send(
                                                 crate::network::status::HistorySendRequest {
                                                     peer_addr: primary,
                                                     alt_addr: alt,
@@ -4868,7 +4866,7 @@ impl PhotonApp {
                                                     vsf_bytes,
                                                     tag: None,
                                                 },
-                                            );
+                                            ), "queue a history send");
                                             crate::logf!("BLIND: stored deposit from {} device {} — acked (disk-committed, off-thread)", crate::fp(&snapshot.handle_proof), hex::encode(&sender_pubkey.key[..4]));
                                         }
                                         Err(e) => {
@@ -5076,9 +5074,9 @@ impl PhotonApp {
                                                 {
                                                     let snapshot = self.contacts[idx].clone();
                                                     queue_job(&self.seal_job_tx, move || {
-                                                        let _ = crate::storage::contacts::save_contact_state(
+                                                        crate::log_err!(crate::storage::contacts::save_contact_state(
                                                             &snapshot, &storage,
-                                                        );
+                                                        ), "save contact state");
                                                     });
                                                 }
                                             }
@@ -6002,8 +6000,7 @@ impl PhotonApp {
                 }
                 // Evict the party-id avatar cache too — the fetch worker is local-first now, and a raw-AV1 cache entry decodes fine under ANY pin, so without this eviction the old face would be re-served forever.
                 if let (Some(c), Some(storage)) = (self.contacts.get(i), self.storage.as_ref()) {
-                    let _ =
-                        storage.delete_addr(&crate::storage::vault_key("avatar", &c.handle_hash));
+                    crate::log_err!(storage.delete_addr(&crate::storage::vault_key("avatar", &c.handle_hash)), "evict a cached avatar");
                 }
                 self.spawn_avatar_download(i);
             }

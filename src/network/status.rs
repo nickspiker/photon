@@ -1050,40 +1050,40 @@ impl StatusChecker {
         relay_to: Vec<[u8; 32]>,
         announce: bool,
     ) {
-        let _ = self.ping_sender.send(PingRequest {
+        crate::log_err!(self.ping_sender.send(PingRequest {
             peer_addr,
             peer_pubkey,
             punch_candidates,
             relay_to,
             announce,
-        });
+        }), "Status: ping request to the network thread");
     }
 
     // NOTE: send_clutch() removed - legacy v1 CLUTCH no longer used
 
     /// Send an encrypted message (non-blocking)
     pub fn send_message(&self, request: MessageRequest) {
-        let _ = self.message_sender.send(request);
+        crate::log_err!(self.message_sender.send(request), "Status: message request to the network thread");
     }
 
     /// Send a message acknowledgment (non-blocking)
     pub fn send_ack(&self, request: AckRequest) {
-        let _ = self.ack_sender.send(request);
+        crate::log_err!(self.ack_sender.send(request), "Status: ack request to the network thread");
     }
 
     /// Send an AvatarRequest to a peer asking for their avatar (non-blocking)
     pub fn send_avatar_request(&self, request: AvatarRequestSend) {
-        let _ = self.avatar_request_sender.send(request);
+        crate::log_err!(self.avatar_request_sender.send(request), "Status: avatar request to the network thread");
     }
 
     /// Send my avatar back to a peer (non-blocking)
     pub fn send_avatar_response(&self, request: AvatarResponseSend) {
-        let _ = self.avatar_response_sender.send(request);
+        crate::log_err!(self.avatar_response_sender.send(request), "Status: avatar response to the network thread");
     }
 
     /// Send a pre-built history frame (hist_req or hist_page) to a peer (non-blocking)
     pub fn send_history(&self, request: HistorySendRequest) {
-        let _ = self.history_sender.send(request);
+        crate::log_err!(self.history_sender.send(request), "Status: history frame to the network thread");
     }
 
     /// A cloneable handle for dispatching history pages from a WORKER thread. Serving a page means reading and decrypting up to 50 vault rows and sealing them — measured at 2.2s on the UI thread, which is what a peer's backfill request felt from the inside. The work moves off the render loop; only this sender needs to travel with it.
@@ -1103,11 +1103,11 @@ impl StatusChecker {
 
     /// Start a PT large transfer (non-blocking) Ask a reachable peer (by address) for the peer records it holds — phonebook gossip. Used when our own fgtw is unreachable but a friend is: they answer with self-signed records that merge into the shared peer store, so a friend we can't reach gets learned from one we can.
     pub fn send_phonebook_request(&self, addr: SocketAddr) {
-        let _ = self.phonebook_req_sender.send(addr);
+        crate::log_err!(self.phonebook_req_sender.send(addr), "Status: phonebook request to the network thread");
     }
 
     pub fn send_pt(&self, peer_addr: SocketAddr, data: Vec<u8>) {
-        let _ = self.pt_sender.send(PTSendRequest { peer_addr, data });
+        crate::log_err!(self.pt_sender.send(PTSendRequest { peer_addr, data }), "Status: PT send to the network thread");
     }
 
     /// Send full CLUTCH offer (~548KB) via TCP fallback (non-blocking)
@@ -1116,21 +1116,21 @@ impl StatusChecker {
     /// - ceremony_id: Deterministic from sorted handle_hashes (same on both sides)
     /// - device keys: For Ed25519 signing of the VSF message
     pub fn send_offer(&self, request: ClutchOfferRequest) {
-        let _ = self.offer_sender.send(request);
+        crate::log_err!(self.offer_sender.send(request), "Status: CLUTCH offer to the network thread");
     }
 
     /// Send CLUTCH KEM response (~31KB) via TCP fallback (non-blocking)
     ///
     /// Uses VSF format with proper signing. Uses same deterministic ceremony_id.
     pub fn send_kem_response(&self, request: ClutchKemResponseRequest) {
-        let _ = self.kem_response_sender.send(request);
+        crate::log_err!(self.kem_response_sender.send(request), "Status: CLUTCH KEM response to the network thread");
     }
 
     /// Send CLUTCH complete proof (~200 bytes) via TCP fallback (non-blocking)
     ///
     /// Both parties exchange their eggs_proof after computing eggs. Proofs MUST match - if they don't, something is catastrophically wrong.
     pub fn send_complete_proof(&self, request: ClutchCompleteRequest) {
-        let _ = self.complete_proof_sender.send(request);
+        crate::log_err!(self.complete_proof_sender.send(request), "Status: CLUTCH complete proof to the network thread");
     }
 
     /// Clone of the proof channel for a deferred send — the ceremony drain attaches it to the durable chains write so the proof fires post-durability (ChainsPostDurable::CeremonyProof).
@@ -1145,26 +1145,26 @@ impl StatusChecker {
 
     /// Broadcast presence on LAN for local peer discovery (non-blocking) Solves NAT hairpinning - when peers are on same LAN, they can discover each other's local IPs
     pub fn send_lan_broadcast(&self, our_handle_proof: [u8; 32], our_port: u16) {
-        let _ = self.lan_broadcast_sender.send(LanBroadcastRequest {
+        crate::log_err!(self.lan_broadcast_sender.send(LanBroadcastRequest {
             our_handle_proof,
             our_port,
             unicast: None,
-        });
+        }), "Status: LAN broadcast request to the network thread");
     }
 
     /// Send ONE pt_disc frame unicast to `target` (the Wi-Fi Direct group-up exchange — see LanBroadcastRequest::unicast).
     pub fn send_lan_unicast(&self, our_handle_proof: [u8; 32], our_port: u16, target: SocketAddr) {
-        let _ = self.lan_broadcast_sender.send(LanBroadcastRequest {
+        crate::log_err!(self.lan_broadcast_sender.send(LanBroadcastRequest {
             our_handle_proof,
             our_port,
             unicast: Some(target),
-        });
+        }), "Status: LAN unicast request to the network thread");
     }
 
     /// Clear pending PT sends for a peer (non-blocking) NOTE: Currently unused - clearing PT sends during CLUTCH completion was killing ClutchComplete transfers in flight. Left for future use.
     #[allow(dead_code)]
     pub fn clear_pt_sends(&self, peer_addr: SocketAddr) {
-        let _ = self.clear_pt_sender.send(ClearPtSendsRequest { peer_addr });
+        crate::log_err!(self.clear_pt_sender.send(ClearPtSendsRequest { peer_addr }), "Status: clear PT sends to the network thread");
     }
 
     /// Check for status updates (non-blocking)
@@ -1213,7 +1213,7 @@ fn send_status_update(
     update: StatusUpdate,
     #[allow(unused_variables)] event_proxy: &OptionalEventProxy,
 ) {
-    let _ = status_tx.send(update);
+    crate::log_err!(status_tx.send(update), "Status: status update to the UI");
     #[cfg(not(target_os = "android"))]
     if let Some(proxy) = event_proxy {
         if let Err(e) = proxy.send(PhotonEvent::NetworkUpdate) {
@@ -1268,7 +1268,9 @@ async fn run_checker(
         let want: libc::c_int = 4 << 20;
         // SAFETY: a plain setsockopt/getsockopt on a socket this process owns, with the integer option values the API defines.
         unsafe {
-            let _ = libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUF, &want as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+            if libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUF, &want as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t) != 0 {
+                crate::logf!("Status: socket receive buffer request refused: {}", std::io::Error::last_os_error());
+            }
             let mut got: libc::c_int = 0;
             let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
             if libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUF, &mut got as *mut _ as *mut libc::c_void, &mut len) == 0 {
@@ -1377,7 +1379,7 @@ async fn run_checker(
             };
 
             // Enable broadcast receive (for subnet broadcast fallback)
-            let _ = socket.set_broadcast(true);
+            crate::log_err!(socket.set_broadcast(true), "LAN: enable broadcast receive");
 
             // Join multicast group
             if let Err(e) = socket.join_multicast_v4(&multicast_addr, &Ipv4Addr::UNSPECIFIED) {
@@ -4457,9 +4459,8 @@ async fn run_checker(
                             let dev = *dev;
                             let bytes = a_bytes.clone();
                             tokio::spawn(async move {
-                                let _ =
-                                    crate::network::fgtw::relay::send_via_relay(&kp, &dev, &bytes)
-                                        .await;
+                                let sent = crate::network::fgtw::relay::send_via_relay(&kp, &dev, &bytes).await;
+                                crate::log_err!(sent, "RELAY: announce over the relay pipe");
                             });
                         }
                     }
@@ -5103,14 +5104,14 @@ async fn run_checker(
 
             // Send to IPv4 multicast
             if let Ok(mcast_sock) = UdpSocket::bind("0.0.0.0:0") {
-                let _ = mcast_sock.set_multicast_ttl_v4(1);
-                let _ = udp::send_sync(&mcast_sock, &packet, mcast_v4);
+                crate::log_err!(mcast_sock.set_multicast_ttl_v4(1), "LAN: multicast TTL");
+                crate::log_err!(udp::send_sync(&mcast_sock, &packet, mcast_v4), "LAN: IPv4 multicast send");
                 crate::logf!("LAN: Multicast {} bytes to {}", packet.len(), mcast_v4);
             }
 
             // Send to IPv6 multicast (hop limit is 1 by default for link-local)
             if let Ok(mcast_sock) = UdpSocket::bind("[::]:0") {
-                let _ = udp::send_sync(&mcast_sock, &packet, mcast_v6);
+                crate::log_err!(udp::send_sync(&mcast_sock, &packet, mcast_v6), "LAN: IPv6 multicast send");
                 crate::logf!("LAN: Multicast {} bytes to {}", packet.len(), mcast_v6);
             }
 
@@ -5119,8 +5120,8 @@ async fn run_checker(
                 let bcast_addr =
                     SocketAddr::new(std::net::IpAddr::V4(broadcast), crate::MULTICAST_PORT);
                 if let Ok(bcast_sock) = UdpSocket::bind("0.0.0.0:0") {
-                    let _ = bcast_sock.set_broadcast(true);
-                    let _ = udp::send_sync(&bcast_sock, &packet, bcast_addr);
+                    crate::log_err!(bcast_sock.set_broadcast(true), "LAN: enable broadcast send");
+                    crate::log_err!(udp::send_sync(&bcast_sock, &packet, bcast_addr), "LAN: subnet broadcast send");
                     crate::logf!(
                         "LAN: Broadcast {} bytes to {} (from {})",
                         packet.len(),

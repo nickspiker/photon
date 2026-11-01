@@ -51,7 +51,7 @@ impl<'a> WindowsBuffer<'a> {
 
             let hdc_desktop = GetDC(None);
 
-            let _ = UpdateLayeredWindow(
+            crate::log_err!(UpdateLayeredWindow(
                 self.renderer.hwnd,
                 hdc_desktop,
                 None,
@@ -61,7 +61,7 @@ impl<'a> WindowsBuffer<'a> {
                 None,
                 Some(&blend),
                 ULW_ALPHA,
-            );
+            ), "Windows renderer: UpdateLayeredWindow");
         }
         Ok(())
     }

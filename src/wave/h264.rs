@@ -343,7 +343,7 @@ mod tests {
         let (w, h) = (160, 120);
         let mut enc = Encoder::new(w, h, 15, 200_000).unwrap();
         for t in 0..5 {
-            let _ = enc.encode(&frame(w, h, t)).unwrap();
+            enc.encode(&frame(w, h, t)).unwrap();
         }
         enc.force_keyframe();
         let au = enc.encode(&frame(w, h, 5)).unwrap();

@@ -326,7 +326,8 @@ impl PhotonApp {
         {
             // Outgoing too: the ringback already holds the wave's audio session and route (placing a wave is the wave, 2026-09-29).
             if matches!(phase, Some(WavePhase::Active | WavePhase::Outgoing)) {
-                let _ = crate::platform::jni_android::wave_service_void("cycleWaveRoute");
+                // wave_service_void logs its own failure.
+                crate::platform::jni_android::wave_service_void("cycleWaveRoute");
             }
             any = true;
         }
@@ -607,7 +608,8 @@ impl PhotonApp {
             wave.ring = None; // Ringing → Active keeps the ActiveWave, so the guard needs an explicit stop here
         }
         #[cfg(target_os = "android")]
-        let _ = crate::platform::jni_android::wave_service_void("waveWentActive");
+        // wave_service_void logs its own failure.
+        crate::platform::jni_android::wave_service_void("waveWentActive");
         crate::logf!("WAVE: answered (id {})", hex::encode(&wave_id[..4]));
         Self::stop_ring_alert_platform();
         self.scene_dirty = true;
@@ -633,7 +635,8 @@ impl PhotonApp {
         }
         let (wave_id, peer, offer_osc) = (wave.wave_id, wave.peer_handle_hash, wave.offer_osc);
         if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
-            let _ = self.send_wave_signal(ci, WaveSignal::Decline { wave_id }, vsf::eagle_time_oscillations());
+            // chain_transmit logs why a signal could not go.
+            self.send_wave_signal(ci, WaveSignal::Decline { wave_id }, vsf::eagle_time_oscillations());
         }
         self.end_wave(WaveOutcome::Declined, offer_osc);
     }
@@ -682,19 +685,18 @@ impl PhotonApp {
         let Some(wave) = self.active_wave.as_ref() else {
             return;
         };
-        let (wave_id, peer, phase, offer_osc, phase_osc, we_are_origin) = (
+        let (wave_id, peer, phase, offer_osc, we_are_origin) = (
             wave.wave_id,
             wave.peer_handle_hash,
             wave.phase,
             wave.offer_osc,
-            wave.phase_osc,
             wave.we_are_origin,
         );
         crate::logf!("WAVE: hangup_wave (phase {}, id {})", format!("{:?}", phase), hex::encode(&wave_id[..4]));
         if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
-            let _ = self.send_wave_signal(ci, WaveSignal::Hangup { wave_id }, vsf::eagle_time_oscillations());
+            // chain_transmit logs why a signal could not go.
+            self.send_wave_signal(ci, WaveSignal::Hangup { wave_id }, vsf::eagle_time_oscillations());
         }
-        let _ = phase_osc; // the wave row's seconds come from the phase base inside end_wave
         let outcome = match phase {
             WavePhase::Outgoing if we_are_origin => WaveOutcome::Missed,
             WavePhase::Active => WaveOutcome::Answered,
@@ -818,7 +820,7 @@ impl PhotonApp {
                                 crate::logf!("TRAVERSE: FGTW re-observed us at {} after the interface change (attempt {})", a, i + 1);
                                 crate::network::traverse::post_reflexive_seed(a);
                                 if let Some(w) = wake.as_ref() {
-                                    let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                                    wake_ui(w);
                                 }
                                 return;
                             }
@@ -1102,13 +1104,15 @@ impl PhotonApp {
                     Some(_) => {
                         // Busy: only the direct receiver replies (merge is history, and every sibling replying would triplicate it).
                         if !from_merge {
-                            let _ = self.send_wave_signal(ci, WaveSignal::Busy { wave_id }, vsf::eagle_time_oscillations());
+                            // chain_transmit logs why a signal could not go.
+                            self.send_wave_signal(ci, WaveSignal::Busy { wave_id }, vsf::eagle_time_oscillations());
                         }
                     }
                     // In a GROUP wave: busy, exactly as in a pair's.
                     None if self.group_wave.is_some() => {
                         if !from_merge {
-                            let _ = self.send_wave_signal(ci, WaveSignal::Busy { wave_id }, vsf::eagle_time_oscillations());
+                            // chain_transmit logs why a signal could not go.
+                            self.send_wave_signal(ci, WaveSignal::Busy { wave_id }, vsf::eagle_time_oscillations());
                         }
                     }
                     None => {
@@ -1198,7 +1202,8 @@ impl PhotonApp {
                     // An answer with no active wave. Loud-kill ONLY if THIS device dialed that wave this session (the origin dismissed/lost it and the answer strayed in late — without the hangup the friend sits Active on a dead wave). Any other device is a fleet SIBLING hearing the friend's answer fan-out, and it must stay SILENT: the express key is per-friendship so its hangup authenticates as the whole identity, and on 2026-09-08 the non-waving sibling's "kill it loudly" tore down Brittany's engine 107ms after answer — 17s of nobody hearing anybody. Siblings observe, never destroy (fleetwide wave presence — join/switch mid-wave — rides on exactly that). Trade accepted: an origin that CRASHED (RAM set gone) no longer kills its own stray answer; the friend hangs up a one-way wave by hand, which beats every multi-device wave dying at answer.
                     if !from_merge && !row_is_outgoing {
                         if self.dialed_wave_ids.contains(&wave_id) {
-                            let _ = self.send_wave_signal(ci, WaveSignal::Hangup { wave_id }, vsf::eagle_time_oscillations());
+                            // chain_transmit logs why a signal could not go.
+                            self.send_wave_signal(ci, WaveSignal::Hangup { wave_id }, vsf::eagle_time_oscillations());
                         } else {
                             crate::logf!(
                                 "WAVE: answer for a wave this device didn't place (id {}) — ignored (sibling's copy)",
@@ -1261,14 +1266,16 @@ impl PhotonApp {
                             wave.spool = spool;
                         }
                         #[cfg(target_os = "android")]
-                        let _ = crate::platform::jni_android::wave_service_void("waveWentActive");
+                        // wave_service_void logs its own failure.
+                        crate::platform::jni_android::wave_service_void("waveWentActive");
                         crate::logf!("WAVE: answered by {} — active", crate::fp(&peer));
                         self.scene_dirty = true;
                     }
                     WavePhase::Active => {
                         // A second device answered late — first won.
                         if wave.answer_nonce != Some(nonce) && !from_merge {
-                            let _ = self.send_wave_signal(ci, WaveSignal::Taken { wave_id }, vsf::eagle_time_oscillations());
+                            // chain_transmit logs why a signal could not go.
+                            self.send_wave_signal(ci, WaveSignal::Taken { wave_id }, vsf::eagle_time_oscillations());
                         }
                     }
                     // Ringing/Ended: an answer arriving after we've already left the live window is stale — ignore it.
@@ -1510,9 +1517,12 @@ impl PhotonApp {
             crate::logf!("WAVE: express {} skipped — no direct path and no relay device known (lane only)", sig.kind());
             return;
         }
-        for a in &targets {
+        'targets: for a in &targets {
             for frame in &frames {
-                let _ = crate::wave::send_media(frame.clone(), *a);
+                if !crate::wave::send_media(frame.clone(), *a) {
+                    crate::log("WAVE: express frames not sent — the network runtime is gone");
+                    break 'targets;
+                }
             }
         }
         if let Some(kp) = self.device_keypair.clone().filter(|_| !relay_devs.is_empty()) {
@@ -1692,7 +1702,7 @@ impl PhotonApp {
         answer_nonce: &[u8; 32],
     ) -> Option<[u8; 32]> {
         // v2: no era material beyond the offer lane key (keys.rs) — a one-era skew between the fleets used to split the secret. The contact is still required to exist (a wave needs a friendship).
-        let _ = self.contacts.get(ci)?.friendship_id?;
+        self.contacts.get(ci)?.friendship_id?;
         Some(crate::wave::keys::derive_wave_secret(
             offer_lane_key,
             wave_id,
@@ -1809,16 +1819,20 @@ impl PhotonApp {
             .spawn(move || {
                 #[cfg(target_os = "android")]
                 {
-                    let _ = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, -4) };
+                    if unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, -4) } != 0 {
+                        crate::logf!("WAVE: keep thread priority not raised: {}", std::io::Error::last_os_error());
+                    }
                 }
                 // The spool is still being written while the engine drains fills from the peer — wait for it to go quiet (bounded by engine.rs DRAIN_MAX).
                 if let Some(t) = engine_thread {
-                    let _ = t.join();
+                    if t.join().is_err() {
+                        crate::log("WAVE: the engine thread panicked before the keep — finalizing what the spool holds");
+                    }
                 }
                 let result = crate::wave::record::finalize_nchannel(ticket, &seed);
-                let _ = tx.send(WaveKeepResult { peer, offer_osc, wave_id8, result, group: None });
+                crate::log_err!(tx.send(WaveKeepResult { peer, offer_osc, wave_id8, result, group: None }), "hand a finished wave keep to the UI");
                 if let Some(w) = wake {
-                    let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                    wake_ui(&w);
                 }
             })
             .is_ok();
@@ -1851,13 +1865,12 @@ impl PhotonApp {
         // A beam's ring is three bursts: the express path marked this offer (RING_IS_BEAM), consumed here.
         let beam = crate::wave::RING_IS_BEAM.swap(false, std::sync::atomic::Ordering::SeqCst);
         crate::wave::RING_SOUNDING_BEAM.store(beam, std::sync::atomic::Ordering::SeqCst);
-        let ring_hp = *blake3::hash(&digest).as_bytes();
         // No ring on ferros yet: no notification surface and no audio engine.
         #[cfg(target_os = "ferros")]
         {
-            let _ = ring_hp;
             return None;
         }
+        let ring_hp = *blake3::hash(&digest).as_bytes();
         // Honor the Notifications "Ring on incoming wave" tick: unchecked = the notification still posts (the wave is never invisible) but the audible ring loop stays silent. Read BEFORE the platform blocks — Android's ring loops now, and an unhonored mute there is a ring that cannot be silenced.
         let ring_audible = self
             .fleet_settings
@@ -2087,6 +2100,7 @@ impl PhotonApp {
         }
         #[cfg(not(target_os = "android"))]
         {
+            // The desktop sender reads the secret from the wave itself; this branch only needed to know one exists.
             let _ = secret;
             self.start_desktop_beam();
         }
@@ -2142,7 +2156,8 @@ impl PhotonApp {
     pub(super) fn cycle_beam_camera(&mut self) {
         #[cfg(target_os = "android")]
         {
-            let _ = crate::wave::beam_session::android_cycle_camera();
+            // A camera that is not sending has nothing to cycle, and the service bridge logs its own failure.
+            crate::wave::beam_session::android_cycle_camera();
         }
         #[cfg(not(target_os = "android"))]
         {
@@ -2257,7 +2272,8 @@ impl PhotonApp {
         // DROUGHT BASELINE ON THIS THREAD, before the engine exists (field 2026-09-08 22:56, "dropped — no authenticated media for 1970s"): the engine thread re-baselines these at its own start, but wave_drought_tick can run between `wave.engine = Some` and that start and read the PREVIOUS wave's clocks — 33 minutes of "drought" on a wave that was 1 ms old.
         crate::wave::MEDIA_START_OSC.store(vsf::eagle_time_oscillations(), std::sync::atomic::Ordering::Relaxed);
         // THE MICROPHONE GRANT (field 2026-10-10, Jon's Mac): ask when undetermined (the system prompt), say and open Settings when denied. A stub off macOS.
-        let _ = crate::platform::mic_permission::at_wave_start();
+        // The status it returns already lands in MIC_DENIED for the wave screen.
+        crate::platform::mic_permission::at_wave_start();
         crate::wave::LAST_MEDIA_RX_OSC.store(0, std::sync::atomic::Ordering::Relaxed);
         // No validated direct address is NOT no engine (field 2026-08-20, the "stuck wave": Emma's validated path to Nick expired mid-session, this bail left her engine down, and the wave sat Active-and-silent BOTH ways even tho Nick held a valid path and its media was arriving — with no engine there was no sink to decode it and no TX to answer with). Start on the RELAY_ADDR sentinel instead: RX needs no address at all (the engine installs the sink), sends to the sentinel are swallowed harmlessly, and the peer's FIRST authenticated packet re-points TX at its real source (address-follows-auth). Media stays dead only when NEITHER side holds an address.
         // THE DEVICE IN THE WAVE, NOT THE CONTACT (field 2026-09-11, the green-circle wave: Emma's validated path to Nick pointed at his MACBOOK on her own LAN, because a validated path belongs to the CONTACT — so the engine aimed a wave with his PHONE at a laptop three feet away, and both sides logged zero packets in while the ring sat honestly green). A wave is with one device: take that device's own best address, and only fall back to the contact-level race when we do not know which device answered.

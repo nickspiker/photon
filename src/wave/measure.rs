@@ -75,7 +75,7 @@ pub fn start(secs: u64) -> Option<Receiver<MeasureResult>> {
                 voiced_frames,
                 if full { "" } else { " (under 3 s of speech — floor-only post)" }
             );
-            let _ = tx.send(MeasureResult { mic_id, voiced: voiced_coarse.round() as u32, floor, voiced_frames: voiced_frames as u32 });
+            crate::log_err!(tx.send(MeasureResult { mic_id, voiced: voiced_coarse.round() as u32, floor, voiced_frames: voiced_frames as u32 }), "CAL: posting the measure result");
         })
         .is_ok();
     if !spawned {

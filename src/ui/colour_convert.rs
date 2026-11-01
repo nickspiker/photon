@@ -4,9 +4,6 @@
 //!
 //! The conversion is a single spectral 3×3 matrix multiply in linear: VSF RGB primaries (703/523/462 nm, Illuminant E) → Rec.2020 primaries (630/532/467 nm, D65). Colorimetric since vsf 02076e6: no chromatic adaptation, so VSF white (Illuminant E) shows as E light on a D65 display, a little warm, and a D65 white shows as D65. D50 never enters this path because we are not round-tripping thru XYZ.
 
-use vsf::colour::convert::apply_matrix_3x3_f32;
-use vsf::colour::VSF_RGB2REC2020;
-
 /// Convert γ=2.0 VSF RGB u8 bytes (`[R, G, B, R, G, B, …]`) to the display surface's γ=2.0 RGB u8 bytes of the same shape: BT.2020, or unchanged on macOS (converting there too put avatars and previews thru BT.2020 primaries on a surface that is VSF RGB, a second conversion the compositor then undid wrongly).
 pub fn vsf_rgb_to_bt2020(src: &[u8]) -> Vec<u8> {
     #[cfg(target_os = "macos")]
@@ -19,6 +16,8 @@ pub fn vsf_rgb_to_bt2020(src: &[u8]) -> Vec<u8> {
 
 #[cfg(not(target_os = "macos"))]
 fn bt2020(src: &[u8]) -> Vec<u8> {
+    use vsf::colour::convert::apply_matrix_3x3_f32;
+    use vsf::colour::VSF_RGB2REC2020;
     let n = src.len() / 3;
     let mut out = vec![0u8; n * 3];
     for i in 0..n {

@@ -201,7 +201,8 @@ impl PhotonApp {
         // A derived conversation materializes on its first touch.
         if self.conv_by_id(id).is_none() {
             if let Some(ci) = self.pair_contact_of(id) {
-                let _ = self.conv_mut_of(ci);
+                // Called for its side effect: materializing the conversation; the borrow it hands back is not needed here.
+                self.conv_mut_of(ci);
             }
         }
         let Some(us) = self.our_pid_in(id) else {
@@ -268,7 +269,7 @@ impl PhotonApp {
         let Some(conv_id) = self.contacts.get(ci).and_then(|c| self.our_party_id(c).map(|us| c.conversation(&us).id())) else {
             crate::logf!("STORAGE: message persist SKIPPED — no conversation object resolves for contact index {} (rows live in RAM only until this is fixed)", ci);
             if !signal_rows.is_empty() {
-                let _ = self.persist_done.0.send(MessagesDurableVerdict { conv_id: crate::types::friendship::FriendshipId([0u8; 32]), rows: signal_rows, err: Some("no conversation object resolves".to_string()) });
+                crate::log_err!(self.persist_done.0.send(MessagesDurableVerdict { conv_id: crate::types::friendship::FriendshipId([0u8; 32]), rows: signal_rows, err: Some("no conversation object resolves".to_string()) }), "hand a message persist verdict to the UI");
             }
             return;
         };
@@ -311,7 +312,7 @@ impl PhotonApp {
         let Some(conv) = self.conversations.iter().find(|v| v.id() == conv_id).cloned() else {
             crate::logf!("STORAGE: message persist SKIPPED — no conversation {} (rows live in RAM only)", hex::encode(&conv_id.as_bytes()[..4]));
             if !signal_rows.is_empty() {
-                let _ = self.persist_done.0.send(MessagesDurableVerdict { conv_id, rows: signal_rows, err: Some("no conversation object resolves".to_string()) });
+                crate::log_err!(self.persist_done.0.send(MessagesDurableVerdict { conv_id, rows: signal_rows, err: Some("no conversation object resolves".to_string()) }), "hand a message persist verdict to the UI");
             }
             return;
         };
@@ -324,22 +325,22 @@ impl PhotonApp {
         if !conv.hydrated {
             crate::logf!("STORAGE: message persist REFUSED for conversation {} — never hydrated from the vault (a write now could shadow durable rows); rows stay in RAM", hex::encode(&conv.id().as_bytes()[..4]));
             if !signal_rows.is_empty() {
-                let _ = self.persist_done.0.send(MessagesDurableVerdict {
+                crate::log_err!(self.persist_done.0.send(MessagesDurableVerdict {
                     conv_id: conv.id(),
                     rows: signal_rows,
                     err: Some("conversation not hydrated".to_string()),
-                });
+                }), "hand a message persist verdict to the UI");
             }
             return;
         }
         let Some(storage) = self.storage.as_ref().cloned() else {
             crate::log("STORAGE: message persist SKIPPED — no storage (vault not open)");
             if !signal_rows.is_empty() {
-                let _ = self.persist_done.0.send(MessagesDurableVerdict {
+                crate::log_err!(self.persist_done.0.send(MessagesDurableVerdict {
                     conv_id: conv.id(),
                     rows: signal_rows,
                     err: Some("vault not open".to_string()),
-                });
+                }), "hand a message persist verdict to the UI");
             }
             return;
         };
@@ -399,13 +400,13 @@ impl PhotonApp {
                             }
                         };
                         if !rows.is_empty() {
-                            let _ = done_tx.send(MessagesDurableVerdict {
+                            crate::log_err!(done_tx.send(MessagesDurableVerdict {
                                 conv_id: v.id(),
                                 rows,
                                 err,
-                            });
+                            }), "hand a message persist verdict to the UI");
                             if let Some(w) = wake.as_ref() {
-                                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                                wake_ui(w);
                             }
                         }
                     }
@@ -599,7 +600,7 @@ impl PhotonApp {
             });
             tx
         });
-        let _ = tx.send((addr, buf, storage));
+        crate::log_err!(tx.send((addr, buf, storage)), "queue a conv-state persist on its writer");
     }
 
     /// Commit finished send encrypts: CAS-advance the lane (prepare_send_commit), then ride the durable-transmit writer — the frame leaves only after the chains land on disk (the C2 law). A CAS miss (an era adopt landed mid-encrypt) voids the ciphertext and re-fires the held row at the fresh position. Always clears the per-friendship encrypt gate, success or not.
@@ -1261,7 +1262,7 @@ impl PhotonApp {
                     }
                 },
             );
-            let _ = tx.send(BraidTxEncrypted {
+            crate::log_err!(tx.send(BraidTxEncrypted {
                 friendship_id,
                 conversation_token,
                 eagle_time,
@@ -1271,9 +1272,9 @@ impl PhotonApp {
                 text_len,
                 control: control_owned,
                 result,
-            });
+            }), "hand an encrypted send to the UI");
             if let Some(w) = wake.as_ref() {
-                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                wake_ui(w);
             }
         });
 

@@ -18,13 +18,11 @@ pub mod payload_type {
 
 /// Send VSF data over TCP (no external framing - L is in header)
 pub fn send(stream: &mut TcpStream, data: &[u8]) -> std::io::Result<()> {
-    let _addr = stream
-        .peer_addr()
-        .unwrap_or_else(|_| "unknown".parse().unwrap());
-
     #[cfg(feature = "development")]
     {
-        let msg = vsf_inspect(data, "TCP", "TX", &_addr.to_string());
+        // A peer address the OS cannot name is labelled, never a panic (the old fallback parsed "unknown" as a SocketAddr, which always fails).
+        let addr = stream.peer_addr().map(|a| a.to_string()).unwrap_or_else(|_| "unknown".to_string());
+        let msg = vsf_inspect(data, "TCP", "TX", &addr);
         if !msg.is_empty() {
             crate::log(&msg);
         }
@@ -39,10 +37,6 @@ pub fn send(stream: &mut TcpStream, data: &[u8]) -> std::io::Result<()> {
 
 /// Receive VSF data from TCP by parsing L from header Returns the complete VSF file bytes
 pub fn recv(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
-    let _addr = stream
-        .peer_addr()
-        .unwrap_or_else(|_| "unknown".parse().unwrap());
-
     // Read enough bytes to parse VSF header and extract L (file length) VSF header starts with: RÅ< (4 bytes) + z + y + b + L + ... We need to read incrementally until we have L
 
     // First, read magic + enough for header fields (conservatively 64 bytes)
@@ -61,7 +55,7 @@ pub fn recv(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
     let mut ptr = 4; // After "RÅ<"
 
     // Parse z (version)
-    let _ = vsf::decoding::parse(&header_buf, &mut ptr).map_err(|e| {
+    vsf::decoding::parse(&header_buf, &mut ptr).map_err(|e| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("TCP recv: Failed to parse version: {}", e),
@@ -69,7 +63,7 @@ pub fn recv(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
     })?;
 
     // Parse y (backward compat)
-    let _ = vsf::decoding::parse(&header_buf, &mut ptr).map_err(|e| {
+    vsf::decoding::parse(&header_buf, &mut ptr).map_err(|e| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("TCP recv: Failed to parse backward compat: {}", e),
@@ -77,7 +71,7 @@ pub fn recv(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
     })?;
 
     // Parse b (header length)
-    let _ = vsf::decoding::parse(&header_buf, &mut ptr).map_err(|e| {
+    vsf::decoding::parse(&header_buf, &mut ptr).map_err(|e| {
         std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("TCP recv: Failed to parse header length: {}", e),
@@ -124,7 +118,8 @@ pub fn recv(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
 
     #[cfg(feature = "development")]
     {
-        let msg = vsf_inspect(&data, "TCP", "RX", &_addr.to_string());
+        let addr = stream.peer_addr().map(|a| a.to_string()).unwrap_or_else(|_| "unknown".to_string());
+        let msg = vsf_inspect(&data, "TCP", "RX", &addr);
         if !msg.is_empty() {
             crate::log(&msg);
         }

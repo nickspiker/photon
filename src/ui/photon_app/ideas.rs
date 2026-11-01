@@ -172,7 +172,7 @@ impl PhotonApp {
         let kind = kind.to_string();
         std::thread::spawn(move || {
             let r = crate::network::fgtw::gripe_put_blocking(&id, &nonce, &kind, &text).map_err(|e| e.to_string());
-            let _ = tx.send(GripeEvent::Put(id, r));
+            crate::log_err!(tx.send(GripeEvent::Put(id, r)), "the gripe put result to the UI thread");
         });
         self.ready_toast = Some(tr(Msg::IdeasSending).into_owned());
         self.scene_dirty = true;
@@ -188,7 +188,7 @@ impl PhotonApp {
         std::thread::spawn(move || {
             for id in ids {
                 let r = crate::network::fgtw::gripe_get_blocking(&id).map_err(|e| e.to_string());
-                let _ = tx.send(GripeEvent::Status(id, r));
+                crate::log_err!(tx.send(GripeEvent::Status(id, r)), "a gripe status to the UI thread");
             }
         });
     }
@@ -198,7 +198,7 @@ impl PhotonApp {
         let tx = self.gripe_channel();
         std::thread::spawn(move || {
             let r = crate::network::fgtw::gripe_list_blocking().map_err(|e| e.to_string());
-            let _ = tx.send(GripeEvent::List(r));
+            crate::log_err!(tx.send(GripeEvent::List(r)), "the gripe list to the UI thread");
         });
     }
 

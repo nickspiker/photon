@@ -130,9 +130,9 @@ impl PeerUpdateClient {
                                 Ok(Message::Binary(data)) => {
                                     // Parse VSF peer_update message
                                     if let Some(update) = Self::parse_peer_update(&data) {
-                                        let _ = update_tx.send(update);
+                                        crate::log_err!(update_tx.send(update), "PeerUpdate: update to the app");
                                         // Wake up the event loop
-                                        let _ = event_proxy.send_event(PhotonEvent::NetworkUpdate);
+                                        crate::log_err!(event_proxy.send_event(PhotonEvent::NetworkUpdate), "PeerUpdate: wake the UI");
                                     }
                                 }
                                 Ok(Message::Ping(_)) => {
@@ -197,7 +197,7 @@ impl PeerUpdateClient {
 
                         if let Ok(Message::Binary(data)) = msg_result {
                             if let Some(update) = Self::parse_peer_update(&data) {
-                                let _ = update_tx.send(update);
+                                crate::log_err!(update_tx.send(update), "PeerUpdate: update to the app");
                             }
                         }
                     }
@@ -284,6 +284,7 @@ impl Drop for PeerUpdateClient {
     fn drop(&mut self) {
         // Signal shutdown to background thread
         if let Some(tx) = self.shutdown_sender.take() {
+            // WHY: the only failure is a disconnected receiver — the loop already exited, which is what this signal asks for.
             let _ = tx.send(());
         }
     }

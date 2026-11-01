@@ -63,7 +63,7 @@ const BRIDGE_BUF_MAX: usize = 65536;
 /// Wake the event loop from a worker thread. Platform-agnostic (a plain event send) — the pigeon landing on any host uses it, so it carries no shell cfg gate.
 pub(super) fn bridge_wake(w: &Option<std::sync::Arc<dyn WakeSender<PhotonEvent>>>) {
     if let Some(w) = w {
-        let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+        super::wake_ui(w);
     }
 }
 
@@ -201,8 +201,10 @@ impl BridgeShell {
                 let n = match stdout.read(&mut buf) {
                     Ok(0) | Err(_) => {
                         if !line.is_empty() {
+                            // WHY: the reader only dies once stdout closes, which is the shell's teardown — the receiver dropping with it is the expected end, not a fault.
                             let _ = tx.send(Some(String::from_utf8_lossy(&line).into_owned()));
                         }
+                        // WHY: the end-of-stream marker after a teardown has no reader by design (see above).
                         let _ = tx.send(None);
                         return;
                     }
@@ -248,7 +250,7 @@ impl BridgeShell {
             host: String::new(),
         };
         // Drain init noise (bashrc chatter/errors) up to a priming sentinel so the FIRST real command's output starts clean, then capture the hostname once — bash defines $HOSTNAME even non-interactively, so no external binary runs.
-        let _ = sh.run_streaming("true", |_| {});
+        crate::log_err!(sh.run_streaming("true", |_| {}), "the bridge shell's priming command");
         sh.host = sh
             .run_streaming("printf '%s\\n' \"$HOSTNAME\"", |_| {})
             .map(|(_, _, body)| body.trim().to_string())
@@ -421,7 +423,7 @@ impl PhotonApp {
         };
         self.ensure_bridge_exec();
         if let Some(tx) = self.bridge_cmd_tx.as_ref() {
-            let _ = tx.send(BridgeJob::Run(contact, dev, cmd.to_string(), cmd_ts));
+            crate::log_err!(tx.send(BridgeJob::Run(contact, dev, cmd.to_string(), cmd_ts)), "the bridge command to its executor");
         }
     }
 
@@ -614,7 +616,7 @@ impl PhotonApp {
         }
         self.ensure_bridge_exec();
         if let Some(tx) = self.bridge_cmd_tx.as_ref() {
-            let _ = tx.send(BridgeJob::Reset(dev));
+            crate::log_err!(tx.send(BridgeJob::Reset(dev)), "the bridge reset to its executor");
         }
     }
 
@@ -673,7 +675,7 @@ impl PhotonApp {
                                     cwds.clone(),
                                     wake.clone(),
                                 );
-                                let _ = tx.send((contact, cmd, ts));
+                                crate::log_err!(tx.send((contact, cmd, ts)), "the bridge command to the new device worker");
                                 workers.insert(dev, tx);
                             }
                         }
@@ -787,7 +789,7 @@ impl PhotonApp {
             // Unattended only means anything if the box relaunches photon at boot — force background/autostart on.
             #[cfg(not(target_os = "android"))]
             {
-                let _ = crate::platform::autostart::enable();
+                crate::log_err!(crate::platform::autostart::enable(), "autostart enable for unattended mode");
                 crate::platform::autostart::set_background_desired(true);
                 self.resident_mode = true;
             }
@@ -797,7 +799,7 @@ impl PhotonApp {
             );
         } else {
             if let Some(v) = crate::storage::device_vault() {
-                let _ = v.delete_device(Self::REBOOT_CAPSULE_ENTRY);
+                crate::log_err!(v.delete_device(Self::REBOOT_CAPSULE_ENTRY), "the reboot capsule removal");
             }
             crate::log("UNATTENDED: auto-attest-on-reboot DISABLED (capsule shredded)");
         }
@@ -819,7 +821,7 @@ impl PhotonApp {
                 }
             }
         } else {
-            let _ = vault.delete_device(Self::REBOOT_CAPSULE_ENTRY);
+            crate::log_err!(vault.delete_device(Self::REBOOT_CAPSULE_ENTRY), "the reboot capsule removal");
         }
     }
 }
@@ -869,7 +871,7 @@ impl PhotonApp {
                         Some(m) => (m.chunks, false),
                         None => (vec![hash], true),
                     };
-                    let _ = tx.send(super::PigeonPrepared { contact, name, hash, size, chunks, single, was_held });
+                    crate::log_err!(tx.send(super::PigeonPrepared { contact, name, hash, size, chunks, single, was_held }), "the prepared pigeon to the UI thread");
                     bridge_wake(&wake);
                 }
                 Ok(_) => crate::log("PIGEON: the dropped file changed while it was read — drop it again"),
@@ -896,7 +898,7 @@ impl PhotonApp {
             // The row's bar starts empty here and fills from the host's pigeon_ack frames — the host's spool is the only truth about what has landed.
             self.pigeon_progress.insert(p.hash, super::PigeonProgress { device, name: p.name.clone(), got: 0, of: p.chunks.len() as u32, at: std::time::Instant::now() });
             crate::logf!("PIGEON: {} ({} bytes, {} chunk(s)) announced — the copy stays here until the host holds every chunk", p.name, p.size, p.chunks.len());
-            self.pigeon_outbound.insert(p.hash, super::PigeonOutbound { device, name: p.name, size: p.size, chunks: p.chunks, single: p.single, was_held: p.was_held });
+            self.pigeon_outbound.insert(p.hash, super::PigeonOutbound { name: p.name, size: p.size, chunks: p.chunks, single: p.single, was_held: p.was_held });
             self.dispatch_pigeon_chunks(ci, p.hash, None);
         }
     }
@@ -952,7 +954,7 @@ impl PhotonApp {
                 }
                 match kete::encrypt_bytes(&plain, &wire_key).and_then(|sealed| crate::network::fgtw::protocol::build_pigeon_chunk_vsf(&token, &hash, i as u32, sealed, size, sealed_name.as_deref(), &kp_pub, &kp_sec)) {
                     Ok(v) => {
-                        let _ = dispatch.send(crate::network::status::HistorySendRequest { peer_addr, alt_addr, recipient_pubkey: device, vsf_bytes: v, relay_to: relay_to.clone(), tag: None });
+                        crate::log_err!(dispatch.send(crate::network::status::HistorySendRequest { peer_addr, alt_addr, recipient_pubkey: device, vsf_bytes: v, relay_to: relay_to.clone(), tag: None }), "a pigeon chunk to the network dispatch");
                         sent += 1;
                     }
                     Err(e) => crate::logf!("PIGEON: chunk {} frame build failed: {}", i, e),
@@ -1104,7 +1106,7 @@ impl PhotonApp {
         queue_job(&self.seal_job_tx, move || {
             let dir_s = dir.to_string_lossy().into_owned();
             let landed = crate::network::pigeon::finalize_inflight(inf, &seed, &dir).unwrap_or(None);
-            let _ = tx.send((contact, landed, dir_s));
+            crate::log_err!(tx.send((contact, landed, dir_s)), "the landed pigeon to the UI thread");
             bridge_wake(&wake);
         });
     }

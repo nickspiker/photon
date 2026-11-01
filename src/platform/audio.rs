@@ -1048,13 +1048,18 @@ pub fn play_end_sweep() {
     let gen = SESSION_GEN.load(Ordering::SeqCst);
     play_overlay(&crate::wave::sweep::down());
     END_HOLD.store(true, Ordering::SeqCst);
-    let _ = std::thread::Builder::new().name("end-sweep".into()).spawn(move || {
+    // The waiter runs detached (its JoinHandle is dropped); a waiter that cannot spawn releases the hold and stops the session at once, cutting the sweep short.
+    let waiter = std::thread::Builder::new().name("end-sweep".into()).spawn(move || {
         let g = OVERLAY_DRAINED.0.lock().unwrap();
         // WHY/PROOF: the drain edge comes from the render callback; a device that stops calling back (unplugged, route torn down) can never drain the sweep, and the mic must not stay open waiting for it — twice the sweep's length bounds the hold.
-        let _ = OVERLAY_DRAINED.1.wait_timeout_while(g, std::time::Duration::from_secs(2), |_| !OVERLAY.lock().unwrap().is_empty());
+        crate::log_err!(OVERLAY_DRAINED.1.wait_timeout_while(g, std::time::Duration::from_secs(2), |_| !OVERLAY.lock().unwrap().is_empty()), "AUDIO: end-sweep drain wait");
         END_HOLD.store(false, Ordering::SeqCst);
         stop_owned(gen);
     });
+    if !crate::log_err!(waiter, "AUDIO: end-sweep waiter spawn") {
+        END_HOLD.store(false, Ordering::SeqCst);
+        stop_owned(gen);
+    }
 }
 
 /// `stop()` is held while the disconnect sweep plays (see [`play_end_sweep`]).
@@ -1199,9 +1204,8 @@ pub fn render_env_since(cursor: usize) -> (Vec<(i64, f32)>, usize) {
 /// Reset all queues — session start/stop hygiene so a new wave never hears the last wave's tail.
 /// Logs the session's jitter diagnostics FIRST (this runs at both start and stop; the stop edge is the one whose numbers matter, and a start against zeroed stats logs nothing).
 fn clear_queues() {
-    let (margin, waiting, misses, late) = jitter_stats();
+    let (_, waiting, misses, late) = jitter_stats();
     if misses > 0 || waiting > 0 || late > 0 {
-        let _ = margin;
         crate::logf!("WAVE: playout — l {} samples against L {}, {} far frame(s) left waiting, {} miss(es), {} too late to play (5 ms frames)", play_latency().map_or("?".to_string(), |l| l.to_string()), play_target().map_or("?".to_string(), |l| l.to_string()), waiting, misses, late);
     }
     // Every party, and with them every group link's claim: a session edge ends the whole wave.
@@ -1485,7 +1489,9 @@ mod desktop {
         let session = SESSION_THREAD.lock().unwrap().take();
         if let Some(h) = session {
             h.thread().unpark();
-            let _ = h.join();
+            if h.join().is_err() {
+                crate::log("AUDIO: the session thread panicked before releasing its streams");
+            }
         }
     }
 
@@ -1797,12 +1803,13 @@ mod android {
         }
         clear_queues();
         // The wave starts on the user's own pick when that device is here (Kotlin's routeWaveAudio).
-        let _ = crate::platform::jni_android::wave_service_str("setPreferredRoute", &super::picked_route().unwrap_or_default());
-        let _ = crate::platform::jni_android::wave_service_void("startWaveAudio");
+        // The wave_service_* calls log their own failures.
+        crate::platform::jni_android::wave_service_str("setPreferredRoute", &super::picked_route().unwrap_or_default());
+        crate::platform::jni_android::wave_service_void("startWaveAudio");
         if crate::platform::audio_aaudio::start() {
             true
         } else {
-            let _ = crate::platform::jni_android::wave_service_void("stopWaveAudio");
+            crate::platform::jni_android::wave_service_void("stopWaveAudio");
             ACTIVE.store(false, Ordering::SeqCst);
             false
         }
@@ -1815,7 +1822,7 @@ mod android {
         let _h = HANDOVER.lock().unwrap();
         if ACTIVE.swap(false, Ordering::SeqCst) {
             crate::platform::audio_aaudio::stop();
-            let _ = crate::platform::jni_android::wave_service_void("stopWaveAudio");
+            crate::platform::jni_android::wave_service_void("stopWaveAudio");
             clear_queues();
         }
     }
@@ -1838,7 +1845,7 @@ mod android {
     }
 
     fn refresh_mics() {
-        let _ = crate::platform::jni_android::wave_service_void("pushMicList");
+        crate::platform::jni_android::wave_service_void("pushMicList");
     }
 
     pub fn input_names() -> Vec<String> {
@@ -2007,7 +2014,7 @@ mod tests {
         assert!(after_clear.is_empty(), "hygiene clears the ring without rewinding the cursor base");
         assert_eq!(cur3, cur, "TOTAL survives clear — a held cursor sees a gap, never a phantom replay");
         queue_playback(vec![55i16; FRAME_SAMPLES]);
-        let _ = next_render_frame();
+        next_render_frame();
         let (fresh, _) = render_env_since(cur);
         assert_eq!(fresh.len(), 1, "post-hygiene renders resume flowing to the held cursor");
 
@@ -2026,7 +2033,7 @@ mod tests {
         assert_eq!(play_latency(), Some(f), "l held on L");
         // L drops by 100 samples: across SILENCE every sample is a zero-slope point, so l walks down one per sample and meets L inside the frame.
         set_play_target(f - 100);
-        let _ = next_render_frame_at(dac(k + 3 * f));
+        next_render_frame_at(dac(k + 3 * f));
         let met = play_latency().unwrap();
         assert!((met - (f - 100)).abs() <= WALK_DEAD_BAND, "silence lets l meet L at once, to within the dead band ({met} vs {})", f - 100);
         // Speech-like audio (a 1 kHz tone, two peaks per 48 samples, no flat runs): l moves exactly one sample per peak or trough.
@@ -2038,13 +2045,13 @@ mod tests {
         }
         set_play_target(f - 150); // 50 samples shorter than l
         let before = play_latency().unwrap();
-        let _ = next_render_frame_at(dac(k + 4 * f));
+        next_render_frame_at(dac(k + 4 * f));
         let moved = before - play_latency().unwrap();
         assert_eq!(moved, 1, "over audio the walk takes one slip per frame, however many peaks the frame holds ({moved})");
         // l too SHORT: repeats at the same points, lengthening l one at a time.
         set_play_target(play_latency().unwrap() + 100); // past the dead band
         let before = play_latency().unwrap();
-        let _ = next_render_frame_at(dac(k + 5 * f));
+        next_render_frame_at(dac(k + 5 * f));
         let grew = play_latency().unwrap() - before;
         assert_eq!(grew, 1, "repeats lengthen l by one per frame over audio ({grew})");
         // TOO LATE: every name of a frame has had its instant — dropped at the door, never played.
@@ -2062,10 +2069,10 @@ mod tests {
         assert_eq!(play_latency(), Some(-6 * 48_000 + f), "l is the new L at once — a jump by the first-arrival rule, not a walk");
         // THE RENDER TRACE: armed, every named far frame lands in the ring as the DAC got it, with its name and holes.
         set_profile(true);
-        let _ = take_render_trace();
+        take_render_trace();
         let p0 = party(0).play_next.load(Ordering::Relaxed);
         queue_named(p0, vec![31; FRAME_SAMPLES]);
-        let _ = next_render_frame_at(dac(p0 + play_latency().unwrap()));
+        next_render_frame_at(dac(p0 + play_latency().unwrap()));
         let tr = take_render_trace();
         assert_eq!(tr.len(), 1, "one traced frame per render");
         assert_eq!(tr[0].name, p0, "traced under the name it started on");
@@ -2082,12 +2089,12 @@ mod tests {
         let far = |v: i16| vec![v; FRAME_SAMPLES];
         for _ in 0..40 {
             queue_playback(far(20)); // the room: the floor settles at 20, knee 40
-            let _ = next_render_frame();
+            next_render_frame();
         }
         assert!(expand_knee() <= 48, "a quiet room keeps the knee low ({})", expand_knee());
         for _ in 0..20 {
             queue_playback(far(150));
-            let _ = next_render_frame();
+            next_render_frame();
         }
         queue_playback(far(150));
         let heard = next_render_frame();
@@ -2097,12 +2104,12 @@ mod tests {
         set_duck_coupling(0.0);
         for _ in 0..4000 {
             queue_playback(far(100)); // a loud room, held the twenty seconds the slow rise takes to settle: the knee reaches twice it
-            let _ = next_render_frame();
+            next_render_frame();
         }
         assert!((190..=256).contains(&expand_knee()), "a loud room lifts the knee to twice itself, never past the plan's ceiling ({})", expand_knee());
         for _ in 0..20 {
             queue_playback(far(150));
-            let _ = next_render_frame();
+            next_render_frame();
         }
         queue_playback(far(150));
         let heard = next_render_frame();

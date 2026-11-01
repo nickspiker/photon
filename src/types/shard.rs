@@ -82,7 +82,6 @@ pub struct ShardDistribution {
 
 impl ShardDistribution {
     pub fn split_key(private_key: &[u8; 32], contacts: &[(ContactId, f32)], threshold: u8) -> Self {
-        let _total_shards = contacts.len() as u8;
         let mut shards = Vec::with_capacity(contacts.len());
 
         for (i, (contact_id, _weight)) in contacts.iter().enumerate() {

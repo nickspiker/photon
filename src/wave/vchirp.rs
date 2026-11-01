@@ -263,7 +263,7 @@ pub fn take_verdict() -> Option<Verdict> {
 
 /// Run the fit off-thread (the 2-leg × ~24k-lag scan is ~100-500ms of CPU — never on the engine loop, which is pacing 10ms frames). `render_start_osc` = DAC-enqueue stamp of the chirp's first audible frame; `cap_anchor_osc` = osc of the capture buffer's first sample; their difference anchors the in-buffer lag to the true render→capture delay, so device spin-up before the chirp never inflates it.
 pub fn finish(cap: Vec<i16>, vol_lin: f32, render_start_osc: i64, cap_anchor_osc: i64, route: String, emit_scale: f32) {
-    let _ = std::thread::Builder::new().name("vchirp-fit".into()).spawn(move || {
+    let spawned = std::thread::Builder::new().name("vchirp-fit".into()).spawn(move || {
         let t0 = std::time::Instant::now();
         let Some(f) = fit(&cap, MAX_LAG_SAMPLES) else {
             crate::log("WAVE: v-chirp fit rejected — legs disagreed (speech/movement/resampler?) — no seed, duck stays on its prior");
@@ -338,6 +338,7 @@ pub fn finish(cap: Vec<i16>, vol_lin: f32, render_start_osc: i64, cap_anchor_osc
         }]);
         *VERDICT.lock().unwrap() = Some(Verdict::Coupled { g_norm, delay_bins, floor: f.floor, ir: (ir_start, taps) });
     });
+    crate::log_err!(spawned, "WAVE: spawning the v-chirp fit thread");
 }
 
 fn env_i16(frame: &[i16]) -> f32 {

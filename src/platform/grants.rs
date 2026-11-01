@@ -18,7 +18,9 @@ static WAKE: std::sync::OnceLock<std::sync::Arc<dyn fluor::host::WakeSender<crat
 
 /// The app's wake handle, so a prompt answered on a system thread runs the gate at once.
 pub fn set_wake(proxy: std::sync::Arc<dyn fluor::host::WakeSender<crate::ui::PhotonEvent>>) {
-    let _ = WAKE.set(proxy);
+    if WAKE.set(proxy).is_err() {
+        crate::log("GRANTS: the wake handle was already set — the first one stays");
+    }
 }
 
 pub fn answered() -> u64 {
@@ -29,7 +31,7 @@ pub fn answered() -> u64 {
 pub fn note_answer() {
     ANSWERS.fetch_add(1, Ordering::SeqCst);
     if let Some(w) = WAKE.get() {
-        let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+        crate::log_err!(w.send(crate::ui::PhotonEvent::NetworkUpdate), "GRANTS: waking the UI after a prompt answer");
     }
 }
 
@@ -73,7 +75,8 @@ pub fn request(need: Need) {
     crate::logf!("GRANTS: asking for the {}", name(need));
     #[cfg(target_os = "android")]
     {
-        let _ = crate::platform::jni_android::wave_service_void(match need {
+        // wave_service_void logs its own failure.
+        crate::platform::jni_android::wave_service_void(match need {
             Need::Mic => "askMic",
             Need::Camera => "askCameraEarly",
         });
@@ -89,8 +92,12 @@ pub fn request(need: Need) {
 pub fn open_settings(need: Need) {
     #[cfg(target_os = "android")]
     {
-        let _ = need;
-        let _ = crate::platform::jni_android::wave_service_void("openAppSettings");
+        // Both needs land on the app's own settings page; wave_service_void logs its own failure.
+        match need {
+            Need::Mic | Need::Camera => {
+                crate::platform::jni_android::wave_service_void("openAppSettings");
+            }
+        }
     }
     #[cfg(not(target_os = "android"))]
     match need {

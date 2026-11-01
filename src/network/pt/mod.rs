@@ -1424,15 +1424,15 @@ mod tests {
         let fresh: SocketAddr = "192.168.1.161:4383".parse().unwrap();
         let pk = [0x77u8; 32];
         // Small packet + large transfer, both aimed at the stale address.
-        let _ = mgr.send_with_pubkey(stale, vec![1; 64], Some(pk));
-        let _ = mgr.send_with_pubkey(stale, vec![2; 8000], Some(pk));
+        mgr.send_with_pubkey(stale, vec![1; 64], Some(pk));
+        mgr.send_with_pubkey(stale, vec![2; 8000], Some(pk));
         // A second transfer for the SAME pubkey that already locked its path.
-        let _ = mgr.send_with_pubkey(stale, vec![3; 8000], Some(pk));
+        mgr.send_with_pubkey(stale, vec![3; 8000], Some(pk));
         let locked_stream = mgr.outbound[1].stream_id;
         mgr.outbound[1].spec_acked = true;
         // A different peer's packet must not move.
         let other: SocketAddr = "10.0.0.9:4383".parse().unwrap();
-        let _ = mgr.send_with_pubkey(other, vec![4; 64], Some([0x88u8; 32]));
+        mgr.send_with_pubkey(other, vec![4; 64], Some([0x88u8; 32]));
 
         mgr.retarget_peer(&pk, fresh, None);
 
@@ -1461,7 +1461,7 @@ mod tests {
         let spec_fields = parse_vsf_section_fields(&spec_bytes);
         let spec = PTSpec::from_vsf_fields(&spec_fields).unwrap();
         // Receiver keys the transfer by the SPEC's source (the v6 path)...
-        let _ = receiver.handle_spec(v6_path, spec.clone(), None);
+        receiver.handle_spec(v6_path, spec.clone(), None);
         let data_packets = sender.handle_spec_ack(v6_path, spec.stream_id, spec.data_hash);
         // ...but the DATA arrives from the v4 path.
         let first = PTData::from_bytes(&data_packets[0]).unwrap();
@@ -1838,7 +1838,7 @@ mod tests {
         assert_eq!(sender.in_flight_for(peer_key(Some(pk), peer)), 0, "the window slot is free");
 
         // A receiver that has forgotten (restarted) never answers: when the ladder runs out the transfer retires instead of waiting forever.
-        let _ = sender.send_with_pubkey(peer, vec![0xCD; 3000], Some(pk));
+        sender.send_with_pubkey(peer, vec![0xCD; 3000], Some(pk));
         sender.outbound[0].state = TransferState::AwaitingComplete;
         sender.outbound[0].retries = 11; // forced: the ladder's timing is not under test
         sender.tick();
@@ -1859,12 +1859,12 @@ mod tests {
         let live: SocketAddr = "192.168.1.159:4383".parse().unwrap();
         assert!(!mgr.send(dead, vec![1; 64]).is_empty());
         for i in 2..6u8 {
-            let _ = mgr.send(dead, vec![i; 64]);
+            mgr.send(dead, vec![i; 64]);
         }
         // One queued packet names a live alternate: it must be re-aimed, not dropped.
-        let _ = mgr.send_with_pubkey_and_alt(dead, Some(live), vec![7; 64], None);
+        mgr.send_with_pubkey_and_alt(dead, Some(live), vec![7; 64], None);
         // A retransmit of the same bytes stacks nothing.
-        let _ = mgr.send(dead, vec![2; 64]);
+        mgr.send(dead, vec![2; 64]);
         assert_eq!(mgr.outbound_packets.len(), 6);
         // The head exhausts its ladder (forced: the ladder's timing is not under test).
         mgr.outbound_packets[0].retry_count = PTManager::MAX_PACKET_RETRIES;

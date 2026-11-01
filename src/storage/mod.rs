@@ -208,6 +208,7 @@ pub fn set_device_flag(key: &str, on: bool) {
 /// Desktop only: on Android `photon_config_dir` is the app-private files ROOT, which the OS and the JNI layer also write into — sweeping unknown names there would eat platform files; the sandbox already isolates it.
 fn census_sweep(device_secret: &[u8; 32]) {
     #[cfg(target_os = "android")]
+    // WHY: not a Result — Android has no census, so this only marks the param used there.
     let _ = device_secret;
     #[cfg(not(target_os = "android"))]
     {
@@ -331,7 +332,10 @@ pub fn isolate_test_storage() {
     let root = std::env::temp_dir().join(format!("photon-tests-{}", std::process::id()));
     static CLEAN: std::sync::Once = std::sync::Once::new();
     CLEAN.call_once(|| {
-        let _ = std::fs::remove_dir_all(&root); // pid-reuse insurance — before any test writes; same-run siblings only ever see the fresh root
+        // Pid-reuse insurance — before any test writes; same-run siblings only ever see the fresh root.
+        if let Err(e) = std::fs::remove_dir_all(&root) {
+            assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "clear test root {}: {}", root.display(), e);
+        }
     });
     std::env::set_var("PHOTON_DATA_DIR", root.join("cfg"));
     kete::set_vault_dirs_override(
@@ -767,10 +771,21 @@ pub fn blob_store_file(identity_seed: &[u8; 32], path: &std::path::Path) -> Resu
 ///
 /// Overwrite is the rule, not an option (Nick, 2026-09-20). This used to collision-suffix — `name (2)` — as a "safety property", and it cost a real afternoon: a script dropped over the bridge landed under a name nobody asked for, the hook kept running the stale one, and the push it was meant to fix stayed refused with nothing to point at. A transfer that changes the name it was given has not delivered the file. Rollback belongs to snapshots on the receiving host, never to the writer inventing a name.
 pub fn land_blob(seed: &[u8; 32], content_hash: &[u8; 32], dir: &std::path::Path, name: &str) -> Option<String> {
-    let _ = std::fs::create_dir_all(dir);
+    if let Err(e) = std::fs::create_dir_all(dir) {
+        save_refused(dir, e);
+        return None;
+    }
     let dest = dir.join(name);
     blob_write_file(seed, content_hash, &dest)?;
     Some(dest.to_string_lossy().into_owned())
+}
+
+/// A remove whose target is already gone has reached its goal: NotFound becomes Ok, every other failure stays an error for the caller to log.
+pub fn absent_ok(r: std::io::Result<()>) -> std::io::Result<()> {
+    match r {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        r => r,
+    }
 }
 
 /// A Save that the filesystem refused, named in the log with the OS's reason (field 2026-10-26, Nick's MacBook: "unable to save pigeons on mac" left only "did not land" — macOS guards the Downloads folder behind a privacy permission, and the refusal was swallowed).
@@ -805,21 +820,21 @@ pub fn blob_write_file(identity_seed: &[u8; 32], content_hash: &[u8; 32], path: 
     for h in &m.chunks {
         let Some(c) = blob_chunk_load(h) else {
             drop(f);
-            let _ = std::fs::remove_file(path);
+            crate::log_err!(absent_ok(std::fs::remove_file(path)), "blob: partial save remove (missing chunk)");
             return None;
         };
         hasher.update(&c);
         if let Err(e) = f.write_all(&c) {
             save_refused(path, e);
             drop(f);
-            let _ = std::fs::remove_file(path);
+            crate::log_err!(absent_ok(std::fs::remove_file(path)), "blob: partial save remove (write refused)");
             return None;
         }
         n += c.len() as u64;
     }
     if hasher.finalize().as_bytes() != content_hash {
         drop(f);
-        let _ = std::fs::remove_file(path);
+        crate::log_err!(absent_ok(std::fs::remove_file(path)), "blob: partial save remove (hash mismatch)");
         crate::log("blob: chunked content hash mismatch on save — file removed");
         return None;
     }
@@ -829,16 +844,16 @@ pub fn blob_write_file(identity_seed: &[u8; 32], content_hash: &[u8; 32], path: 
 /// Delete a blob value (attachment tombstone follow-thru — blobs CAN truly shred; only row content is braid-bound). A chunked blob sheds its chunks and manifest too.
 pub fn blob_delete(content_hash: &[u8; 32]) {
     if let (Some(v), Some(addr)) = (device_vault(), blob_addr(content_hash)) {
-        let _ = v.delete_addr(&addr);
+        crate::log_err!(v.delete_addr(&addr), "blob: value delete");
         if let Some(m) = blob_manifest(content_hash) {
             for h in &m.chunks {
                 if let Some(a) = blob_addr(h) {
-                    let _ = v.delete_addr(&a);
+                    crate::log_err!(v.delete_addr(&a), "blob: chunk delete");
                 }
             }
         }
         if let Some(a) = manifest_addr(content_hash) {
-            let _ = v.delete_addr(&a);
+            crate::log_err!(v.delete_addr(&a), "blob: manifest delete");
         }
         complete_cache_set(*content_hash, false);
         blob_presence_forget(content_hash);
@@ -846,7 +861,7 @@ pub fn blob_delete(content_hash: &[u8; 32]) {
         if let Some(hb) = wrap_alias(content_hash).filter(|hb| hb != content_hash) {
             blob_delete(&hb);
             if let Some(a) = alias_addr(content_hash) {
-                let _ = v.delete_addr(&a);
+                crate::log_err!(v.delete_addr(&a), "blob: wrap alias delete");
             }
         }
     }
@@ -924,7 +939,7 @@ pub fn acquire_single_instance(data_dir: &std::path::Path) -> Option<InstanceLoc
     use std::os::unix::io::AsRawFd;
     let lock_path = runtime_artifact(data_dir, "lock");
     if let Some(parent) = lock_path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        crate::log_err!(std::fs::create_dir_all(parent), "single-instance lock dir create");
     }
     let file = std::fs::OpenOptions::new()
         .create(true)
@@ -995,17 +1010,20 @@ pub fn write_file(path: &Path, data: &[u8], label: &str) -> Result<(), std::io::
     };
 
     if let Err(e) = fs::write(&tmp_path, data) {
-        let _ = fs::remove_file(&tmp_path);
+        crate::log_err!(absent_ok(fs::remove_file(&tmp_path)), "STORAGE: temp remove after failed write");
         crate::logf!("STORAGE: Failed to write {}: {}", label, e);
         return Err(e);
     }
 
     // fsync the temp file before rename so the renamed inode points at durable bytes.
-    if let Ok(f) = fs::File::open(&tmp_path) {
-        let _ = f.sync_all();
+    // Opened for WRITE: Windows refuses FlushFileBuffers on a read-only handle, and an fsync that cannot run is a failed write, not a skipped step.
+    if let Err(e) = fs::OpenOptions::new().write(true).open(&tmp_path).and_then(|f| f.sync_all()) {
+        crate::log_err!(absent_ok(fs::remove_file(&tmp_path)), "STORAGE: temp remove after failed fsync");
+        crate::logf!("STORAGE: Failed to fsync {}: {}", label, e);
+        return Err(e);
     }
     if let Err(e) = fs::rename(&tmp_path, path) {
-        let _ = fs::remove_file(&tmp_path);
+        crate::log_err!(absent_ok(fs::remove_file(&tmp_path)), "STORAGE: temp remove after failed rename");
         crate::logf!("STORAGE: Failed to rename {}: {}", label, e);
         return Err(e);
     }
@@ -1071,7 +1089,7 @@ mod tests {
             bytes.push((i % 251) as u8);
         }
         let dir = std::env::temp_dir().join(format!("photon-blobstream-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
         let path = dir.join("pigeon.bin");
         std::fs::write(&path, &bytes).expect("write");
 
@@ -1089,7 +1107,7 @@ mod tests {
         let back = dir.join("out.bin");
         assert!(blob_write_file(&seed, &streamed_hash, &back).is_some(), "streams back out");
         assert_eq!(std::fs::read(&back).expect("read back"), bytes, "byte-identical after the round trip");
-        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::remove_dir_all(&dir).expect("remove scratch dir");
     }
 
     /// THE census rule (Nick, verbatim, 2026-08-20): a file in the primary or secondary dir that doesn't match `<device token>.vsf` or the log "goes bye bye. no backey uppey, no convertey, no touchey." Strays don't need to be known by name to die, file-era artifacts included — nothing is imported into the vault.
@@ -1100,7 +1118,7 @@ mod tests {
         // Spend log_dir's ONE-SHOT old-log migration (OLD_LOG_SWEPT) before planting the log. That Once deletes photon.log.vsf from the CONFIG dir — a legitimate one-time move to the temp dir — and if it fires after this test plants its bait the assertion below blames the census for a file the census never touches (its keep list names the log explicitly).
         // Called DIRECTLY rather than thru a log macro: a log line only buffers into LOG_PENDING and the sink opens lazily, so macro-first merely made the race rarer instead of ending it — which is exactly how it came back.
         #[cfg(feature = "logging")]
-        let _ = crate::log_dir();
+        crate::log_dir();
         let secret = [0x9Du8; 32];
         let dir = photon_config_dir().unwrap();
         std::fs::create_dir_all(dir.join("junkdir")).unwrap();

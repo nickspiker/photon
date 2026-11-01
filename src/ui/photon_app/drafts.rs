@@ -265,9 +265,9 @@ impl PhotonApp {
                 let wake = self.event_proxy.clone();
                 queue_job(&self.seal_job_tx, move || {
                     let loaded = crate::storage::drafts::load_drafts(&storage);
-                    let _ = tx.send(loaded);
+                    crate::log_err!(tx.send(loaded), "the loaded drafts to the UI thread");
                     if let Some(w) = wake.as_ref() {
-                        let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                        super::wake_ui(w);
                     }
                 });
             }

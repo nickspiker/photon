@@ -23,9 +23,13 @@ fn socket_path(data_dir: &std::path::Path) -> std::path::PathBuf {
 pub fn install_unix_listener(data_dir: &std::path::Path) {
     let path = socket_path(data_dir);
     if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
+        crate::log_err!(std::fs::create_dir_all(parent), "CONTROL: socket directory create {}", parent.display());
     }
-    let _ = std::fs::remove_file(&path);
+    // A leftover socket from a dead owner is unlinked; no leftover (NotFound) is the common case and says nothing.
+    match std::fs::remove_file(&path) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => crate::logf!("CONTROL: leftover socket {} remove failed: {}", path.display(), e),
+        _ => {}
+    }
     match std::os::unix::net::UnixListener::bind(&path) {
         Ok(l) => *LISTENER.lock().unwrap() = Some(ControlListener::Unix(l)),
         Err(e) => crate::logf!(
@@ -63,11 +67,11 @@ pub fn spawn_accept_thread(
             let proxy = &proxy;
             if buf.starts_with(b"show") {
                 crate::log("CONTROL: show requested by a second launch — surfacing the window");
-                let _ = proxy.send(crate::ui::PhotonEvent::ShowWindow);
+                crate::log_err!(proxy.send(crate::ui::PhotonEvent::ShowWindow), "CONTROL: waking the UI to show the window");
             } else if buf.starts_with(b"yield") {
                 // A full-UI launch wants the lock (docs/headless-lifeline.md). The LIFELINE pump exits on this event; a full-UI instance just surfaces (its on_user_event maps Yield → ShowWindow behavior) and keeps the lock — the requester's re-acquire then fails and it falls back to the show path.
                 crate::log("CONTROL: yield requested by a full-UI launch");
-                let _ = proxy.send(crate::ui::PhotonEvent::Yield);
+                crate::log_err!(proxy.send(crate::ui::PhotonEvent::Yield), "CONTROL: waking the UI to yield");
             }
         };
         match listener {
@@ -84,7 +88,10 @@ pub fn spawn_accept_thread(
                 for stream in l.incoming() {
                     let Ok(mut s) = stream else { continue };
                     // Loopback-only by bind; a brief read deadline so a port-scanner's half-open connect can't wedge the accept loop.
-                    let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(500)));
+                    // Without the deadline that wedge is possible, so a connection that refuses one is dropped unread.
+                    if !crate::log_err!(s.set_read_timeout(Some(std::time::Duration::from_millis(500))), "CONTROL: read deadline set") {
+                        continue;
+                    }
                     let mut buf = [0u8; 16];
                     let n = s.read(&mut buf).unwrap_or(0);
                     handle(&buf[..n]);

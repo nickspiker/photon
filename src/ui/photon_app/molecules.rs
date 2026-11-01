@@ -146,7 +146,7 @@ impl PhotonApp {
             let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_grp_relay_vsf(&token, &self.molecule_frames[*i].raw, kp.public.as_bytes(), kp.secret.as_bytes()) else {
                 continue;
             };
-            let _ = dispatch.send(crate::network::status::HistorySendRequest { peer_addr: route.0, alt_addr: route.1, recipient_pubkey: peer, vsf_bytes, relay_to: route.2.clone(), tag: None });
+            crate::log_err!(dispatch.send(crate::network::status::HistorySendRequest { peer_addr: route.0, alt_addr: route.1, recipient_pubkey: peer, vsf_bytes, relay_to: route.2.clone(), tag: None }), "queue a group relay send");
             *self.molecule_relay_tries.entry((peer, *ts)).or_insert(0) += 1;
             sent += 1;
         }
@@ -365,7 +365,7 @@ impl PhotonApp {
             if let Some(o) = self.bond_offers.iter_mut().find(|o| o.molecule_id == gid) {
                 o.accepted = true;
                 if let Some(storage) = self.storage.as_ref() {
-                    let _ = crate::storage::molecule::save_bond_offer(o, storage);
+                    crate::log_err!(crate::storage::molecule::save_bond_offer(o, storage), "save an accepted bond offer");
                 }
             }
         }
@@ -1652,7 +1652,7 @@ impl PhotonApp {
         if let Some(o) = self.bond_offers.iter_mut().find(|o| o.molecule_id == gid && !o.accepted) {
             o.accepted = true;
             if let Some(storage) = self.storage.as_ref() {
-                let _ = crate::storage::molecule::save_bond_offer(o, storage);
+                crate::log_err!(crate::storage::molecule::save_bond_offer(o, storage), "save an accepted bond offer");
             }
             self.scene_dirty = true;
         }
@@ -1695,7 +1695,7 @@ impl PhotonApp {
         if changed {
             self.persist_molecule(&gid);
         } else if let Some(storage) = self.storage.as_ref() {
-            let _ = crate::storage::molecule::index_molecule(&gid, storage);
+            crate::log_err!(crate::storage::molecule::index_molecule(&gid, storage), "index a molecule in the vault");
         }
         changed
     }

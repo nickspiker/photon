@@ -121,7 +121,7 @@ pub fn deliver_media(bytes: &[u8], src: SocketAddr) {
     let sinks = MEDIA_SINKS.lock().unwrap();
     let known = sinks.iter().any(|s| s.peer == Some(from));
     for s in sinks.iter().filter(|s| !known || s.peer == Some(from)) {
-        let _ = s.tx.send((bytes.to_vec(), src, at));
+        crate::log_err!(s.tx.send((bytes.to_vec(), src, at)), "WAVE: handing a media datagram to an engine");
     }
 }
 

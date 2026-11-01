@@ -76,7 +76,6 @@ mod imp {
 
     /// Append `v` as lowercase hex into `buf` at `pos` — the async-signal-safe fragment of format!.
     fn put_hex(buf: &mut [u8], pos: &mut usize, mut v: usize) {
-        let start = *pos;
         if v == 0 {
             buf[*pos] = b'0';
             *pos += 1;
@@ -94,7 +93,6 @@ mod imp {
             buf[*pos] = digits[n];
             *pos += 1;
         }
-        let _ = start;
     }
 
     fn put_str(buf: &mut [u8], pos: &mut usize, s: &str) {
@@ -132,6 +130,7 @@ mod imp {
             put_str(&mut buf, &mut pos, " at 0x");
             put_hex(&mut buf, &mut pos, addr);
             put_str(&mut buf, &mut pos, "\n");
+            // WHY: inside the signal handler — a short or failed write has no async-signal-safe place to be reported.
             let _ = libc::write(fd, buf.as_ptr() as *const _, pos);
         }
         // The soft log batch (minutes of the run before this fault) dies with the process unless it goes to disk now — best effort, write(2) only.
@@ -146,11 +145,14 @@ mod imp {
             restore.sa_sigaction = libc::SIG_DFL;
             libc::sigemptyset(&mut restore.sa_mask);
         }
+        // WHY: inside the signal handler — no lock or allocation may report a failure; the _exit below ends the process regardless.
         let _ = libc::sigaction(sig, &restore, std::ptr::null_mut());
         let mut set: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&mut set);
         libc::sigaddset(&mut set, sig);
+        // WHY: inside the signal handler — nothing async-signal-safe can report a failure here.
         let _ = libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
+        // WHY: inside the signal handler — if the re-raise fails the _exit below still ends the process.
         let _ = libc::raise(sig);
         // Still here (a chained handler swallowed it): do not return into the faulting instruction.
         libc::_exit(128 + sig);
@@ -161,7 +163,7 @@ mod imp {
             return; // armed already (Android arms from NetworkContext::new after the early JNI_OnLoad attempt)
         }
         let Some(dir) = crate::log_dir() else { return };
-        let _ = std::fs::create_dir_all(&dir);
+        crate::log_err!(std::fs::create_dir_all(&dir), "CRASH: sidecar log directory create {}", dir.display());
         let path = dir.join("photon.crash.txt");
         let Ok(cpath) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) else {
             return;
@@ -190,7 +192,9 @@ mod imp {
             );
             if stack != libc::MAP_FAILED {
                 let ss = libc::stack_t { ss_sp: stack, ss_flags: 0, ss_size: stack_size };
-                let _ = libc::sigaltstack(&ss, std::ptr::null_mut());
+                if libc::sigaltstack(&ss, std::ptr::null_mut()) != 0 {
+                    crate::logf!("CRASH: sigaltstack failed ({}) — a stack-overflow fault will report nothing", std::io::Error::last_os_error());
+                }
             }
             let mut sa: libc::sigaction = std::mem::zeroed();
             sa.sa_sigaction = handler as *const () as usize;

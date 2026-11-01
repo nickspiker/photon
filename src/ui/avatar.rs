@@ -351,7 +351,6 @@ fn extract_tiff_icc(data: &[u8]) -> Option<Vec<u8>> {
 
         // Tag 34675 (0x8773) = InterColorProfile (ICC)
         if tag == 34675 {
-            let _field_type = read_u16(entry_offset + 2);
             let count = read_u32(entry_offset + 4) as usize;
             let value_offset = read_u32(entry_offset + 8) as usize;
 
@@ -870,7 +869,8 @@ static ANDROID_DATA_DIR: std::sync::OnceLock<String> = std::sync::OnceLock::new(
 /// Set the Android data directory (called from JNI init)
 #[cfg(target_os = "android")]
 pub fn set_android_data_dir(path: String) {
-    let _ = ANDROID_DATA_DIR.set(path);
+    // The first directory set wins; a later one is refused and dropped.
+    drop(ANDROID_DATA_DIR.set(path));
 }
 
 /// Get the Android data directory (for use by other modules)
@@ -916,7 +916,7 @@ pub fn load_cached_avatar_from_seed(
         None => {
             // The cached bytes failed to verify/decrypt/decode — a poisoned cache (e.g. an old error frame written before the validate-before-cache fix). Evict it so the next fetch can repopulate; this self-heals already-poisoned test vaults without a nuke.
             crate::log("Avatar: cached bytes failed to decode, evicting poisoned vault entry");
-            let _ = storage.delete_addr(&addr);
+            crate::log_err!(storage.delete_addr(&addr), "Avatar: evicting the poisoned vault entry");
             None
         }
     }
@@ -942,7 +942,7 @@ pub fn load_cached_avatar_pinned(
         Some(loaded) => Some(loaded),
         None => {
             crate::log("Avatar: cached bytes failed to decode, evicting poisoned vault entry");
-            let _ = storage.delete_addr(&addr);
+            crate::log_err!(storage.delete_addr(&addr), "Avatar: evicting the poisoned vault entry");
             None
         }
     }
@@ -1706,24 +1706,6 @@ pub fn build_signed_avatar_vsf_keyed(
     vsf::verification::sign_file(unsigned, avatar_signing_key.as_bytes())
 }
 
-/// Upload avatar to FGTW with signature authentication
-///
-/// # Arguments
-/// * `device_secret` - Device's Ed25519 signing key * `handle` - User's handle * `handle_proof` - 32-byte handle proof (proves registered peer)
-///
-/// # Returns
-/// The avatar storage key on success (for sharing with peers)
-#[allow(dead_code)]
-fn _upload_avatar_removed(
-    device_secret: &SigningKey,
-    _handle: &str,
-    handle_proof: &[u8; 32],
-    storage: &std::sync::Arc<crate::storage::FlatStorage>,
-) -> Result<String, String> {
-    let _ = (device_secret, handle_proof, storage);
-    Err("upload_avatar (handle wrapper) removed — avatar upload is pin-based now".to_string())
-}
-
 /// The avatar bytes to hand a FRIEND directly (the peer-to-peer answer to an AVATAR_REQUEST): our vault copy re-encrypted under the PIN's key half, exactly as [`upload_avatar_from_seed`] prepares the wall copy.
 ///
 /// The two copies are keyed differently and always were: the vault holds the avatar under a SEED-derived key (only we know the seed), while a friend holds only the random pin we handed them over an authenticated pong. Serving the vault bytes verbatim therefore hands a friend a blob keyed to something they can never have — it verifies, then fails to decrypt (`aead::Error`, observed live 2026-08-01). This was invisible while the pin was seed-DERIVED, since both keys were then the same value; it broke the moment the pin became random (and friend-gated), and only on the direct path — the FGTW fallback always served the pin-encrypted wall copy, which is why avatars still appeared eventually.
@@ -1991,7 +1973,7 @@ fn fetch_avatar_tail(
     // Cache ONLY on full success — never persist bytes that didn't verify+decrypt+decode, or we poison the vault with a frame that then fails to decode forever.
     let decoded = load_avatar_from_bytes(&vsf_data, handle);
     if decoded.is_some() {
-        let _ = save_avatar_to_cache(handle, &vsf_data, storage);
+        crate::log_err!(save_avatar_to_cache(handle, &vsf_data, storage), "Avatar: caching the fetched avatar");
     }
     decoded
 }
@@ -2054,7 +2036,7 @@ pub fn download_avatar_from_seed(
     // Cache ONLY on full verify+decrypt+decode success — never poison the vault with a frame.
     let decoded = load_avatar_from_bytes_from_seed(&vsf_data, identity_seed);
     if decoded.is_some() {
-        let _ = save_avatar_to_cache_from_seed(identity_seed, &vsf_data, storage);
+        crate::log_err!(save_avatar_to_cache_from_seed(identity_seed, &vsf_data, storage), "Avatar: caching the fetched avatar");
     }
     decoded
 }
@@ -2307,16 +2289,12 @@ pub fn sync_avatar_background(
             }
         };
 
-        let _ = tx.send(AvatarDownloadResult {
-            owner: None,
-            pixels,
-            name: None,
-        });
+        crate::log_err!(tx.send(AvatarDownloadResult { owner: None, pixels, name: None }), "Avatar: posting the sync result");
 
         // Wake the event loop on desktop
         #[cfg(not(any(target_os = "android", target_os = "ferros")))]
         if let Some(proxy) = event_proxy {
-            let _ = proxy.send_event(PhotonEvent::NetworkUpdate);
+            crate::log_err!(proxy.send_event(PhotonEvent::NetworkUpdate), "Avatar: waking the event loop");
         }
     });
 }

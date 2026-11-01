@@ -100,18 +100,13 @@ pub fn play_ring_chirp(chirp_seed: &[u8; 32], beam: bool) {
         };
         let t_i64: Vec<i64> = timings.iter().map(|&t| t as i64).collect();
         let a_i32: Vec<i32> = amplitudes.iter().map(|&a| a as i32).collect();
-        let _ = env.set_long_array_region(&t_arr, 0, &t_i64);
-        let _ = env.set_int_array_region(&a_arr, 0, &a_i32);
-        if env
-            .call_method(
-                svc.as_obj(),
-                "playRingAlert",
-                "([B[J[II)V",
-                &[(&wav_arr).into(), (&t_arr).into(), (&a_arr).into(), ring_gap_ms().into()],
-            )
-            .is_err()
-        {
-            let _ = env.exception_clear();
+        crate::log_err!(env.set_long_array_region(&t_arr, 0, &t_i64), "JNI: ring haptic timings copy");
+        crate::log_err!(env.set_int_array_region(&a_arr, 0, &a_i32), "JNI: ring haptic amplitudes copy");
+        if !crate::log_err!(
+            env.call_method(svc.as_obj(), "playRingAlert", "([B[J[II)V", &[(&wav_arr).into(), (&t_arr).into(), (&a_arr).into(), ring_gap_ms().into()]),
+            "JNI: playRingAlert"
+        ) {
+            crate::log_err!(env.exception_clear(), "JNI: exception clear after playRingAlert");
         }
     }
 }
@@ -119,7 +114,8 @@ pub fn play_ring_chirp(chirp_seed: &[u8; 32], beam: bool) {
 /// Tear the wave notification down on any ring-stop edge (answered here, answered/declined by a sibling, origin hangup) — an ongoing CATEGORY_CALL notification never auto-cancels.
 #[cfg(target_os = "android")]
 pub fn cancel_wave_notification() {
-    let _ = wave_service_void("cancelWaveNotification");
+    // wave_service_void logs its own failure.
+    wave_service_void("cancelWaveNotification");
 }
 
 /// Answer/Decline pressed ON the notification (backgrounded ring): Kotlin's action intents land here; the app's tick drains it into answer_wave/decline_wave on the UI thread.
@@ -183,7 +179,7 @@ fn notify_with_chirp_via(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, t
             let timings_i64: Vec<i64> = timings.iter().map(|&t| t as i64).collect();
             let timings_arr = match env.new_long_array(timings_i64.len() as i32) {
                 Ok(a) => {
-                    let _ = env.set_long_array_region(&a, 0, &timings_i64);
+                    crate::log_err!(env.set_long_array_region(&a, 0, &timings_i64), "JNI: message haptic timings copy");
                     a
                 }
                 Err(e) => {
@@ -194,7 +190,7 @@ fn notify_with_chirp_via(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, t
             let amps_i32: Vec<i32> = amplitudes.iter().map(|&a| a as i32).collect();
             let amps_arr = match env.new_int_array(amps_i32.len() as i32) {
                 Ok(a) => {
-                    let _ = env.set_int_array_region(&a, 0, &amps_i32);
+                    crate::log_err!(env.set_int_array_region(&a, 0, &amps_i32), "JNI: message haptic amplitudes copy");
                     a
                 }
                 Err(e) => {
@@ -252,7 +248,7 @@ fn notify_with_chirp_via(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, t
                 ),
             };
             if env.call_method(svc.as_obj(), method, sig, &args).is_err() {
-                let _ = env.exception_clear();
+                crate::log_err!(env.exception_clear(), "JNI: pending exception clear");
                 error!("notify_new_message: postMessageNotification call failed");
             }
         }
@@ -268,7 +264,7 @@ pub fn wave_service_str(method: &str, arg: &str) -> bool {
     let Ok(mut env) = vm.attach_current_thread() else { return false };
     let Ok(js) = env.new_string(arg) else { return false };
     if env.call_method(svc.as_obj(), method, "(Ljava/lang/String;)V", &[(&js).into()]).is_err() {
-        let _ = env.exception_clear();
+        crate::log_err!(env.exception_clear(), "JNI: pending exception clear");
         error!("wave_service_str: {} failed", method);
         return false;
     }
@@ -280,7 +276,7 @@ pub fn wave_service_int(method: &str, arg: i32) -> bool {
     let Some((vm, svc)) = MESSAGE_NOTIFIER.get() else { return false };
     let Ok(mut env) = vm.attach_current_thread() else { return false };
     if env.call_method(svc.as_obj(), method, "(I)V", &[arg.into()]).is_err() {
-        let _ = env.exception_clear();
+        crate::log_err!(env.exception_clear(), "JNI: pending exception clear");
         error!("wave_service_int: {} failed", method);
         return false;
     }
@@ -465,7 +461,7 @@ pub fn wave_service_void(method: &str) -> bool {
     match vm.attach_current_thread() {
         Ok(mut env) => {
             if env.call_method(svc.as_obj(), method, "()V", &[]).is_err() {
-                let _ = env.exception_clear();
+                crate::log_err!(env.exception_clear(), "JNI: pending exception clear");
                 error!("wave_service_void: {} failed", method);
                 false
             } else {
@@ -488,7 +484,7 @@ pub fn save_to_downloads(src: &std::path::Path, name: &str) -> Option<String> {
     let out = match env.call_method(svc.as_obj(), "saveToDownloads", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", &[(&js).into(), (&jn).into()]) {
         Ok(v) => v.l().ok()?,
         Err(_) => {
-            let _ = env.exception_clear();
+            crate::log_err!(env.exception_clear(), "JNI: pending exception clear");
             error!("save_to_downloads: call failed");
             return None;
         }
@@ -512,7 +508,7 @@ pub fn open_url(url: &str) -> bool {
                 .call_method(svc.as_obj(), "openUrl", "(Ljava/lang/String;)V", &[(&js).into()])
                 .is_err()
             {
-                let _ = env.exception_clear();
+                crate::log_err!(env.exception_clear(), "JNI: pending exception clear");
                 error!("open_url: openUrl call failed");
                 false
             } else {
@@ -545,7 +541,7 @@ pub fn request_service_tick() {
                 .call_method(svc.as_obj(), "requestServiceTick", "()V", &[])
                 .is_err()
             {
-                let _ = env.exception_clear();
+                crate::log_err!(env.exception_clear(), "JNI: pending exception clear");
                 error!("request_service_tick: requestServiceTick call failed");
             }
         }
@@ -605,8 +601,9 @@ fn create_context(env: &mut JNIEnv<'_>, width: jint, height: jint, network_ptr: 
                 }
             }
         }
-        Err(_) => {
-            let _ = env.exception_clear();
+        Err(e) => {
+            crate::log_err!(env.exception_clear(), "JNI: exception clear after getDoubleTapTimeout");
+            warn!("getDoubleTapTimeout failed ({e}) — multi-tap keeps the default interval");
         }
     }
     fluor::host::android::surface::set_samsung_mode(is_samsung != JNI_FALSE);
@@ -639,7 +636,8 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeDestro
     if context_ptr != 0 {
         info!("PhotonService: destroying the app context (service going away, no screen holds it)");
         unsafe {
-            let _ = Box::from_raw(context_ptr as *mut PhotonContext);
+            // Reclaim the context the pointer owned and drop it here.
+            drop(Box::from_raw(context_ptr as *mut PhotonContext));
         }
     }
 }
@@ -1354,7 +1352,8 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeDestroy(
     if context_ptr != 0 {
         info!("Destroying PhotonContext");
         unsafe {
-            let _ = Box::from_raw(context_ptr as *mut PhotonContext);
+            // Reclaim the context the pointer owned and drop it here.
+            drop(Box::from_raw(context_ptr as *mut PhotonContext));
         }
     }
 }
@@ -1377,8 +1376,10 @@ pub extern "C" fn Java_com_photon_messenger_PhotonBeacon_nativeInit(
 ) {
     match (env.get_java_vm(), env.new_global_ref(&this)) {
         (Ok(vm), Ok(obj)) => {
-            let _ = BEACON_BRIDGE.set((vm, obj));
-            info!("PhotonBeacon: bridge registered");
+            // A second Activity onCreate finds the bridge already set and keeps the first ref (the same process-singleton object), as documented above.
+            if BEACON_BRIDGE.set((vm, obj)).is_ok() {
+                info!("PhotonBeacon: bridge registered");
+            }
         }
         (vm, obj) => error!(
             "PhotonBeacon nativeInit failed (vm ok: {}, ref ok: {})",
@@ -1420,8 +1421,10 @@ pub extern "C" fn Java_com_photon_messenger_PhotonNfc_nativeInit(
     let vm = env.get_java_vm();
     let gref = env.new_global_ref(&obj);
     if let (Ok(vm), Ok(gref)) = (vm, gref) {
-        let _ = PHOTON_NFC.set((vm, gref));
-        info!("PhotonNfc: bridge registered");
+        // A second nativeInit keeps the first ref, as PhotonBeacon does.
+        if PHOTON_NFC.set((vm, gref)).is_ok() {
+            info!("PhotonNfc: bridge registered");
+        }
     }
 }
 
@@ -1449,8 +1452,8 @@ pub fn nfc_call(method: &str) {
     };
     match vm.attach_current_thread() {
         Ok(mut env) => {
-            if env.call_method(obj.as_obj(), method, "()V", &[]).is_err() {
-                let _ = env.exception_clear();
+            if !crate::log_err!(env.call_method(obj.as_obj(), method, "()V", &[]), "JNI: nfc_call({method})") {
+                crate::log_err!(env.exception_clear(), "JNI: exception clear after nfc_call({method})");
             }
         }
         Err(_) => {}
@@ -1466,11 +1469,8 @@ pub fn nfc_call_bytes(method: &str, a: &[u8]) {
             let Ok(arr) = env.byte_array_from_slice(a) else {
                 return;
             };
-            if env
-                .call_method(obj.as_obj(), method, "([B)V", &[(&arr).into()])
-                .is_err()
-            {
-                let _ = env.exception_clear();
+            if !crate::log_err!(env.call_method(obj.as_obj(), method, "([B)V", &[(&arr).into()]), "JNI: nfc_call_bytes({method})") {
+                crate::log_err!(env.exception_clear(), "JNI: exception clear after nfc_call_bytes({method})");
             }
         }
         Err(_) => {}
@@ -1485,7 +1485,7 @@ pub fn beacon_call(method: &str) {
     match vm.attach_current_thread() {
         Ok(mut env) => {
             if env.call_method(obj.as_obj(), method, "()V", &[]).is_err() {
-                let _ = env.exception_clear();
+                crate::log_err!(env.exception_clear(), "JNI: pending exception clear");
                 error!("beacon_call({method}) failed");
             }
         }
@@ -1510,7 +1510,7 @@ pub fn beacon_call_bytes(method: &str, a: &[u8]) {
                 .call_method(obj.as_obj(), method, "([B)V", &[(&arr).into()])
                 .is_err()
             {
-                let _ = env.exception_clear();
+                crate::log_err!(env.exception_clear(), "JNI: pending exception clear");
                 error!("beacon_call_bytes({method}) failed");
             }
         }
@@ -1795,7 +1795,9 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetwor
     // Register the service as the message-notification sink. nativeNetworkInit is an INSTANCE method on the Kotlin side, so the second JNI parameter is the service `this` — a global ref of it (+ the JavaVM) lets the RX thread post "new message" notifications up thru Kotlin regardless of Activity lifecycle (the Choreographer poll bridge stops when the app backgrounds, which is exactly when notifications matter).
     match (env.get_java_vm(), env.new_global_ref(&service)) {
         (Ok(vm), Ok(svc)) => {
-            let _ = MESSAGE_NOTIFIER.set((vm, svc));
+            if MESSAGE_NOTIFIER.set((vm, svc)).is_err() {
+                warn!("nativeNetworkInit: the notifier was already registered — upcalls keep the first service ref");
+            }
         }
         (vm, svc) => error!(
             "nativeNetworkInit: notifier registration failed (vm ok: {}, ref ok: {})",
@@ -1857,7 +1859,8 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetwor
     if network_ptr != 0 {
         info!("Destroying NetworkContext");
         unsafe {
-            let _ = Box::from_raw(network_ptr as *mut NetworkContext);
+            // Reclaim the network context the pointer owned and drop it here.
+            drop(Box::from_raw(network_ptr as *mut NetworkContext));
         }
     }
 }
@@ -2039,8 +2042,10 @@ pub extern "C" fn Java_com_photon_messenger_PhotonWifiDirect_nativeInit(
 ) {
     match (env.get_java_vm(), env.new_global_ref(&this)) {
         (Ok(vm), Ok(obj)) => {
-            let _ = WFD_BRIDGE.set((vm, obj));
-            info!("PhotonWifiDirect: bridge registered");
+            // A second nativeInit keeps the first ref, as PhotonBeacon does.
+            if WFD_BRIDGE.set((vm, obj)).is_ok() {
+                info!("PhotonWifiDirect: bridge registered");
+            }
         }
         (vm, obj) => error!(
             "PhotonWifiDirect nativeInit failed (vm ok: {}, ref ok: {})",
@@ -2132,7 +2137,7 @@ fn wfd_call(method: &str) {
     match vm.attach_current_thread() {
         Ok(mut env) => {
             if env.call_method(obj.as_obj(), method, "()V", &[]).is_err() {
-                let _ = env.exception_clear();
+                crate::log_err!(env.exception_clear(), "JNI: pending exception clear");
                 error!("wfd_call({method}) failed");
             }
         }
@@ -2155,7 +2160,7 @@ fn wfd_call_bytes(method: &str, a: &[u8]) {
                 .call_method(obj.as_obj(), method, "([B)V", &[(&arr).into()])
                 .is_err()
             {
-                let _ = env.exception_clear();
+                crate::log_err!(env.exception_clear(), "JNI: pending exception clear");
                 error!("wfd_call_bytes({method}) failed");
             }
         }
@@ -2183,7 +2188,7 @@ fn wfd_call_strings(method: &str, a: &str, b: &str) {
                 )
                 .is_err()
             {
-                let _ = env.exception_clear();
+                crate::log_err!(env.exception_clear(), "JNI: pending exception clear");
                 error!("wfd_call_strings({method}) failed");
             }
         }

@@ -224,7 +224,9 @@ pub enum DeviceSigner {
 static DEVICE_SIGNER: std::sync::OnceLock<DeviceSigner> = std::sync::OnceLock::new();
 
 pub fn install_device_signer(signer: DeviceSigner) {
-    let _ = DEVICE_SIGNER.set(signer);
+    if DEVICE_SIGNER.set(signer).is_err() {
+        crate::log("FLEET: device signer already installed — keeping the first");
+    }
 }
 
 /// The signer to use for `device_pubkey`: the installed one when it IS that device, else `None`.
@@ -742,7 +744,7 @@ pub fn recover_or_establish_carrying(
                 }
             }
             let (revision, key) = mint_fleet_key(handle_proof, device_key, &members, identity_seed)?;
-            let _ = storage.write_addr(cache_addr, &key);
+            crate::log_err!(storage.write_addr(cache_addr, &key), "FLEET: minted fleet key cache write");
             // A SOLO mint re-seeds even with nothing to carry: the mint just orphaned the old seal on purpose, no sibling roster exists to clobber, and a readable slot is what lets this device's own pulls/pushes work from here on (field 2026-08-21: the first spoke crossing minted "nothing to carry" and then sat wedged — pulls dead on the orphaned seal, pushes blocked by the clobber guard, breaker friendless).
             if preserved.is_some() || ours_meaningful || solo {
                 let carried = preserved.is_some() || ours_meaningful;

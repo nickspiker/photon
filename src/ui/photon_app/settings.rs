@@ -53,7 +53,7 @@ impl PhotonApp {
             use crate::network::updates::{fetch_manifest_stamped_blocking, our_row, Channel};
             match fetch_manifest_stamped_blocking(Channel::Release) {
                 Ok((stamp, rows)) => {
-                    let _ = tx.send(UpdateEvent::AutoChecked(stamp, our_row(&rows)));
+                    crate::log_err!(tx.send(UpdateEvent::AutoChecked(stamp, our_row(&rows))), "hand the auto update check to the UI");
                 }
                 Err(e) => crate::logf!("UPDATE: auto check failed ({}) — next cadence retries", e),
             }
@@ -150,12 +150,12 @@ impl PhotonApp {
             std::thread::spawn(move || {
                 use crate::network::updates::{fetch_manifest_blocking, fetch_release_notes_blocking, our_row};
                 let result = fetch_manifest_blocking(channel).map(|rows| our_row(&rows));
-                let _ = tx.send(UpdateEvent::Checked(channel, result));
+                crate::log_err!(tx.send(UpdateEvent::Checked(channel, result)), "hand an update check to the UI");
                 // The release check also brings the published notes, so the page can say what's new in the release it offers.
                 if channel == Channel::Release {
                     match fetch_release_notes_blocking() {
                         Ok(text) => {
-                            let _ = tx.send(UpdateEvent::Notes(text));
+                            crate::log_err!(tx.send(UpdateEvent::Notes(text)), "hand release notes to the UI");
                         }
                         Err(e) => crate::logf!("UPDATE: release notes fetch failed: {}", e),
                     }
@@ -203,23 +203,20 @@ impl PhotonApp {
                     done >> 20
                 };
                 if last_pct.swap(pct, std::sync::atomic::Ordering::Relaxed) != pct {
-                    let _ = txp.send(UpdateEvent::Progress(done, total));
-                    #[cfg(not(target_os = "android"))]
+                    crate::log_err!(txp.send(UpdateEvent::Progress(done, total)), "hand update progress to the UI");
                     if let Some(w) = wake.as_ref() {
-                        let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                        wake_ui(w);
                     }
                 }
             };
-            #[cfg(target_os = "android")]
-            let _ = &wake; // Android redraws via the Choreographer; the drain runs every tick regardless.
             #[cfg(not(target_os = "android"))]
             {
                 match crate::network::updates::apply_desktop_blocking(&row, &progress) {
                     Ok(exe) => {
-                        let _ = tx.send(UpdateEvent::Applied(exe));
+                        crate::log_err!(tx.send(UpdateEvent::Applied(exe)), "hand an applied update to the UI");
                     }
                     Err(e) => {
-                        let _ = tx.send(UpdateEvent::ApplyFailed(e));
+                        crate::log_err!(tx.send(UpdateEvent::ApplyFailed(e)), "hand an update failure to the UI");
                     }
                 }
             }
@@ -227,10 +224,10 @@ impl PhotonApp {
             {
                 match crate::network::updates::download_apk_blocking(&row, &progress) {
                     Ok(path) => {
-                        let _ = tx.send(UpdateEvent::ApkReady(path.to_string_lossy().into_owned()));
+                        crate::log_err!(tx.send(UpdateEvent::ApkReady(path.to_string_lossy().into_owned())), "hand a staged APK to the UI");
                     }
                     Err(e) => {
-                        let _ = tx.send(UpdateEvent::ApplyFailed(e));
+                        crate::log_err!(tx.send(UpdateEvent::ApplyFailed(e)), "hand an update failure to the UI");
                     }
                 }
             }
@@ -257,7 +254,6 @@ impl PhotonApp {
                         Err(e) => {
                             // Read (log) the reason — otherwise the field is dead and the failure is invisible.
                             crate::logf!("UPDATE: {} check failed: {}", channel.label(), e);
-                            let _ = e;
                             ChannelCheck::Failed
                         }
                     };
@@ -739,12 +735,12 @@ impl PhotonApp {
             let (tx, rx) = std::sync::mpsc::channel();
             self.vault_stats_rx = Some(rx);
             let wake = self.event_proxy.clone();
-            let _ = std::thread::Builder::new().name("vault-stats".into()).spawn(move || {
-                let _ = tx.send(crate::storage::vault_stats_view());
+            crate::log_err!(std::thread::Builder::new().name("vault-stats".into()).spawn(move || {
+                crate::log_err!(tx.send(crate::storage::vault_stats_view()), "hand vault stats to the UI");
                 if let Some(w) = wake {
-                    let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                    wake_ui(&w);
                 }
-            });
+            }), "spawn the vault stats reader");
         }
     }
 
@@ -1262,19 +1258,6 @@ impl PhotonApp {
         self.scene_dirty = true;
     }
 
-
-    pub(super) fn settings_set_link(&mut self, key: &str, linked: bool) -> bool {
-        if !self.ensure_fleet_settings() {
-            return false;
-        }
-        let fs = self.fleet_settings.as_mut().unwrap();
-        if !fs.set_link(key, linked, vsf::eagle_time_oscillations()) {
-            return false;
-        }
-        self.persist_and_push_settings();
-        true
-    }
-
     /// Build the You-page field boxes ONCE (HitId is a scarce u16 — never rebuild): the standard taxonomy, then any custom fields registered as `profile._custom.<id>` per-key entries (value = the verbatim label). Idempotent; values are loaded separately by [`Self::load_you_fields`]; expandable-field instances (addr2, email3, …) are appended by [`Self::sync_expandable_fields`].
     pub(super) fn build_you_fields(&mut self) {
         if !self.you_fields.is_empty() {
@@ -1714,9 +1697,9 @@ impl PhotonApp {
                 crate::logf!("FLEET: roster push failed: {}", e);
             }
             // Success or failure, the slot is done being written — release it and let a queued follow-up (which re-snapshots) carry anything newer.
-            let _ = tx.send(());
+            crate::log_err!(tx.send(()), "release the roster push slot");
             if let Some(w) = wake.as_ref() {
-                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                wake_ui(w);
             }
         });
     }
@@ -1748,7 +1731,8 @@ impl PhotonApp {
     pub(super) fn settings_next_camera(&mut self) {
         #[cfg(target_os = "android")]
         {
-            let _ = crate::platform::jni_android::wave_service_void("cycleBeamCamera");
+            // wave_service_void logs its own failure.
+            crate::platform::jni_android::wave_service_void("cycleBeamCamera");
         }
         #[cfg(not(target_os = "android"))]
         {

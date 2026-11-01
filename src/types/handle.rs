@@ -61,10 +61,10 @@ mod tests {
     fn test_any_unicode_valid() {
         let identity = DevicePubkey::from_bytes([1u8; 32]);
 
-        let _h1 = Handle::new("alice".to_string(), identity.clone());
-        let _h2 = Handle::new("🚀".to_string(), identity.clone());
-        let _h3 = Handle::new("".to_string(), identity.clone());
-        let _h4 = Handle::new("∫∂x".to_string(), identity.clone());
+        for text in ["alice", "🚀", "", "∫∂x"] {
+            let h = Handle::new(text.to_string(), identity.clone());
+            assert_eq!(h.text, text, "any Unicode is held byte for byte");
+        }
     }
 
     #[test]

@@ -24,7 +24,7 @@ pub(super) fn view_temp_path(name: &str, hash: &[u8; 32], bytes: &[u8]) -> Optio
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
     let ext = if ext.is_empty() { crate::types::sniff_ext(bytes).to_string() } else { ext };
     let dir = crate::storage::runtime_dir();
-    let _ = std::fs::create_dir_all(&dir);
+    crate::log_err!(std::fs::create_dir_all(&dir), "the runtime dir for the attachment view temp");
     let path = dir.join(format!("attach-view-{}.{}", hex::encode(&hash[..8]), if ext.is_empty() { "bin" } else { ext.as_str() }));
     match std::fs::write(&path, bytes) {
         Ok(()) => Some(path),
@@ -42,7 +42,7 @@ pub(super) fn raw_temp_path(kind: crate::types::AttachKind, hash: &[u8; 32], byt
         return None;
     }
     let dir = crate::storage::runtime_dir();
-    let _ = std::fs::create_dir_all(&dir);
+    crate::log_err!(std::fs::create_dir_all(&dir), "the runtime dir for the RAW temp");
     let path = dir.join(format!("attach-raw-{}.tmp", hex::encode(&hash[..8])));
     match std::fs::write(&path, bytes) {
         Ok(()) => Some(path),
@@ -118,7 +118,11 @@ impl PhotonApp {
                         Err(e) => {
                             crate::logf!("attach: blob store failed: {}", e);
                             if let Some(t) = raw_tmp.as_ref() {
-                                let _ = std::fs::remove_file(t);
+                                if let Err(e) = std::fs::remove_file(t) {
+                                    if e.kind() != std::io::ErrorKind::NotFound {
+                                        crate::logf!("attach: RAW temp removal failed: {}", e);
+                                    }
+                                }
                             }
                             return;
                         }
@@ -137,7 +141,7 @@ impl PhotonApp {
                     }
                 }
             });
-            let _ = tx.send(super::AttachPrepared { conv, name, bytes, meta: p.meta, preview: p.preview, blob: p.blob, raw_tmp, hash, manifest, head: head_hash, wrap });
+            crate::log_err!(tx.send(super::AttachPrepared { conv, name, bytes, meta: p.meta, preview: p.preview, blob: p.blob, raw_tmp, hash, manifest, head: head_hash, wrap }), "the prepared attachment to the UI thread");
         });
     }
 
@@ -149,7 +153,11 @@ impl PhotonApp {
                 continue;
             }
             if let Some(t) = p.raw_tmp.as_ref() {
-                let _ = std::fs::remove_file(t);
+                if let Err(e) = std::fs::remove_file(t) {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        crate::logf!("attach: RAW temp removal failed: {}", e);
+                    }
+                }
             }
             crate::logf!(
                 "attach: prepared {} — kind {}{}, micro {} bytes, preview blob {}",
@@ -320,14 +328,14 @@ impl PhotonApp {
             };
             match crate::network::fgtw::protocol::build_attach_blob_vsf(&token, &content_hash, sealed, &kp_pub, &kp_sec) {
                 Ok(vsf_bytes) => {
-                    let _ = dispatch.send(crate::network::status::HistorySendRequest {
+                    crate::log_err!(dispatch.send(crate::network::status::HistorySendRequest {
                         peer_addr,
                         alt_addr,
                         recipient_pubkey: device,
                         vsf_bytes,
                         relay_to,
                         tag: Some(bar), // the bar for THIS blob reads its transfer by this tag (the row's raw hash, also for a wrapper)
-                    });
+                    }), "the attachment blob to the network dispatch");
                     crate::log("attach: blob dispatched over PT");
                 }
                 Err(e) => crate::logf!("attach: blob frame build failed: {}", e),
@@ -379,14 +387,14 @@ impl PhotonApp {
         queue_job(&self.attach_job_tx, move || {
             // Only the CHUNKS carry the blob's tag: the bar counts them against the chunk total, and the manifest is not one of them.
             let send = |vsf_bytes: Vec<u8>, tag: Option<[u8; 32]>| {
-                let _ = dispatch.send(crate::network::status::HistorySendRequest {
+                crate::log_err!(dispatch.send(crate::network::status::HistorySendRequest {
                     peer_addr,
                     alt_addr,
                     recipient_pubkey: device,
                     vsf_bytes,
                     relay_to: relay_to.clone(),
                     tag,
-                });
+                }), "an attachment chunk to the network dispatch");
             };
             match kete::encrypt_bytes(&m.to_bytes(), &wire_key).and_then(|sealed| {
                 crate::network::fgtw::protocol::build_attach_manifest_vsf(&token, &content_hash, sealed, &kp_pub, &kp_sec)
@@ -543,14 +551,14 @@ impl PhotonApp {
             let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_attach_req_want_vsf(&token, &ask, want.as_deref(), &kp_pub, &kp_sec) else {
                 return;
             };
-            let _ = dispatch.send(crate::network::status::HistorySendRequest {
+            crate::log_err!(dispatch.send(crate::network::status::HistorySendRequest {
                 peer_addr,
                 alt_addr,
                 recipient_pubkey,
                 vsf_bytes,
                 relay_to,
                 tag: None,
-            });
+            }), "the attachment want to the network dispatch");
             crate::logf!("attach: fetch request dispatched to device {} ({})", crate::fp(&recipient_pubkey), candidate);
         });
         let conv_id = id;
@@ -763,10 +771,10 @@ impl PhotonApp {
         let (tx, rx) = std::sync::mpsc::channel();
         let wake = self.event_proxy.clone();
         self.ready_toast = Some(tr(Msg::ExportingWave).into_owned());
-        let _ = std::thread::Builder::new().name("wave-export".into()).spawn(move || {
+        crate::log_err!(std::thread::Builder::new().name("wave-export".into()).spawn(move || {
             let out = (|| {
                 let blob = crate::storage::blob_load(&seed, &hash)?;
-                let _ = std::fs::create_dir_all(&dir);
+                crate::log_err!(std::fs::create_dir_all(&dir), "the wave export directory creation");
                 let start = blob.get(13..21).and_then(|b| b.try_into().ok()).map(i64::from_le_bytes).unwrap_or(ts);
                 let name = crate::wave::export::file_name(start, &who, fmt);
                 let path = dir.join(&name);
@@ -776,27 +784,37 @@ impl PhotonApp {
                     Ok(frames) => crate::logf!("WAVE: exported {} ({} frames, {})", name, frames, fmt.label()),
                     Err(e) => {
                         crate::logf!("WAVE: export failed — {}", e);
-                        let _ = std::fs::remove_file(&path);
+                        if let Err(e) = std::fs::remove_file(&path) {
+                            if e.kind() != std::io::ErrorKind::NotFound {
+                                crate::logf!("WAVE: export file removal failed: {}", e);
+                            }
+                        }
                         return None;
                     }
                 }
                 #[cfg(target_os = "android")]
                 {
                     let shared = crate::platform::jni_android::save_to_downloads(&path, &name);
-                    let _ = std::fs::remove_file(&path); // the staging copy is done with either way
+                    // The staging copy is done with either way.
+                    if let Err(e) = std::fs::remove_file(&path) {
+                        if e.kind() != std::io::ErrorKind::NotFound {
+                            crate::logf!("WAVE: export file removal failed: {}", e);
+                        }
+                    }
                     shared
                 }
                 #[cfg(not(target_os = "android"))]
                 Some(path.to_string_lossy().into_owned())
             })();
-            let _ = tx.send(out);
+            crate::log_err!(tx.send(out), "the wave export result to the UI thread");
             #[cfg(not(target_os = "android"))]
             if let Some(w) = wake.as_ref() {
-                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                super::wake_ui(w);
             }
             #[cfg(target_os = "android")]
-            let _ = wake;
-        });
+            // Android wakes thru JNI, not the proxy: the clone has nothing to do here.
+            drop(wake);
+        }), "the wave-export thread spawn");
         self.wave_export_rx = Some(rx);
     }
 
@@ -822,7 +840,7 @@ impl PhotonApp {
         let base: std::path::PathBuf = return Err(SaveMiss::Failed);
         #[cfg(not(any(target_os = "android", target_os = "ferros")))]
         let base = dirs::download_dir().ok_or(SaveMiss::Failed)?;
-        let _ = std::fs::create_dir_all(&base);
+        crate::log_err!(std::fs::create_dir_all(&base), "the save directory creation");
         let name = Self::attach_file_name(&seed, name, content_hash);
         let name = name.as_str();
         // macOS: the system save panel, opening in Downloads with the name filled in — a place the user picked is writable with no privacy prompt (Nick 2026-10-26, after "unable to save pigeons on mac"); cancelling is no failure.
@@ -840,7 +858,12 @@ impl PhotonApp {
         {
             let staged = std::path::PathBuf::from(&landed);
             let shared = crate::platform::jni_android::save_to_downloads(&staged, name);
-            let _ = std::fs::remove_file(&staged); // the staging copy is done with either way
+            // The staging copy is done with either way.
+            if let Err(e) = std::fs::remove_file(&staged) {
+                if e.kind() != std::io::ErrorKind::NotFound {
+                    crate::logf!("attach: staging copy removal failed: {}", e);
+                }
+            }
             return shared.ok_or(SaveMiss::Failed);
         }
         #[cfg(not(target_os = "android"))]
@@ -959,7 +982,10 @@ mod land_tests {
         let seed = [0x4Du8; 32];
         let _v = crate::storage::open_session_vault(seed, [0x4E; 32], [0x4F; 32]).expect("vault");
         let dir = std::env::temp_dir().join(format!("photon-land-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        // A stale dir from an earlier run is the only thing to clear; a fresh run finds none.
+        if let Err(e) = std::fs::remove_dir_all(&dir) {
+            assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "stale test dir removal: {e}");
+        }
         let hash = *blake3::hash(b"pigeon body one").as_bytes();
         crate::storage::blob_store(&seed, &hash, b"pigeon body one").expect("store");
         let first = crate::storage::land_blob(&seed, &hash, &dir, "notes.txt").expect("first lands");
@@ -971,7 +997,7 @@ mod land_tests {
         assert_eq!(second, first, "the same name lands at the same path");
         assert_eq!(std::fs::read(&second).unwrap(), b"pigeon body two", "and holds the new bytes");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no second file was minted");
-        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::remove_dir_all(&dir).expect("test dir cleanup");
     }
 }
 

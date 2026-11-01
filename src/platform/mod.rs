@@ -127,7 +127,10 @@ pub fn spawn_at<F: FnOnce() + Send + 'static>(name: &str, priority: Priority, f:
     }
     #[cfg(target_os = "ferros")]
     {
-        let _ = priority;
+        // ferros has no thread priorities yet: every pick runs at the one priority there is.
+        match priority {
+            Priority::Min | Priority::Max => {}
+        }
         std::thread::Builder::new().name(name.to_string()).spawn(f).unwrap_or_else(|e| panic!("spawning the {name} thread: {e}"));
     }
 }
@@ -135,7 +138,7 @@ pub fn spawn_at<F: FnOnce() + Send + 'static>(name: &str, priority: Priority, f:
 /// Drop the calling thread to the lowest OS priority, where the OS has one.
 pub fn lower_this_thread() {
     #[cfg(not(target_os = "ferros"))]
-    let _ = thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Min);
+    crate::log_err!(thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Min), "THREAD: lowering this thread's priority");
 }
 
 // The sockets Photon talks through: tokio's where a kernel offers sockets, the types over ferros's ip server on the phone.

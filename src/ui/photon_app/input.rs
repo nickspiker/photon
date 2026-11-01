@@ -274,7 +274,7 @@ impl PhotonApp {
             std::thread::spawn(move || {
                 // ~1s memory-hard PoW (ihi::handle_to_proof) — never on the UI thread.
                 let hp = crate::types::Handle::username_to_handle_proof(&h);
-                let _ = tx.send((h, hp));
+                crate::log_err!(tx.send((h, hp)), "the off-grid handle proof to the UI thread");
             });
             self.woods_add_rx = Some(rx);
             crate::network::wfd::start_open_house();
@@ -770,17 +770,14 @@ impl PhotonApp {
             return false;
         }
         // Compose drag = SELECTION on desktop (the multi-line box selects like an editor). On Android a finger drag SCROLLS the text instead — the scroll rides the touch-synthesized wheel deltas in the wheel arm, so the drag must not also grow a selection under the finger.
+        #[cfg(target_os = "android")]
+        if self.message_textbox.as_ref().is_some_and(|t| t.hit_id() == id) {
+            return true;
+        }
+        #[cfg(not(target_os = "android"))]
         if let Some(tb) = self.message_textbox.as_mut().filter(|t| t.hit_id() == id) {
-            #[cfg(target_os = "android")]
-            {
-                let _ = (tb, x, y);
-                return true;
-            }
-            #[cfg(not(target_os = "android"))]
-            {
-                tb.pointer_drag(x, y);
-                return true;
-            }
+            tb.pointer_drag(x, y);
+            return true;
         }
         // ANDROID AXIS SPLIT (Nick 2026-09-10): a finger on a single-line box decides its axis in the first few pixels — left-right pans/selects the text, up-down is the PAGE scrolling and the box lets go of the gesture (drag_select_hit cleared, so the wheel path stops suppressing the pane scroll; focus + caret stay where the press put them).
         #[cfg(target_os = "android")]

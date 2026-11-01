@@ -536,7 +536,7 @@ mod tests {
             .expect("send");
         // Drive some attempts onto the pending, then round-trip.
         for k in 1..5 {
-            let _ = chains.collect_due_retransmits(1_000_000 + k * 60 * vsf::OSCILLATIONS_PER_SECOND as i64);
+            chains.collect_due_retransmits(1_000_000 + k * 60 * vsf::OSCILLATIONS_PER_SECOND as i64);
         }
         let attempts_before = chains.pending_messages().first().expect("pending").attempts;
         assert!(attempts_before > 1, "retransmits must have counted");

@@ -79,15 +79,15 @@ impl PhotonApp {
     fn space_spawn(&self, evict: Vec<[u8; 32]>) -> std::sync::mpsc::Receiver<Option<SpaceReading>> {
         let (tx, rx) = std::sync::mpsc::channel();
         let wake = self.event_proxy.clone();
-        let _ = std::thread::Builder::new().name("space".into()).spawn(move || {
+        crate::log_err!(std::thread::Builder::new().name("space".into()).spawn(move || {
             for h in &evict {
                 crate::storage::blob_delete(h);
             }
-            let _ = tx.send(read_space());
+            crate::log_err!(tx.send(read_space()), "hand the space reading to the UI");
             if let Some(w) = wake {
-                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                wake_ui(&w);
             }
-        });
+        }), "spawn the space worker");
         rx
     }
 

@@ -121,8 +121,8 @@ pub fn open(path: Option<&str>) -> Result<Camera, String> {
 }
 
 fn pin_controls(dev: &v4l::Device) {
-    // V4L2_CID_AUTO_WHITE_BALANCE = 0x0098090c; a camera without it just errors, which is fine.
-    let _ = dev.set_control(v4l::Control { id: 0x0098_090c, value: v4l::control::Value::Boolean(false) });
+    // V4L2_CID_AUTO_WHITE_BALANCE = 0x0098090c; a camera without it refuses, which is harmless and logged once.
+    crate::log_err!(dev.set_control(v4l::Control { id: 0x0098_090c, value: v4l::control::Value::Boolean(false) }), "CAMERA: auto white balance pin");
 }
 
 impl Camera {

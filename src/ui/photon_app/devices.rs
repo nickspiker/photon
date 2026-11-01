@@ -62,7 +62,10 @@ impl PhotonApp {
                                         }
                                         if let Some((kind, evt_hp)) = fleet::parse_pair_event(&m.into_data()) {
                                             if evt_hp == hp && kind == "request" {
-                                                let _ = wake_tx.send(());
+                                                // The poll loop holding wake_rx has ended (its ceremony is over): this subscription has no one left to wake.
+                                                if wake_tx.send(()).is_err() {
+                                                    return;
+                                                }
                                             }
                                         }
                                     }
@@ -84,7 +87,7 @@ impl PhotonApp {
                 }
                 match fleet::bindreq_list(&kp, &hp, &seed) {
                     Ok(reqs) => {
-                        let _ = tx.send(AddDeviceUpdate::Candidates(reqs));
+                        crate::log_err!(tx.send(AddDeviceUpdate::Candidates(reqs)), "the bind request candidates to the UI thread");
                     }
                     Err(e) => crate::logf!("FLEET: bindreq list failed: {}", e),
                 }
@@ -289,7 +292,7 @@ impl PhotonApp {
                 *slot = Some(blob.to_vec());
             }
             if let Some(poke) = self.add_join_poke.as_ref() {
-                let _ = poke.send(());
+                crate::log_err!(poke.send(()), "the fan-out poke to the joining thread");
             }
             crate::logf!("JOIN: a fan-out for the fleet we are joining arrived over the mesh ({} B)", blob.len());
             return true;
@@ -594,14 +597,14 @@ impl PhotonApp {
                     (unspecified, None, relays)
                 }
             };
-            let _ = dispatch.send(crate::network::status::HistorySendRequest {
+            crate::log_err!(dispatch.send(crate::network::status::HistorySendRequest {
                 peer_addr: primary,
                 alt_addr: alt,
                 recipient_pubkey: sib_key,
                 relay_to,
                 vsf_bytes: frame.clone(),
                 tag: None,
-            });
+            }), "the checkpoint frame to the network dispatch");
         }
     }
 
@@ -751,7 +754,7 @@ impl PhotonApp {
         std::thread::spawn(move || {
             use crate::network::fgtw::fleet;
             let send = |o: CkptOutcome| {
-                let _ = tx.send(o);
+                crate::log_err!(tx.send(o), "the checkpoint outcome to the UI thread");
             };
             // The fan-out epoch names WHICH fleet key folds into the derivation — recover the pair together so they can't skew.
             let (fanout_epoch, fk) =
@@ -890,15 +893,15 @@ impl PhotonApp {
         if self.fleet_evt_rx.is_some() {
             return;
         }
-        let Some(hp) = self.our_handle_proof() else {
+        // Attest-gate only: we no longer filter by our own hp — tick routes by hp (ours vs a contact's).
+        if self.our_handle_proof().is_none() {
             return;
-        };
+        }
         let (tx, rx) = std::sync::mpsc::channel::<(&'static str, [u8; 32])>();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.fleet_evt_rx = Some(rx);
         self.fleet_evt_stop = Some(stop.clone());
         let wake = self.event_proxy.clone();
-        let _ = hp; // attest-gate only; we no longer filter by our own hp — tick routes by hp (ours vs a contact's)
         #[cfg(not(target_os = "ferros"))]
         crate::network::http::runtime().spawn(async move {
             use futures::StreamExt;
@@ -929,7 +932,7 @@ impl PhotonApp {
                                                 return; // app side dropped the receiver — subscription retired
                                             }
                                             if let Some(w) = wake.as_ref() {
-                                                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                                                super::wake_ui(w);
                                             }
                                         }
                                     }
@@ -1000,7 +1003,7 @@ impl PhotonApp {
                 }
             }
             if let Some(w) = wake.as_ref() {
-                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                super::wake_ui(w);
             }
         });
     }
@@ -1018,14 +1021,14 @@ impl PhotonApp {
     /// One signed frame to a device at an address, direct (no relay: the mesh path is the point here).
     pub(super) fn send_frame_direct(&self, frame: Vec<u8>, device: [u8; 32], addr: std::net::SocketAddr, alt: Option<std::net::SocketAddr>) {
         let Some(checker) = self.status_checker.as_ref() else { return };
-        let _ = checker.history_dispatch().send(crate::network::status::HistorySendRequest {
+        crate::log_err!(checker.history_dispatch().send(crate::network::status::HistorySendRequest {
             peer_addr: addr,
             alt_addr: alt,
             recipient_pubkey: device,
             relay_to: Vec::new(),
             vsf_bytes: frame,
             tag: None,
-        });
+        }), "a direct frame to the network dispatch");
     }
 
     /// Ask the contact holding `hp` for its membership chain: a `fleet_req` to every device of theirs we hold an address for. Returns whether any ask went out.
@@ -1085,7 +1088,7 @@ impl PhotonApp {
                 if ours {
                     self.fleet_chain_store();
                 }
-                let _ = self.contact_members_sender().send((hp, members, tip, genesis, true));
+                crate::log_err!(self.contact_members_sender().send((hp, members, tip, genesis, true)), "the chain's members to the contact-members drain");
                 true
             }
             Err(e) => {
@@ -1101,7 +1104,7 @@ impl PhotonApp {
             *slot = Some(chain.to_vec());
         }
         if let Some(poke) = self.add_join_poke.as_ref() {
-            let _ = poke.send(());
+            crate::log_err!(poke.send(()), "the chain poke to the joining thread");
         }
         crate::logf!("JOIN: a chain for the fleet we are joining arrived over the mesh ({} B)", chain.len());
         true
@@ -1184,7 +1187,7 @@ impl PhotonApp {
                 return; // app dropped the receiver
             }
             if let Some(w) = wake.as_ref() {
-                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                super::wake_ui(w);
             }
         });
     }
@@ -1436,9 +1439,9 @@ impl PhotonApp {
                             Ok(()) => crate::logf!("FLEET: shrink heal — minted at revision {} ({} ira(s) wrapped), fstate re-sealed", revision, members.len()),
                             Err(e) => crate::logf!("FLEET: shrink heal — minted at revision {} but the re-seal push failed ({}); the next roster/settings write re-seals", revision, e),
                         }
-                        let _ = rotated_tx.send(());
+                        crate::log_err!(rotated_tx.send(()), "the fleet rotation edge to the UI thread");
                         if let Some(w) = wake.as_ref() {
-                            let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                            super::wake_ui(w);
                         }
                     }
                     Err(e) => {
@@ -1450,7 +1453,7 @@ impl PhotonApp {
                         if let Ok(Some(k)) =
                             fleet::recover_fleet_key(&hp, &device_key, &identity_seed)
                         {
-                            let _ = storage.write_addr(&addr, &k);
+                            crate::log_err!(storage.write_addr(&addr, &k), "the recovered fleet key write");
                             if let Ok(mut g) = fkc.lock() {
                                 *g = Some(k);
                             }
@@ -1867,7 +1870,7 @@ impl PhotonApp {
                     Err(e)
                 }
             };
-            let _ = tx.send(result);
+            crate::log_err!(tx.send(result), "the fleet state pull result to the UI thread");
         });
     }
 
@@ -1903,10 +1906,10 @@ impl PhotonApp {
         ) {
             std::thread::spawn(move || {
                 // Seed-optional: the Add lands in the chain we hold and reaches the fleet over the mesh (the Bound arm pushes it); the seed is a mirror that may be down.
-                let _ = tx.send(match fleet::bind_device_held(&kp, &hp, &req) {
+                crate::log_err!(tx.send(match fleet::bind_device_held(&kp, &hp, &req) {
                     Ok(_) => AddDeviceUpdate::Bound(req.device_pubkey),
                     Err(e) => AddDeviceUpdate::Failed(e),
-                });
+                }), "the bind outcome to the UI thread");
             });
         }
     }
@@ -1945,10 +1948,10 @@ impl PhotonApp {
                     Ok(_) => crate::log("ADD-DEVICE: confirm — fan-out grown, the new device can recover the fleet key"),
                     Err(e) => crate::logf!("ADD-DEVICE: confirm FAILED — {}", e),
                 }
-                let _ = tx.send(match r {
+                crate::log_err!(tx.send(match r {
                     Ok(blob) => AddDeviceUpdate::Rotated(blob),
                     Err(e) => AddDeviceUpdate::Failed(e),
-                });
+                }), "the confirm outcome to the UI thread");
             });
         } else {
             // A missing input used to leave `checking` set with nothing running, so every later tap returned early and the screen sat on "Finishing" forever.
@@ -2113,7 +2116,7 @@ impl PhotonApp {
             let facts = super::FleetSchemes { floor, declared, locked, members: members.len() };
             if tx.send(facts).is_ok() {
                 if let Some(w) = wake.as_ref() {
-                    let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                    super::wake_ui(w);
                 }
             }
         });
@@ -2171,7 +2174,7 @@ impl PhotonApp {
                             "FLEET: {} is UNLOCKED — the fleet trusts it again",
                             crate::fp(&self.contacts[i].device_key().unwrap_or_default())
                         );
-                        let _ = crate::storage::contacts::save_contact(&self.contacts[i], storage);
+                        crate::log_err!(crate::storage::contacts::save_contact(&self.contacts[i], storage), "the contact save after an unlock");
                     }
                 }
                 self.reseed_contact_pubkeys();
@@ -2214,7 +2217,7 @@ impl PhotonApp {
                         "FLEET: {} is LOCKED OUT — frames refused, key rotating away",
                         crate::fp(&self.contacts[i].device_key().unwrap_or_default())
                     );
-                    let _ = crate::storage::contacts::save_contact(&self.contacts[i], storage);
+                    crate::log_err!(crate::storage::contacts::save_contact(&self.contacts[i], storage), "the contact save after a lockout");
                 }
             }
             // Rebuild the answerable ping set so a freshly-locked device's PINGS stop being answered immediately (answerable_pubkeys now drops locked_out contacts) — not just its chain/ceremony frames, which the downstream knows_device gates already refused.
@@ -2459,7 +2462,7 @@ impl PhotonApp {
         std::thread::spawn(move || {
             let bytes = crate::snapshot_log_bytes().unwrap_or_default();
             let (rows, consumed) = crate::parse_log_records(&bytes);
-            let _ = tx.send((rows, consumed));
+            crate::log_err!(tx.send((rows, consumed)), "the log rows to the diagnostics page");
         });
     }
 
@@ -2547,7 +2550,7 @@ impl PhotonApp {
                 Some(tr(Msg::SendingLog(&crate::unit_size(total as u64, crate::SizeUnit::KiB))).into_owned());
             std::thread::spawn(move || {
                 let Some(bytes) = crate::snapshot_log_bytes() else {
-                    let _ = tx.send(Err("log unreadable".to_string()));
+                    crate::log_err!(tx.send(Err("log unreadable".to_string())), "the log submit result to the UI thread");
                     return;
                 };
                 crate::logf!(
@@ -2556,7 +2559,7 @@ impl PhotonApp {
                 );
                 let r =
                     put_log_blocking(&bytes, &note, &kp, &hp, &seed).map_err(|e| format!("{e}"));
-                let _ = tx.send(r);
+                crate::log_err!(tx.send(r), "the log submit result to the UI thread");
             });
             self.log_submit_inflight = true;
         } else {
@@ -2744,10 +2747,10 @@ impl PhotonApp {
             let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
             let me = device_key.keypair().public.to_bytes();
             // SHOW THE WORDS FIRST — they only need identity_seed (microseconds) + the device pubkey, NOT the ~1s memory-hard handle_proof or the radio. Deferring this behind either left the screen on "Preparing…" for the whole proof (and, on Android, behind a blocking BLE-advertise JNI call) — the "stuck on Preparing" report. The words are this device's OWN pubkey masked to the fleet: shoulder-surfing them is inert (nothing binds without the request signature below; the mask makes them noise outside this fleet).
-            let _ = tx.send(JoinUpdate::ShowWords(fleet::masked_device_words(
+            crate::log_err!(tx.send(JoinUpdate::ShowWords(fleet::masked_device_words(
                 &me,
                 &identity_seed,
-            )));
+            ))), "the join words to the UI thread");
             // NOW the expensive derivation (reused from the probe when the caller passed it; else the ~1s proof here) — the words are already up, so this cost is invisible.
             let handle_proof = precomputed_proof
                 .unwrap_or_else(|| crate::types::Handle::username_to_handle_proof(&handle));
@@ -2762,7 +2765,7 @@ impl PhotonApp {
                 &crate::crypto::clutch::identity_party_id(&identity_seed),
             ) {
                 crate::log("join: DEVICE BUSY — bound to another identity; refused post-proof");
-                let _ = tx.send(JoinUpdate::Failed(tr(Msg::IdentityOccupied).into_owned()));
+                crate::log_err!(tx.send(JoinUpdate::Failed(tr(Msg::IdentityOccupied).into_owned())), "the join refusal to the UI thread");
                 return;
             }
             let hp = session.handle_proof;
@@ -2781,7 +2784,7 @@ impl PhotonApp {
             let mint = |tx: &std::sync::mpsc::Sender<JoinUpdate>| -> Result<i64, String> {
                 let req = fleet::make_bind_request(&device_key, &identity_seed, &hp, &nfc_secret);
                 let frame = crate::network::fgtw::protocol::build_bind_req_vsf(&req, &hp, device_key.keypair().secret.as_bytes())?;
-                let _ = tx.send(JoinUpdate::Aimed { hp, bind_req: frame, poke: poke_tx.clone() });
+                crate::log_err!(tx.send(JoinUpdate::Aimed { hp, bind_req: frame, poke: poke_tx.clone() }), "the join aim to the UI thread");
                 match fleet::bindreq_post(&req, &hp) {
                     Ok(()) => crate::log("JOIN: binding request posted to the seed's registry and armed for the LAN"),
                     Err(e) if e.starts_with("device_owned") => return Err(e),
@@ -2792,7 +2795,7 @@ impl PhotonApp {
             let offer_et = match mint(&tx) {
                 Ok(et) => et,
                 Err(e) => {
-                    let _ = tx.send(JoinUpdate::Failed(tr(Msg::RequestFailed(&e)).into_owned()));
+                    crate::log_err!(tx.send(JoinUpdate::Failed(tr(Msg::RequestFailed(&e)).into_owned())), "the join failure to the UI thread");
                     return;
                 }
             };
@@ -2818,7 +2821,10 @@ impl PhotonApp {
                                         }
                                         if let Some((_kind, evt_hp)) = fleet::parse_pair_event(&m.into_data()) {
                                             if evt_hp == hp {
-                                                let _ = wake_tx.send(());
+                                                // The poll loop holding wake_rx has ended (its ceremony is over): this subscription has no one left to wake.
+                                                if wake_tx.send(()).is_err() {
+                                                    return;
+                                                }
                                             }
                                         }
                                     }
@@ -2854,7 +2860,7 @@ impl PhotonApp {
                     "JOIN: fleet key {} — attesting",
                     if fleet_key.is_some() { "recovered" } else { "follows the sponsor's confirm (event-synced)" }
                 );
-                let _ = tx.send(JoinUpdate::Joined(fleet_key, session));
+                crate::log_err!(tx.send(JoinUpdate::Joined(fleet_key, session)), "the join success to the UI thread");
             };
             let mut last_repost = std::time::Instant::now();
             let ceremony_start = std::time::Instant::now();
@@ -2868,18 +2874,18 @@ impl PhotonApp {
                 if ceremony_start.elapsed() >= MAX_CEREMONY {
                     crate::log("JOIN: ceremony ran too long without binding — stopping re-posts");
                     withdraw("timeout");
-                    let _ = tx.send(JoinUpdate::Failed(
+                    crate::log_err!(tx.send(JoinUpdate::Failed(
                         "timed out waiting to be added — re-enter the handle to try again".into(),
-                    ));
+                    )), "the join timeout to the UI thread");
                     return;
                 }
                 // Announce on the LAN each round (rides the poll cadence): the sponsor's screen lights this device's candidate row "nearby" the moment a frame lands.
                 if let Some(tx) = lan_tx.as_ref() {
-                    let _ = tx.send(crate::network::status::LanBroadcastRequest {
+                    crate::log_err!(tx.send(crate::network::status::LanBroadcastRequest {
                         our_handle_proof: hp,
                         our_port: lan_port,
                         unicast: None,
-                    });
+                    }), "the join LAN announce request");
                 }
                 // THE MESH FIRST: a chain a sponsor pushed to us. Verified exactly as a seed copy is — it claims this slot, its genesis is this identity's, it folds — and green iff it folds US in. A chain that does not name us yet is held (the sponsor may have pushed before the bind) and we wait on.
                 if let Some(bytes) = chain_slot.lock().ok().and_then(|mut s| s.take()) {
@@ -2913,10 +2919,10 @@ impl PhotonApp {
                             "JOIN: chain genesis no longer matches this identity — aborting",
                         );
                         withdraw("wrong-fleet");
-                        let _ = tx.send(JoinUpdate::Failed(
+                        crate::log_err!(tx.send(JoinUpdate::Failed(
                             "this handle's fleet is not ours — the chain changed hands mid-join"
                                 .into(),
-                        ));
+                        )), "the join abort to the UI thread");
                         return;
                     }
                     Err(e) => {

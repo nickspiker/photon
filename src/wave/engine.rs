@@ -374,17 +374,17 @@ fn run(
 
     // THE ARCHIVE ENCODER (the ordering fix, Nick 2026-09-12: "save the encoded stream… ideally before the duck(s)"): one high-end Opus encode of the CLEAN mic runs live beside the wire encoder — 10ms frames, VBR 160k, complexity 6 — and THAT is what the spool keeps. Plaid raw-PCM spooling dies (it ate ~5.5MB/min), the keep repackages these packets verbatim (no second lossy generation), and the ducking rides as a profile, not a second stream.
     let mut arch_enc = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).ok().map(|mut e| {
-        let _ = e.set_vbr(true);
-        let _ = e.set_bitrate(opus::Bitrate::Bits(160_000));
-        let _ = e.set_complexity(6);
+        crate::log_err!(e.set_vbr(true), "WAVE: archive encoder set_vbr");
+        crate::log_err!(e.set_bitrate(opus::Bitrate::Bits(160_000)), "WAVE: archive encoder set_bitrate");
+        crate::log_err!(e.set_complexity(6), "WAVE: archive encoder set_complexity");
         e
     });
     let mut arch_buf: Vec<i16> = Vec::with_capacity(480);
     // The receive twin: received plaid frames re-encode at the high rung before spooling (5ms — the RX grid stays on its lattice).
     let mut rx_arch_enc = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).ok().map(|mut e| {
-        let _ = e.set_vbr(true);
-        let _ = e.set_bitrate(opus::Bitrate::Bits(160_000));
-        let _ = e.set_complexity(6);
+        crate::log_err!(e.set_vbr(true), "WAVE: receive archive encoder set_vbr");
+        crate::log_err!(e.set_bitrate(opus::Bitrate::Bits(160_000)), "WAVE: receive archive encoder set_bitrate");
+        crate::log_err!(e.set_complexity(6), "WAVE: receive archive encoder set_complexity");
         e
     });
     let mut rx_arch_pkt = vec![0u8; 4000];
@@ -395,8 +395,8 @@ fn run(
     let mut arch_dec: Option<opus::Decoder> = None;
     let mut encoder = match opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::LowDelay) {
         Ok(mut e) => {
-            let _ = e.set_vbr(false); // CBR — traffic-shape privacy (VBR leaks the speech envelope via packet sizes)
-            let _ = e.set_bitrate(opus::Bitrate::Bits(TIER_RATES[0])); // every wave starts at the ladder floor and climbs on evidence
+            crate::log_err!(e.set_vbr(false), "WAVE: wire encoder set_vbr"); // CBR — traffic-shape privacy (VBR leaks the speech envelope via packet sizes)
+            crate::log_err!(e.set_bitrate(opus::Bitrate::Bits(TIER_RATES[0])), "WAVE: wire encoder set_bitrate"); // every wave starts at the ladder floor and climbs on evidence
             e
         }
         Err(e) => {
@@ -649,7 +649,7 @@ fn run(
     // Drought baseline + stale-state drain: the UI measures receive drought against max(start, last rx), and a previous wave's redirect must never re-point this one. The ringback left LOCAL_SOURCE set — network audio owns the queue from the first pass.
     if solo { super::MEDIA_START_OSC.store(vsf::eagle_time_oscillations(), Ordering::Relaxed); }
     if solo { super::LAST_MEDIA_RX_OSC.store(0, Ordering::Relaxed); }
-    if solo { let _ = super::take_peer_redirect(); }
+    if solo { super::take_peer_redirect(); }
     super::SLOT_LINKS.at(far).start_osc.store(vsf::eagle_time_oscillations(), Ordering::Relaxed);
     super::SLOT_LINKS.at(far).rx_osc.store(0, Ordering::Relaxed);
     crate::platform::audio::set_local_source(false);
@@ -697,7 +697,8 @@ fn run(
                     let msg = FillMsg { draining: true, satisfied: wanted.is_empty(), windows: window_id, reqs: Vec::new(), fills: Vec::new() };
                     tx_fill.advance_to(StepChain::step_for_seq(fill_seq));
                     if let Some(wire) = packet::seal_fill(&tx_fill, fill_seq, &fill_encode(&msg)) {
-                        let _ = super::send_media(wire, peer);
+                        // A gone media channel is caught, logged and stops the engine at the voice send; a fill message lost with it changes nothing.
+                        super::send_media(wire, peer);
                     }
                     fill_seq = fill_seq.wrapping_add(1);
                 }
@@ -811,7 +812,7 @@ fn run(
                         let r = g.rung();
                         if r != enc_tier {
                             enc_tier = r;
-                            let _ = encoder.set_bitrate(opus::Bitrate::Bits(TIER_RATES[enc_tier]));
+                            crate::log_err!(encoder.set_bitrate(opus::Bitrate::Bits(TIER_RATES[enc_tier])), "WAVE: wire encoder tier change set_bitrate");
                         }
                     }
                 }
@@ -819,7 +820,7 @@ fn run(
                     if enc_fill == 0 && pending_tier != enc_tier {
                         enc_tier = pending_tier;
                         if enc_tier != RAW_TIER {
-                            let _ = encoder.set_bitrate(opus::Bitrate::Bits(TIER_RATES[enc_tier]));
+                            crate::log_err!(encoder.set_bitrate(opus::Bitrate::Bits(TIER_RATES[enc_tier])), "WAVE: wire encoder tier change set_bitrate");
                         }
                     }
                 }
@@ -1561,7 +1562,8 @@ fn run(
                 };
                 tx_fill.advance_to(StepChain::step_for_seq(fill_seq));
                 if let Some(wire) = packet::seal_fill(&tx_fill, fill_seq, &fill_encode(&msg)) {
-                    let _ = super::send_media(wire, peer);
+                    // A gone media channel is caught, logged and stops the engine at the voice send; a fill message lost with it changes nothing.
+                    super::send_media(wire, peer);
                 }
                 fill_seq = fill_seq.wrapping_add(1);
                 fill_hello_due = false;
@@ -2216,7 +2218,7 @@ fn serve_window_from_archive(params: &EngineParams, reader: &mut Option<super::s
         };
         fno.get_or_insert(frame_no(vsf::grid::eagle_to_sample(rec.osc)).wrapping_sub(*slot0 as u32)); // the algorithm: frame numbers live mod 2^32
         let mut pcm = vec![0i16; 480];
-        let _ = d.reset_state();
+        crate::log_err!(d.reset_state(), "WAVE: resetting the serve decoder");
         let Ok(got) = d.decode(&rec.bytes, &mut pcm, false) else {
             continue;
         };
@@ -2345,8 +2347,8 @@ mod fill_tests {
     #[test]
     fn decoded_audio_trails_its_input_by_exactly_the_lookahead() {
         let mut enc = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::LowDelay).unwrap();
-        let _ = enc.set_vbr(false);
-        let _ = enc.set_bitrate(opus::Bitrate::Bits(TIER_RATES[3]));
+        enc.set_vbr(false).unwrap();
+        enc.set_bitrate(opus::Bitrate::Bits(TIER_RATES[3])).unwrap();
         let look = enc.get_lookahead().unwrap() as usize;
         let mut dec = opus::Decoder::new(48_000, opus::Channels::Mono).unwrap();
         let click_at = 3 * FRAME_SAMPLES + 57;
@@ -2408,7 +2410,7 @@ mod fill_tests {
         assert_eq!(fno, frame_no((base_frame + 16) * super::super::align::FRAME));
         assert_eq!(u16::from_le_bytes([win[0], win[1]]) as usize, RAW_FRAME_BYTES);
         assert!(serve_window(&params, &mut reader, &index, 3).is_none());
-        let _ = std::fs::remove_file(&path);
+        std::fs::remove_file(&path).unwrap();
     }
 }
 

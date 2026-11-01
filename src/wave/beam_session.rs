@@ -209,7 +209,8 @@ impl Drop for Receiver {
         // The stop is an edge, not a poll: wake the decoder parked on the frame queue so the join returns at once (it used to wait out a 250 ms timeout at every hangup, on the thread hanging up).
         self._rx.shared.wake();
         if let Some(t) = self.thread.take() {
-            let _ = t.join();
+            // A panicked thread's Err is the panic the hook already logged; the join is for the ordering.
+            drop(t.join());
         }
         *PICTURES.at(self.slot).lock().unwrap() = None;
         // The parked transport is the 1:1 wave's; a group link's receiver leaves it alone.
@@ -530,7 +531,8 @@ impl Drop for Sender {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.thread.take() {
-            let _ = t.join();
+            // A panicked thread's Err is the panic the hook already logged; the join is for the ordering.
+            drop(t.join());
         }
         if let Some((tx, _, n)) = ENCODED_TX.lock().unwrap().take() {
             tx.park(ENCODED_KEY.lock().unwrap().take(), n);
@@ -1158,14 +1160,13 @@ pub fn camera_name() -> Option<String> {
 
 /// The desktop's camera, if the platform has one we can open: the user's pick, else the first one.
 pub fn open_desktop_camera() -> Result<Box<dyn FrameSource>, String> {
-    let pick = desktop_camera_pick();
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
-        crate::platform::camera_v4l2::open(pick.as_deref()).map(|c| Box::new(c) as Box<dyn FrameSource>)
+        crate::platform::camera_v4l2::open(desktop_camera_pick().as_deref()).map(|c| Box::new(c) as Box<dyn FrameSource>)
     }
     #[cfg(target_os = "macos")]
     {
-        crate::platform::camera_avf::open(pick.as_deref()).map(|c| Box::new(c) as Box<dyn FrameSource>)
+        crate::platform::camera_avf::open(desktop_camera_pick().as_deref()).map(|c| Box::new(c) as Box<dyn FrameSource>)
     }
     #[cfg(not(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos")))]
     {
@@ -1196,7 +1197,7 @@ pub fn start_desktop_async(target: Target) -> std::sync::mpsc::Receiver<Result<S
             Ok(s)
         });
         // A receiver already gone hands the sender back here, so its camera closes on this thread.
-        let _ = tx.send(started);
+        drop(tx.send(started));
     });
     if let Err(e) = spawned {
         crate::logf!("BEAM: no camera thread: {}", e);
@@ -1312,7 +1313,9 @@ fn take_preview_source() -> Option<Box<dyn FrameSource>> {
 /// A phone previews thru Kotlin's own capture pipeline: started here with nothing armed, it shows the self-view and sends nothing (see `android_started`); stopped here unless a send took it over.
 #[cfg(target_os = "android")]
 pub fn preview_start() {
-    let _ = crate::platform::jni_android::wave_service_void("startBeamCapture");
+    if !crate::platform::jni_android::wave_service_void("startBeamCapture") {
+        crate::log("BEAM: preview — the wave service did not start the capture");
+    }
 }
 #[cfg(target_os = "android")]
 pub fn preview_stop() {
@@ -1328,7 +1331,8 @@ fn retire_with(f: impl FnOnce() + Send + 'static) {
     let prev = RETIRING.lock().unwrap().take();
     let spawned = std::thread::Builder::new().name("beam-retire".into()).spawn(move || {
         if let Some(p) = prev {
-            let _ = p.join();
+            // A panicked retirement's Err is the panic the hook already logged; the join is for the ordering.
+            drop(p.join());
         }
         f();
     });
@@ -1349,10 +1353,12 @@ pub fn retire_opening(rx: std::sync::mpsc::Receiver<Result<Sender, String>>) {
 }
 
 /// The camera worker's first step: every stopping sender has parked its transport.
+#[cfg(not(target_os = "android"))]
 fn await_retired() {
     let h = RETIRING.lock().unwrap().take();
     if let Some(h) = h {
-        let _ = h.join();
+        // A panicked retirement's Err is the panic the hook already logged; the join is for the ordering.
+        drop(h.join());
     }
 }
 
@@ -1376,7 +1382,7 @@ pub fn camera_usable() -> bool {
         if listed.is_none() {
             static ASKED: AtomicBool = AtomicBool::new(false);
             if !ASKED.swap(true, Ordering::Relaxed) {
-                let _ = std::thread::Builder::new().name("camera-list".into()).spawn(reenumerate_desktop_cameras);
+                crate::log_err!(std::thread::Builder::new().name("camera-list".into()).spawn(reenumerate_desktop_cameras), "BEAM: spawning the camera-list thread");
             }
         }
         listed.unwrap_or(true)
@@ -1407,7 +1413,9 @@ pub fn ask_camera_early() {
     // Android's grant lives with the service, which prompts only when it is missing.
     #[cfg(target_os = "android")]
     {
-        let _ = crate::platform::jni_android::wave_service_void("askCameraEarly");
+        if !crate::platform::jni_android::wave_service_void("askCameraEarly") {
+            crate::log("BEAM: the wave service did not take the early camera ask");
+        }
         return;
     }
     #[cfg(not(target_os = "android"))]

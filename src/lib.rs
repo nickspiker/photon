@@ -994,7 +994,7 @@ pub fn log_size_bytes() -> u64 {
 #[cfg(feature = "logging")]
 static LOG_FILE: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
 /// The open log file's raw descriptor (unix), for the native-fault handler's last-gasp flush of the soft batch — a signal handler may write(2) but must not open or lock.
-#[cfg(feature = "logging")]
+#[cfg(all(feature = "logging", unix))]
 static LOG_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
 // Records that arrive before the sink can open (Android: everything logged before the JNI data dir lands, including the Kotlin bridge's earliest lifecycle lines) — held as already-built VSF record bytes so their creation stamps stay true, drained into the file the moment it opens. Bounded so a never-initializing process can't grow it unbounded; overflow drops the newest record (the earliest lines are the ones worth keeping).
@@ -1070,7 +1070,8 @@ static ANDROID_LOG_DIR: std::sync::OnceLock<String> = std::sync::OnceLock::new()
 #[cfg(all(feature = "logging", target_os = "android"))]
 pub fn set_android_log_dir(dir: String) {
     if !dir.is_empty() {
-        let _ = ANDROID_LOG_DIR.set(dir);
+        // The first directory set wins; a later one is refused and dropped.
+        drop(ANDROID_LOG_DIR.set(dir));
     }
 }
 
@@ -1102,6 +1103,7 @@ pub(crate) fn log_dir() -> Option<std::path::PathBuf> {
             static OLD_LOG_SWEPT: std::sync::Once = std::sync::Once::new();
             OLD_LOG_SWEPT.call_once(|| {
                 if let Ok(old) = crate::storage::photon_config_dir() {
+                    // WHY: log_dir runs inside the log sink (ensure_log_open, trim), so logging this failure would re-enter the sink it serves.
                     let _ = std::fs::remove_file(old.join("photon.log.vsf"));
                 }
             });
@@ -1119,6 +1121,7 @@ fn ensure_log_open(guard: &mut Option<std::fs::File>) {
         return;
     }
     let Some(dir) = log_dir() else { return };
+    // WHY: this is the log sink opening itself under LOG_FILE; a failure here shows as the open below failing, and logging it would re-enter the sink.
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("photon.log.vsf");
     let mut opts = std::fs::OpenOptions::new();
@@ -1132,6 +1135,7 @@ fn ensure_log_open(guard: &mut Option<std::fs::File>) {
     if let Ok(mut f) = opts.open(&path) {
         if let Ok(mut pending) = LOG_PENDING.lock() {
             if !pending.is_empty() {
+                // WHY: the sink draining its own buffer under LOG_PENDING and LOG_FILE; logging the failure would re-enter both locks.
                 let _ = f.write_all(&pending);
                 pending.clear();
                 pending.shrink_to_fit();
@@ -1183,12 +1187,14 @@ fn trim_log_if_due(guard: &mut Option<std::fs::File>) {
 pub fn write_crash_sidecar(text: &str) {
     use std::io::Write;
     let Some(dir) = log_dir() else { return };
+    // WHY: the panic hook's sidecar touches no shared lock by design; a failure here shows as the open below failing, and there is nowhere safer to report it.
     let _ = std::fs::create_dir_all(&dir);
     if let Ok(mut f) = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(dir.join("photon.crash.txt"))
     {
+        // WHY: the panic hook's last resort: there is no sink left to report a failed crash write to.
         let _ = writeln!(f, "{}", text);
         let _ = f.flush();
     }
@@ -1201,7 +1207,8 @@ pub fn report_prior_crash() {
     let Ok(text) = std::fs::read_to_string(&path) else {
         return;
     };
-    let _ = std::fs::remove_file(&path);
+    // A sidecar that will not delete is reported again next run, so say so.
+    crate::log_err!(std::fs::remove_file(&path), "removing the prior run's crash sidecar");
     // Bounded: a handler that re-entered (Android libsigchain, 2026-09-10) left fifty thousand identical lines; the report is the first few, plus the count.
     let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
     for line in lines.iter().take(48) {
@@ -1262,6 +1269,7 @@ pub fn flush_log_buffer() {
     if drained > 0 {
         LOG_BYTES.fetch_add(drained as u64, std::sync::atomic::Ordering::Relaxed);
         // A file born from this drain has no seeded oldest — these records are it.
+        // WHY: Err means an oldest was already seeded, which this exchange leaves alone on purpose; the Result is Copy, so drop() would lint.
         let _ = LOG_OLDEST_OSC.compare_exchange(
             i64::MAX,
             vsf::eagle_time_oscillations(),
@@ -1300,7 +1308,6 @@ fn append_log_record(level: LogLevel, msg: &str, vals: &[LogValue]) {
         }
         out.push_str(rest);
         println!("{}", out);
-        let _ = level;
     }
     // Build first so a buffered record carries the stamp of when it was LOGGED, not when the sink finally opened. `msg` is the pure-text template; each captured value rides as its own TYPED `val` field, in slot order — a number never stringifies into the record (numbers-binary-at-rest).
     let mut section = vsf::VsfSection::new("log");
@@ -1365,6 +1372,7 @@ fn append_log_record(level: LogLevel, msg: &str, vals: &[LogValue]) {
         return;
     };
     if let Ok(bytes) = record {
+        // WHY: this IS the log sink, under LOG_FILE; logging its own write failure would re-enter the lock it holds.
         let _ = file.write_all(&bytes);
         let _ = file.flush();
         LOG_BYTES.fetch_add(bytes.len() as u64, std::sync::atomic::Ordering::Relaxed);
@@ -1512,6 +1520,7 @@ fn first_record_osc(path: &std::path::Path) -> Option<i64> {
 pub fn clear_log() {
     if let Ok(mut guard) = LOG_FILE.lock() {
         if let Some(dir) = log_dir() {
+            // WHY: this runs under LOG_FILE; logging the failure would re-enter the lock it holds.
             let _ = std::fs::remove_file(dir.join("photon.log.vsf"));
         }
         *guard = None;

@@ -62,7 +62,7 @@ pub fn persist_register(wave_id8: &[u8; 8], ticket: &SpoolTicket, peer: &[u8; 32
 /// Drop the register — the keep completed (blob stored) or the recording was deliberately discarded. Ordering law: the origin deletes the register BEFORE the spool file is removed, so every crash window resolves at recovery (file+register → re-finish the keep, idempotent by content hash; file-without-register → stray, deleted).
 pub fn drop_register(wave_id8: &[u8; 8]) {
     if let Some(v) = crate::storage::device_vault() {
-        let _ = v.delete(&reg_key(wave_id8));
+        crate::log_err!(v.delete(&reg_key(wave_id8)), "WAVE: dropping the spool register");
     }
 }
 
@@ -92,8 +92,9 @@ pub fn recover_orphans() -> Vec<(SpoolTicket, [u8; 32], i64, [u8; 8])> {
                 out.push((SpoolTicket { key, path: e.path() }, peer, offer_osc, id8));
             }
             _ => {
-                let _ = std::fs::remove_file(e.path());
-                crate::logf!("WAVE: stray spool file removed ({name})");
+                if crate::log_err!(std::fs::remove_file(e.path()), "WAVE: removing the stray spool file {name}") {
+                    crate::logf!("WAVE: stray spool file removed ({name})");
+                }
             }
         }
     }
@@ -248,9 +249,14 @@ impl SpoolWriter {
         let Ok(sealed) = self.cipher.encrypt(&nonce.into(), plain.as_slice()) else {
             return None;
         };
-        let _ = self.file.write_all(&(sealed.len() as u16).to_le_bytes());
-        let _ = self.file.write_all(&sealed);
-        self.offset += 2 + sealed.len() as u64;
+        // One write per record (length prefix and sealed body together); a failed record is logged and indexed nowhere, and the offset stays where the last good record ended.
+        let mut rec = Vec::with_capacity(2 + sealed.len());
+        rec.extend_from_slice(&(sealed.len() as u16).to_le_bytes());
+        rec.extend_from_slice(&sealed);
+        if !crate::log_err!(self.file.write_all(&rec), "WAVE: spool record write") {
+            return None;
+        }
+        self.offset += rec.len() as u64;
         Some(at)
     }
 }
@@ -348,13 +354,15 @@ pub fn finalize(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Option<([u8; 3
     let hash = *blake3::hash(&container).as_bytes();
     let size = container.len() as u64;
     crate::storage::blob_store_any(identity_seed, &hash, &container).ok()?;
-    let _ = std::fs::remove_file(&ticket.path);
+    crate::log_err!(std::fs::remove_file(&ticket.path), "WAVE: removing the kept spool file");
     Some((hash, size))
 }
 
 /// DELETE: remove the file; the key dies with the ticket drop. (The removal is defence-in-depth — the shred already happened when the key ceased to exist.)
 pub fn shred(ticket: SpoolTicket) {
-    let _ = std::fs::remove_file(&ticket.path);
+    // A spool whose file was never created (the create failed and was logged there) has nothing to remove: NotFound is the one meaningless failure here.
+    let removed = std::fs::remove_file(&ticket.path).or_else(|e| if e.kind() == std::io::ErrorKind::NotFound { Ok(()) } else { Err(e) });
+    crate::log_err!(removed, "WAVE: removing a discarded spool file");
     drop(ticket);
 }
 

@@ -43,7 +43,7 @@ pub async fn send(socket: &UdpSocket, data: &[u8], addr: SocketAddr) {
             crate::log(&msg);
         }
     }
-    let _ = socket.send_to(data, addr).await;
+    crate::log_err!(socket.send_to(data, addr).await, "UDP send to {}", addr);
 }
 
 /// Synchronous version for non-async contexts (LAN broadcast uses std::net::UdpSocket)

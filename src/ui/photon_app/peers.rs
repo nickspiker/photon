@@ -292,7 +292,7 @@ impl PhotonApp {
                     }
                 }
             }
-            let _ = tx.send(found);
+            crate::log_err!(tx.send(found), "hand phonebook lookups to the UI");
         });
     }
 
@@ -395,7 +395,7 @@ impl PhotonApp {
             });
             tx
         });
-        let _ = tx.send((snapshot, kp, storage, addr));
+        crate::log_err!(tx.send((snapshot, kp, storage, addr)), "queue a phonebook persist on its writer");
     }
 
     /// Load the persisted phonebook into the live store, merging rather than replacing — a record learned this session (fresher `last_seen`) must win over a stale one off disk, which is what `add_peer`'s per-device upsert already does.

@@ -166,7 +166,7 @@ fn bind_photon_socket() -> (UdpSocket, u16) {
     crate::log("Network: All fixed ports busy - falling back to ephemeral");
     let udp = UdpSocket::bind("[::]:0").expect("Failed to bind UDP socket");
     // Enable broadcast receive for LAN discovery
-    let _ = udp.set_broadcast(true);
+    crate::log_err!(udp.set_broadcast(true), "Network: enable broadcast receive");
     let port = udp
         .local_addr()
         .expect("Failed to get socket address")
@@ -317,7 +317,7 @@ impl HandleQuery {
     /// ferros: the LAN is the network; there is no fgtw.org to ask whether we are online, so online it is.
     #[cfg(target_os = "ferros")]
     fn spawn_connectivity_worker(online_tx: Sender<bool>, _event_proxy: Option<Arc<dyn WakeSender<PhotonEvent>>>) {
-        let _ = online_tx.send(true);
+        crate::log_err!(online_tx.send(true), "Connectivity: online flag to the network client");
     }
 
     #[cfg(not(any(target_os = "android", target_os = "ferros")))]
@@ -351,8 +351,8 @@ impl HandleQuery {
 
                             if let Ok(mut watcher) = IfWatcher::new() {
                                 loop {
-                                    if watcher.next().await.is_some() {
-                                        let _ = net_change_tx_clone.send(());
+                                    if watcher.next().await.is_some() && !crate::log_err!(net_change_tx_clone.send(()), "Connectivity: network-change wake") {
+                                        break;
                                     }
                                 }
                             }
@@ -380,9 +380,9 @@ impl HandleQuery {
                         "Connectivity: FGTW {} (GET /status)",
                         if online { "ONLINE" } else { "offline" }
                     );
-                    let _ = online_tx.send(online);
+                    crate::log_err!(online_tx.send(online), "Connectivity: online flag to the network client");
                     if let Some(ref proxy) = event_proxy {
-                        let _ = proxy.send(PhotonEvent::ConnectivityChanged(online));
+                        crate::log_err!(proxy.send(PhotonEvent::ConnectivityChanged(online)), "Connectivity: wake the UI");
                     }
                     prev_online = online;
                     first_check = false;
@@ -440,7 +440,7 @@ impl HandleQuery {
                 };
 
                 if first_check || online != prev_online {
-                    let _ = online_tx.send(online);
+                    crate::log_err!(online_tx.send(online), "Connectivity: online flag to the network client");
                     prev_online = online;
                     first_check = false;
                 }
@@ -481,10 +481,10 @@ impl HandleQuery {
                         &crate::crypto::clutch::identity_party_id(&identity_seed),
                     ) {
                         crate::log("attest: DEVICE BUSY — this device is bound to another identity; refused post-proof");
-                        let _ = tx.send(QueryResult::Probe {
+                        crate::log_err!(tx.send(QueryResult::Probe {
                             outcome: ProbeOutcome::DeviceBusy,
                             session,
-                        });
+                        }), "attest: probe result to the UI");
                         continue;
                     }
                     // THE ATTEST VERDICT is fgtw's one pure function (fgtw::attest), so Photon and ferros's bare-metal client decide identically from the same evidence. Photon hands it the seed's answer alone for now — no held or peer chains — which is exactly the decision this probe made by hand before.
@@ -505,19 +505,19 @@ impl HandleQuery {
                         // An unfoldable chain is indeterminate (corrupt / partial / KV read-lag): surface an error and let the next cycle retry, never brand the handle taken.
                         fgtw::attest::AttestVerdict::Unverifiable(fold_err) => {
                             crate::logf!("Network: probe fold failed (indeterminate, not taken): {}", format!("{:?}", fold_err));
-                            let _ = tx.send(QueryResult::Error(format!("chain unverifiable: {fold_err:?}")));
+                            crate::log_err!(tx.send(QueryResult::Error(format!("chain unverifiable: {fold_err:?}"))), "attest: probe error to the UI");
                             continue;
                         }
                         // Network unreachable — can't classify, and claiming needs the network anyway. The fleet client's message is already short and plain (e.g. "No connection to FGTW"), surfaced verbatim.
                         fgtw::attest::AttestVerdict::Unreachable => {
                             let e = fetched.err().unwrap_or_default();
                             crate::logf!("Network: probe fetch failed: {}", e);
-                            let _ = tx.send(QueryResult::Error(e));
+                            crate::log_err!(tx.send(QueryResult::Error(e)), "attest: probe error to the UI");
                             continue;
                         }
                     };
                     crate::logf!("Network: probe → {}", format!("{:?}", outcome));
-                    let _ = tx.send(QueryResult::Probe { outcome, session });
+                    crate::log_err!(tx.send(QueryResult::Probe { outcome, session }), "attest: probe result to the UI");
                     continue;
                 }
 
@@ -637,7 +637,7 @@ impl HandleQuery {
                                 "Network: attest verdict indeterminate (keeping session): {}",
                                 e
                             );
-                            let _ = tx.send(QueryResult::Error(e));
+                            crate::log_err!(tx.send(QueryResult::Error(e)), "attest: verdict error to the UI");
                             continue;
                         }
                     };
@@ -685,7 +685,7 @@ impl HandleQuery {
                             Err(e) => {
                                 let msg = format!("storage init failed: {}", e);
                                 crate::logf!("Network: {}", msg);
-                                let _ = tx.send(QueryResult::Error(msg));
+                                crate::log_err!(tx.send(QueryResult::Error(msg)), "attest: storage error to the UI");
                                 return;
                             }
                         };
@@ -766,10 +766,7 @@ impl HandleQuery {
                                 &identity_seed,
                             ) {
                                 crate::log("RECOVERY: fleet key recovered from the fan-out (ira wrap — no sibling needed)");
-                                let _ = storage.write_addr(
-                                    &crate::storage::vault_key("fleet_key", &vault_seed),
-                                    &k,
-                                );
+                                crate::log_err!(storage.write_addr(&crate::storage::vault_key("fleet_key", &vault_seed), &k), "RECOVERY: recovered fleet key write");
                                 fleet_key = Some(k);
                             }
                         }
@@ -817,8 +814,7 @@ impl HandleQuery {
                                         }
                                     }
                                     // Save to local storage
-                                    let _ =
-                                        crate::storage::contacts::save_contact(&contact, &storage);
+                                    crate::log_err!(crate::storage::contacts::save_contact(&contact, &storage), "Cloud: restored contact save");
                                     contacts.push(contact);
                                 }
                             }
@@ -837,13 +833,13 @@ impl HandleQuery {
                         });
                         if let Some(fk) = fleet_key {
                             if !contacts.is_empty() && !unchanged {
-                                let _ = crate::storage::cloud::sync_contacts_to_cloud(
+                                crate::log_err!(crate::storage::cloud::sync_contacts_to_cloud(
                                     &contacts,
                                     &identity_seed,
                                     &fk,
                                     &keypair,
                                     &handle_proof,
-                                );
+                                ), "Cloud: contacts backup upload");
                             } else if unchanged {
                                 crate::logf!(
                                     "Cloud: {} contacts unchanged — skipping upload",
@@ -958,7 +954,7 @@ impl HandleQuery {
                     }
                 };
 
-                let _ = tx.send(query_result);
+                crate::log_err!(tx.send(query_result), "attest: query result to the UI");
             }
         });
     }
@@ -989,7 +985,7 @@ impl HandleQuery {
 
                 let result = Self::search_with_refresh(&handle, handle_proof, &transport_arc);
 
-                let _ = tx.send(result);
+                crate::log_err!(tx.send(result), "Network: search result to the UI");
             }
         });
     }
@@ -1070,24 +1066,22 @@ impl HandleQuery {
     /// First attest from a typed handle (non-blocking).
     /// The worker derives + persists the session roots, so subsequent launches use [`query_resume`](Self::query_resume) instead.
     pub fn query(&self, handle: String) {
-        let _ = self.query_sender.send(QueryRequest::FirstAttest(handle));
+        crate::log_err!(self.query_sender.send(QueryRequest::FirstAttest(handle)), "Network: attest request to the query worker");
     }
 
     /// Classify a typed handle without announcing (non-blocking) — drives the attest three-way branch. Returns [`QueryResult::Probe`].
     pub fn probe(&self, handle: String) {
-        let _ = self.query_sender.send(QueryRequest::Probe(handle));
+        crate::log_err!(self.query_sender.send(QueryRequest::Probe(handle)), "Network: probe request to the query worker");
     }
 
     /// First attest with caller-derived roots (non-blocking) — the JOIN flow derives them once up front; this skips the string and the second ~1s proof while keeping first-attest persistence (roots remembered on FGTW confirmation).
     pub fn query_first_attest_with_roots(&self, session: tohu::SessionIdentity) {
-        let _ = self
-            .query_sender
-            .send(QueryRequest::FirstAttestWithRoots(session));
+        crate::log_err!(self.query_sender.send(QueryRequest::FirstAttestWithRoots(session)), "Network: attest-with-roots request to the query worker");
     }
 
     /// Resume attestation from the cached session roots (non-blocking) — no handle string, no ~1s proof recompute.
     pub fn query_resume(&self, session: tohu::SessionIdentity) {
-        let _ = self.query_sender.send(QueryRequest::Resume(session));
+        crate::log_err!(self.query_sender.send(QueryRequest::Resume(session)), "Network: resume request to the query worker");
     }
 
     /// Check if an attestation response is ready (non-blocking)
@@ -1102,7 +1096,7 @@ impl HandleQuery {
 
     /// Start a handle search (non-blocking)
     pub fn search(&self, handle: String) {
-        let _ = self.search_sender.send(handle);
+        crate::log_err!(self.search_sender.send(handle), "Network: search request to the search worker");
     }
 
     /// Check if a search result is ready (non-blocking)

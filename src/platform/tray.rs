@@ -39,7 +39,7 @@ mod linux {
             }]
         }
         fn activate(&mut self, _x: i32, _y: i32) {
-            let _ = self.proxy.send(crate::ui::PhotonEvent::ShowWindow);
+            crate::log_err!(self.proxy.send(crate::ui::PhotonEvent::ShowWindow), "TRAY: waking the UI to show the window");
         }
         fn menu(&self) -> Vec<ksni::menu::MenuItem<Self>> {
             use ksni::menu::*;
@@ -47,7 +47,7 @@ mod linux {
                 StandardItem {
                     label: "Show Photon".into(),
                     activate: Box::new(|t: &mut Self| {
-                        let _ = t.proxy.send(crate::ui::PhotonEvent::ShowWindow);
+                        crate::log_err!(t.proxy.send(crate::ui::PhotonEvent::ShowWindow), "TRAY: waking the UI to show the window");
                     }),
                     ..Default::default()
                 }
@@ -101,7 +101,7 @@ mod windows_tray {
     use windows::Win32::UI::WindowsAndMessaging::{
         AppendMenuW, CreateIconIndirect, CreatePopupMenu, CreateWindowExW, DefWindowProcW,
         DispatchMessageW, GetCursorPos, GetMessageW, RegisterClassW, RegisterWindowMessageW,
-        SetForegroundWindow, TrackPopupMenu, TranslateMessage, HICON, HMENU, ICONINFO, MF_STRING,
+        SetForegroundWindow, TrackPopupMenu, TranslateMessage, HICON, ICONINFO, MF_STRING,
         MSG, TPM_BOTTOMALIGN, TPM_NONOTIFY, TPM_RETURNCMD, TPM_RIGHTBUTTON, WINDOW_EX_STYLE,
         WINDOW_STYLE, WM_APP, WM_LBUTTONUP, WM_RBUTTONUP, WNDCLASSW,
     };
@@ -139,8 +139,9 @@ mod windows_tray {
             hbmColor: colour,
         };
         let icon = CreateIconIndirect(&info).ok();
-        let _ = DeleteObject(colour);
-        let _ = DeleteObject(mask);
+        // CreateIconIndirect copied both bitmaps; a failed release leaks a GDI object.
+        crate::log_err!(DeleteObject(colour).ok(), "TRAY: colour bitmap release");
+        crate::log_err!(DeleteObject(mask).ok(), "TRAY: mask bitmap release");
         icon
     }
 
@@ -158,7 +159,7 @@ mod windows_tray {
         }
         let tip = wide("Photon");
         nid.szTip[..tip.len().min(128)].copy_from_slice(&tip[..tip.len().min(128)]);
-        let _ = Shell_NotifyIconW(NIM_ADD, &nid);
+        crate::log_err!(Shell_NotifyIconW(NIM_ADD, &nid).ok(), "TRAY: Shell_NotifyIcon add");
     }
 
     unsafe extern "system" fn wndproc(
@@ -171,19 +172,22 @@ mod windows_tray {
             match lparam.0 as u32 {
                 WM_LBUTTONUP => {
                     if let Some(proxy) = PROXY.get() {
-                        let _ = proxy.send(crate::ui::PhotonEvent::ShowWindow);
+                        crate::log_err!(proxy.send(crate::ui::PhotonEvent::ShowWindow), "TRAY: waking the UI to show the window");
                     }
                 }
                 WM_RBUTTONUP => {
                     if let Ok(menu) = CreatePopupMenu() {
                         let show = wide("Show Photon");
                         let exit = wide("Exit");
-                        let _ = AppendMenuW(menu, MF_STRING, MENU_SHOW, PCWSTR(show.as_ptr()));
-                        let _ = AppendMenuW(menu, MF_STRING, MENU_EXIT, PCWSTR(exit.as_ptr()));
+                        crate::log_err!(AppendMenuW(menu, MF_STRING, MENU_SHOW, PCWSTR(show.as_ptr())), "TRAY: menu item Show append");
+                        crate::log_err!(AppendMenuW(menu, MF_STRING, MENU_EXIT, PCWSTR(exit.as_ptr())), "TRAY: menu item Exit append");
                         let mut pt = POINT::default();
-                        let _ = GetCursorPos(&mut pt);
+                        crate::log_err!(GetCursorPos(&mut pt), "TRAY: cursor position read");
                         // Required Win32 ritual: without SetForegroundWindow the popup never dismisses on outside-click.
-                        let _ = SetForegroundWindow(hwnd);
+                        // Its zero return sets no last-error code, so a refusal is said plainly.
+                        if !SetForegroundWindow(hwnd).as_bool() {
+                            crate::log("TRAY: SetForegroundWindow refused — the menu may not dismiss on an outside click");
+                        }
                         let picked = TrackPopupMenu(
                             menu,
                             TPM_RETURNCMD | TPM_NONOTIFY | TPM_RIGHTBUTTON | TPM_BOTTOMALIGN,
@@ -196,7 +200,7 @@ mod windows_tray {
                         match picked.0 as usize {
                             MENU_SHOW => {
                                 if let Some(proxy) = PROXY.get() {
-                                    let _ = proxy.send(crate::ui::PhotonEvent::ShowWindow);
+                                    crate::log_err!(proxy.send(crate::ui::PhotonEvent::ShowWindow), "TRAY: waking the UI to show the window");
                                 }
                             }
                             MENU_EXIT => {
@@ -243,7 +247,9 @@ mod windows_tray {
                     return;
                 }
                 let tc = wide("TaskbarCreated");
-                let _ = TASKBAR_CREATED.set(RegisterWindowMessageW(PCWSTR(tc.as_ptr())));
+                if TASKBAR_CREATED.set(RegisterWindowMessageW(PCWSTR(tc.as_ptr()))).is_err() {
+                    crate::log("TRAY: the TaskbarCreated id was already registered — the first one stays");
+                }
                 // A plain hidden top-level window, NOT message-only (HWND_MESSAGE windows don't receive the TaskbarCreated broadcast).
                 let Ok(hwnd) = CreateWindowExW(
                     WINDOW_EX_STYLE(0),
@@ -266,6 +272,7 @@ mod windows_tray {
                 crate::log("TRAY: orb parked next to the clock (Shell_NotifyIcon; Windows may fold new icons into the ^ overflow until the user drags them out)");
                 let mut msg = MSG::default();
                 while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                    // WHY: TranslateMessage's BOOL says whether a character message was generated — information, not a failure, and BOOL is must_use.
                     let _ = TranslateMessage(&msg);
                     DispatchMessageW(&msg);
                 }
@@ -308,7 +315,7 @@ mod macos_tray {
             #[unsafe(method(showPhoton:))]
             fn show_photon(&self, _sender: Option<&AnyObject>) {
                 if let Some(proxy) = PROXY.get() {
-                    let _ = proxy.send(crate::ui::PhotonEvent::ShowWindow);
+                    crate::log_err!(proxy.send(crate::ui::PhotonEvent::ShowWindow), "TRAY: waking the UI to show the window");
                 }
             }
 
@@ -367,7 +374,9 @@ mod macos_tray {
             // With a menu attached, LEFT click also opens it — macOS convention (there is no separate left-activate once a menu is set, and fighting that needs a click-mask dance not worth it for v1). "Show Photon" is the top item, so surfacing is two clicks.
             item.setMenu(Some(&menu));
             // Park the retained objects for the process lifetime.
-            let _ = PARKED.set(Retained::into_raw(item) as usize);
+            if PARKED.set(Retained::into_raw(item) as usize).is_err() {
+                crate::log("TRAY: a status item was already parked — this one stays leaked alongside it");
+            }
             std::mem::forget(target);
         }
         crate::log("TRAY: orb parked in the menu bar (NSStatusItem)");

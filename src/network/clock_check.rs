@@ -76,7 +76,7 @@ pub fn spawn_clock_check(
         {
             Ok(r) => r,
             Err(e) => {
-                let _ = tx.send(ClockCheckResult::Unavailable(format!("runtime: {}", e)));
+                crate::log_err!(tx.send(ClockCheckResult::Unavailable(format!("runtime: {}", e))), "clock check: result to the app");
                 return;
             }
         };
@@ -98,11 +98,11 @@ pub fn spawn_clock_check(
             }
         });
 
-        let _ = tx.send(result);
+        crate::log_err!(tx.send(result), "clock check: result to the app");
 
         #[cfg(not(target_os = "android"))]
         if let Some(proxy) = event_proxy.as_ref() {
-            let _ = proxy.send(PhotonEvent::NetworkUpdate);
+            crate::log_err!(proxy.send(PhotonEvent::NetworkUpdate), "clock check: wake the UI");
         }
     });
 }

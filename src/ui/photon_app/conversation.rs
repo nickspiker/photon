@@ -378,6 +378,18 @@ impl PhotonApp {
     }
 
     /// The open conversation's header (docs/conversations.md Phase 2): one view at any size, computed before the chrome borrow.
+    /// Does any other standing member of this group sit online on a validated DIRECT path (not the relay)? A group wave needs one, as a pair's does (Nick 2026-11-01: "we should have a missing or greyed out beam/wave if we do not have a direct connection regardless").
+    /// A member we never friended has no validated path we can see, so only friends count.
+    pub(super) fn molecule_direct_path(&self, gi: usize) -> bool {
+        let Some((_, roster)) = self.molecule_rosters.get(gi) else {
+            return false;
+        };
+        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        roster.standing().into_iter().filter(|p| Some(*p) != us).any(|p| {
+            self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == p && c.is_online && c.validated_path.is_some_and(|(a, _)| a != crate::network::status::RELAY_ADDR))
+        })
+    }
+
     pub(super) fn conv_header(&self) -> Option<super::ConvHeader> {
         let id = self.active_conversation?;
         if let Some(gid) = self.roster_id_of(id) {
@@ -851,7 +863,7 @@ impl PhotonApp {
             c.friendship_id = None;
         }
         if let Some(storage) = self.storage.as_ref() {
-            let _ = crate::storage::contacts::save_contact(&self.contacts[ci], storage);
+            crate::log_err!(crate::storage::contacts::save_contact(&self.contacts[ci], storage), "the contact save after the CLUTCH reset");
         }
     }
 
@@ -872,7 +884,7 @@ impl PhotonApp {
                 c.era_prior_claim = None;
                 c.clutch_state = crate::types::ClutchState::Complete;
                 if let Some(storage) = self.storage.as_ref() {
-                    let _ = crate::storage::contacts::save_contact(&self.contacts[ci], storage);
+                    crate::log_err!(crate::storage::contacts::save_contact(&self.contacts[ci], storage), "the contact save after the wedged round discard");
                 }
             } else {
                 self.repose_clutch_round(ci, "ceremony wedged on repeated ceremony_id mismatches — round discarded, re-keying from the deterministic posture");
@@ -930,7 +942,7 @@ impl PhotonApp {
             }
             c.era_weave_due = 0;
             if let Some(storage) = self.storage.as_ref() {
-                let _ = crate::storage::contacts::save_contact(&self.contacts[i], storage);
+                crate::log_err!(crate::storage::contacts::save_contact(&self.contacts[i], storage), "the contact save after arming the heavy weave");
             }
         }
         // FLEET-FIRST REJOIN (the re-clutch storm fix): while ANY fleet sibling still lacks a presence VERDICT (pong or 3-timeout — an evidence edge, never a timer), FRIEND keygens hold. A wiped device's restored contacts arrive Pending+keyless and the old code fired ceremonies at every friend within milliseconds — seconds before chain replication from an online sibling would have flipped them all Complete with no ceremony at all. Once every sibling is probed: online siblings ⇒ chains arrive and adoption drains the queue; all-offline ⇒ this is the identity's only live device and clutching is legitimately ours. Sibling PAIR-WEAVES are exempt — they are the very channel the chains replicate over.
@@ -1036,10 +1048,10 @@ impl PhotonApp {
                 OwnSync::Adopted => {
                     crate::log("Avatar: a sibling's newer avatar adopted from our scoped slot (startup sync)");
                     if let Some(pixels) = crate::ui::avatar::load_cached_avatar_from_seed(&identity_seed, &storage).map(|(_, p)| p) {
-                        let _ = tx.send(crate::ui::avatar::AvatarDownloadResult { owner: None, pixels: Some(pixels), name: None });
+                        crate::log_err!(tx.send(crate::ui::avatar::AvatarDownloadResult { owner: None, pixels: Some(pixels), name: None }), "the adopted own avatar to the UI thread");
                         #[cfg(not(target_os = "android"))]
                         if let Some(p) = proxy.as_ref() {
-                            let _ = p.send(crate::ui::PhotonEvent::NetworkUpdate);
+                            super::wake_ui(p);
                         }
                     }
                 }
@@ -1073,14 +1085,14 @@ impl PhotonApp {
                             crate::ui::avatar::load_cached_avatar_from_seed(&identity_seed, &storage)
                                 .map(|(_, p)| p);
                         if pixels.is_some() || recovered_name.is_some() {
-                            let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
+                            crate::log_err!(tx.send(crate::ui::avatar::AvatarDownloadResult {
                                 owner: None, // self
                                 pixels,
                                 name: recovered_name,
-                            });
+                            }), "the FGTW own avatar to the UI thread");
                             #[cfg(not(target_os = "android"))]
                             if let Some(p) = proxy.as_ref() {
-                                let _ = p.send(crate::ui::PhotonEvent::NetworkUpdate);
+                                super::wake_ui(p);
                             }
                         }
                     }
@@ -1401,14 +1413,14 @@ impl PhotonApp {
                     });
                 // No network fallback to the legacy pin: an old-form avatar is read only from our own vault (the cache read above). The pin-sealed wall copy can be written by anyone who holds the pin, which is every friend, and the host is assumed hostile.
             }
-            let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
+            crate::log_err!(tx.send(crate::ui::avatar::AvatarDownloadResult {
                 owner: Some(hp),
                 pixels,
                 name: peer_name,
-            });
+            }), "the fetched avatar to the UI thread");
             #[cfg(not(target_os = "android"))]
             if let Some(p) = proxy.as_ref() {
-                let _ = p.send(crate::ui::PhotonEvent::NetworkUpdate);
+                super::wake_ui(p);
             }
         });
     }
@@ -2613,7 +2625,7 @@ impl PhotonApp {
                             c.friendship_id = Some(fid);
                             crate::logf!("CHAIN-SYNC: wired {} to its replicated chains — this device transmits on its own lane now", crate::fp(&c.handle_proof).as_str());
                             if let Some(storage) = self.storage.as_ref() {
-                                let _ = crate::storage::contacts::save_contact(c, storage);
+                                crate::log_err!(crate::storage::contacts::save_contact(c, storage), "the contact save after wiring replicated chains");
                             }
                         }
                     }
@@ -2672,7 +2684,7 @@ impl PhotonApp {
                     // A completion adopted by replication is the other instance winning — the yield served its purpose.
                     contact.clutch_yielded = false;
                     if let Some(storage) = self.storage.as_ref() {
-                        let _ = crate::storage::contacts::save_contact(&self.contacts[ci], storage);
+                        crate::log_err!(crate::storage::contacts::save_contact(&self.contacts[ci], storage), "the contact save after adopting a replicated chain");
                     }
                     crate::logf!(
                         "CHAIN-SYNC: adopted chain for {} — this device can now transmit directly",
@@ -3082,7 +3094,7 @@ impl PhotonApp {
             }
             // The catch-up summary for a sibling batch, and the flush for a walk this page finished, whoever sent it (catch_up_alert); our fleet's own terminal never alerts.
             if !self.contacts[idx].is_sibling {
-                let _ = self.catch_up_alert(conv_pos, &fresh, from_sibling);
+                self.catch_up_alert(conv_pos, &fresh, from_sibling);
                 self.clear_unread_on_reply(conv_pos, &fresh);
             }
             // WAVE signals via sibling merge are STOP edges ONLY (docs/waves.md): our sibling's answer/decline row stops this device's ring; replayed catch-up signals correctly ring nothing (a ring requires the DIRECT offer decrypt — which is also what kills the stale-offer-rings-days-later class).
@@ -3183,7 +3195,11 @@ impl PhotonApp {
         };
         // A muted group discharges silently, as its live rows do.
         let muted = self.roster_id_of(id).is_some_and(|gid| self.molecule_muted(&gid));
+        // The chirp seed voices the Android alert; desktop notifications have no chirp.
+        #[cfg(target_os = "android")]
         let (sender_name, chirp_seed) = self.alert_voice(id);
+        #[cfg(not(target_os = "android"))]
+        let (sender_name, _) = self.alert_voice(id);
         crate::logf!("NOTIFY: batch of {} undischarged row(s) from {} — one summary alert", undischarged.len(), sender_name);
         let summary = tr(Msg::NewMessages(undischarged.len())).into_owned();
         let batch_hp = *blake3::hash(&undischarged[0].to_le_bytes()).as_bytes();
@@ -3193,7 +3209,6 @@ impl PhotonApp {
         }
         #[cfg(not(target_os = "android"))]
         {
-            let _ = chirp_seed;
             if !muted {
                 crate::platform::desktop_notify::notify_new_message(&batch_hp, &sender_name, &summary, Some(*id.as_bytes()));
             }
@@ -3375,7 +3390,7 @@ impl PhotonApp {
             std::thread::spawn(move || {
                 match crate::network::fgtw::inbox_drain_blocking(&kp, &hp) {
                     Ok(events) if !events.is_empty() => {
-                        let _ = tx.send(events);
+                        crate::log_err!(tx.send(events), "the inbox events to the UI thread");
                     }
                     Ok(_) => {}
                     Err(e) => crate::logf!("INBOX: drain failed: {}", e),
@@ -3441,14 +3456,14 @@ impl PhotonApp {
                 (None, None) => (None, None),
             };
             if pixels.is_some() || name.is_some() {
-                let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
+                crate::log_err!(tx.send(crate::ui::avatar::AvatarDownloadResult {
                     owner: None, // self
                     pixels,
                     name,
-                });
+                }), "the recovered own avatar to the UI thread");
                 #[cfg(not(target_os = "android"))]
                 if let Some(p) = proxy.as_ref() {
-                    let _ = p.send(crate::ui::PhotonEvent::NetworkUpdate);
+                    super::wake_ui(p);
                 }
             }
         });

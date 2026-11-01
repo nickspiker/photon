@@ -33,7 +33,7 @@ pub fn enable() -> Result<(), String> {
     );
     std::fs::write(&path, unit).map_err(|e| format!("write {}: {e}", path.display()))?;
     // Best-effort immediate arm — the artifact alone covers the next login; these make it live NOW.
-    let _ = std::process::Command::new("systemctl").args(["--user", "daemon-reload"]).status();
+    crate::log_err!(std::process::Command::new("systemctl").args(["--user", "daemon-reload"]).status(), "LIFELINE: systemctl --user daemon-reload");
     let ok = std::process::Command::new("systemctl")
         .args(["--user", "enable", "--now", "photon-lifeline.service"])
         .status()
@@ -47,13 +47,14 @@ pub fn enable() -> Result<(), String> {
 
 #[cfg(target_os = "linux")]
 pub fn disable() -> Result<(), String> {
-    let _ = std::process::Command::new("systemctl")
-        .args(["--user", "disable", "--now", "photon-lifeline.service"])
-        .status();
+    crate::log_err!(
+        std::process::Command::new("systemctl").args(["--user", "disable", "--now", "photon-lifeline.service"]).status(),
+        "LIFELINE: systemctl --user disable"
+    );
     let path = unit_path()?;
     match std::fs::remove_file(&path) {
         Ok(()) => {
-            let _ = std::process::Command::new("systemctl").args(["--user", "daemon-reload"]).status();
+            crate::log_err!(std::process::Command::new("systemctl").args(["--user", "daemon-reload"]).status(), "LIFELINE: systemctl --user daemon-reload");
             Ok(())
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -90,14 +91,14 @@ pub fn enable() -> Result<(), String> {
     );
     std::fs::write(&path, plist).map_err(|e| format!("write {}: {e}", path.display()))?;
     // Best-effort immediate arm; launchd scans LaunchAgents at login regardless.
-    let _ = std::process::Command::new("launchctl").args(["load", "-w"]).arg(&path).status();
+    crate::log_err!(std::process::Command::new("launchctl").args(["load", "-w"]).arg(&path).status(), "LIFELINE: launchctl load {}", path.display());
     Ok(())
 }
 
 #[cfg(target_os = "macos")]
 pub fn disable() -> Result<(), String> {
     let path = agent_path()?;
-    let _ = std::process::Command::new("launchctl").args(["unload", "-w"]).arg(&path).status();
+    crate::log_err!(std::process::Command::new("launchctl").args(["unload", "-w"]).arg(&path).status(), "LIFELINE: launchctl unload {}", path.display());
     match std::fs::remove_file(&path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),

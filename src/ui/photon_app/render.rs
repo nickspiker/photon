@@ -439,7 +439,9 @@ impl PhotonApp {
             .and_then(|ci| self.contacts.get(ci))
             .map_or(false, |c| {
                 !c.is_sibling && c.is_online && (c.chain_woven || c.friendship_id.is_some()) && !c.validated_path.is_some_and(|(a, _)| a != crate::network::status::RELAY_ADDR)
-            });
+            })
+            // A group the same (2026-11-01): standing with members online, but none on a direct path, reads "no direct path" and stays dimmed.
+            || (molecule_wave.is_some_and(|(_, on)| on) && !active_gi.is_some_and(|gi| self.molecule_direct_path(gi)));
         let wave_pill_enabled = self
             .active_contact()
             .and_then(|ci| self.contacts.get(ci))
@@ -447,7 +449,7 @@ impl PhotonApp {
                 !c.is_sibling && c.is_online && (c.chain_woven || c.friendship_id.is_some())
             })
             && !wave_pill_no_path
-            || molecule_wave.is_some_and(|(_, on)| on);
+            || (molecule_wave.is_some_and(|(_, on)| on) && !wave_pill_no_path);
         // A molecule beams too: our camera to every link (docs/group-waves.md).
         let beam_pill_enabled = wave_pill_enabled && crate::wave::beam_session::camera_usable();
         // Live wave-duration seconds, computed here (a per-frame recompute from the frozen osc stamps — no stored timer): Active counts up from `phase_osc` (re-stamped at answer); Ended freezes at `final_osc - phase_osc`; other phases show 0. Carried in the overlay tuple so the panel + strip render it via the base-aware `fmt_duration`.
@@ -3358,10 +3360,9 @@ impl PhotonApp {
                                     return b.clone();
                                 }
                             }
-                            if let (Some((ph, pct)), Some((h, name, _))) =
+                            if let (Some((ph, pct)), Some((h, _, _))) =
                                 (playing_rec, m.file_parts())
                             {
-                                let _ = name;
                                 if m.is_wave_recording() && h == ph {
                                     return tr(Msg::RecordingPlaying { pct }).into_owned();
                                 }
@@ -3993,8 +3994,6 @@ impl PhotonApp {
                                 // ★ — mark important, never prune (the retention design reads it; the glyph needs no translation).
                                 {
                                     let starred = msg.star_osc > 0;
-                                    let star_fill = starred.then_some((theme::near_black(*theme::SEARCH_RELAY_COLOUR, 0.35), *theme::SEARCH_RELAY_COLOUR));
-                                    let _ = star_fill;
                                     pills.push(("\u{2605}".into(), if starred { *theme::SEARCH_RELAY_COLOUR } else { *theme::LABEL_COLOUR }, (self.msg_action_base + 10)));
                                 }
                                 let deleting =
@@ -4273,16 +4272,13 @@ impl PhotonApp {
                                                     if known == Some(true) {
                                                         self.wave_env_pending.insert(eh);
                                                         let (tx, wake) = (tx0.clone(), wake0.clone());
-                                                        let _ = std::thread::Builder::new().name("wave-env".into()).spawn(move || {
+                                                        crate::log_err!(std::thread::Builder::new().name("wave-env".into()).spawn(move || {
                                                             let res = crate::storage::blob_load(&seed, &eh).and_then(|b| crate::wave::wave_env::read(&b)).map(|e| vec![e]);
-                                                            let _ = tx.send((eh, res));
-                                                            #[cfg(not(target_os = "android"))]
+                                                            crate::log_err!(tx.send((eh, res)), "hand a wave envelope to the UI");
                                                             if let Some(wk) = wake.as_ref() {
-                                                                let _ = wk.send(crate::ui::PhotonEvent::NetworkUpdate);
+                                                                wake_ui(wk);
                                                             }
-                                                            #[cfg(target_os = "android")]
-                                                            let _ = wake;
-                                                        });
+                                                        }), "spawn the wave envelope reader");
                                                     } else if known == Some(false) {
                                                         if let Some(id) = self.active_conversation {
                                                             self.wave_env_wants.push((id, eh));
@@ -4293,16 +4289,13 @@ impl PhotonApp {
                                                 if held && !self.wave_env.contains_key(&hash) && !self.wave_env_pending.contains(&hash) && (side_unresolvable(env_ours_h) || side_unresolvable(env_theirs_h)) {
                                                     self.wave_env_pending.insert(hash);
                                                     let (tx, wake) = (tx0.clone(), wake0.clone());
-                                                    let _ = std::thread::Builder::new().name("wave-env-derive".into()).spawn(move || {
+                                                    crate::log_err!(std::thread::Builder::new().name("wave-env-derive".into()).spawn(move || {
                                                         let res = crate::storage::blob_load(&seed, &hash).and_then(|b| crate::wave::record::envelopes_from_blob(&b));
-                                                        let _ = tx.send((hash, res));
-                                                        #[cfg(not(target_os = "android"))]
+                                                        crate::log_err!(tx.send((hash, res)), "hand derived wave envelopes to the UI");
                                                         if let Some(wk) = wake.as_ref() {
-                                                            let _ = wk.send(crate::ui::PhotonEvent::NetworkUpdate);
+                                                            wake_ui(wk);
                                                         }
-                                                        #[cfg(target_os = "android")]
-                                                        let _ = wake;
-                                                    });
+                                                    }), "spawn the wave envelope deriver");
                                                 }
                                             }
                                             // Resolve each party: their own blob first, the audio-derived channel second (0 = us/mic, 1 = them/wire).
@@ -4321,11 +4314,11 @@ impl PhotonApp {
                                                 }
                                                 None
                                             };
-                                            let sides = [(resolve(env_ours_h, 0), false, our_colour), (resolve(env_theirs_h, 1), true, their_colour)];
+                                            let sides = [(resolve(env_ours_h, 0), false), (resolve(env_theirs_h, 1), true)];
                                             // THE CUMULATIVE STACK WITH OPACITY CONTRIBUTIONS (Nick 2026-09-12): wave_fold_coverage lands every bin in one column at its own height and tracks per-row coverage; the draw is one solid run plus a graded contour. Height reference −12 dBFS; the played/unplayed split rides the colour.
                                             const WAVE_FULL_HEIGHT_AMP: f32 = 0.25;
                                             let rows = half as usize;
-                                            for (src, up, pc) in sides {
+                                            for (src, up) in sides {
                                                 let Some((src_h, src_ch, e)) = src else { continue };
                                                 if rows == 0 {
                                                     continue;
@@ -4346,7 +4339,6 @@ impl PhotonApp {
                                                         }
                                                     }
                                                 };
-                                                let _ = pc;
                                                 let (cov, band_cols) = &*bars;
                                                 let darker = |c: u32| {
                                                     let (a, d) = (c & 0xFF00_0000, c & 0x00FF_FFFF);
@@ -4443,16 +4435,13 @@ impl PhotonApp {
                                             self.wave_env_pending.insert(ahash);
                                             let tx = self.wave_env_tx.as_ref().unwrap().clone();
                                             let wake = self.event_proxy.clone();
-                                            let _ = std::thread::Builder::new().name("music-env".into()).spawn(move || {
+                                            crate::log_err!(std::thread::Builder::new().name("music-env".into()).spawn(move || {
                                                 let res = crate::storage::blob_load(&seed, &ahash).and_then(|b| crate::wave::music::envelopes_from_music(&b));
-                                                let _ = tx.send((ahash, res));
-                                                #[cfg(not(target_os = "android"))]
+                                                crate::log_err!(tx.send((ahash, res)), "hand music envelopes to the UI");
                                                 if let Some(wk) = wake.as_ref() {
-                                                    let _ = wk.send(crate::ui::PhotonEvent::NetworkUpdate);
+                                                    wake_ui(wk);
                                                 }
-                                                #[cfg(target_os = "android")]
-                                                let _ = wake;
-                                            });
+                                            }), "spawn the music envelope reader");
                                         }
                                     }
                                     if let Some(Some(envs)) = self.wave_env.get(&ahash).cloned() {
@@ -4796,7 +4785,6 @@ impl PhotonApp {
                                 }
                             }
                         }
-                        let _ = n;
 
                         // ── Armed reply/edit strip: the referenced message at HALF alpha (its sender's colour), in the reserved band. While editing, the strip shows what the row says NOW — the box holds the correction, so the pair reads as a before/after diff.
                         if digit_strip {
@@ -5423,8 +5411,6 @@ impl PhotonApp {
             // (page body is computed per-arm as a scrolled, natural-height region — see `layout.content_scrolled`) Everything sizes off layout.unit — the ONE span·ru harmonic unit — so text, pills, rows, and controls all scale together with window shape AND zoom. (The old mix — text × ru inside fixed rows, controls off bare region fractions — is what made zoom hit-or-miss.)
             let tspan = layout.unit * 0.72;
             let hspan2 = tspan * 0.75;
-            // Stub-pill height as a fraction of its row — the row is already unit-scaled, so no extra ru factor (that would double-scale).
-            let pillf = |base: Coord| base.min(1.0);
             // Draw a labelled action pill; stamps `settings_btn_base + slot` and returns nothing (stub). `n` rows must match update_widget_layout's split where widgets coexist.
             let btn_base = self.settings_btn_base;
             // Immediate-mode stub pill helper — captured as a closure over the canvas/text/hit-map isn't possible (multiple &mut borrows), so pills are drawn inline per page below via `draw_stub_pill`.
@@ -5577,33 +5563,6 @@ impl PhotonApp {
                                     cols[0].center_h(0.72),
                                     &tr(Msg::Add),
                                     btn_base + 2,
-                                    ctx.pressed_hit,
-                                );
-                            }
-                            YouRow::SavePill => {
-                                draw_stub_pill(
-                                    &mut canvas,
-                                    ctx.text,
-                                    &mut chrome.hit_test_map,
-                                    buf_w,
-                                    buf_h,
-                                    r.center_h(pillf(0.5)),
-                                    &tr(Msg::Update),
-                                    btn_base + 0,
-                                    ctx.pressed_hit,
-                                );
-                            }
-                            YouRow::Blank => {}
-                            YouRow::AvatarPill => {
-                                draw_stub_pill(
-                                    &mut canvas,
-                                    ctx.text,
-                                    &mut chrome.hit_test_map,
-                                    buf_w,
-                                    buf_h,
-                                    r.center_h(pillf(0.5)),
-                                    &tr(Msg::ChangeAvatar),
-                                    btn_base + 1,
                                     ctx.pressed_hit,
                                 );
                             }
@@ -7286,7 +7245,6 @@ impl PhotonApp {
                         crate::NumBase::Arabic => {}
                     }
                     measured_extent = Some((y + settings_content_scroll - inset.y + line_h, inset.h));
-                    let _ = tspan;
                 }
                 SettingsPage::About => {
                     // An About CARD, not a settings list: the Photon wordmark over its chromatic wave up top, then the two headline properties (killswitch-ready, passless), then the version — tap it to reveal both the spelled-out form AND the dozenal cheat sheet. No feedback line — photon is owned by everyone. All centred under the logo; a manual vertical cursor (elements are variable-height, not equal rows).
@@ -7504,7 +7462,6 @@ impl PhotonApp {
                     }
                     // MEASURED extent (Flow doctrine): the card's true height from the final cursor — retires the hand-counted row arithmetic next frame.
                     measured_extent = Some((y + settings_content_scroll - inset.y + line_h, inset.h));
-                    let _ = tspan;
                 }
             }
         }

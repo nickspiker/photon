@@ -27,14 +27,15 @@ impl PhotonApp {
                 "CLUTCH: Keypairs ready (ceremony_id computed when ping provenances available)",
             );
 
-            let _ = tx.send(ClutchKeygenResult {
+            crate::log_err!(tx.send(ClutchKeygenResult {
                 contact_id,
                 keypairs,
-            });
+            }), "the CLUTCH keygen result to the UI thread");
 
             // Wake the event loop so it processes the result
             #[cfg(not(target_os = "android"))]
             if let Some(p) = proxy.as_ref() {
+                // WHY: a refused wake is never news — the event loop has closed (the app is exiting); the result itself already sits in the channel.
                 let _ = p.send(crate::ui::PhotonEvent::ClutchKeygenComplete);
             }
         };
@@ -76,18 +77,19 @@ impl PhotonApp {
             #[cfg(feature = "development")]
             crate::log("CLUTCH: KEM encapsulation complete");
 
-            let _ = tx.send(ClutchKemEncapResult {
+            crate::log_err!(tx.send(ClutchKemEncapResult {
                 contact_id,
                 kem_response,
                 local_secrets,
                 ceremony_id,
                 conversation_token,
                 peer_addr,
-            });
+            }), "the CLUTCH encapsulation result to the UI thread");
 
             // Wake the event loop so it processes the result
             #[cfg(not(target_os = "android"))]
             if let Some(p) = proxy.as_ref() {
+                // WHY: a refused wake is never news — the event loop has closed (the app is exiting); the result itself already sits in the channel.
                 let _ = p.send(crate::ui::PhotonEvent::ClutchKemEncapComplete);
             }
         };
@@ -119,15 +121,16 @@ impl PhotonApp {
             #[cfg(feature = "development")]
             crate::log("CLUTCH: KEM decapsulation complete");
 
-            let _ = tx.send(ClutchKemDecapResult {
+            crate::log_err!(tx.send(ClutchKemDecapResult {
                 contact_id,
                 remote_secrets,
                 keypair_hqc_prefix,
-            });
+            }), "the CLUTCH decapsulation result to the UI thread");
 
             // Wake the event loop so it processes the result
             #[cfg(not(target_os = "android"))]
             if let Some(p) = proxy.as_ref() {
+                // WHY: a refused wake is never news — the event loop has closed (the app is exiting); the result itself already sits in the channel.
                 let _ = p.send(crate::ui::PhotonEvent::ClutchKemDecapComplete);
             }
         };
@@ -350,7 +353,7 @@ impl PhotonApp {
             #[cfg(feature = "development")]
             crate::log("CLUTCH: Ceremony completion finished");
 
-            let _ = tx.send(ClutchCeremonyResult {
+            crate::log_err!(tx.send(ClutchCeremonyResult {
                 contact_id,
                 friendship_chains,
                 eggs_proof: result.proof,
@@ -361,11 +364,12 @@ impl PhotonApp {
                 their_hqc_prefix,
                 fanout_pair_secret,
                 prior_tag,
-            });
+            }), "the CLUTCH ceremony result to the UI thread");
 
             // Wake the event loop so it processes the result
             #[cfg(not(target_os = "android"))]
             if let Some(p) = proxy.as_ref() {
+                // WHY: a refused wake is never news — the event loop has closed (the app is exiting); the result itself already sits in the channel.
                 let _ = p.send(crate::ui::PhotonEvent::ClutchCeremonyComplete);
             }
         };
@@ -942,14 +946,9 @@ impl PhotonApp {
         use crate::types::ClutchState;
 
         let mut changed = false;
-        let _our_handle_hash = match self
-            .session
-            .as_ref()
-            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
-        {
-            Some(h) => h,
-            None => return changed,
-        };
+        if self.session.is_none() {
+            return changed;
+        }
         let device_pubkey = *self
             .device_keypair
             .as_ref()

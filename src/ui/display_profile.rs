@@ -357,6 +357,7 @@ fn get_display_profile() -> Option<Vec<u8>> {
 
         // First call to get required buffer size
         let mut size: u32 = 0;
+        // WHY: the size query has no buffer, so FALSE is its normal answer; BOOL is Copy (drop would lint), and `size` carries the result.
         let _ = GetICMProfileW(hdc, &mut size, PWSTR::null());
 
         if size == 0 {

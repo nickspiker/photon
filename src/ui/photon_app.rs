@@ -581,7 +581,13 @@ fn spawn_job_worker(name: &'static str) -> std::sync::mpsc::Sender<Job> {
 
 /// Enqueue on a job worker — same call shape as the `std::thread::spawn` it replaces, so converted sites keep their closure bodies verbatim.
 fn queue_job(tx: &std::sync::mpsc::Sender<Job>, job: impl FnOnce() + Send + 'static) {
-    let _ = tx.send(Box::new(job));
+    crate::log_err!(tx.send(Box::new(job)), "queue a job on its worker");
+}
+
+/// Nudge the UI thread to drain a worker's result.
+fn wake_ui(w: &Arc<dyn WakeSender<PhotonEvent>>) {
+    // WHY: a refused wake is never news — the event loop has closed (the app is exiting) or the host is Android, whose NoopWakeSender refuses every send because the Choreographer draws and drains every tick regardless.
+    let _ = w.send(PhotonEvent::NetworkUpdate);
 }
 
 /// RAII release for the fleet-heal latch: `acquire` CASes false→true and hands back a guard whose Drop stores false — so a panic anywhere in a heal (fold, rotate, push) can never park key sync for the whole session behind a latch nothing clears. The panic still kills its worker thread; the next sync edge retries against a released latch.
@@ -621,13 +627,13 @@ impl ChainsPostDurable {
     fn fire(self) {
         match self {
             ChainsPostDurable::Ack(tx, req) => {
-                let _ = tx.send(req);
+                crate::log_err!(tx.send(req), "hand a durable ACK to the sender");
             }
             ChainsPostDurable::Message(tx, req) => {
-                let _ = tx.send(req);
+                crate::log_err!(tx.send(req), "hand a durable message to the sender");
             }
             ChainsPostDurable::CeremonyProof(tx, req) => {
-                let _ = tx.send(req);
+                crate::log_err!(tx.send(req), "hand a durable ceremony proof to the sender");
             }
         }
     }
@@ -900,7 +906,7 @@ fn drain_chunk_intake(intake: std::sync::Arc<std::sync::Mutex<ChunkIntake>>, job
             });
             let complete = complete && last_of.get(&pc.content_hash) == Some(&i);
             let content_hash = if complete { raw_of_wrapper.unwrap_or(pc.content_hash) } else { pc.content_hash };
-            let _ = pc.tx.send(AttachInstalled {
+            crate::log_err!(pc.tx.send(AttachInstalled {
                 sniffed,
                 manifest: None,
                 chunk: Some((pc.index, total, complete)),
@@ -909,7 +915,7 @@ fn drain_chunk_intake(intake: std::sync::Arc<std::sync::Mutex<ChunkIntake>>, job
                 sender_pubkey: pc.sender_pubkey,
                 sender_addr: pc.sender_addr,
                 len,
-            });
+            }), "hand an installed attachment chunk to the UI");
         }
     }
     // Whatever gathered while this drain ran rides the next one; the pending flag drops only when nothing is left.
@@ -1139,7 +1145,6 @@ impl ChatFilter {
 /// One bridge pigeon's progress as the row draws it: which sibling device it is with, the name the row carries (the row holds the name, not the hash — so the row finds its bar by device + name, newest first), and chunks got of chunks in all.
 /// CLIENT: a pigeon this device dropped and keeps serving until the host reports every slot held (pigeons v2, 2026-10-07 — the copy used to be shed the moment the chunks left, so a lost chunk could never be re-sent).
 pub(crate) struct PigeonOutbound {
-    pub(crate) device: [u8; 32],
     pub(crate) name: String,
     pub(crate) size: u64,
     pub(crate) chunks: Vec<[u8; 32]>,
@@ -1211,6 +1216,7 @@ pub(crate) struct PendingSend {
 }
 
 /// How far (px) a press on a file must travel before it becomes a drag out of the window — past a hand's wobble on a click.
+#[cfg(not(target_os = "android"))]
 pub(super) const FILE_DRAG_SLOP: f32 = 8.0;
 
 /// An attachment's VISUAL as drawn this frame (the picture band, or a code row's preview lines), slot-indexed like [`PhotonApp::msg_hit_rows`]: a tap inside opens it, a tap on the rest of the row opens the actions (Nick 2026-09-12: "just show the image or code or waveform or thumbnail, that's it").
@@ -1539,12 +1545,6 @@ enum YouRow {
     AddInput,
     /// The "Add" pill under it.
     AddPill,
-    /// "Update" action pill.
-    SavePill,
-    /// Empty breathing row (between the action pills).
-    Blank,
-    /// "Change avatar…" action pill.
-    AvatarPill,
 }
 
 /// Build the ordered You-page row plan from the current field set: fields grouped under their tier header (only non-empty tiers get a header), then the add-field affordance, the reassurance note, the identity read-out, and the action pills. Pure over `fields` so render / layout / scroll-extent all agree on the row count and order.
@@ -1571,7 +1571,7 @@ fn you_rows_plan(fields: &[ProfileField]) -> Vec<YouRow> {
     rows.push(YouRow::AddInput);
     rows.push(YouRow::AddPill);
     // No reassurance note and no identity read-out (Nick 2026-09-10): nothing key-shaped belongs in the GUI — the default machine names are the one exception, and they live on the Fleet page.
-    // No SavePill / AvatarPill (Nick 2026-09-02): fields save on focus-leave + page-navigate (save_you_fields diffs, so a no-change blur is free), and the avatar changes from YOUR contact page, not here. Variants stay compiled for the render arm's exhaustive match.
+    // No SavePill / AvatarPill (Nick 2026-09-02): fields save on focus-leave + page-navigate (save_you_fields diffs, so a no-change blur is free), and the avatar changes from YOUR contact page, not here.
     rows
 }
 
@@ -2569,6 +2569,7 @@ pub struct PhotonApp {
     #[cfg(all(unix, not(target_os = "android")))]
     bridge_partial_sent: crate::linear_map::LinearMap<ContactId, std::time::Instant>,
     /// Eagle-time of the last bridge PARTIAL sent per conversation — the own-ACK gate: the next partial ships only once this one has left pending_messages (see drain_bridge_output).
+    #[cfg(all(unix, not(target_os = "android")))]
     bridge_partial_inflight: crate::linear_map::LinearMap<ContactId, i64>,
     /// The interrupt registry (host side): device → (foreground-job pgid handle, bash pid), so a Stop arriving while a worker is blocked draining output can signal the command's own process group directly.
     #[cfg(all(unix, not(target_os = "android")))]
@@ -3399,6 +3400,7 @@ impl PhotonApp {
             bridge_partials: None,
             #[cfg(all(unix, not(target_os = "android")))]
             bridge_partial_sent: crate::linear_map::LinearMap::new(),
+            #[cfg(all(unix, not(target_os = "android")))]
             bridge_partial_inflight: crate::linear_map::LinearMap::new(),
             #[cfg(all(unix, not(target_os = "android")))]
             bridge_fg: None,
@@ -3693,9 +3695,9 @@ impl PhotonApp {
             };
             // Display pixels first — the UI installs them the next tick; the grind continues below.
             let vsf_rgb = crate::ui::avatar::avatar_rgb_f32_to_u8(&rgb_f32);
-            let _ = px_tx.send(crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb));
+            crate::log_err!(px_tx.send(crate::ui::colour_convert::vsf_rgb_to_bt2020(&vsf_rgb)), "hand picked avatar pixels to the UI");
             if let Some(w) = wake.as_ref() {
-                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                wake_ui(w);
             }
             let av1_data = match crate::ui::avatar::encode_avatar_rgb_f32(&rgb_f32) {
                 Ok(d) => d,

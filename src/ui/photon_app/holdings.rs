@@ -164,13 +164,13 @@ impl PhotonApp {
         let all: Vec<[u8; 32]> = items.iter().flat_map(|i| i.hashes.iter().copied()).collect();
         let (tx, rx) = std::sync::mpsc::channel();
         let wake = self.event_proxy.clone();
-        let _ = std::thread::Builder::new().name("holdings-probe".into()).spawn(move || {
+        crate::log_err!(std::thread::Builder::new().name("holdings-probe".into()).spawn(move || {
             let held: SortedSet<[u8; 32]> = all.into_iter().filter(|h| crate::storage::blob_present_probe_now(h)).collect();
-            let _ = tx.send(held);
+            crate::log_err!(tx.send(held), "the holdings probe result to the UI thread");
             if let Some(w) = wake {
-                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                super::wake_ui(&w);
             }
-        });
+        }), "the holdings-probe thread spawn");
         crate::logf!("HOLDINGS: check started over {} attachments", items.len());
         self.holdings_check = Some(HoldingsCheck {
             nonce: rand::random::<[u8; 32]>(),
@@ -295,13 +295,13 @@ impl PhotonApp {
         };
         let tx = self.holdings_serve_tx.clone();
         let wake = self.event_proxy.clone();
-        let _ = std::thread::Builder::new().name("holdings-serve".into()).spawn(move || {
+        crate::log_err!(std::thread::Builder::new().name("holdings-serve".into()).spawn(move || {
             let missing: Vec<[u8; 32]> = asked.into_iter().filter(|h| !crate::storage::blob_present_probe_now(h)).collect();
-            let _ = tx.send(HoldingsServe { nonce, to: from, addr, pull, missing });
+            crate::log_err!(tx.send(HoldingsServe { nonce, to: from, addr, pull, missing }), "the holdings serve answer to the UI thread");
             if let Some(w) = wake {
-                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                super::wake_ui(&w);
             }
-        });
+        }), "the holdings-serve thread spawn");
     }
 
     fn holdings_send_missing(&self, nonce: [u8; 32], to: [u8; 32], addr: std::net::SocketAddr, missing: &[[u8; 32]]) {
@@ -314,14 +314,14 @@ impl PhotonApp {
         match frame {
             Ok(frame) => {
                 crate::logf!("HOLDINGS: answered {} — missing {}", crate::fp(&to), missing.len());
-                let _ = checker.history_dispatch().send(crate::network::status::HistorySendRequest {
+                crate::log_err!(checker.history_dispatch().send(crate::network::status::HistorySendRequest {
                     peer_addr: addr,
                     alt_addr: None,
                     recipient_pubkey: to,
                     relay_to: vec![to],
                     vsf_bytes: frame,
                     tag: None,
-                });
+                }), "the holdings answer to the network dispatch");
             }
             Err(e) => crate::logf!("HOLDINGS: answer build failed: {}", e),
         }

@@ -158,7 +158,11 @@ impl PhotonApp {
                 if !matches!(opsin::sniff::sniff(&bytes), opsin::sniff::Kind::Unknown) {
                     let path = super::attachments::view_temp_path(&name, &hash, &bytes).ok_or_else(|| "no runtime dir for the decode".to_string())?;
                     let r = opsin::view::load_image_folded_with(&path, edge, keep_decode, &report);
-                    let _ = std::fs::remove_file(&path);
+                    // An already-gone temp is the goal reached; any other refusal leaves a decode temp behind and says so.
+                    match std::fs::remove_file(&path) {
+                        Err(e) if e.kind() != std::io::ErrorKind::NotFound => crate::logf!("attach: viewer decode temp not removed: {}", e),
+                        _ => {}
+                    }
                     match r {
                         Ok(loaded) => return Ok(loaded),
                         Err(e) => crate::logf!("attach: opsin declined {}: {} — image-crate path", if name.is_empty() { "the bytes" } else { name.as_str() }, e),
@@ -175,7 +179,7 @@ impl PhotonApp {
                 Ok(l) => crate::logf!("attach: original decoded for the viewer — {}×{}", l.dims().0, l.dims().1),
                 Err(e) => crate::logf!("attach: viewer decode failed: {}", e),
             }
-            let _ = tx.send((hash, out));
+            crate::log_err!(tx.send((hash, out)), "hand a viewer decode to the UI");
         });
         self.scene_dirty = true;
     }
@@ -309,9 +313,9 @@ impl PhotonApp {
             for h in &wanted {
                 crate::storage::blob_present_probe_now(h);
             }
-            let _ = tx.send(());
+            crate::log_err!(tx.send(()), "hand blob presence probes to the UI");
             if let Some(w) = wake.as_ref() {
-                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                wake_ui(w);
             }
         });
     }
@@ -340,7 +344,7 @@ impl PhotonApp {
                     let tx = self.head_tx.clone().unwrap();
                     queue_job(&self.seal_job_tx, move || {
                         let head = crate::storage::blob_load(&seed, &hh).and_then(|b| crate::types::AttachHead::parse(&b));
-                        let _ = tx.send((hh, head));
+                        crate::log_err!(tx.send((hh, head)), "hand an attachment head to the UI");
                     });
                 }
                 Some(false) => {
@@ -419,7 +423,7 @@ impl PhotonApp {
                                 .or_else(|| crate::types::AttachHead::parse(&b).and_then(|h| h.preview).and_then(|p| crate::ui::attach_preview::decode_preview_blob(&p)))
                         }
                     });
-                    let _ = tx.send((hash, out));
+                    crate::log_err!(tx.send((hash, out)), "hand an attachment preview to the UI");
                 });
             } else if from_original {
                 // The original itself is missing: the fleet replication sweep fetches it; the picture follows once it lands.
