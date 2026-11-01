@@ -42,6 +42,8 @@
     <!-- Foreground service for persistent connection -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- Android 14+: the connection service runs as remoteMessaging — the type for carrying messages between devices, with no daily limit (dataSync is cut off after six hours a day on Android 15). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_REMOTE_MESSAGING" />
 
     <!-- Waves (docs/waves.md): mic capture via VOICE_COMMUNICATION (the source that engages the
          vendor echo canceller). RECORD_AUDIO is a runtime prompt at the first wave; the microphone
@@ -103,7 +105,7 @@
              capture keeps running when the Activity backgrounds mid-wave. -->
         <service
             android:name=".PhotonConnectionService"
-            android:foregroundServiceType="dataSync|microphone|camera"
+            android:foregroundServiceType="dataSync|remoteMessaging|microphone|camera"
             android:exported="false" />
 
         <!-- NFC instant device add: the joiner's HCE service serving the pairing secret under photon's private AID (res/xml/apduservice.xml). -->

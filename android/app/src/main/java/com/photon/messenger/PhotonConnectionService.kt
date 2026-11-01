@@ -415,7 +415,8 @@ class PhotonConnectionService : Service() {
         val notification = buildNotification()
         try {
             if (Build.VERSION.SDK_INT >= 29) {
-                var types = ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                // REMOTE MESSAGING on Android 14+ (2026-11-01, Brittany's phone: ForegroundServiceDidNotStopInTimeException — Android 15 allows a dataSync service six hours a day and then kills the app). remoteMessaging is the type for carrying messages between devices and has no daily limit; older releases keep dataSync, which had none either.
+                var types = if (Build.VERSION.SDK_INT >= 34) ServiceInfo.FOREGROUND_SERVICE_TYPE_REMOTE_MESSAGING else ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
                 if (withMic && Build.VERSION.SDK_INT >= 30) {
                     types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
                 }
@@ -430,6 +431,12 @@ class PhotonConnectionService : Service() {
         } catch (e: Exception) {
             PhotonLog.w(TAG, "startForeground(withMic=$withMic) rejected — continuing degraded", e)
         }
+    }
+
+    /** Android 15's time limit on a foreground type (dataSync, which only a pre-14 start uses now): the system asks the service to stop and kills the app if it has not within seconds. Stop cleanly instead of crashing; the next screen or doorbell starts it again. */
+    override fun onTimeout(startId: Int, fgsType: Int) {
+        PhotonLog.w(TAG, "foreground time limit reached (type $fgsType) — stopping the service rather than being killed")
+        stopSelf()
     }
 
     override fun onBind(intent: Intent?): IBinder = binder

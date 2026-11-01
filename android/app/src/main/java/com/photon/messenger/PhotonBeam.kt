@@ -202,7 +202,8 @@ class PhotonBeam(
             r.setOnImageAvailableListener({ rd ->
                 val img = rd.acquireLatestImage() ?: return@setOnImageAvailableListener
                 try {
-                    feed(img)
+                    // A frame queued before stop() is dropped: feed() would build a fresh encoder for a beam that has ended.
+                    if (running) feed(img)
                 } finally {
                     img.close()
                 }
@@ -260,12 +261,29 @@ class PhotonBeam(
     fun stop() {
         if (!running) return
         running = false
-        closeSession()
-        try { camera?.close() } catch (_: Throwable) {}
-        camera = null
+        // THE CAMERA THREAD CLOSES WHAT IT READS (2026-11-01, Brittany's phone at the end of the first group beam: SIGSEGV in nativeBeamFill — this stop() ran on another thread and closed the ImageReader and the encoder while photon-beam-cam was still reading a frame's planes).
+        // What this run owns is taken out of the fields now, so a start() right behind us builds its own and our close never touches it; the close itself is the camera thread's next message, after the frame in hand.
+        val s = session; val r = reader; val c = codec; val cam = camera
+        session = null; reader = null; codec = null; camera = null
+        freeInputs.clear()
+        config = null
+        codedW = 0
+        codedH = 0
+        codedKbps = 0
         target = null
-        cameraThread?.quitSafely(); cameraThread = null; cameraHandler = null
-        codecThread?.quitSafely(); codecThread = null; codecHandler = null
+        val camT = cameraThread; val codecT = codecThread
+        cameraThread = null; cameraHandler = null; codecThread = null; codecHandler = null
+        val close = Runnable {
+            try { s?.close() } catch (_: Throwable) {}
+            try { r?.close() } catch (_: Throwable) {}
+            try { c?.stop(); c?.release() } catch (_: Throwable) {}
+            try { cam?.close() } catch (_: Throwable) {}
+        }
+        // A thread already gone (or a post refused) leaves nothing reading: close here.
+        val posted = camT?.let { Handler(it.looper).post(close) } ?: false
+        if (!posted) close.run()
+        camT?.quitSafely()
+        codecT?.quitSafely()
         PhotonLog.i(TAG, "stopped after $frames encoded frames, $fed fed, $dropped dropped, $slotsOffered slots offered since the last slot line")
         frames = 0
         dropped = 0
