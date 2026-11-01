@@ -2277,3 +2277,10 @@ pub extern "C" fn Java_com_photon_messenger_PhotonBeam_nativeBeamEncoderCap(_env
 pub extern "C" fn Java_com_photon_messenger_PhotonBeam_nativeBeamEncoderStalled(_env: JNIEnv<'_>, _this: JObject<'_>) -> jni::sys::jboolean {
     crate::wave::beam_session::android_encoder_stalled() as jni::sys::jboolean
 }
+
+/// Should the wave about to start put the phone in its in-call audio mode (the Wave page's "Treat waves as phone calls", `waves.in_call`, default on)? Kotlin's startWaveAudio asks this before Rust opens the streams, so the streams open in the mode they will run in.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeInCallMode(_env: JNIEnv<'_>, _class: JClass<'_>) -> jni::sys::jboolean {
+    crate::platform::audio::IN_CALL_MODE.load(std::sync::atomic::Ordering::Relaxed) as jni::sys::jboolean
+}

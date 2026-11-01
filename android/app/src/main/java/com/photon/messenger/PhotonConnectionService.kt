@@ -116,6 +116,7 @@ class PhotonConnectionService : Service() {
     private external fun nativeDestroyContext(contextPtr: Long)
     private external fun nativeProtocolBeat(): Long  // the watchdog's heartbeat read
     private external fun nativeServiceTick(contextPtr: Long)  // Headless advance_protocol on the Activity ctx (background delivery)
+    private external fun nativeInCallMode(): Boolean  // the Wave page's "Treat waves as phone calls" (waves.in_call, default on)
 
     // Session broadcast — VSF capsule carrying identity_seed + vault_seed + handle_proof.
     // Sticky broadcast survives uninstall/reinstall (OS holds it); dies on reboot (desired).
@@ -1300,6 +1301,7 @@ class PhotonConnectionService : Service() {
                 .minByOrNull { if (it.location == android.media.MicrophoneInfo.LOCATION_MAINBODY) 0 else 1 }
             nativeMicInfo(declared, chosen?.sensitivity ?: Float.NaN, desc)
         } catch (e: Throwable) { PhotonLog.w(TAG, "mic introspection failed: ${e.message}") }
+        enterCallAudio()
         routeWaveAudio(true)
         acquireWaveWifiLock()
         // Proximity blanks the screen ONLY on the earpiece route (2026-09-14, "still being a bugger"): on speaker/headset a hand or pocket over the sensor was turning the screen off mid-wave. Earpiece = at the ear = blanking is right.
@@ -1317,10 +1319,51 @@ class PhotonConnectionService : Service() {
         PhotonLog.i(TAG, "waveAudio: chores up (proximity lock, FGS mic type=$hasMic) — streams are Rust's")
     }
 
+    /** Voice-communication focus held for the wave, and whether this wave entered the in-call mode — so the hangup undoes exactly what the start did, whatever the setting says by then. */
+    private var callFocus: android.media.AudioFocusRequest? = null
+    private var inCallAudio = false
+
+    /** A WAVE IS A CALL TO ANDROID (Nick 2026-11-01: "lets things ring me obnoxiously loud … we default to Android call audio"): the in-communication mode plus voice-communication audio focus is the only "I'm in a call" Android has — with it, other apps' notifications and rings play as the soft in-call tone and their music pauses (Lumis does the same during a shot). Entered before Rust opens its streams, so they open in the mode they run in. The cost is the vendor voice pipeline's latency (docs/waves.md), which is why it is the Wave page's "Treat waves as phone calls", default on. */
+    private fun enterCallAudio() {
+        if (!nativeInCallMode()) {
+            PhotonLog.i(TAG, "waveAudio: call audio off (Wave page) — normal mode, other apps' sounds play as usual")
+            return
+        }
+        val am = getSystemService(AUDIO_SERVICE) as AudioManager
+        try {
+            val attrs = AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_VOICE_COMMUNICATION)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                .build()
+            val req = android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                .setAudioAttributes(attrs)
+                .setOnAudioFocusChangeListener { change -> PhotonLog.i(TAG, "waveAudio: audio focus change $change") }
+                .build()
+            val granted = am.requestAudioFocus(req)
+            callFocus = req
+            am.mode = AudioManager.MODE_IN_COMMUNICATION
+            inCallAudio = true
+            PhotonLog.i(TAG, "waveAudio: call audio on — in-communication mode, voice focus " + (if (granted == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) "granted" else "refused ($granted)"))
+        } catch (e: Exception) {
+            PhotonLog.w(TAG, "waveAudio: entering call audio failed", e)
+        }
+    }
+
+    private fun leaveCallAudio() {
+        val am = getSystemService(AUDIO_SERVICE) as AudioManager
+        if (inCallAudio) {
+            try { am.mode = AudioManager.MODE_NORMAL } catch (e: Exception) { PhotonLog.w(TAG, "waveAudio: leaving call audio failed", e) }
+            inCallAudio = false
+        }
+        callFocus?.let { try { am.abandonAudioFocusRequest(it) } catch (e: Exception) { PhotonLog.w(TAG, "waveAudio: abandoning voice focus failed", e) } }
+        callFocus = null
+    }
+
     /** Called from Rust at hangup, after its streams are closed. */
     fun stopWaveAudio() {
         waveAudioRunning = false
         routeWaveAudio(false)
+        leaveCallAudio()
         releaseWaveWifiLock()
         // RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY: the screen comes back only once the sensor clears — a bare release() mid-cover flashed the screen on against the ear at hangup.
         try { proximityLock?.let { if (it.isHeld) it.release(PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY) } } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock release failed", e) }

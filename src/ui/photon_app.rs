@@ -2618,6 +2618,8 @@ pub struct PhotonApp {
     settings_wave_hold_check: Option<fluor::widgets::Checkbox>,
     /// Wave-page "Use this device's own voice processing on a headset too" (`waves.voice_dsp`, DEVICE-LOCAL, default OFF; Android and macOS): the vendor's canceller in front of the mic (platform::audio::VOICE_DSP); the speaker route always takes it.
     settings_voice_dsp_check: Option<fluor::widgets::Checkbox>,
+    /// Wave-page "Treat waves as phone calls" (`waves.in_call`, DEVICE-LOCAL, default ON; Android only): the in-call audio mode during a wave (platform::audio::IN_CALL_MODE), so other apps' sounds go quiet.
+    settings_in_call_check: Option<fluor::widgets::Checkbox>,
     /// The measure-now ritual in flight (the Wave page shows "listening…" while Some) and its last verdict.
     wave_measure_rx: Option<std::sync::mpsc::Receiver<crate::wave::measure::MeasureResult>>,
     wave_measured: Option<crate::wave::measure::MeasureResult>,
@@ -3437,6 +3439,7 @@ impl PhotonApp {
             settings_hardlogs_check: None,
             settings_wave_hold_check: None,
             settings_voice_dsp_check: None,
+            settings_in_call_check: None,
             wave_measure_rx: None,
             wave_measured: None,
             wave_profiles: Vec::new(),
@@ -4168,6 +4171,9 @@ impl PhotonApp {
                         f(cb);
                     }
                     if let Some(cb) = self.settings_voice_dsp_check.as_mut() {
+                        f(cb);
+                    }
+                    if let Some(cb) = self.settings_in_call_check.as_mut() {
                         f(cb);
                     }
                 }

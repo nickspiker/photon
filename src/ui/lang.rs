@@ -767,6 +767,8 @@ pub enum Msg<'a> {
     HoldWavesOnDevice,
     /// Wave page: open the mic thru the phone's own voice processing (echo cancel, noise, gain) instead of the calibrated raw feed — an experiment, device-local.
     VoiceDsp,
+    /// Wave page (Android): treat a wave as a phone call — the in-communication audio mode, so other apps' sounds go quiet during it.
+    InCallMode,
     KeepEditHistory,
     VibrateIncomingWave,
     PresenceCheckbox,

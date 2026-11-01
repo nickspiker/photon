@@ -536,6 +536,17 @@ impl PhotonApp {
         if let Some(cb) = self.settings_voice_dsp_check.as_mut() {
             cb.set_checked(voice_dsp);
         }
+        // A wave is a call to Android: device-local, absent = ON (Nick 2026-11-01).
+        let in_call = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.device_local("waves.in_call"))
+            .and_then(crate::storage::fleet_settings::as_bool)
+            .unwrap_or(true);
+        crate::platform::audio::IN_CALL_MODE.store(in_call, std::sync::atomic::Ordering::Relaxed);
+        if let Some(cb) = self.settings_in_call_check.as_mut() {
+            cb.set_checked(in_call);
+        }
         // The earpiece trim (device-local, stops; absent = 0) applied live.
         let trim = self
             .fleet_settings

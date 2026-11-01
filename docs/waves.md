@@ -197,6 +197,15 @@ Colour is the spectral balance the AGB way: each band's power over the geometric
 
 Route and latency are different axes. Latency is the stream's path: exclusive MMAP, low-latency mode, 96-frame bursts, a 4 ms buffer. Route is which transducer the audio policy attaches the stream to. Android couples them only thru the IN_COMMUNICATION audio mode, which wakes the vendor voice pipeline (the 80 ms floor of 2026-08-19) — and that mode is never entered. Instead the OUTPUT stream carries the voice-communication usage (a policy label, nothing more) and Kotlin's `setCommunicationDevice` (API 31) points this app's voice-usage streams at the built-in earpiece for the wave, cleared at hangup. Wired and Bluetooth routes are left where the OS put them. The volume mirror reads the voice stream at the earpiece's curve while routed. The proof of the trade is the `AAudio out up` line: Exclusive/LowLatency at 4 ms, or the vendor policy has intervened on that device.
 
+## A wave is a call to Android (2026-11-01)
+
+Nick 2026-11-01: "lets things ring me obnoxiously loud … I think it needs to be a setting … we default to Android call audio unless there's another way to tell android".
+There is no other way: the in-communication audio mode, with voice-communication audio focus, is Android's only "this app is in a call" — it is what turns other apps' notifications and rings into the soft in-call tone and pauses their music, and Telecom's self-managed calls set the same mode underneath (Lumis takes the same two steps during a shot).
+So the section above is now a choice, not a rule: the Wave page's "Treat waves as phone calls" (`waves.in_call`, device-local, default ON, Android only) enters the mode and takes the focus at the wave start, before Rust opens its streams, and leaves both at hangup (`enterCallAudio` / `leaveCallAudio` in PhotonConnectionService).
+Off, a wave runs as before — the fast path, and other apps' sounds at full volume.
+Whatever the setting, Photon's own chimes during a wave play once, two stops quieter, on the wave's voice stream, and a second wave's ring is one such chime, never a loop.
+The `AAudio out up` line says what the mode cost on each device.
+
 ## A working path is never abandoned (2026-09-12 22:28)
 
 Two phones on one LAN connected over the LAN, then one side's drought probe re-aimed it at the peer's global IPv6, the anchor carried that address across, and the other engine's express re-anchor followed — both left a live path for one the router does not route between its own clients. Two guards: the drought probe walks candidates only while no authenticated media has arrived on the wave (`LAST_MEDIA_RX_OSC == 0`), and the engine's express re-anchor applies only before the first authenticated packet (`rx_max_seq.is_none()`). After media has flowed, a drought means the peer stopped sending; the anchors still carry the search, and the media plane's forward-progress rule still re-points TX when the peer's own packets arrive from a new address.

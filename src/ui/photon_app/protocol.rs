@@ -551,6 +551,26 @@ impl PhotonApp {
             }
             { needs_redraw = true; self.note_redraw(line!()); }
         }
+        // A wave is a call to Android: device-local (unlinked) bool, default ON; flips now, applies at the next wave start.
+        let in_call_toggle = self
+            .settings_in_call_check
+            .as_mut()
+            .map(|cb| (cb.take_toggle(), cb.is_checked()));
+        if let Some((true, checked)) = in_call_toggle {
+            crate::platform::audio::IN_CALL_MODE.store(checked, std::sync::atomic::Ordering::Relaxed);
+            let now = vsf::eagle_time_oscillations();
+            if self.ensure_fleet_settings() {
+                let fs = self.fleet_settings.as_mut().unwrap();
+                if fs.linked("waves.in_call") {
+                    fs.set_link("waves.in_call", false, now);
+                }
+                if fs.set("waves.in_call", vsf::VsfType::u0(checked), now) {
+                    crate::logf!("SETTINGS: waves.in_call = {} (device-local)", checked);
+                    self.persist_and_push_settings();
+                }
+            }
+            { needs_redraw = true; self.note_redraw(line!()); }
+        }
         let hardlogs_toggle = self
             .settings_hardlogs_check
             .as_mut()
@@ -1274,6 +1294,9 @@ impl PhotonApp {
         }
         if let Some(cb) = self.settings_voice_dsp_check.as_mut() {
             cb.set_label(tr(Msg::VoiceDsp));
+        }
+        if let Some(cb) = self.settings_in_call_check.as_mut() {
+            cb.set_label(tr(Msg::InCallMode));
         }
         if let Some(cb) = self.settings_vibrate_msg_check.as_mut() {
             cb.set_label(tr(Msg::VibrateNewMessage));

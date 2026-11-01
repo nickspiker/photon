@@ -527,6 +527,12 @@ impl FluorApp<Px> for PhotonApp {
         } else {
             None
         };
+        // A wave is a call to Android (waves.in_call, device-local, default ON) — the Wave page, Android only: no other platform has an in-call audio mode to enter.
+        self.settings_in_call_check = if cfg!(target_os = "android") {
+            Some(fluor::widgets::Checkbox::new(&mut self.hit_counter, tr(Msg::InCallMode), 0., 0., 1., 1., 12., true))
+        } else {
+            None
+        };
         self.settings_hardlogs_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
             tr(Msg::HardLogs),
