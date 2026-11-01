@@ -4015,7 +4015,9 @@ impl PhotonApp {
                 .and_then(|ci| self.contacts.get(ci))
                 .map_or(false, |c| {
                     !c.is_sibling && c.is_online && (c.chain_woven || c.friendship_id.is_some())
-                });
+                })
+                // A GROUP's slats take presses too (2026-11-01, Nick: a group's Wave and Beam were lit on every member's device and never lit on press — the press landed on their ids, but this walk only ever handed them to a pair's conversation). Whether they act is the enabled state the render sets (standing, a member online, a direct path).
+                || self.active_molecule().is_some();
             if callable {
                 if let Some(b) = self.wave_start_btn.as_mut() {
                     f(b);
