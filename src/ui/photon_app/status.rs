@@ -3593,7 +3593,11 @@ impl PhotonApp {
                             }
                         });
                     } else {
-                        crate::log("ATTACH: no wire key / no session for the blob's conversation — dropped");
+                        if wire_key.is_some() {
+                            crate::log("ATTACH: a blob arrived before the session — dropped");
+                        } else {
+                            self.say_key_miss_once("a blob", &sender_pubkey.key, &conversation_token);
+                        }
                     }
                 }
                 // CHUNKED ATTACHMENTS (Phase 1): the manifest lands first (small — opened inline), then chunks are verified + stored off-thread; the install drain counts them and fires attach_have when the last one lands.
@@ -3674,7 +3678,11 @@ impl PhotonApp {
                             }
                         });
                     } else {
-                        crate::log("ATTACH: no wire key / no session for the manifest's conversation — dropped");
+                        if wire_key.is_some() {
+                            crate::log("ATTACH: a manifest arrived before the session — dropped");
+                        } else {
+                            self.say_key_miss_once("a manifest", &sender_pubkey.key, &conversation_token);
+                        }
                     }
                 }
                 StatusUpdate::AttachChunkReceived {
@@ -3712,7 +3720,11 @@ impl PhotonApp {
                             PendingChunk { conversation_token, content_hash, index, sealed, sender_pubkey, sender_addr, wire_key, seed, sniff_name, is_wrapper_fetch, tx },
                         );
                     } else {
-                        crate::log("ATTACH: no wire key / no session for the chunk's conversation — dropped");
+                        if wire_key.is_some() {
+                            crate::log("ATTACH: a chunk arrived before the session — dropped");
+                        } else {
+                            self.say_key_miss_once("a chunk", &sender_pubkey.key, &conversation_token);
+                        }
                     }
                 }
                 // A bridge pigeon chunk: into its spool (a 256 KB pwrite — brief), and once the spool is whole, the decrypt-walk + landing run on the seal worker.

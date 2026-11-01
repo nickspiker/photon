@@ -267,6 +267,36 @@ impl PhotonApp {
             .and_then(|(_, ch)| ch.history_key().copied())
     }
 
+    /// WHY `attach_wire_key` has no key for this sender and token, in words (2026-11-01, Nick's Pixel after a launch: 1076 of Emma's desktop's chunks "dropped — no wire key", re-asked every launch, with no hint which side of the lookup missed).
+    pub(super) fn attach_key_miss(&self, device: &[u8; 32], token: &[u8; 32]) -> String {
+        if self.contacts.iter().any(|c| c.is_sibling && c.device_key() == Some(*device)) {
+            return format!("device {} is our own, but the fleet key is not loaded", crate::fp(device));
+        }
+        if self.friendship_chains.iter().any(|(_, ch)| ch.conversation_token == *token) {
+            return format!("device {}: the chain for token {} is here but holds no history key yet", crate::fp(device), crate::fp(token));
+        }
+        let owner = self.contacts.iter().find(|c| !c.is_sibling && c.knows_device(device));
+        let Some(owner) = owner else {
+            return format!("device {} belongs to no contact, and no chain carries token {}", crate::fp(device), crate::fp(token));
+        };
+        let theirs = owner.friendship_id.and_then(|fid| self.friendship_chains.iter().find(|(id, _)| *id == fid)).map(|(_, ch)| (ch.conversation_token, ch.history_key().is_some()));
+        match theirs {
+            Some((t, keyed)) => format!("device {} of contact {}: no chain carries token {} — the contact's chain carries token {} ({}), so the ask named another conversation (a group's, or a token derived from members)", crate::fp(device), crate::fp(&owner.handle_proof), crate::fp(token), crate::fp(&t), if keyed { "keyed" } else { "keyless" }),
+            None => format!("device {} of contact {}: we hold NO chain with this contact (friendship_id {}), so nothing it seals can be opened here", crate::fp(device), crate::fp(&owner.handle_proof), if owner.friendship_id.is_some() { "set, chains missing" } else { "unset" }),
+        }
+    }
+
+    /// Say why a piece was dropped, once per sender and token: the same miss repeats for every chunk of every blob (1076 identical lines in one launch), and its first line is the whole story.
+    pub(super) fn say_key_miss_once(&self, what: &str, device: &[u8; 32], token: &[u8; 32]) {
+        static SAID: std::sync::Mutex<Vec<([u8; 32], [u8; 32])>> = std::sync::Mutex::new(Vec::new());
+        let mut said = SAID.lock().unwrap();
+        if said.contains(&(*device, *token)) {
+            return;
+        }
+        said.push((*device, *token));
+        crate::logf!("ATTACH: {} dropped — no key to open it: {} (said once per device and token)", what, self.attach_key_miss(device, token));
+    }
+
     /// Seal + push the blob for `content_hash` to contact `ci`'s device over PT (skips self/sibling contacts — they fetch lazily).
     /// The load, the seal and the dispatch run on the attach worker: the UI thread makes no vault call (2026-09-18 ANR).
     /// `token` names the conversation the blob belongs to when it is not the pair's own (a roster conversation's push to one of its members).
@@ -524,6 +554,18 @@ impl PhotonApp {
             }
         }
         targets.sort_by_key(|t| t.0);
+        // ASK ONLY WHOM WE CAN OPEN (2026-11-01, Nick's Pixel: every launch asked Emma's desktop for ~200 files and dropped all 1076 chunks it sent, holding no key for that token): a device whose answer `attach_wire_key` cannot open is never asked — the same lookup the receive side runs, so an ask and its answer agree. Why one was passed over is said once per device and token.
+        let mut unopenable = Vec::new();
+        targets.retain(|t| {
+            let ok = self.attach_wire_key(&t.3, &token).is_some();
+            if !ok {
+                unopenable.push(t.3);
+            }
+            ok
+        });
+        for dev in unopenable {
+            self.say_key_miss_once("an ask to this device", &dev, &token);
+        }
         // A parked sibling cannot answer: asking it burns one of MAX_TRIES rounds and a relay leg into a closed pipe (Emma 2026-10-21: 72 asks at two old phones that never came online).
         // It stays a candidate only when nobody else is left, so a fetch is never dropped for want of a live device.
         let parked: Vec<[u8; 32]> = self.contacts.iter().filter(|c| c.sibling_parked()).filter_map(|c| c.device_key()).collect();
