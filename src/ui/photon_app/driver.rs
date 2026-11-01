@@ -395,6 +395,7 @@ impl FluorApp<Px> for PhotonApp {
         self.beam_cal_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::Calibrate)));
         self.wave_mic_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
         self.wave_out_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
+        self.wave_mute_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
         for b in [
             self.wave_status_btn.as_mut(),
             self.wave_start_btn.as_mut(),
@@ -409,6 +410,7 @@ impl FluorApp<Px> for PhotonApp {
             self.beam_cal_btn.as_mut(),
             self.wave_mic_btn.as_mut(),
             self.wave_out_btn.as_mut(),
+            self.wave_mute_btn.as_mut(),
         ]
         .into_iter()
         .flatten()

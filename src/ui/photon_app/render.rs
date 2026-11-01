@@ -658,6 +658,7 @@ impl PhotonApp {
         let dock_other = wave_phase_now == Some(crate::wave::WavePhase::Ringing) && can_beam;
         let dock_out = wave_live && cfg!(not(target_os = "android"));
         let dock_mic = wave_live;
+        let wave_muted = self.wave_muted;
         let dock_beam2 = wave_live && cfg!(target_os = "android");
         let dock_cal = wave_phase_now == Some(crate::wave::WavePhase::Active) && crate::wave::beam_calibrate::available();
         let dock_secondary = dock_other || dock_out || dock_mic || dock_beam2 || dock_cal;
@@ -1172,7 +1173,7 @@ impl PhotonApp {
                             b.set_rect(rx, ry, bw, bh);
                             // A camera still opening reads as sending: the next tap cancels it.
                             let sending = self.active_wave.as_ref().map_or(false, |w| w.beam_tx.is_some() || w.beam_opening.is_some()) || group_beaming;
-                            b.set_label(tr(if sending { Msg::BeamToggle } else { Msg::BeamStart }));
+                            b.set_label(tr(if sending { Msg::CameraOff } else { Msg::BeamStart }));
                             b.set_font_size_fitted(bfont * 0.8, ctx.text);
                             b.set_enabled(can_beam);
                             let id = b.hit_id();
@@ -1181,7 +1182,7 @@ impl PhotonApp {
                     }
                 }
                 // THE SECONDARY ROW: equal pills spanning the diagonal's width, in a fixed order (the other answer; the speaker, the mic, the Beam toggle on a phone, Calibrate), each labelled with what it acts on (Nick 2026-10-17: "enumerate the names").
-                let row: Vec<u8> = [(dock_other, 0u8), (dock_out, 1), (dock_mic, 2), (dock_beam2, 3), (dock_cal, 4)].iter().filter(|(on, _)| *on).map(|(_, k)| *k).collect();
+                let row: Vec<u8> = [(dock_other, 0u8), (dock_out, 1), (dock_mic, 2), (dock_mic, 5), (dock_beam2, 3), (dock_cal, 4)].iter().filter(|(on, _)| *on).map(|(_, k)| *k).collect();
                 if !row.is_empty() {
                     let span = 3.0 * bw + 2.0 * l.gap;
                     let pw = (span - (row.len() - 1) as f32 * l.gap) / row.len() as f32;
@@ -1195,6 +1196,7 @@ impl PhotonApp {
                             1 => self.wave_out_btn.as_mut(),
                             2 => self.wave_mic_btn.as_mut(),
                             3 => self.beam_btn.as_mut(),
+                            5 => self.wave_mute_btn.as_mut(),
                             _ => self.beam_cal_btn.as_mut(),
                         };
                         let Some(b) = b else {
@@ -1215,8 +1217,16 @@ impl PhotonApp {
                             2 => b.set_label(Self::device_label("🎤", mic_pick.clone(), mic_open.clone())),
                             3 => {
                                 let sending = crate::wave::beam_session::android_sending();
-                                b.set_label(tr(if sending { Msg::BeamToggle } else { Msg::BeamStart }));
+                                b.set_label(tr(if sending { Msg::CameraOff } else { Msg::BeamStart }));
                                 b.set_enabled(true);
+                            }
+                            // MUTE: says what a tap does — Mute while the microphone goes out, Unmute while it is silenced (the danger fill marks a muted wave at a glance).
+                            5 => {
+                                b.set_label(tr(if wave_muted { Msg::WaveUnmute } else { Msg::WaveMute }));
+                                b.set_enabled(true);
+                                b.set_fill(if wave_muted { Some(*theme::WAVE_DANGER_FILL) } else { None });
+                                b.set_hover_fill(if wave_muted { Some(*theme::WAVE_DANGER_HOVER) } else { None });
+                                b.set_held_fill(if wave_muted { Some(*theme::WAVE_DANGER_HOVER) } else { None });
                             }
                             _ => {
                                 b.set_label(tr(Msg::Calibrate));
@@ -7556,6 +7566,9 @@ impl PhotonApp {
                         }
                         if dock_mic {
                             stamp(self.wave_mic_btn.as_ref(), &mut chrome.hit_test_map);
+                        }
+                        if dock_mic {
+                            stamp(self.wave_mute_btn.as_ref(), &mut chrome.hit_test_map);
                         }
                         // The self-view's camera cycle (the pair's inset, or our own group tile), where it painted.
                         if wave_phase_now == Some(crate::wave::WavePhase::Active) {

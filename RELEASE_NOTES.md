@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Mute and camera off without leaving.** A live wave or beam — two people or a group — has a Mute button that silences your microphone until you tap Unmute, and the camera button now reads Camera off while your video is going out; the wave carries on either way.
 - **No crash when a beam ends on a phone.** Ending a beam could crash Photon on Android if the camera delivered a frame at the moment it was being closed.
 - **Photon keeps running in the background on Android 15.** Android 15 stops some background services after six hours a day, which made Photon close itself; it now runs as a messaging service, which Android does not cut off.
 - **Wave and Beam buttons work in groups.** In a group conversation the buttons showed as ready but ignored every tap; they now start or join the group's wave, and read "no direct path" when nobody in the group can be reached directly.

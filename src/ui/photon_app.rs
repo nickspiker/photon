@@ -2171,6 +2171,10 @@ pub struct PhotonApp {
     wave_mic_btn: Option<Button>,
     /// The in-wave SPEAKER picker on a desktop (a phone's speaker is the route pill, `wave_speaker_btn`).
     wave_out_btn: Option<Button>,
+    /// The in-wave MUTE (Nick 2026-11-01: "We def need to be able to turn on/off the video and mic whilst staying in the wave/beam"): a tap silences our microphone on every link and the next tap brings it back; the wave and its camera go on.
+    wave_mute_btn: Option<Button>,
+    /// The microphone is muted for the live wave: every engine (and every group link brought up later) sends silence. Cleared when the wave ends.
+    wave_muted: bool,
     /// BEAM FROM THE CONVERSATION (docs/beams.md stage 4): the Beam slat started this wave, so the camera goes out the moment the wave is live. Cleared when the send starts or the wave ends.
     beam_armed: bool,
     /// THE GRANTS GATE (platform/grants.rs): a wave or beam asked for while a permission prompt is up, held against the count of prompt answers it saw — any newer answer re-runs it.
@@ -3230,6 +3234,8 @@ impl PhotonApp {
             beam_btn: None,
             beam_cal_btn: None,
             wave_mic_btn: None,
+            wave_mute_btn: None,
+            wave_muted: false,
             wave_out_btn: None,
             beam_armed: false,
             pending_grant: None,
@@ -4000,6 +4006,10 @@ impl PhotonApp {
                         if let Some(b) = self.beam_cal_btn.as_mut() {
                             f(b);
                         }
+                    }
+                    // Mute, wherever a wave is live.
+                    if let Some(b) = self.wave_mute_btn.as_mut() {
+                        f(b);
                     }
                     // The mic picker everywhere; the speaker picker on a desktop (a phone's output is the route pill above).
                     if let Some(b) = self.wave_mic_btn.as_mut() {

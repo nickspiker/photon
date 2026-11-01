@@ -264,6 +264,12 @@ pub enum Msg<'a> {
     WaveJoin,
     /// The same, with our camera.
     BeamJoin,
+    /// The in-wave mute pill while our microphone goes out: a tap silences it.
+    WaveMute,
+    /// The same pill while muted: a tap brings the microphone back.
+    WaveUnmute,
+    /// The in-wave camera pill while our camera goes out: a tap turns it off, the wave goes on (the label says what a tap does, as Mute does).
+    CameraOff,
     /// The wave card's "wave back" in the same state.
     WaveBackNoPath,
     WaveActiveNoPath(&'a str),

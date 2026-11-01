@@ -234,6 +234,10 @@ impl PhotonApp {
             any = true;
         }
         // The mic and speaker pickers: each tap moves to the next device (Auto first), reopens the streams in place, and remembers the pick on this device.
+        if self.wave_mute_btn.as_mut().map(|b| b.take_click()).unwrap_or(false) && matches!(phase, Some(WavePhase::Active | WavePhase::Outgoing)) {
+            self.toggle_wave_mute();
+            any = true;
+        }
         if self.wave_mic_btn.as_mut().map(|b| b.take_click()).unwrap_or(false) {
             self.cycle_mic();
             any = true;
@@ -1729,6 +1733,8 @@ impl PhotonApp {
     fn end_wave(&mut self, outcome: WaveOutcome, offer_osc: i64) {
         // The live rings may have been opened by the ringback alone (a wave that never connected); the field has nothing to show once the wave is over.
         crate::wave::live::stop();
+        // The next wave starts with the microphone on.
+        self.wave_muted = false;
         if let Some(wave) = &self.active_wave {
             // Remember the id so a late copy of its offer never rings again; bounded, since a session sees few waves.
             let id = wave.wave_id;
@@ -2071,6 +2077,22 @@ impl PhotonApp {
 
     /// Spin up the media engine for an Active wave. None (the wave stays signaling-only + silent) when the basket never completed or the contact has no direct address — media-over-the-relay-pipe is explicitly deferred (docs/waves.md), and the transport dot already tells the human they're on relay.
     /// The Beam button on an active wave: start sending this device's camera, or stop. Receiving is always up (it started with the engine), so the peer's picture needs no action here.
+    /// MUTE (Nick 2026-11-01: "We def need to be able to turn on/off the video and mic whilst staying in the wave/beam"): our microphone goes silent on every link (the engine sends zeros, so the cadence and the paths hold) and the next tap brings it back; the wave and the camera go on.
+    pub(super) fn toggle_wave_mute(&mut self) {
+        self.wave_muted = !self.wave_muted;
+        let m = self.wave_muted;
+        if let Some(e) = self.active_wave.as_ref().and_then(|w| w.engine.as_ref()) {
+            e.muted.store(m, std::sync::atomic::Ordering::Relaxed);
+        }
+        if let Some(g) = self.group_wave.as_ref() {
+            for l in &g.links {
+                l.engine.muted.store(m, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        crate::logf!("WAVE: microphone {}", if m { "muted" } else { "back on" });
+        self.scene_dirty = true;
+    }
+
     pub(super) fn toggle_beam(&mut self) {
         if self.group_wave.is_some() {
             self.toggle_group_beam();
@@ -2338,6 +2360,8 @@ impl PhotonApp {
             slot: 0,
             group: None,
         });
+        // A muted wave stays muted across an engine restart (a reconnect).
+        handle.muted.store(self.wave_muted, std::sync::atomic::Ordering::Relaxed);
         (Some(handle), ticket)
     }
 

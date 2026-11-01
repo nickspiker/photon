@@ -687,6 +687,8 @@ impl PhotonApp {
             slot,
             group: Some(crate::wave::engine::GroupLink { lead: lead.clone(), slot_gen, tx: group_tx }),
         });
+        // A link that comes up while we are muted starts muted.
+        engine.muted.store(self.wave_muted, std::sync::atomic::Ordering::Relaxed);
         crate::logf!("WAVE: group link up with {} on slot {} — media aimed at {}", crate::fp(&device), slot, addr);
         // No address for this device: push ours to it now (its answer is its record), as a 1:1 wave does when it starts without a route.
         if addr == crate::network::status::RELAY_ADDR {
@@ -732,6 +734,8 @@ impl PhotonApp {
             return;
         };
         crate::logf!("WAVE: group wave {} ends here — {}, {} link(s)", hex::encode(&w.wave_id[..4]), format!("{:?}", outcome), w.links.len());
+        // The next wave starts with the microphone on.
+        self.wave_muted = false;
         // The wave goes on without us while anyone else is in it: leaving, declining or missing it keeps it joinable here (join_live_group_wave).
         if let Some(key) = w.offer_lane_key.filter(|_| !w.joined.is_empty()) {
             self.live_group_waves.retain(|l| l.gid != w.gid);
