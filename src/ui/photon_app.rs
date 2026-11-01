@@ -2517,6 +2517,8 @@ pub struct PhotonApp {
     chain_pushed_osc: crate::linear_map::LinearMap<[u8; 32], i64>,
     /// Per group: BLAKE3 of the roster last pushed to our siblings. A roster edge (founding, a join, a rename) moves no lane, so the lane filter alone never carried it.
     molecule_roster_pushed: crate::linear_map::LinearMap<[u8; 32], [u8; 32]>,
+    /// Friendships a sibling asked us for by era_pull while we hold a different era: the next replication pass pushes each one whole-era (lane-less if no lane moved), so the asker gets an answer it can adopt or refuse.
+    era_serves: crate::linear_map::LinearSet<[u8; 32]>,
     /// Tokens we fired a `chain_pull` for (Complete-without-chains, siblings exist) — once per session, so the fleet gets ONE ask before any re-key verdict. RAM-only.
     chain_pull_sent: crate::linear_map::SortedSet<[u8; 32]>,
     /// Per-token miss answers: sibling device pubkeys that replied `chain_pull_miss`. When every live sibling contact has a device in the set, the fleet truly holds nothing and the re-key runs. RAM-only.
@@ -3367,6 +3369,7 @@ impl PhotonApp {
             last_fleet_sweep: None,
             chain_pushed_osc: crate::linear_map::LinearMap::new(),
             molecule_roster_pushed: crate::linear_map::LinearMap::new(),
+            era_serves: crate::linear_map::LinearSet::new(),
             chain_pull_sent: crate::linear_map::SortedSet::new(),
             chain_pull_misses: crate::linear_map::LinearMap::new(),
             peer_era_seen: crate::linear_map::LinearMap::new(),

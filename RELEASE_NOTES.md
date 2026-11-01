@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Conversations no longer go silent after a device reset.** When one of your devices came back from a reset with old keys for a friend, it could start a new key exchange that the friend never finished, and your other devices then followed it — after which nothing either of you sent arrived; your devices now take the keys from each other first, and only ever follow keys the friend is actually using.
 - **Group waves past eight people.** A group wave used to stop at eight devices; it now takes as many as join.
 - **Lighter group waves.** In a group wave your device now encodes your voice once for everyone instead of once per person, and when someone joins, the others answer only them instead of the whole group, so a large wave no longer floods every device.
 

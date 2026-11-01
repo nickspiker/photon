@@ -378,11 +378,20 @@ impl PhotonApp {
                 self.pull_era_from_fleet(fid);
                 return true;
             }
+            // THE FLEET FIRST (2026-11-01, Nick's Pixel and Emma): a device that booted on an old era sees the friend's era as unknown while a sibling holds it — the Pixel re-keyed here, moved the whole fleet off the era Emma was on, and every frame both ways was dropped.
+            // A device with siblings only ever asks them; the era repair (era.rs) re-keys once every live sibling has answered that none holds an era the friend is on (FleetAllMissed), so a re-key happens only when the identity as a whole has lost the bond.
+            if self.contacts.iter().any(|c| c.is_sibling && !c.locked_out) {
+                crate::logf!("ERA: {}'s bond is on era#{:08x}, one we do not hold — asking our own devices, not re-keying", fp, peer_tag);
+                self.pull_era_from_fleet(fid);
+                return true;
+            }
             if us > them {
                 crate::logf!("ERA: {}'s bond advertises era#{:08x}, one ours never held — the lower party re-keys it; waiting", fp, peer_tag);
                 return true;
             }
-            if self.era_heals.insert((fid, peer_tag, 0)) {
+            // Once per disagreement AS WE STAND: keyed by our own era too, so a side whose era moved since its last try (a re-key that completed here and not there) tries again instead of waiting on itself forever.
+            let our_tag = self.friendship_chains.iter().find(|(id, _)| *id == fid).and_then(|(_, c)| c.era_tag()).unwrap_or(0);
+            if self.era_heals.insert((fid, peer_tag, our_tag)) {
                 crate::logf!("ERA: {}'s bond advertises era#{:08x}, one ours never held — we are the lower party: a fresh CLUTCH re-keys the bond", fp, peer_tag);
                 self.rekey_without_chains(ci);
             }

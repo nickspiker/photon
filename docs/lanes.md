@@ -119,6 +119,18 @@ FLEET SHRINK is the trigger (decision 1): a device leaving the fold or being rev
 
 Not yet (later stages): the consent-gated fresh channel (`ConsentFresh`, logs); the remaining ad-hoc triggers routed through `friendship_repair`; KEM decapsulation off the UI thread (inline today — a few milliseconds once per 256 rows).
 
+### Which era is live, across two fleets (2026-11-01)
+
+The field case: Nick's phone booted holding an old era for Emma while his desktop, his Mac and Emma were all on the current one; the phone re-keyed with Emma, three of Nick's devices answered at once, the phone completed a pairing Emma never confirmed and pushed it, and the desktop and Mac adopted it by genesis order — discarding the era Emma was on, so every frame between them was dropped and the invite to a new atom with it.
+The rules that keep one live era, whichever devices are reset, stale or offline:
+
+1. **The friend's era outranks the order.** A sibling's pushed era replaces ours only if the friend's own devices are seen on it (their pong advertisements, `peer_era_seen`); one they are seen on is never replaced by one they are not (`friend_era_verdict`, drain_chain_syncs). With no evidence either way, the old order decides (`era_superseded_by`: same lineage by index, else the later genesis, else the larger root), and every device of both fleets applies it the same way.
+2. **An unconfirmed era stays on the device that made it.** A ceremony supersedes our era at its eggs, before the friend's proof; until the proof lands (AwaitingProof → Complete) that friendship is not pushed to siblings. If it never lands, the friend's era comes back from the siblings by rule 1.
+3. **A device behind its fleet asks the fleet, never the friend.** The era-mismatch heal (bonds.rs `heal_era_mismatch`) only asks our own devices when we have any; the era repair (era.rs) re-keys only after every live sibling has answered that none holds an era the friend is on. A sibling answers an era_pull whenever it holds a different era than the one the asker names (a fresh ceremony restarts the index at 0, so "ours ≥ theirs" answered miss while holding the friend's era), and pushes it even when no lane moved (`era_serves`). Siblings that are offline never answer, so a device whose siblings are all away waits for one to come back.
+4. **Every wait ends on an event.** The heal's once-per-disagreement guard is keyed by our own era too, so a side whose era moved since its last try tries again.
+
+Several devices of one fleet can still answer the same offer (the §4.2 owner depends on each device's view of who is live); rules 1 and 2 make the outcome converge — a pairing the friend did not confirm never spreads, and confirmed eras are ordered the same way everywhere.
+
 ## Out of scope here
 
 Molecules (atoms bound together) — BUILT 2026-09-15 as docs/molecules.md (the same lanes off a delivered group root, exactly as promised here) — the reservoir/epoch FS machinery of §14.10 (lanes are compatible with it; it layers on later), UI (no UI work in this phase — rendering still shows one conversation, lanes are transport plumbing).

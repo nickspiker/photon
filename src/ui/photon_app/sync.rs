@@ -1108,6 +1108,14 @@ impl PhotonApp {
             .filter(|c| c.is_sibling && !c.locked_out)
             .filter_map(|c| c.friendship_id.map(|f| *f.as_bytes()))
             .collect();
+        // AN UNCONFIRMED ERA STAYS HERE (2026-11-01): a ceremony supersedes our era at its eggs, before the friend's proof — a phone pushed such an era, the friend never confirmed it, and the whole fleet left the era the friend was on. Until the proof lands (AwaitingProof → Complete) the friendship is not pushed; if it never lands, the friend's era comes back to this device from its siblings (conversation.rs drain_chain_syncs).
+        let unconfirmed: Vec<[u8; 32]> = self
+            .contacts
+            .iter()
+            .filter(|c| !c.is_sibling && c.clutch_state == crate::types::ClutchState::AwaitingProof)
+            .filter_map(|c| self.bond_chains_id(c).or(c.friendship_id))
+            .map(|f| *f.as_bytes())
+            .collect();
         // Collect due frames first (read-only pass over the chains); the encode + seal + frame build ride ONE worker — kete over 17KB+ per changed friendship ran inline on the render thread, and an adopt storm (fresh sibling join repushes everything) multiplied it.
         let mut frames: Vec<(
             [u8; 32],
@@ -1120,8 +1128,12 @@ impl PhotonApp {
             if sibling_fids.contains(&fid_bytes) {
                 continue;
             }
+            if unconfirmed.contains(&fid_bytes) {
+                continue;
+            }
             let pushed = self.chain_pushed_osc.get(&fid_bytes).copied().unwrap_or(0);
-            if chains.mutated_osc <= pushed {
+            let serve = self.era_serves.contains(&fid_bytes);
+            if chains.mutated_osc <= pushed && !serve {
                 continue; // coarse gate: nothing on this friendship moved since the last push
             }
             // PER-LANE: send only the lanes whose position advanced past what we last pushed — a per-lane checkpoint subset, not the whole blob. A key of fid ‖ label.
@@ -1135,6 +1147,11 @@ impl PhotonApp {
                     self.lane_pushed_pos.get(&key).copied().unwrap_or(0) < *pos
                 })
                 .collect();
+            if changed.is_empty() && serve {
+                // AN ERA SERVE (2026-11-01): a sibling asked for the era we hold, and an era just superseded has no lane moved yet — the frame carries the era itself, lane-less, or the asker would get neither a blob nor a miss.
+                frames.push((fid_bytes, chains.mutated_osc, Vec::new(), Some(chains.replication_subset(&[]))));
+                continue;
+            }
             if changed.is_empty() {
                 // A GROUP'S ROSTER EDGE moves no lane — and a freshly founded atom has no lanes at all — so the lane filter alone never carried it (Nick 2026-10-24: "strawberry" founded on the MacBook never reached the desktop, so Emma's join had one device to answer it and that one was asleep).
                 // The roster rides every chains frame; push a lane-less frame whenever it changed since the last push, and a sibling that never held the group adopts it whole, keys included.
@@ -1152,6 +1169,9 @@ impl PhotonApp {
             let changed_labels: Vec<[u8; 32]> = changed.iter().map(|(l, _)| *l).collect();
             let subset = chains.replication_subset(&changed_labels);
             frames.push((fid_bytes, chains.mutated_osc, changed, Some(subset)));
+        }
+        for f in &frames {
+            self.era_serves.remove(&f.0);
         }
         if frames.is_empty() {
             return;

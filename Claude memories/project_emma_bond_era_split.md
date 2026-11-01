@@ -1,0 +1,19 @@
+---
+name: project_emma_bond_era_split
+description: 2026-11-01 CONVICTED — Nick's fleet and Emma split eras on their bond (Nick d01a68b6/80dc4dcf vs Emma 43e74c1d) after a stale-booted Pixel re-keyed; every frame both ways dropped since 00:30 UTC, atom invite lost
+metadata:
+  type: project
+---
+Field 2026-11-01 (UTC): Emma founded atom 5b0bef4e and invited Nick and Brittany; Brittany got it, Nick did not. The offer reached Nick's desktop (PT ACK'd) and was dropped: "CHAT: frame tagged era 1139231773 (= 43e74c1d) from 9ce64cc2 — ours d01a68b6, retired 80dc4dcf — dropped". Every frame Emma ↔ Nick has been dropped since ~00:30.
+
+The chain of faults (all four logs merged):
+0. 00:28:49 Nick's Pixel booted holding the bond's OLD era 80dc4dcf; desktop, Mac and Emma were on 43e74c1d. It took ceremony ownership for 12 friendships ("claimant 90e571bf is not live" — boot race).
+1. 00:28:51 era.rs correctly asked the fleet (PullFleet), but 00:28:54 bonds.rs heal_era_mismatch fired "a fresh CLUTCH re-keys the bond" anyway — the heal path never asks the fleet first.
+2. Emma answered "peer lost chains, accepting re-key"; desktop AND Mac also accepted Emma's offer and sent their own offers (three Nick devices in one round). Desktop: "ceremony wedged on repeated ceremony_id mismatches". Pixel completed its pairing and SUPERSEDED 80dc4dcf → d01a68b6 at eggs time, before Emma's proof; Emma dropped the Pixel's proof as "cross-round echo" (her round paired a different Nick offer) — her round stays Pending forever.
+3. Desktop and Mac adopted the Pixel's chain by CHAIN-SYNC "sibling was ahead": current d01a68b6, retired 80dc4dcf — 43e74c1d, the era Emma is actually on, was discarded.
+4. Nothing heals: era_heals is keyed (fid, peer_tag, 0), so the Pixel's one try at 43e74c1d is spent; desktop/Mac defer to the owner (Hold "era_pull in flight" forever); Emma is the higher party and waits.
+
+5. 01:33 the Pixel (restarted, heal guard cleared) re-keyed again and the same three-way race repeated: desktop AND Mac each answered Emma's offer with their own ("while Complete — peer lost chains"), the Pixel dropped its own round naming the desktop owner, then 8 s later named the Mac; Emma kept "discarding our round and adopting theirs"; the desktop wedged on ceremony_id mismatches. ROOT: the §4.2 computed ceremony owner depends on each device's view of sibling liveness, so the three disagree and every one of them answers.
+FIXED 2026-11-01 (docs/lanes.md "Which era is live, across two fleets"): (1) a sibling's era replaces ours only if the friend is seen on it — friend_era_verdict in drain_chain_syncs; (2) an AwaitingProof friendship is never pushed; (3) heal_era_mismatch only asks the fleet when siblings exist, era_pull is served whenever we hold a different tag (era_serves forces a lane-less push); (4) heal guard keyed by our own era. Deliberately NOT built: switching a live round to the lowest-hash offer (slot-state surgery, flip-flop risk) — rules 1+2 converge instead. Field test pending; the current Nick/Emma split heals only once both run the fix.
+**Why:** a stale device must take its fleet's era, never re-key a working bond; a half-confirmed era must never replace the one the peer uses.
+**How to apply:** fixes in bonds.rs heal_era_mismatch (fleet first; heal key includes our own era so a moved side retries) and chain adoption (keep the replaced era readable). Log prints era tags in decimal in some lines (1139231773) and hex in others — read both. Related: [[project_era_ratchet]], [[project_consent_order_deadlock]].

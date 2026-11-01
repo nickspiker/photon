@@ -5472,13 +5472,24 @@ impl PhotonApp {
                 continue;
             }
             // TOKEN-matched (same 2026-09-01 rule as the heal): serve iff we hold a chain FOR THIS TOKEN — a stale-era chain under the same contact must answer miss, or the asking sibling re-keys against a chain we can't actually give it. An era_pull (held_era set) additionally requires OURS to be a newer era than the one they hold: same era = miss, so a fleet at one era never re-pushes to itself.
+            // A DIFFERENT ERA IS AN ANSWER (2026-11-01): a fresh ceremony restarts the index at 0, so "ours ≥ theirs" answered miss to a stale phone while we held the very era its friend was on — the phone concluded nobody had it and re-keyed. When the asker names its tag, any other era we hold is served, and the asker's adopt decides (the friend's advertisement first, conversation.rs drain_chain_syncs).
             let have_fid = self
                 .friendship_chains
                 .iter()
-                .find(|(_, c)| c.conversation_token == token && held_era.map_or(true, |h| c.era_index >= h))
+                .find(|(_, c)| {
+                    c.conversation_token == token
+                        && match (held_era, held_tag) {
+                            (Some(_), Some(t)) => c.era_tag() != Some(t),
+                            (Some(h), None) => c.era_index >= h,
+                            (None, _) => true,
+                        }
+                })
                 .map(|(id, _)| *id);
             if let Some(fid) = have_fid {
                 let fb = *fid.as_bytes();
+                if held_era.is_some() {
+                    self.era_serves.insert(fb);
+                }
                 self.chain_pushed_osc.remove(&fb);
                 self.lane_pushed_pos.retain(|k, _| k[..32] != fb);
                 crate::logf!(

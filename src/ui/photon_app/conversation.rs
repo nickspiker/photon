@@ -2505,7 +2505,32 @@ impl PhotonApp {
             let left_group = incoming.molecule && self.molecule_is_left(&crate::types::molecule::MoleculeId(*fid.as_bytes()));
             let booted_orphan = incoming.participants().iter().any(|p| self.is_booted_party(p))
                 && !self.contacts.iter().any(|c| c.friendship_id == Some(fid));
+            // THE FRIEND DECIDES WHICH ERA IS LIVE (2026-11-01, Nick's fleet and Emma): the eras the friend's own devices last advertised for this friendship (peer_era_seen, from their pongs) — read before the chains borrow.
+            let friend_tags: Vec<u32> = if incoming.molecule {
+                Vec::new()
+            } else {
+                self.peer_era_seen.iter().filter(|((f, dev), _)| *f == fid && self.contacts.iter().any(|c| !c.is_sibling && c.knows_device(dev))).map(|(_, (_, tag))| *tag).collect()
+            };
             let adopted = match self.friendship_chains.iter_mut().find(|(id, _)| *id == fid) {
+                // AN ERA THE FRIEND IS NOT ON NEVER REPLACES ONE THEY ARE ON (2026-11-01): a stale-booted phone completed a ceremony the friend never confirmed, pushed it, and the desktop and Mac adopted it by genesis order — discarding the era the friend was actually using; every frame both ways was dropped from then on.
+                // The friend's advertisement outranks the order: seen on the incoming era and not on ours, it is adopted whatever its genesis (a stale device catching up to the live era); seen on ours and not on the incoming, it is refused. With no evidence either way the order below decides, as before.
+                Some((_, local)) if local.differs_in_era_from(&incoming) && friend_era_verdict(local.era_tag(), incoming.era_tag(), &friend_tags) == Some(false) => {
+                    crate::logf!(
+                        "CHAIN-SYNC: era REFUSED for fid {} — the friend is on ours ({:08x}), not on the incoming ({:08x}) from {}",
+                        crate::fp(&fid.0),
+                        local.era_tag().unwrap_or(0),
+                        incoming.era_tag().unwrap_or(0),
+                        crate::fp(&sender_pubkey.key)
+                    );
+                    false
+                }
+                Some((_, local)) if local.differs_in_era_from(&incoming) && friend_era_verdict(local.era_tag(), incoming.era_tag(), &friend_tags) == Some(true) && !crate::network::time_base::from_the_future(incoming.genesis_osc) => {
+                    incoming.sanitize_replicated();
+                    *local = incoming;
+                    era_moved = true;
+                    crate::logf!("CHAIN-SYNC: adopted the era the friend is on for fid {} — ours was one they are not on", crate::fp(&fid.0));
+                    true
+                }
                 // ERA SUPERSEDE before any lane math: a re-key mints a NEW lane_root, and the lane-wise merge below adopts a root only where one is absent — so a sibling holding the old era would keep dead chains forever, deriving garbage lanes for every new-era label it meets. Two blobs under one friendship with DIFFERENT roots are different eras, and eras replace wholesale: the newer GENESIS wins (era_superseded_by), sanitized like any replicated copy. Losing the race one round just means our next push carries the newer era back.
                 Some((_, local)) if local.differs_in_era_from(&incoming) => {
                     // A genesis dated past our known time never supersedes — it would otherwise win the era comparison against every honest era for as long as the lie lasts. Filtered here at ingest, not inside the pure comparison, so the type stays clock-free.
@@ -3428,5 +3453,32 @@ impl PhotonApp {
             }
         });
         true
+    }
+}
+
+/// Which era the friend is on, between ours and a sibling's pushed one (2026-11-01, Nick's fleet and Emma): `Some(true)` adopt the incoming, `Some(false)` refuse it, `None` no evidence either way (the era order decides).
+/// The friend's own devices' advertisements are the evidence: an era they are on outranks one they are not, whatever the genesis says.
+fn friend_era_verdict(ours: Option<u32>, incoming: Option<u32>, friend: &[u32]) -> Option<bool> {
+    let on = |t: Option<u32>| t.is_some_and(|t| friend.contains(&t));
+    match (on(ours), on(incoming)) {
+        (true, false) => Some(false),
+        (false, true) => Some(true),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::friend_era_verdict;
+
+    /// The 2026-11-01 split: Emma on 43e74c1d, the desktop on it too, the phone pushing an era she never confirmed — refused; the phone, behind, takes hers whatever its genesis; no word from her leaves it to the order.
+    #[test]
+    fn the_friend_s_era_outranks_the_order() {
+        let emma = [0x43e7_4c1d];
+        assert_eq!(friend_era_verdict(Some(0x43e7_4c1d), Some(0xd01a_68b6), &emma), Some(false));
+        assert_eq!(friend_era_verdict(Some(0x80dc_4dcf), Some(0x43e7_4c1d), &emma), Some(true));
+        assert_eq!(friend_era_verdict(Some(0x80dc_4dcf), Some(0xd01a_68b6), &emma), None);
+        assert_eq!(friend_era_verdict(Some(0x43e7_4c1d), Some(0xd01a_68b6), &[]), None);
+        assert_eq!(friend_era_verdict(Some(0x43e7_4c1d), Some(0xd01a_68b6), &[0x43e7_4c1d, 0xd01a_68b6]), None, "a friend on both (two of its devices split) gives no evidence");
     }
 }
