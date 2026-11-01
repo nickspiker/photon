@@ -155,10 +155,16 @@ impl PhotonApp {
                 if beam {
                     self.beam_armed = true;
                 }
-                self.start_group_wave(gi);
+                // A wave already running in the group is joined (late, or again after leaving); otherwise this one starts it.
+                let joining = self.live_group_wave_joinable(gi);
+                if joining {
+                    self.join_live_group_wave(gi);
+                } else {
+                    self.start_group_wave(gi);
+                }
                 if beam {
                     crate::wave::beam_session::preview_start();
-                    crate::log("BEAM: group wave started from the Beam button — the camera shows now and sends on the first link");
+                    crate::log(if joining { "BEAM: joined the running group wave from the Beam button — the camera sends on every link" } else { "BEAM: group wave started from the Beam button — the camera shows now and sends on the first link" });
                 }
             }
             GrantIntent::Answer { beam } => {

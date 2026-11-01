@@ -31,6 +31,14 @@ The lower device key plays the origin's direction (`group_link_origin`), so the 
 - A device is in one wave at a time: a pair's offer during a group wave gets `Busy`, a group offer during any wave is ignored.
 - A ring ends on the origin's hangup, our own answer or decline, our fleet's answer or decline on another device, or the presence plane's offline verdict for every device still waving (the group ring's lease, on an edge).
 
+### Joining late, leaving and coming back (2026-11-01)
+
+Nick: "We need a way for a member to join in after the beam or wave has started. Leave/join at will."
+Every device keeps the group's running wave whether or not it is in it (`LiveGroupWave`): learned from the offer row (rung here or not), kept current by every `Answer` and `Hangup` on the group's lane, and gone when the last device leaves.
+Declining, missing the ring or leaving keeps it, so the wave stays joinable while anyone else is in.
+In that group's conversation the Wave and Beam pills read "Join wave" / "Join beam" while a member in the wave is online (and, as for any group wave, one is on a direct path); a tap joins it thru the ordinary join with a fresh nonce, so every link's secret is fresh.
+A member that sees a device it already holds join again with a different nonce takes it as a return: the old link goes down and a fresh one comes up (its leave may never have arrived).
+The record lives in RAM only: after a restart a device learns the running wave again from the next join or leave, or the offer re-served with the group's history.
 ## A member is a person, not a contact
 
 A molecule's member need not be anyone's friend: I bind Frank, Frank binds Mike, and Mike and I never met.

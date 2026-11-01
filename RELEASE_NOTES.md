@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Wave and Beam buttons work in groups.** In a group conversation the buttons showed as ready but ignored every tap; they now start or join the group's wave, and read "no direct path" when nobody in the group can be reached directly.
+- **Join a group wave at any time.** A wave or beam already running in a group can be joined late — the Wave and Beam buttons say "Join" — and anyone can leave and come back while it goes on.
 
 ## v136
 - **Conversations no longer go silent after a device reset.** When one of your devices came back from a reset with old keys for a friend, it could start a new key exchange that the friend never finished, and your other devices then followed it — after which nothing either of you sent arrived; your devices now take the keys from each other first, and only ever follow keys the friend is actually using.

@@ -19,11 +19,24 @@ pub(crate) enum GroupPhase {
 }
 
 /// Another device in the wave.
+#[derive(Clone, Copy)]
 pub(crate) struct GroupMember {
     pub device: [u8; 32],
     pub party: [u8; 32],
     /// Its join nonce (the origin's offer nonce for the origin).
     pub nonce: [u8; 32],
+}
+
+/// A GROUP WAVE RUNNING WITHOUT US (Nick 2026-11-01: "We need a way for a member to join in after the beam or wave has started. Leave/join at will."): what joining it needs — the offer's key and who is in.
+/// Learned from the offer whether or not it rang here, kept current by every join and leave on the group's lane, and gone when the last member leaves; leaving a wave keeps it, so a member can come back.
+pub(crate) struct LiveGroupWave {
+    pub gid: MoleculeId,
+    pub wave_id: [u8; 16],
+    pub offer_osc: i64,
+    /// The lane key the offer was sealed under — every link's secret derives from it.
+    pub key: [u8; 32],
+    /// Every other device in the wave, the origin first while it stays.
+    pub joined: Vec<GroupMember>,
 }
 
 /// A live media link to one member device.
@@ -328,6 +341,71 @@ impl PhotonApp {
         self.scene_dirty = true;
     }
 
+    /// An offer seen in a group, rung here or not: the group's running wave is this one, unless a newer offer already stands.
+    fn note_live_offer(&mut self, gid: MoleculeId, wave_id: [u8; 16], offer_osc: i64, key: [u8; 32], origin: GroupMember) {
+        match self.live_group_waves.iter_mut().find(|l| l.gid == gid) {
+            Some(l) if l.wave_id == wave_id => {}
+            Some(l) if l.offer_osc < offer_osc => *l = LiveGroupWave { gid, wave_id, offer_osc, key, joined: vec![origin] },
+            Some(_) => {}
+            None => self.live_group_waves.push(LiveGroupWave { gid, wave_id, offer_osc, key, joined: vec![origin] }),
+        }
+    }
+
+    /// A join on the group's lane: the device is in (a fresh nonce replaces its old one — it left and came back).
+    fn note_live_join(&mut self, gid: MoleculeId, wave_id: [u8; 16], m: GroupMember) {
+        if let Some(l) = self.live_group_waves.iter_mut().find(|l| l.gid == gid && l.wave_id == wave_id) {
+            match l.joined.iter_mut().find(|j| j.device == m.device) {
+                Some(j) => *j = m,
+                None => l.joined.push(m),
+            }
+        }
+    }
+
+    /// A leave on the group's lane: the device is out, and the wave with it once nobody is left.
+    fn note_live_leave(&mut self, gid: MoleculeId, wave_id: [u8; 16], device: [u8; 32]) {
+        if let Some(l) = self.live_group_waves.iter_mut().find(|l| l.gid == gid && l.wave_id == wave_id) {
+            l.joined.retain(|j| j.device != device);
+        }
+        self.live_group_waves.retain(|l| !l.joined.is_empty());
+    }
+
+    /// Can this device join the group's running wave now: not in a wave of its own, and someone in that wave online.
+    pub(super) fn live_group_wave_joinable(&self, gi: usize) -> bool {
+        if self.active_wave.is_some() || self.group_wave.is_some() {
+            return false;
+        }
+        let Some(gid) = self.molecule_rosters.get(gi).map(|(g, _)| *g) else {
+            return false;
+        };
+        self.live_group_waves.iter().find(|l| l.gid == gid).is_some_and(|l| l.joined.iter().any(|m| self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == m.party && c.is_online)))
+    }
+
+    /// Join the group's running wave (late, or again after leaving): the record becomes this device's group wave and the ordinary join runs — a fresh nonce, so every link's secret is fresh too.
+    pub(super) fn join_live_group_wave(&mut self, gi: usize) {
+        if self.active_wave.is_some() || self.group_wave.is_some() {
+            crate::log("WAVE: already in a wave");
+            return;
+        }
+        let Some(gid) = self.molecule_rosters.get(gi).map(|(g, _)| *g) else {
+            return;
+        };
+        let Some(pos) = self.live_group_waves.iter().position(|l| l.gid == gid) else {
+            return;
+        };
+        let l = self.live_group_waves.remove(pos);
+        let Some(origin) = l.joined.first().copied() else {
+            return;
+        };
+        self.ended_waves.remove(&l.wave_id);
+        self.rejected_waves.remove(&l.wave_id);
+        self.freshen_clock_for_wave();
+        let mut w = Self::ringing_group_wave(gid, l.wave_id, l.offer_osc, l.key, origin);
+        w.joined = l.joined;
+        crate::logf!("WAVE: joining the running group wave {} in {} — {} device(s) in", hex::encode(&l.wave_id[..4]), hex::encode(&gid.0[..4]), w.joined.len());
+        self.group_wave = Some(w);
+        self.join_group_wave();
+    }
+
     /// Decline the ring here: no signal (the others' wave goes on without us), the wave's row says we missed it.
     pub(super) fn decline_group_wave(&mut self) {
         if self.group_wave.as_ref().is_some_and(|w| w.phase == GroupPhase::Ringing) {
@@ -360,6 +438,10 @@ impl PhotonApp {
         }
         match sig {
             WaveSignal::Offer { wave_id, nonce, .. } => {
+                // Every offer seen in the group is its running wave, whether it rings here or not: a member who missed, declined or left joins it later.
+                if let Some(key) = rx_lane_key {
+                    self.note_live_offer(gid, wave_id, row_ts, key, GroupMember { device, party, nonce });
+                }
                 if self.ended_waves.contains(&wave_id) || self.rejected_waves.contains(&wave_id) {
                     return;
                 }
@@ -411,16 +493,28 @@ impl PhotonApp {
                 }
             }
             WaveSignal::Answer { wave_id, nonce, .. } => {
+                self.note_live_join(gid, wave_id, GroupMember { device, party, nonce });
                 let Some(w) = self.group_wave.as_mut().filter(|w| w.wave_id == wave_id) else {
                     return;
                 };
-                if w.joined.iter().any(|m| m.device == device) {
-                    return;
-                }
-                w.joined.push(GroupMember { device, party, nonce });
+                // A device already in with a DIFFERENT nonce left and came back (its leave may never have reached us): its old link goes, the fresh nonce brings a fresh secret.
+                let rejoin = match w.joined.iter_mut().find(|m| m.device == device) {
+                    Some(m) if m.nonce == nonce => return,
+                    Some(m) => {
+                        m.nonce = nonce;
+                        true
+                    }
+                    None => {
+                        w.joined.push(GroupMember { device, party, nonce });
+                        false
+                    }
+                };
                 let joined_here = w.phase == GroupPhase::Joined;
                 let (gid, our_nonce) = (w.gid, w.our_nonce);
-                crate::logf!("WAVE: {} joined group wave {} ({} in besides us)", crate::fp(&party), hex::encode(&wave_id[..4]), w.joined.len());
+                crate::logf!("WAVE: {} {} group wave {} ({} in besides us)", crate::fp(&party), if rejoin { "came back to" } else { "joined" }, hex::encode(&wave_id[..4]), w.joined.len());
+                if rejoin {
+                    self.group_link_down(device);
+                }
                 if joined_here {
                     self.group_link_up(device);
                     // ROLL CALL: the newcomer knows only the joins that reached it, and a member it never heard of could never link with it — everyone already in says so again (a device already known is ignored, so this never cascades).
@@ -432,6 +526,7 @@ impl PhotonApp {
                 self.scene_dirty = true;
             }
             WaveSignal::Hangup { wave_id } => {
+                self.note_live_leave(gid, wave_id, device);
                 let Some(w) = self.group_wave.as_mut().filter(|w| w.wave_id == wave_id) else {
                     return;
                 };
@@ -637,6 +732,11 @@ impl PhotonApp {
             return;
         };
         crate::logf!("WAVE: group wave {} ends here — {}, {} link(s)", hex::encode(&w.wave_id[..4]), format!("{:?}", outcome), w.links.len());
+        // The wave goes on without us while anyone else is in it: leaving, declining or missing it keeps it joinable here (join_live_group_wave).
+        if let Some(key) = w.offer_lane_key.filter(|_| !w.joined.is_empty()) {
+            self.live_group_waves.retain(|l| l.gid != w.gid);
+            self.live_group_waves.push(LiveGroupWave { gid: w.gid, wave_id: w.wave_id, offer_osc: w.offer_osc, key, joined: w.joined.clone() });
+        }
         if self.ended_waves.len() > 256 {
             self.ended_waves.clear();
         }

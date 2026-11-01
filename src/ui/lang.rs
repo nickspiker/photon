@@ -260,6 +260,10 @@ pub enum Msg<'a> {
     IncomingWaveNoPath,
     /// The ☎ pill while the friend is online but only over the relay — a wave cannot carry voice there yet, so the pill says why instead of failing silently (Nick 2026-09-17).
     WaveStartNoPath,
+    /// A group wave is running and this device is not in it: the pill joins it (Nick 2026-11-01: "leave/join at will").
+    WaveJoin,
+    /// The same, with our camera.
+    BeamJoin,
     /// The wave card's "wave back" in the same state.
     WaveBackNoPath,
     WaveActiveNoPath(&'a str),

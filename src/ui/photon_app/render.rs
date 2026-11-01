@@ -427,6 +427,8 @@ impl PhotonApp {
         // Hoisted for the wave overlay (the chrome borrow below outlives it): SHOW the ☎ pill for any real friend conversation (discoverable, dimmed when it can't connect); ENABLE it only when the friend is online with a usable chain. Also whether a wave is live (phase + peer name for the bar). All read before the chrome `as_mut` since the overlay draws early, under-blend-topmost, on every screen.
         // A MOLECULE waves too (docs/group-waves.md): the pill shows once the conversation stands, and lights when any other standing member is online.
         let molecule_wave = conv_hdr.as_ref().filter(|h| h.roster).map(|h| (h.woven, h.woven && h.online));
+        // A wave already running in this group that we are not in: the pills JOIN it (late, or again after leaving) instead of starting one.
+        let group_joinable = active_gi.is_some_and(|gi| self.live_group_wave_joinable(gi));
         let wave_pill_show = self
             .active_contact()
             .and_then(|ci| self.contacts.get(ci))
@@ -1338,19 +1340,20 @@ impl PhotonApp {
                 let beam_cy = conv_blind_now.beam_cy;
                 let wave_cx = buf_w as f32 - unit * 0.5 - pill_w * 0.5;
                 if let Some(b) = self.wave_start_btn.as_mut() {
-                    let pw = pill_w * if wave_pill_no_path { 1.8 } else { 1.0 };
+                    let pw = pill_w * if wave_pill_no_path { 1.8 } else if group_joinable { 1.5 } else { 1.0 };
                     b.set_rect(buf_w as f32 - unit * 0.5 - pw * 0.5, wave_cy, pw, pill_h);
                     b.set_font_size(pill_font);
-                    b.set_label(tr(if wave_pill_no_path { Msg::WaveStartNoPath } else { Msg::WaveStart }));
+                    b.set_label(tr(if wave_pill_no_path { Msg::WaveStartNoPath } else if group_joinable { Msg::WaveJoin } else { Msg::WaveStart }));
                     b.set_enabled(wave_pill_enabled);
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                 }
                 // Beam (video) — the slat above Wave, a third of a pill left of it so the two read as a stack: live when a wave could start and this device can send a beam (a codec + a camera path; docs/beams.md); a tap starts the wave with the beam armed.
                 if let Some(b) = self.beam_btn.as_mut() {
-                    b.set_rect(wave_cx - pill_w * 0.35, beam_cy, pill_w, pill_h);
+                    let bw = pill_w * if group_joinable { 1.5 } else { 1.0 };
+                    b.set_rect(wave_cx - pill_w * 0.35 - (bw - pill_w) * 0.5, beam_cy, bw, pill_h);
                     b.set_font_size(pill_font);
-                    b.set_label(tr(Msg::BeamStart));
+                    b.set_label(tr(if group_joinable { Msg::BeamJoin } else { Msg::BeamStart }));
                     b.set_enabled(beam_pill_enabled);
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
