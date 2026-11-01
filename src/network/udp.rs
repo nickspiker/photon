@@ -110,6 +110,71 @@ fn get_local_ip_uncached() -> Option<std::net::Ipv4Addr> {
     }
 }
 
+/// One address bound on one of our own interfaces, and whether that interface is a Wi-Fi Direct group.
+pub struct OwnAddr {
+    pub ip: std::net::IpAddr,
+    pub wifi_direct: bool,
+}
+
+/// Every address another device could reach us at on our OWN interfaces (docs/addresses.md stage 2): each up, non-loopback interface's usable LAN v4 (`is_usable_lan_ipv4`, so never the CLAT `192.0.0.4`), and its global or unique-local v6 — two or four on a v6 network, stable and temporary alike.
+/// Link-local v6 is left out: it needs a scope id no peer can know.
+/// The routing trick (`get_local_ip`) answers only for the interface that reaches the internet; this answers for all of them.
+#[cfg(unix)]
+pub fn own_interface_addrs() -> Vec<OwnAddr> {
+    let mut out = Vec::new();
+    let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: getifaddrs fills `head` with a list we own until freeifaddrs; on failure it returns -1 and leaves nothing to free.
+    if unsafe { libc::getifaddrs(&mut head) } != 0 {
+        return out;
+    }
+    let mut cur = head;
+    while !cur.is_null() {
+        // SAFETY: `cur` walks the list getifaddrs returned, which stays valid until the freeifaddrs below.
+        let ifa = unsafe { &*cur };
+        cur = ifa.ifa_next;
+        let flags = ifa.ifa_flags as libc::c_int;
+        if ifa.ifa_addr.is_null() || flags & libc::IFF_UP == 0 || flags & libc::IFF_LOOPBACK != 0 {
+            continue;
+        }
+        // SAFETY: ifa_name is a NUL-terminated name owned by the list.
+        let name = unsafe { std::ffi::CStr::from_ptr(ifa.ifa_name) }.to_bytes();
+        // SAFETY: the family says which sockaddr this is, and the kernel sized it for that family.
+        let ip = match unsafe { (*ifa.ifa_addr).sa_family } as libc::c_int {
+            libc::AF_INET => {
+                let sin = unsafe { &*(ifa.ifa_addr as *const libc::sockaddr_in) };
+                let v4 = std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
+                if !is_usable_lan_ipv4(v4) {
+                    continue;
+                }
+                std::net::IpAddr::V4(v4)
+            }
+            libc::AF_INET6 => {
+                let sin6 = unsafe { &*(ifa.ifa_addr as *const libc::sockaddr_in6) };
+                let v6 = std::net::Ipv6Addr::from(sin6.sin6_addr.s6_addr);
+                // Global unicast (2000::/3) or unique-local (fc00::/7); everything else (link-local, loopback, multicast, mapped) no peer can reach.
+                let top = v6.segments()[0];
+                if top & 0xe000 != 0x2000 && top & 0xfe00 != 0xfc00 {
+                    continue;
+                }
+                std::net::IpAddr::V6(v6)
+            }
+            _ => continue,
+        };
+        if !out.iter().any(|a: &OwnAddr| a.ip == ip) {
+            out.push(OwnAddr { ip, wifi_direct: name.starts_with(b"p2p") });
+        }
+    }
+    // SAFETY: `head` came from a successful getifaddrs and is freed exactly once.
+    unsafe { libc::freeifaddrs(head) };
+    out
+}
+
+/// Windows has no getifaddrs; GetAdaptersAddresses is its equivalent and is not wired yet, so a Windows device publishes its reflexive and beacon-learned LAN address only.
+#[cfg(not(unix))]
+pub fn own_interface_addrs() -> Vec<OwnAddr> {
+    Vec::new()
+}
+
 /// Is `ip` an address another host on our LAN could actually reach us at?
 /// Rejects `192.0.0.0/24` — the IETF Protocol Assignments block (RFC 6890), whose `192.0.0.0/29` service-continuity prefix (RFC 7335) is what Android's 464XLAT CLAT hands a cellular device (`192.0.0.4`). That address is meaningful ONLY on the device's own stack; published as a peer's `local_ip` it is pure noise that makes every other device burn its PT/TCP retry budget (~17s observed) racing an unreachable candidate before the WAN path wins. Also rejects loopback and link-local, which are never useful peer LAN addresses. A cellular device thus advertises NO LAN address (correct — it has none), and its reachable WAN IPv6 carries the traffic.
 pub use fgtw::traverse::gather::is_usable_lan_ipv4;
@@ -186,6 +251,20 @@ pub fn build_lan_discovery(handle_proof: [u8; 32], port: u16, device_pubkey: [u8
 mod lan_addr_tests {
     use super::is_usable_lan_ipv4;
     use std::net::Ipv4Addr;
+
+    /// Our own interface list never offers an address no peer could reach: no loopback, no link-local, no CLAT, no v6 outside global and unique-local.
+    #[test]
+    fn own_interface_addrs_are_all_reachable_kinds() {
+        for a in super::own_interface_addrs() {
+            match a.ip {
+                std::net::IpAddr::V4(v4) => assert!(is_usable_lan_ipv4(v4), "{} is not a usable v4", v4),
+                std::net::IpAddr::V6(v6) => {
+                    let top = v6.segments()[0];
+                    assert!(top & 0xe000 == 0x2000 || top & 0xfe00 == 0xfc00, "{} is neither global nor unique-local", v6);
+                }
+            }
+        }
+    }
 
     /// The discovery beacon must round-trip thru its own parser. Field, 2026-08-11: every device logged Multicast RX for every beacon and ZERO "Discovered peer" — the parse failed fleet-wide, silently, which is why LAN candidates only ever came from the (WAN-only-when-multi-homed) registry records and same-LAN peers parked on relay.
     #[test]

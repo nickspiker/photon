@@ -11,14 +11,18 @@ The field case: Emma's desktop and phone on one LAN with Nick's Mac and Brittany
 `public()` / `lan()` are the freshest of each kind; `all()` is every one, LAN first; candidate gathering (`traverse::gather`) offers every address, so the stable priority sort tries the freshest first within each kind.
 A LAN beacon carries its device key, and its address now goes to that device's set.
 
-## Stage 2 — our own addresses, all of them
+## Stage 2 — our own addresses, all of them (built)
 
-A device publishes every address it can be reached at, not the one `our_reflexive` slot (which held v4 OR v6):
-- each interface address (getifaddrs on Unix and Android): global IPv6 addresses (stable and temporary), LAN IPv4, VPN interfaces;
-- the reflexive public v4 and v6, kept apart (`ReflexiveState` already does in the receive loop; the app collapsed them);
-- the Wi-Fi Direct group address while a group is up.
+A device publishes every address it can be reached at (`own_address_set` in `ui/photon_app/peers.rs`), most useful first:
+- the reflexive public address peers saw (`our_reflexive`);
+- the beacon-proven LAN address;
+- each up, non-loopback interface's own addresses at our listening port (`udp::own_interface_addrs`, getifaddrs on Unix and Android): usable LAN v4 (never the CLAT `192.0.0.4`), global and unique-local v6 — stable and temporary alike; link-local v6 is left out (it needs a scope id no peer knows);
+- an interface named `p2p…` is tagged Wi-Fi Direct.
 
-## Stage 3 — the phonebook record: a set
+Not yet: Windows (no getifaddrs; GetAdaptersAddresses is the equivalent), and the app still holds one `our_reflexive` (v4 OR v6) — a global v6 interface address is normally the public v6 address anyway, since v6 is rarely NATed.
+The set is republished on the same edge as the single record (the reflexive address moving, or Android's interface-change edge); a v6 temporary address that rotates while the reflexive holds still waits for the next such edge.
+
+## Stage 3 — the phonebook record: a set (built; worker deployed 2026-11-01)
 
 A new record kind beside the old one, `DeviceAddressSet` (kind 4) at `key_address_set(device)`:
 - the 256-byte slot holds the device, the identity's handle proof, a pointer to the SET, the publish timestamp (the slot's epoch, at the same offset as `DeviceAddress`), and the egg pointer;
@@ -28,3 +32,7 @@ A new record kind beside the old one, `DeviceAddressSet` (kind 4) at `key_addres
 Staleness: every publish replaces the whole set — an address the device no longer has is simply not in the next one, and a reader takes a set only if it is newer than the one it holds (the epoch guard the worker already applies). Within a set, `seen` orders the entries, so a reader tries the freshest first; nothing ages on a timer.
 
 Rollout: the worker learns the new kind first (it verifies with the same fgtw code); devices publish BOTH records while older builds live (an old build never sees kind 4 and keeps reading kind 3), and read the set first when it is there.
+
+As built: `fgtw::phonebook` `RecordKind::DeviceAddressSet`, `sign_device_address_set`, `verify_address_set_with`, `address_set_blob` / `address_set_entries` (one `addr` section per address: `ip` as `ni`/`nj`, `port` as `np`, `kind`, `seen` as Eagle time), at most `ADDRESS_SET_MAX` (32) entries and `ADDRESS_SET_BLOB_MAX` (8 KiB).
+The worker stores the set at `pb/set/{ptr}` and serves it beside the record in `pb_get` and `pb_devices`.
+Photon publishes both records on every own-address publish; `fetch_devices` returns each pointed device's verified set, and the resolver notes every address in it on that device's endpoint (`adopt_endpoint_into`'s `more`).

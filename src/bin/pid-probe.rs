@@ -86,7 +86,14 @@ fn main() {
     }
     // The pb_devices view — the REGISTRY-FIRST path peers actually resolve thru (per-device pb_get is only the fallback); a stale row HERE is what a peer punches at even when the per-device record above is fresh.
     match rt.block_on(photon_messenger::network::fgtw::phonebook_client::fetch_devices(&hp)) {
-        Ok((_view, addresses)) => {
+        Ok((_view, addresses, sets)) => {
+            for s in &sets {
+                let age_s = (vsf::eagle_time_oscillations() - s.published) / vsf::OSCILLATIONS_PER_SECOND as i64;
+                println!("  pb_devices set: dev {}…  {} address(es)  (published {}s ago)", hex::encode(&s.device[..4]), s.addrs.len(), age_s);
+                for a in &s.addrs {
+                    println!("    {:?} {}", a.kind, a.addr);
+                }
+            }
             use photon_messenger::network::fgtw::phonebook_client::bytes_to_ip;
             for rec in &addresses {
                 let age_s = (vsf::eagle_time_oscillations() - rec.epoch())

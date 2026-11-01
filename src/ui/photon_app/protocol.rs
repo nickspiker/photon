@@ -195,7 +195,7 @@ impl PhotonApp {
                             rec.handle_proof,
                             *rec.device_pubkey.as_bytes(),
                             rec.ip,
-                            rec.lan_addr(),
+                            rec.lan_addr().as_slice(),
                             rec.local_seen,
                             true,
                         );

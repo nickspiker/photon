@@ -95,15 +95,35 @@ pub async fn publish_address(
 
 /// Publish one already-signed registry record (primary or secondary) with its egg blob — the converge path's writer. The worker re-verifies the record's eggs and the slot-local epoch before storing; a `stale` answer is fine (a racing sibling landed first) and surfaces as Rejected for the caller to ignore.
 pub async fn put_record(rec: &Record, eggs: &[u8]) -> Result<(), PhonebookError> {
+    put_fields(vec![
+        ("rec".to_string(), VsfType::v(b'r', rec.0.to_vec())),
+        ("eggs".to_string(), VsfType::v(b'r', eggs.to_vec())),
+    ])
+    .await
+}
+
+/// Publish EVERY address we have as one signed set (docs/addresses.md stage 3), beside the single-address record older readers take.
+/// The set replaces the last one whole; its timestamp is the slot's monotonic guard, so a set older than the one the seed holds is refused as stale.
+pub async fn publish_address_set(
+    signer: &impl fgtw::pq::FleetSigner,
+    mask: fgtw::fleet::scheme::Mask,
+    handle_proof: &[u8; 32],
+    entries: &[fgtw::phonebook::SetAddr],
+) -> Result<(), PhonebookError> {
+    let (rec, eggs, set) = Record::sign_device_address_set(signer, mask, handle_proof, entries, vsf::eagle_time_oscillations());
+    debug_assert!(rec.verify_address_set(&eggs, &set), "a set we just signed must verify");
+    put_fields(vec![
+        ("rec".to_string(), VsfType::v(b'r', rec.0.to_vec())),
+        ("eggs".to_string(), VsfType::v(b'r', eggs)),
+        ("set".to_string(), VsfType::v(b'r', set)),
+    ])
+    .await
+}
+
+async fn put_fields(fields: Vec<(String, VsfType)>) -> Result<(), PhonebookError> {
     let body = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .add_section(
-            "pb_put",
-            vec![
-                ("rec".to_string(), VsfType::v(b'r', rec.0.to_vec())),
-                ("eggs".to_string(), VsfType::v(b'r', eggs.to_vec())),
-            ],
-        )
+        .add_section("pb_put", fields)
         .build()
         .map_err(|e| PhonebookError::Network(format!("build: {}", e)))?;
     post(body).await?;
@@ -156,7 +176,7 @@ fn unverified_reason(view: &fgtw::phonebook::RegistryView, handle_proof: &[u8; 3
 /// The one-round-trip primary+secondary read: the identity's count record, its pointer run, and every pointed device's address record. Verified document in, per-record verification here: the count and placements must verify cryptographically, addresses must verify AND belong to a pointed device. MEMBERSHIP of the signers is the caller's check, against the fold it holds.
 pub async fn fetch_devices(
     handle_proof: &[u8; 32],
-) -> Result<(fgtw::phonebook::RegistryView, Vec<Record>), PhonebookError> {
+) -> Result<(fgtw::phonebook::RegistryView, Vec<Record>, Vec<DeviceSet>), PhonebookError> {
     let body = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .add_section(
@@ -169,16 +189,27 @@ pub async fn fetch_devices(
 
     let schema = vsf::schema::SectionSchema::new("pb_devices")
         .field("rec", vsf::schema::TypeConstraint::Any)
-        .field("eggs", vsf::schema::TypeConstraint::Any);
+        .field("eggs", vsf::schema::TypeConstraint::Any)
+        .field("set", vsf::schema::TypeConstraint::Any);
     let section = vsf::schema::SectionBuilder::parse_document(schema, &bytes, None)
         .map_err(|_| PhonebookError::NotFound)?;
     let mut view = fgtw::phonebook::RegistryView::default();
     let mut addresses = Vec::new();
+    let mut set_records = Vec::new();
     for field in section.get_fields("eggs") {
         if let Some(VsfType::v(_, b)) = field.values.first() {
             view.add_blob(b.clone());
         }
     }
+    // Address sets, filed by content address like the eggs: each set record names its own by pointer.
+    let sets: Vec<([u8; 32], Vec<u8>)> = section
+        .get_fields("set")
+        .into_iter()
+        .filter_map(|f| match f.values.first() {
+            Some(VsfType::v(_, b)) => Some((fgtw::phonebook::address_set_ptr(b), b.clone())),
+            _ => None,
+        })
+        .collect();
     for field in section.get_fields("rec") {
         let Some(VsfType::v(_, b)) = field.values.first() else {
             continue;
@@ -193,6 +224,7 @@ pub async fn fetch_devices(
             fgtw::phonebook::RecordKind::IdentityCount => view.count = Some(rec),
             fgtw::phonebook::RecordKind::DevicePointer => view.pointers.push(rec),
             fgtw::phonebook::RecordKind::DeviceAddress => addresses.push(rec),
+            fgtw::phonebook::RecordKind::DeviceAddressSet => set_records.push(rec),
             fgtw::phonebook::RecordKind::Empty => {}
         }
     }
@@ -207,7 +239,27 @@ pub async fn fetch_devices(
             && a.handle_proof() == *handle_proof
             && pointed.contains(&a.device_pubkey())
     });
-    Ok((view, addresses))
+    // A set counts only as its signature, identity and pointer say: signed by a pointed device under this identity, over exactly the set it points at.
+    let device_sets = set_records
+        .iter()
+        .filter(|s| s.handle_proof() == *handle_proof && pointed.contains(&s.device_pubkey()))
+        .filter_map(|s| {
+            let set = &sets.iter().find(|(p, _)| *p == s.set_ptr())?.1;
+            if !view.blob(s).is_some_and(|eggs| s.verify_address_set(eggs, set)) {
+                return None;
+            }
+            Some(DeviceSet { device: s.device_pubkey(), published: s.epoch(), addrs: fgtw::phonebook::address_set_entries(set)? })
+        })
+        .collect();
+    Ok((view, addresses, device_sets))
+}
+
+/// Every address one device published, freshest first, as its verified set said.
+pub struct DeviceSet {
+    pub device: [u8; 32],
+    /// The set's own timestamp (Eagle oscillations): every address in it was current then.
+    pub published: i64,
+    pub addrs: Vec<fgtw::phonebook::SetAddr>,
 }
 
 /// Resolve one device's published address.

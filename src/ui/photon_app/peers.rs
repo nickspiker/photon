@@ -21,7 +21,7 @@ impl PhotonApp {
         };
         crate::network::http::runtime().spawn(async move {
             let view = match crate::network::fgtw::phonebook_client::fetch_devices(&handle_proof).await {
-                Ok((view, _)) => view,
+                Ok((view, _, _)) => view,
                 // No registry yet (or an unreadable one): converge from empty — the plan re-mints everything.
                 Err(_) => fgtw::phonebook::RegistryView::default(),
             };
@@ -108,6 +108,12 @@ impl PhotonApp {
                     "PHONEBOOK: seed publish failed ({}) — gossip still carries it",
                     e
                 ),
+            }
+            // EVERY address we have, as one signed set beside the record above (docs/addresses.md stages 2 and 3): the public address peers saw, the beacon-proven LAN address, and every interface's own — two or four v6 on a v6 network, which the single record has no room for.
+            let entries = own_address_set(addr, local, local_port);
+            match crate::network::fgtw::phonebook_client::publish_address_set(&signer, mask, &hp, &entries).await {
+                Ok(()) => crate::logf!("PHONEBOOK: address set published to the seed registry ({} address(es))", entries.len()),
+                Err(e) => crate::logf!("PHONEBOOK: address set publish failed ({})", e),
             }
         });
     }
@@ -250,20 +256,42 @@ impl PhotonApp {
             for (hp, devs) in wanted {
                 // Registry-first: one pb_devices round trip answers the whole identity — count, chain-vouched pointers, and every published address. Absent until the contact's own fleet converges post-cutover, so the per-device path below stays as the fallback.
                 let mut covered: Vec<[u8; 32]> = Vec::new();
-                if let Ok((_view, addresses)) =
+                if let Ok((_view, addresses, sets)) =
                     crate::network::fgtw::phonebook_client::fetch_devices(&hp).await
                 {
+                    let now = vsf::eagle_time_oscillations();
                     for rec in addresses {
                         let dev = rec.device_pubkey();
-                        if let Some(pubaddr) =
-                            crate::network::fgtw::phonebook_client::record_socket_addr(&rec)
-                        {
-                            let lan =
-                                crate::network::fgtw::phonebook_client::record_local_addr(&rec);
-                            found.push((hp, dev, pubaddr, lan, rec.epoch().min(vsf::eagle_time_oscillations())));
+                        // Every address the device's set names rides beside the record's own (stage 3, docs/addresses.md); a device that published no set yet gives just its LAN.
+                        let mut more: Vec<std::net::SocketAddr> = crate::network::fgtw::phonebook_client::record_local_addr(&rec).into_iter().collect();
+                        let set = sets.iter().find(|s| s.device == dev);
+                        for a in set.into_iter().flat_map(|s| s.addrs.iter()) {
+                            if !more.contains(&a.addr) {
+                                more.push(a.addr);
+                            }
                         }
-                        // A pointed device with no usable address is still ANSWERED — the registry spoke for it; asking again per-device would just repeat the same record.
+                        // The record's public address leads; a record with none leaves the device to its set, below.
+                        let Some(pubaddr) = crate::network::fgtw::phonebook_client::record_socket_addr(&rec) else {
+                            if set.is_none() {
+                                covered.push(dev); // a pointed device with no usable address is still ANSWERED — the registry spoke for it; asking again per-device would just repeat the same record
+                            }
+                            continue;
+                        };
+                        more.retain(|a| *a != pubaddr);
+                        found.push((hp, dev, pubaddr, more, rec.epoch().min(now)));
                         covered.push(dev);
+                    }
+                    // A device that published a set but no single record: its freshest reflexive leads, else its freshest address.
+                    for s in sets.iter() {
+                        if covered.contains(&s.device) {
+                            continue;
+                        }
+                        let Some(lead) = s.addrs.iter().find(|a| a.kind == fgtw::phonebook::AddrKind::Reflexive).or(s.addrs.first()) else {
+                            continue;
+                        };
+                        let more = s.addrs.iter().map(|a| a.addr).filter(|a| *a != lead.addr).collect();
+                        found.push((hp, s.device, lead.addr, more, s.published.min(now)));
+                        covered.push(s.device);
                     }
                 }
                 for dev in devs.into_iter().filter(|d| !covered.contains(d)) {
@@ -275,7 +303,7 @@ impl PhotonApp {
                             {
                                 let lan =
                                     crate::network::fgtw::phonebook_client::record_local_addr(&rec);
-                                found.push((hp, dev, pubaddr, lan, rec.epoch().min(vsf::eagle_time_oscillations())));
+                                found.push((hp, dev, pubaddr, lan.into_iter().collect(), rec.epoch().min(vsf::eagle_time_oscillations())));
                             }
                         }
                         // Absence is the normal case for a device that has not published yet; only a genuine rejection is worth a line.
@@ -321,8 +349,8 @@ impl PhotonApp {
             .filter(|c| c.is_sibling && c.locked_out)
             .filter_map(|c| c.device_key())
             .collect();
-        for (hp, dev, pubaddr, lan, seen) in found {
-            learned += adopt_endpoint_into(&mut self.contacts, &locked, hp, dev, pubaddr, lan, seen, false);
+        for (hp, dev, pubaddr, more, seen) in found {
+            learned += adopt_endpoint_into(&mut self.contacts, &locked, hp, dev, pubaddr, &more, seen, false);
         }
         if learned > 0 {
             crate::logf!(
@@ -430,11 +458,42 @@ impl PhotonApp {
     }
 }
 
+/// Every address this device can be reached at, as the set it publishes (docs/addresses.md stage 2): `reflexive` (where peers saw us), the beacon-proven `lan` address, then each interface's own address at our listening `port`, v4 before v6.
+/// Interface addresses go only when the port is known (0 = no listener yet): an address without the port we listen on is not somewhere a peer can reach us.
+/// At most `ADDRESS_SET_MAX`, the most useful first — every reader refuses a larger set.
+fn own_address_set(reflexive: std::net::SocketAddr, lan: Option<std::net::IpAddr>, port: u16) -> Vec<fgtw::phonebook::SetAddr> {
+    use fgtw::phonebook::{AddrKind, SetAddr};
+    let now = vsf::eagle_time_oscillations();
+    let canon = |a: std::net::SocketAddr| std::net::SocketAddr::new(a.ip().to_canonical(), a.port());
+    let mut out = vec![SetAddr { addr: canon(reflexive), kind: AddrKind::Reflexive, seen: now }];
+    let mut push = |addr: std::net::SocketAddr, kind: AddrKind| {
+        let addr = canon(addr);
+        if !out.iter().any(|e| e.addr == addr) && !crate::network::traverse::gather::is_bogus_addr(&addr) {
+            out.push(SetAddr { addr, kind, seen: now });
+        }
+    };
+    if port != 0 {
+        if let Some(ip) = lan {
+            push(std::net::SocketAddr::new(ip, port), AddrKind::Interface);
+        }
+        let mut own = crate::network::udp::own_interface_addrs();
+        own.sort_by_key(|a| a.ip.is_ipv6());
+        for a in own {
+            push(std::net::SocketAddr::new(a.ip, port), if a.wifi_direct { AddrKind::WifiDirect } else { AddrKind::Interface });
+        }
+    }
+    // WHY: a set over the cap is refused by every reader, so the device would publish nothing at all.
+    // PROOF: entries are pushed most useful first (reflexive, beacon LAN, v4, v6), so what the cut drops is the tail of a long v6 list.
+    out.truncate(fgtw::phonebook::ADDRESS_SET_MAX);
+    out
+}
+
 /// Adopt one phonebook record's addresses onto every contact row the device belongs to — THE one reconciler (Nick 2026-10-01: "maintain that phonebook and an extended version of it… on record changes, re-punch and all the things"). The phonebook (signed, newest-wins) is the source of truth; the per-device endpoint rows are the extended book the punch reads. Change-edge only: an identical record is a no-op. `skip_validated` leaves a contact with a PROVEN path alone (the harvest's case — a validated path stands until its own keepalive verdict; the seed drain adopts regardless, it answered an explicit ask).
 /// Returns how many endpoints changed; on the pinned device it also refreshes `contact.ip` and re-arms the punch counter, so the next presence cycle probes the fresh address instead of riding the stale one to the backoff ceiling.
 /// ONE ADDRESS, ONE DEVICE (2026-10-15, Jon's two devices both carried 174.45.252.101:49189): a public ip:port is a single NAT mapping, so it belongs to one device of a contact at a time. `seen` is when this record was current; the newer claim keeps the address, an older device's copy is cleared, and a record OLDER than the claim already held is not adopted — so a punch never aims at one device using another's port.
+/// `more` is every other address the record or set names for the device (its LAN, its other v6 addresses…), noted beside the public one.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn adopt_endpoint_into(contacts: &mut [crate::types::Contact], locked: &[[u8; 32]], hp: [u8; 32], dev: [u8; 32], pubaddr: std::net::SocketAddr, lan: Option<std::net::SocketAddr>, seen: i64, skip_validated: bool) -> usize {
+pub(super) fn adopt_endpoint_into(contacts: &mut [crate::types::Contact], locked: &[[u8; 32]], hp: [u8; 32], dev: [u8; 32], pubaddr: std::net::SocketAddr, more: &[std::net::SocketAddr], seen: i64, skip_validated: bool) -> usize {
     if crate::network::traverse::gather::is_bogus_addr(&pubaddr) || locked.contains(&dev) {
         return 0;
     }
@@ -457,14 +516,15 @@ pub(super) fn adopt_endpoint_into(contacts: &mut [crate::types::Contact], locked
             e.forget(pubaddr);
             crate::logf!("PHONEBOOK: {} belongs to dev {} (newer record) — cleared from dev {}", pubaddr, crate::fp(&dev), crate::fp(&e.pubkey));
         }
-        let lan_ok = lan.filter(|a| !crate::network::traverse::gather::is_bogus_addr(a));
         let ep = contact.endpoint_mut(&dev);
         ep.public_seen = ep.public_seen.max(seen);
-        let changed = !ep.has(pubaddr) || lan_ok.is_some_and(|l| !ep.has(l));
-        ep.note(pubaddr, crate::types::contact::AddrSource::Record);
-        if let Some(l) = lan_ok {
-            ep.note(l, crate::types::contact::AddrSource::Record);
+        let mut changed = !ep.has(pubaddr);
+        // Least preferred first, so the public address the record leads with ends freshest.
+        for a in more.iter().rev().filter(|a| !crate::network::traverse::gather::is_bogus_addr(a)) {
+            changed |= !ep.has(*a);
+            ep.note(*a, crate::types::contact::AddrSource::Record);
         }
+        ep.note(pubaddr, crate::types::contact::AddrSource::Record);
         if !changed {
             continue;
         }
@@ -474,12 +534,12 @@ pub(super) fn adopt_endpoint_into(contacts: &mut [crate::types::Contact], locked
             contact.punch_unvalidated_cycles = 0;
         }
         crate::logf!(
-            "PHONEBOOK: adopted {} → contact {}{} (dev {}, lan {})",
+            "PHONEBOOK: adopted {} → contact {}{} (dev {}, {} more address(es))",
             pubaddr,
             crate::fp(&contact.handle_proof),
             if contact.is_sibling { " (sib row)" } else { "" },
             crate::fp(&dev),
-            lan.map(|l| l.to_string()).unwrap_or_else(|| "-".into())
+            more.len()
         );
         learned += 1;
     }
@@ -503,15 +563,15 @@ mod adopt_tests {
         c.endpoint_mut(&dev).note(old, crate::types::contact::AddrSource::Record);
         c.punch_unvalidated_cycles = 9;
         let mut contacts = vec![c];
-        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, dev, new, None, 1, true), 1, "the differing record adopts");
+        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, dev, new, &[], 1, true), 1, "the differing record adopts");
         assert_eq!(contacts[0].ip, Some(new), "the pinned device refreshes the primary address");
         assert_eq!(contacts[0].punch_unvalidated_cycles, 0, "the punch re-arms");
-        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, dev, new, None, 1, true), 0, "an identical record is a no-op");
+        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, dev, new, &[], 1, true), 0, "an identical record is a no-op");
         contacts[0].validated_path = Some((new, std::time::Instant::now()));
         let other: std::net::SocketAddr = "10.0.0.9:4383".parse().unwrap();
-        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, dev, other, None, 1, true), 0, "a proven path stands");
+        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, dev, other, &[], 1, true), 0, "a proven path stands");
         contacts[0].validated_path = None;
-        assert_eq!(adopt_endpoint_into(&mut contacts, &[dev], hp, dev, other, None, 1, true), 0, "a locked device adopts nowhere");
+        assert_eq!(adopt_endpoint_into(&mut contacts, &[dev], hp, dev, other, &[], 1, true), 0, "a locked device adopts nowhere");
     }
 
     /// ONE ADDRESS, ONE DEVICE (2026-10-15, Jon): two devices of one contact claiming the same public ip:port — the newer record keeps it and the older device's copy is cleared; an older record than the claim held is not adopted.
@@ -523,12 +583,30 @@ mod adopt_tests {
         c.endpoint_mut(&b);
         let mut contacts = vec![c];
         let mapping: std::net::SocketAddr = "174.45.252.101:49189".parse().unwrap();
-        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, a, mapping, None, 100, false), 1);
-        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, b, mapping, None, 200, false), 1, "the newer claim adopts");
+        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, a, mapping, &[], 100, false), 1);
+        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, b, mapping, &[], 200, false), 1, "the newer claim adopts");
         let public_of = |cs: &[Contact], d: [u8; 32]| cs[0].device_endpoints.iter().find(|e| e.pubkey == d).and_then(|e| e.public());
         assert_eq!(public_of(&contacts, a), None, "the older claim is cleared");
         assert_eq!(public_of(&contacts, b), Some(mapping));
-        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, a, mapping, None, 150, false), 0, "an older record than the held claim is not adopted");
+        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, a, mapping, &[], 150, false), 0, "an older record than the held claim is not adopted");
         assert_eq!(public_of(&contacts, b), Some(mapping));
+    }
+
+    /// EVERY ADDRESS A SET NAMES (Nick 2026-11-01: "I could have two ipv6 addy's per device, or four"): the public one leads and every other lands on the same device's endpoint; a set that adds an address is a change, the same set again is not.
+    #[test]
+    fn every_address_of_a_set_lands_on_the_device() {
+        let dev = [7u8; 32];
+        let hp = [0x22; 32];
+        let mut contacts = vec![Contact::new(HandleText::new("friend"), hp, DevicePubkey::from_bytes(dev))];
+        let public: std::net::SocketAddr = "203.0.113.9:51234".parse().unwrap();
+        let more: Vec<std::net::SocketAddr> = ["192.168.1.23:4383", "[2001:db8::1]:4383", "[2001:db8::2]:4383", "[2001:db8::3]:4383", "[2001:db8::4]:4383"].iter().map(|s| s.parse().unwrap()).collect();
+        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, dev, public, &more[..2], 1, false), 1);
+        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, dev, public, &more, 2, false), 1, "two more v6 addresses are a change");
+        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, dev, public, &more, 3, false), 0, "the same set again is not");
+        let ep = contacts[0].device_endpoints.iter().find(|e| e.pubkey == dev).unwrap();
+        assert_eq!(ep.addrs[0].addr, public, "the public address leads");
+        for a in more.iter().chain([&public]) {
+            assert!(ep.has(*a), "{} is on the device", a);
+        }
     }
 }
