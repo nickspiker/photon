@@ -1966,6 +1966,8 @@ pub struct PhotonApp {
     /// Dev instrument: refused memmove hints logged since the press (capped per press) and whether `scene_dirty` was ALREADY set when the tick began — true = the previous render or an event set it, false = the tick itself did (`redraw_why` then names the line).
     hint_refusals_logged: u32,
     dirty_before_tick: bool,
+    /// The screen owes a frame for a change made OUTSIDE a draw tick (Android's service tick, `headless_tick`, drains the network on the main looper between frames): the next tick finds `scene_dirty` already raised, so its own "raised this tick" test cannot see it — this flag can (2026-11-01, an invitation sat unseen until a touch).
+    scene_owed: bool,
     /// Dev instrument: the first tick checkpoint (a driver.rs line) that found `scene_dirty` newly set this tick; 0 = the tick left it alone.
     dirty_blame_line: u32,
     /// SCROLL AS A MEMMOVE (Nick 2026-10-06, "how do we make it so it's just a mem move like we do with moving the window"): the scrollable pane's rigid shift this frame in viewport pixels (+ = content moved DOWN), accumulated by `pane_scroll` while the offset stays inside its bounds and read by `damage_rect`, which arms the hint below; zero when nothing scrolled rigidly. Cleared at the end of every render.
@@ -3126,6 +3128,7 @@ impl PhotonApp {
             scroll_frames_full: 0,
             hint_refusals_logged: 0,
             dirty_before_tick: false,
+            scene_owed: false,
             dirty_blame_line: 0,
             scroll_shift: 0,
             scroll_hint_armed: None,

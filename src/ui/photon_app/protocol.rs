@@ -52,7 +52,12 @@ impl PhotonApp {
     pub fn headless_tick(&mut self, now: Instant) -> bool {
         let resumed = self.poll_resume_vault();
         self.advance_headless_serial();
-        self.advance_protocol(now) || resumed
+        let advanced = self.advance_protocol(now) || resumed;
+        // Whatever this left unrendered, the next draw tick owes a frame for (see `scene_owed`).
+        if self.scene_dirty {
+            self.scene_owed = true;
+        }
+        advanced
     }
 
     /// A headless beat is a tick for the deferred-send fence: with no frame to wait for, a queued send must still drain (Brittany 2026-10-25: a backgrounded phone held a group wrap and a roster post for seven minutes, until the screen came back, because only the draw tick advanced the serial).

@@ -1975,6 +1975,45 @@ macro_rules! logf_at {
     }};
 }
 
+/// THE QUIET FAILURES, SAID (Nick 2026-11-01: "if we can log it thoughtfully or it does need to error out, lets"): a `Result` this code cannot act on is still logged, never dropped with `let _ =`.
+/// `log_err!(tx.send(row), "row to the UI thread")` logs `<what> failed: <error> (<file>:<line>, ×n)` at Warn on the 1st, 2nd, 4th, 8th… failure at that site — a failure that repeats every tick says so on a power-of-two cadence instead of flooding the log, and the count says how often.
+/// Evaluates to `true` when the result was `Ok`, so a caller that must react can still branch on it.
+#[macro_export]
+macro_rules! log_err {
+    ($result:expr, $($what:tt)+) => {{
+        match $result {
+            Ok(_) => true,
+            Err(e) => {
+                $crate::log_err_at(file!(), line!(), || format!($($what)+), &e);
+                false
+            }
+        }
+    }};
+}
+
+/// Failures seen per call site (file, line, count) — a linear table, one row per site that has ever failed this run.
+static LOG_ERR_SITES: std::sync::Mutex<Vec<(&'static str, u32, u64)>> = std::sync::Mutex::new(Vec::new());
+
+/// [`log_err!`]'s body: count this site's failure and log it when the count is a power of two.
+pub fn log_err_at(file: &'static str, line: u32, what: impl FnOnce() -> String, e: &dyn std::fmt::Display) {
+    let n = {
+        let mut sites = LOG_ERR_SITES.lock().unwrap();
+        match sites.iter_mut().find(|s| s.0 == file && s.1 == line) {
+            Some(s) => {
+                s.2 += 1;
+                s.2
+            }
+            None => {
+                sites.push((file, line, 1));
+                1
+            }
+        }
+    };
+    if n.is_power_of_two() {
+        logf_at!(LogLevel::Warn, "{} failed: {} ({}:{}, ×{})", what(), e.to_string(), file, line, n);
+    }
+}
+
 // Bridge the `log` crate into the VSF sink, so records from every dependency that uses log macros (fluor, tohu, the JNI platform layer, reqwest, ...) land in photon.log.vsf alongside `crate::log` lines — ONE durable, pullable, user-submittable log, no logcat/stdout fork.
 // Mirrors the retired android_logger/env_logger setup: Debug and up globally, the known-noisy crates only at Warn+.
 #[cfg(feature = "logging")]
@@ -2070,4 +2109,20 @@ pub extern "system" fn JNI_OnLoad(vm: jni::JavaVM, _: *mut std::os::raw::c_void)
 
     log::info!("Photon JNI loaded (PID: {})", std::process::id());
     jni::sys::JNI_VERSION_1_6
+}
+
+#[cfg(test)]
+mod log_err_tests {
+    /// The macro answers whether the result was Ok, and a failing site counts every failure while logging only the powers of two.
+    #[test]
+    fn a_failure_is_counted_and_the_result_still_answers() {
+        let ok: Result<u8, String> = Ok(1);
+        assert!(crate::log_err!(ok, "ok case"));
+        for _ in 0..(1 << 3) {
+            let bad: Result<u8, String> = Err("nope".into());
+            assert!(!crate::log_err!(bad, "failing case {}", 7));
+        }
+        let sites = super::LOG_ERR_SITES.lock().unwrap();
+        assert!(sites.iter().any(|s| s.2 == 1 << 3), "eight failures at one site, counted as one row");
+    }
 }
