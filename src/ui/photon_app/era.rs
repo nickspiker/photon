@@ -241,7 +241,17 @@ impl PhotonApp {
         let peer = match trigger {
             RepairTrigger::StaleEraObserved { peer_index, peer_tag } => classify(peer_index, peer_tag),
             // The fleet's answer arrives long after the observation that asked — classify against the era the peer LAST advertised, not a blanket "ahead" (a foreign era needs the fresh channel, never a ratchet from ours).
-            RepairTrigger::FleetAllMissed => self.era_peer_seen.get(&token).map_or(PeerEra::Ahead, |(idx, tag)| classify(*idx, *tag)),
+            // With no observation recorded here (the era-mismatch heal, bonds.rs, asked the fleet itself — 2026-11-01, Emma's era read as "ahead" and the verdict was a ratchet from an era she never held), the friend's own devices' advertisements are the evidence: an era of theirs we cannot place is foreign.
+            RepairTrigger::FleetAllMissed => match self.era_peer_seen.get(&token) {
+                Some((idx, tag)) => classify(*idx, *tag),
+                None => self
+                    .peer_era_seen
+                    .iter()
+                    .filter(|((f, dev), _)| *f == fid && contact.knows_device(dev))
+                    .map(|(_, (idx, tag))| classify(*idx, *tag))
+                    .find(|p| !matches!(p, PeerEra::Same | PeerEra::NoRecord))
+                    .unwrap_or(PeerEra::Ahead),
+            },
             RepairTrigger::CadenceReached | RepairTrigger::NudgeReceived => PeerEra::Same,
         };
         let seen_tag = match trigger {
