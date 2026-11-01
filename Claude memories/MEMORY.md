@@ -79,6 +79,7 @@
 - [Group waves](project_group_waves.md) — 2026-10-26 waves+beams in molecules BUILT (mesh, beam fan, roll, recorded, reconnect, express, never-friended members); field test pending
 - [Group media at any size](project_group_media_scale.md) — docs/group-media-scale.md; 1a party table + 1b encode once + newcomer-only roll call BUILT 2026-10-31 (field test pending); 2a sender keys next
 - [Emma bond era split](project_emma_bond_era_split.md) — 2026-11-01 CONVICTED + FIXED (docs/lanes.md "Which era is live"): friend-seen era wins adoption, unconfirmed eras stay local, fleet-first; field test pending
+- [Emma–Brittany group fork](project_emma_brittany_group_fork.md) — OPEN 2026-11-01: two era-1 roots for one group (likely atom "blue"), Emma drops all of Brittany's frames
 - [Beam settings + g2t](project_beam_settings.md) — 2026-10-26 BUILT: Beam page (per-device keys, follow-fleet toggle, 5 live controls, test patterns) + HLG10→g2t HDR beams; field test pending
 - [File drag-out](project_file_drag_out.md) — 2026-10-26 BUILT unverified: drag files out (mac promise / Win virtual file / X11 staged move) + mac Save panel; no share sheet
 - [One conversation model](project_conversation_convergence.md) — docs/conversations.md; step E stage 5 SHIPPED v132 (2026-10-27); F next

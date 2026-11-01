@@ -983,6 +983,7 @@ pub fn take_route_reports() -> (Option<String>, Vec<(String, i32)>) {
     (ROUTE_PICK_OUT.lock().unwrap().take(), std::mem::take(&mut *ROUTE_VOLUME_OUT.lock().unwrap()))
 }
 
+#[cfg(target_os = "android")]
 pub(crate) fn set_voice_path_slow(slow: bool) {
     VOICE_PATH_SLOW.store(slow, Ordering::Relaxed);
 }

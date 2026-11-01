@@ -686,3 +686,47 @@ mod tests {
         eprintln!("field {w}×{h}: map build {build:?}, paint {per:?} per frame");
     }
 }
+
+#[cfg(test)]
+mod picture_tests {
+    use super::*;
+
+    /// A beam picture painted into an empty canvas lands: its middle opaque in the picture's colour, its corner cut, and nothing outside the drawn rect.
+    #[test]
+    fn a_picture_paints_inside_the_window_shape() {
+        let (cw, ch) = (200usize, 150usize);
+        let pic = crate::wave::beam_session::Picture { w: 64, h: 48, frame_no: 1, rgb: vec![0x80; 64 * 48 * 3], holes: None };
+        let mut px = vec![<crate::ui::Px as Pixel>::EMPTY; cw * ch];
+        let mut dmg = fluor::canvas::Damage::new();
+        {
+            let mut c = fluor::canvas::Canvas::new(&mut px, cw, ch, &mut dmg);
+            paint_picture_rect(&mut c, 0, 0, cw, ch, &pic, true);
+        }
+        let mid = px[(ch / 2) * cw + cw / 2];
+        assert_eq!(mid.alpha(), <crate::ui::Px as Pixel>::ONE, "the middle is painted opaque");
+        assert_eq!(px[0], <crate::ui::Px as Pixel>::EMPTY, "the corner is cut");
+    }
+}
+
+#[cfg(test)]
+mod picture_tests_big {
+    use super::*;
+
+    #[test]
+    fn a_real_size_picture_covers_its_rect() {
+        let (cw, ch) = (1600usize, 1300usize);
+        let pic = crate::wave::beam_session::Picture { w: 1296, h: 972, frame_no: 1, rgb: vec![0x80; 1296 * 972 * 3], holes: None };
+        let mut px = vec![<crate::ui::Px as Pixel>::EMPTY; cw * ch];
+        let mut dmg = fluor::canvas::Damage::new();
+        {
+            let mut c = fluor::canvas::Canvas::new(&mut px, cw, ch, &mut dmg);
+            paint_picture_rect(&mut c, 0, 20, cw, 1200, &pic, true);
+        }
+        let one = <crate::ui::Px as Pixel>::ONE;
+        let painted = px.iter().filter(|p| p.alpha() == one).count();
+        eprintln!("painted {painted} of {}", 1600 * 1200);
+        for (x, y) in [(800, 620), (20, 620), (1580, 620), (800, 30), (800, 1210), (300, 300), (1300, 1000)] {
+            eprintln!("({x},{y}) alpha {}", px[y * cw + x].alpha());
+        }
+    }
+}

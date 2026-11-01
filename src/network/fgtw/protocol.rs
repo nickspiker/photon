@@ -2391,22 +2391,6 @@ pub fn parse_fanout_resp_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], Vec<u8>, [u8
     fgtw::protocol::parse_fanout_resp(vsf_bytes)
 }
 
-/// A 32-byte handle proof field (`hP`, the fgtw sections' type for it; `hp`/`hb` accepted too).
-fn field_handle_proof(fields: &[vsf::file_format::VsfField], name: &str) -> Option<[u8; 32]> {
-    fields
-        .iter()
-        .find(|f| f.name == name)
-        .and_then(|f| f.values.first())
-        .and_then(|v| match v {
-            VsfType::hP(b) | VsfType::hp(b) | VsfType::hb(b) if b.len() == 32 => {
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(b);
-                Some(arr)
-            }
-            _ => None,
-        })
-}
-
 /// Build a `chain_pull_miss` — the negative answer to a `chain_pull`: this sibling holds NO chains for the token. The requester re-keys only when EVERY live sibling has answered miss; a sibling that has the chains never sends this (it re-pushes instead).
 pub fn build_chain_pull_miss_vsf(
     conversation_token: &[u8; 32],

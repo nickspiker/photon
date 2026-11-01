@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Seed-lookup failures already logged this run, by their message (it names the device and the record's epoch).
+static SEED_FAILURES_SAID: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
 impl PhotonApp {
     /// Put OUR OWN device's peer record into the store, self-signed.
     ///
@@ -277,7 +280,15 @@ impl PhotonApp {
                         }
                         // Absence is the normal case for a device that has not published yet; only a genuine rejection is worth a line.
                         Err(crate::network::fgtw::phonebook_client::PhonebookError::NotFound) => {}
-                        Err(e) => crate::logf!("PHONEBOOK: seed lookup failed ({})", e),
+                        // A record that fails verification fails the same way on every ask until its device publishes again (the epoch names the record): said once per record, not every pass (2026-11-01: 245 identical lines in half an hour for five dead records).
+                        Err(e) => {
+                            let line = e.to_string();
+                            let mut said = SEED_FAILURES_SAID.lock().unwrap();
+                            if !said.contains(&line) {
+                                crate::logf!("PHONEBOOK: seed lookup failed ({}) — said once per record", line);
+                                said.push(line);
+                            }
+                        }
                     }
                 }
             }
