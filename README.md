@@ -279,7 +279,7 @@ let keypair = Ed25519::from_seed(&seed);      // Deterministic
 | Linux | `/etc/machine-id` | Survives reboots, unique per install |
 | Windows | Registry `MachineGuid` | Survives reboots, unique per install |
 | macOS | `IOPlatformUUID` | Hardware-burned, survives reinstalls |
-| Android | `ANDROID_ID` + user number | Per-device, per-signing-key |
+| Android | Widevine `deviceUniqueId` ‖ APK signing certificate ‖ `ANDROID_ID` | Key: per-device, per-signing-key, rotates on a factory wipe. Plate `BLAKE3(deviceUniqueId ‖ certificate)`: hardware-burned, survives the wipe |
 
 **Why derived keys?**
 
@@ -301,12 +301,12 @@ Platform vendors reserve these features for internal services and don't expose t
 
 | Platform | Hardware | Third-Party Access | Limitation |
 |----------|----------|-------------------|------------|
-| Android | ✅ StrongBox/TEE | ✅ Partial | `ANDROID_ID` is 64-bit oracle output |
+| Android | ✅ StrongBox/TEE | ✅ Partial | The Widevine device ID is a 256-bit factory-burned value read locally from the TEE, with no Google server in the loop; readable by every app, so not a secret |
 | iOS/macOS | ✅ Secure Enclave | ❌ Internal only | Reserved for Apple services |
 | Windows | ✅ TPM 2.0 | ⚠️ Complex | Inconsistent availability, no standard API |
 | Linux | ✅ TPM 2.0 | ⚠️ Manual | Requires manual setup, arcane tools |
 
-Android's `ANDROID_ID` is effectively `HMAC(device_secret, signing_key)` with 64-bit output—better than readable identifiers but not full hardware oracle access. Other platforms provide readable identifiers (machine-id, IOPlatformUUID) that are unique and persistent but not cryptographically secret.
+Android gives two halves and no single value with both properties. The Widevine device ID (`MediaDrm` `PROPERTY_DEVICE_UNIQUE_ID`) is burned in at manufacture, read on the phone with no DRM session and no provisioning round trip (verified in airplane mode), and byte-identical across a factory reset; but every app on the phone can read it. `ANDROID_ID` is effectively `HMAC(device_secret, signing_key)` with 64-bit output, scoped so another app cannot read it; but it rotates on a wipe. So the key folds both in, and the plate is the Widevine half alone. Other platforms provide readable identifiers (machine-id, IOPlatformUUID) that are unique and persistent but not cryptographically secret.
 
 **Photon's approach:**
 
@@ -328,9 +328,9 @@ Be honest about the primitive: `derive_key(context, machine_id)` has **nothing s
 | Linux | `/etc/machine-id` | **World-readable (`0444`)**—any local process, no root |
 | Windows | `HKLM\...\Cryptography\MachineGuid` | Any user—`HKLM` read is not privileged |
 | macOS | `IOPlatformUUID` | Any user via `ioreg`—no root |
-| Android | `ANDROID_ID` | **Needs root** (or your signing key)—app-scoped, so another app can't read it without privilege; but only 64-bit |
+| Android | Widevine ID ‖ certificate ‖ `ANDROID_ID` | The Widevine ID and the certificate: **any app**. The `ANDROID_ID` half: **needs root** (or your signing key)—app-scoped, so another app can't complete the key without privilege; but only 64-bit |
 
-Android is the outlier, and debatably the only one that clears the bar: its identifier is app-scoped, so lifting it takes root or your app-signing key—a real OS boundary, not just obscurity (its weakness is the 64-bit width, not the access model). The desktop three have **no** such boundary. So on a desktop the honest threat model is: **any code that runs on the machine—no root required—can read the identifier, recompute the device key, and clone the device's identity.** "Keys are never stored on disk" is true and beside the point; not storing the key buys nothing when its only input is a world-readable file and the derivation is public. This is device-binding by *derivation*, not a secret held in hardware. It is **not** comparable to an SSH key or a wallet seed (those are `0600` secrets the owner controls); the primary threat is not physical theft but ordinary local code.
+Android is the outlier, and debatably the only one that clears the bar: the key folds in an app-scoped identifier, so completing it takes root or your app-signing key—a real OS boundary, not just obscurity (its weakness is the 64-bit width of that half, not the access model). The price is that the key rotates with a factory wipe, so a wiped phone pairs again from a sibling; what survives the wipe is the plate, the Widevine half alone, which names the phone to the fleet and the phonebook so a wiped phone that comes back under a new key is still recognised as the same phone (and a plate reported stolen can be refused). The desktop three have **no** such boundary. So on a desktop the honest threat model is: **any code that runs on the machine—no root required—can read the identifier, recompute the device key, and clone the device's identity.** "Keys are never stored on disk" is true and beside the point; not storing the key buys nothing when its only input is a world-readable file and the derivation is public. This is device-binding by *derivation*, not a secret held in hardware. It is **not** comparable to an SSH key or a wallet seed (those are `0600` secrets the owner controls); the primary threat is not physical theft but ordinary local code.
 
 Two consequences fall out, and neither is Photon's to fix in software:
 
