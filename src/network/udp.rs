@@ -142,25 +142,15 @@ pub fn own_interface_addrs() -> Vec<OwnAddr> {
         let ip = match unsafe { (*ifa.ifa_addr).sa_family } as libc::c_int {
             libc::AF_INET => {
                 let sin = unsafe { &*(ifa.ifa_addr as *const libc::sockaddr_in) };
-                let v4 = std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr));
-                if !is_usable_lan_ipv4(v4) {
-                    continue;
-                }
-                std::net::IpAddr::V4(v4)
+                std::net::IpAddr::V4(std::net::Ipv4Addr::from(u32::from_be(sin.sin_addr.s_addr)))
             }
             libc::AF_INET6 => {
                 let sin6 = unsafe { &*(ifa.ifa_addr as *const libc::sockaddr_in6) };
-                let v6 = std::net::Ipv6Addr::from(sin6.sin6_addr.s6_addr);
-                // Global unicast (2000::/3) or unique-local (fc00::/7); everything else (link-local, loopback, multicast, mapped) no peer can reach.
-                let top = v6.segments()[0];
-                if top & 0xe000 != 0x2000 && top & 0xfe00 != 0xfc00 {
-                    continue;
-                }
-                std::net::IpAddr::V6(v6)
+                std::net::IpAddr::V6(std::net::Ipv6Addr::from(sin6.sin6_addr.s6_addr))
             }
             _ => continue,
         };
-        if !out.iter().any(|a: &OwnAddr| a.ip == ip) {
+        if reachable_own(ip) && !out.iter().any(|a: &OwnAddr| a.ip == ip) {
             out.push(OwnAddr { ip, wifi_direct: name.starts_with(b"p2p") });
         }
     }
@@ -169,8 +159,70 @@ pub fn own_interface_addrs() -> Vec<OwnAddr> {
     out
 }
 
-/// Windows has no getifaddrs; GetAdaptersAddresses is its equivalent and is not wired yet, so a Windows device publishes its reflexive and beacon-learned LAN address only.
-#[cfg(not(unix))]
+/// An address of ours another device could reach: a usable LAN v4 (`is_usable_lan_ipv4`, never the CLAT `192.0.0.4`), or a global unicast (2000::/3) or unique-local (fc00::/7) v6 — link-local, loopback, multicast and mapped forms no peer can reach. One rule for every platform's enumeration.
+fn reachable_own(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(v4) => is_usable_lan_ipv4(v4),
+        std::net::IpAddr::V6(v6) => {
+            let top = v6.segments()[0];
+            top & 0xe000 == 0x2000 || top & 0xfe00 == 0xfc00
+        }
+    }
+}
+
+/// [`own_interface_addrs`] on Windows: GetAdaptersAddresses is its getifaddrs — every adapter that is up and not the loopback, each unicast address on it. Wi-Fi Direct is not told apart here (no stable name to read); its address is published as an interface's.
+#[cfg(windows)]
+pub fn own_interface_addrs() -> Vec<OwnAddr> {
+    use windows::Win32::NetworkManagement::IpHelper::{GetAdaptersAddresses, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST, IP_ADAPTER_ADDRESSES_LH};
+    use windows::Win32::Networking::WinSock::{AF_INET, AF_INET6, AF_UNSPEC, SOCKADDR_IN, SOCKADDR_IN6};
+    const IF_TYPE_SOFTWARE_LOOPBACK: u32 = 24;
+    let flags = GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_DNS_SERVER;
+    let mut out = Vec::new();
+    // First call sizes the list; the buffer is u64s so the structures inside it are aligned.
+    let mut size: u32 = 0;
+    // SAFETY: a null buffer with a zero size only asks for the size the list needs.
+    unsafe { GetAdaptersAddresses(AF_UNSPEC.0 as u32, flags, None, None, &mut size) };
+    if size == 0 {
+        return out;
+    }
+    let mut buf: Vec<u64> = vec![0; (size as usize).div_ceil(8)];
+    // SAFETY: `buf` holds at least `size` bytes, as the sizing call asked; a non-zero answer (the list grew in between) leaves nothing to read.
+    if unsafe { GetAdaptersAddresses(AF_UNSPEC.0 as u32, flags, None, Some(buf.as_mut_ptr() as *mut IP_ADAPTER_ADDRESSES_LH), &mut size) } != 0 {
+        return out;
+    }
+    let mut ad = buf.as_ptr() as *const IP_ADAPTER_ADDRESSES_LH;
+    while !ad.is_null() {
+        // SAFETY: `ad` walks the list GetAdaptersAddresses wrote into `buf`, which outlives the walk.
+        let a = unsafe { &*ad };
+        ad = a.Next;
+        if a.OperStatus.0 != 1 || a.IfType == IF_TYPE_SOFTWARE_LOOPBACK {
+            continue; // 1 = IfOperStatusUp
+        }
+        let mut ua = a.FirstUnicastAddress;
+        while !ua.is_null() {
+            // SAFETY: the unicast list hangs off the adapter in the same buffer.
+            let u = unsafe { &*ua };
+            ua = u.Next;
+            let sa = u.Address.lpSockaddr;
+            if sa.is_null() {
+                continue;
+            }
+            // SAFETY: the family says which sockaddr this is, and Windows sized it for that family.
+            let ip = match unsafe { (*sa).sa_family } {
+                f if f == AF_INET => std::net::IpAddr::V4(std::net::Ipv4Addr::from(u32::from_be(unsafe { (*(sa as *const SOCKADDR_IN)).sin_addr.S_un.S_addr }))),
+                f if f == AF_INET6 => std::net::IpAddr::V6(std::net::Ipv6Addr::from(unsafe { (*(sa as *const SOCKADDR_IN6)).sin6_addr.u.Byte })),
+                _ => continue,
+            };
+            if reachable_own(ip) && !out.iter().any(|o: &OwnAddr| o.ip == ip) {
+                out.push(OwnAddr { ip, wifi_direct: false });
+            }
+        }
+    }
+    out
+}
+
+/// No interface list on any other platform yet: the device publishes its reflexive and beacon-learned LAN address only.
+#[cfg(not(any(unix, windows)))]
 pub fn own_interface_addrs() -> Vec<OwnAddr> {
     Vec::new()
 }

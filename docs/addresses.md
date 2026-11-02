@@ -19,7 +19,7 @@ A device publishes every address it can be reached at (`own_address_set` in `ui/
 - each up, non-loopback interface's own addresses at our listening port (`udp::own_interface_addrs`, getifaddrs on Unix and Android): usable LAN v4 (never the CLAT `192.0.0.4`), global and unique-local v6 — stable and temporary alike; link-local v6 is left out (it needs a scope id no peer knows);
 - an interface named `p2p…` is tagged Wi-Fi Direct.
 
-Not yet: Windows (no getifaddrs; GetAdaptersAddresses is the equivalent), and the app still holds one `our_reflexive` (v4 OR v6) — a global v6 interface address is normally the public v6 address anyway, since v6 is rarely NATed.
+Windows enumerates thru GetAdaptersAddresses (2026-11-01; Wi-Fi Direct not told apart there). Watch: Photon's main socket binds `[::]` and Windows defaults a v6 socket to v6-only, so a Windows device may not receive v4 on it at all — untested, flagged to Nick. The app still holds one `our_reflexive` (v4 OR v6) — a global v6 interface address is normally the public v6 address anyway, since v6 is rarely NATed.
 The set is republished on the same edge as the single record (the reflexive address moving, or Android's interface-change edge); a v6 temporary address that rotates while the reflexive holds still waits for the next such edge.
 
 ## Stage 3 — the phonebook record: a set (built; worker deployed 2026-11-01)
