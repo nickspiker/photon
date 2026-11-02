@@ -335,6 +335,18 @@ impl PhotonApp {
             w.ring = None;
         }
         Self::stop_group_ring_platform();
+        // MUTED COMING IN FROM THE THIRD (Nick 2026-11-01: "First and second person in, unmuted, 3 and up, mute coming in"): two or more other people already in makes us the third or later, and we join muted — the Mute pill shows Unmute, every link starts silent (group_link_up applies wave_muted).
+        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let mut parties: Vec<[u8; 32]> = Vec::new();
+        for m in self.group_wave.as_ref().map(|w| w.joined.as_slice()).unwrap_or(&[]) {
+            if Some(m.party) != us && !parties.contains(&m.party) {
+                parties.push(m.party);
+            }
+        }
+        if parties.len() >= 2 {
+            self.wave_muted = true;
+            crate::logf!("WAVE: joining as person {} of the group wave — muted coming in (tap Unmute to speak)", parties.len() + 1);
+        }
         let members: Vec<[u8; 32]> = self.group_wave.as_ref().map(|w| w.joined.iter().map(|m| m.device).collect()).unwrap_or_default();
         for dev in members {
             self.group_link_up(dev);
