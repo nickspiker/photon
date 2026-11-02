@@ -104,6 +104,8 @@ fn convert(old: &DeviceSigner, identity_seed: &[u8; 32], hp: &[u8; 32], legacy: 
     // 4. The old vault's files go; this process still holds them open and exits in the next line.
     crate::log_err!(kete::discard_device_vault(crate::storage::APP, &tohu::device::device_secret_from(legacy)), "discarding the legacy vault");
     crate::log("ROOT: moved; exiting so the next start runs on the Widevine root (the session is typed once more)");
+    // The log batches in RAM and process::exit runs no destructor, so the lines above reach the disk here or never.
+    crate::flush_log_buffer();
     std::process::exit(0);
 }
 
