@@ -100,7 +100,7 @@ fn post(title: &str, body: &str, conversation: Option<[u8; 32]>) {
             Ok(_) => {
                 // The Child handle drops on the spot, which detaches the notifier rather than waiting on it.
                 crate::log_err!(
-                    std::process::Command::new("notify-send").args(["--app-name=Photon", &title, &body]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn(),
+                    std::process::Command::new("notify-send").args(["--app-name=Photon", "--", &title, &body]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn(),
                     "NOTIFY: notify-send launch"
                 );
             }
@@ -126,20 +126,16 @@ fn post(title: &str, body: &str, _conversation: Option<[u8; 32]>) {
 #[cfg(target_os = "windows")]
 fn post(title: &str, body: &str, _conversation: Option<[u8; 32]>) {
     // WinRT toast via PowerShell — attribution rides PowerShell's AppUserModelID until we register our own (needs a Start-menu shortcut with an AUMID; packaging-time work). -WindowStyle Hidden keeps the transient console from flashing.
-    // Title/body are now real sender/message text landing inside PowerShell single-quoted literals: double the single quotes so message content can't terminate the literal.
-    let esc = |s: &str| s.replace('\'', "''");
-    let (title, body) = (esc(title), esc(body));
-    let ps = format!(
-        "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; \
+    // NO MESSAGE TEXT IN THE SCRIPT (security audit UPW-001, a zero-click command run): the title and body are a sender's name and words, and PowerShell reads U+2018–U+201B as quotes too, so no escaping of a literal is safe. The script is a constant; the text rides two environment variables the script reads as data.
+    const PS: &str = "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; \
          $x = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); \
          $t = $x.GetElementsByTagName('text'); \
-         $t.Item(0).AppendChild($x.CreateTextNode('{title}')) | Out-Null; \
-         $t.Item(1).AppendChild($x.CreateTextNode('{body}')) | Out-Null; \
-         [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Microsoft.Windows.PowerShell').Show([Windows.UI.Notifications.ToastNotification]::new($x))"
-    );
+         $t.Item(0).AppendChild($x.CreateTextNode($env:PHOTON_TOAST_TITLE)) | Out-Null; \
+         $t.Item(1).AppendChild($x.CreateTextNode($env:PHOTON_TOAST_BODY)) | Out-Null; \
+         [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Microsoft.Windows.PowerShell').Show([Windows.UI.Notifications.ToastNotification]::new($x))";
     // The Child handle drops on the spot, which detaches the notifier rather than waiting on it.
     crate::log_err!(
-        std::process::Command::new("powershell").args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps]).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn(),
+        std::process::Command::new("powershell").args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", PS]).env("PHOTON_TOAST_TITLE", title).env("PHOTON_TOAST_BODY", body).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn(),
         "NOTIFY: the system notifier launch"
     );
 }

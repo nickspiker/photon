@@ -770,7 +770,12 @@ pub fn blob_store_file(identity_seed: &[u8; 32], path: &std::path::Path) -> Resu
 /// Land a held blob into `dir` under EXACTLY `name`, replacing whatever had that name, streamed chunk-by-chunk with a running hash so a chunked blob is never rebuilt in RAM. Shared by attachment Save (into Downloads) and the bridge pigeon (into the host's shell cwd) — the only difference is the directory. Returns the path written.
 ///
 /// Overwrite is the rule, not an option (Nick, 2026-09-20). This used to collision-suffix — `name (2)` — as a "safety property", and it cost a real afternoon: a script dropped over the bridge landed under a name nobody asked for, the hook kept running the stale one, and the push it was meant to fix stayed refused with nothing to point at. A transfer that changes the name it was given has not delivered the file. Rollback belongs to snapshots on the receiving host, never to the writer inventing a name.
+/// `name` must already be ONE plain file name (security audit UPW-002/CSTV-05/NET-02): the name arrives from a sender, and `Path::join` honours `..` and lets an absolute name replace `dir` outright — `../../.config/autostart/x.desktop` was a write anywhere the user can write. A name [`clean_file_name`] would change is refused, never rewritten here (callers that want a usable name clean it first).
 pub fn land_blob(seed: &[u8; 32], content_hash: &[u8; 32], dir: &std::path::Path, name: &str) -> Option<String> {
+    if clean_file_name(name).as_deref() != Some(name) {
+        crate::logf!("blob: save refused — {:?} is not one plain file name", name);
+        return None;
+    }
     if let Err(e) = std::fs::create_dir_all(dir) {
         save_refused(dir, e);
         return None;
@@ -778,6 +783,32 @@ pub fn land_blob(seed: &[u8; 32], content_hash: &[u8; 32], dir: &std::path::Path
     let dest = dir.join(name);
     blob_write_file(seed, content_hash, &dest)?;
     Some(dest.to_string_lossy().into_owned())
+}
+
+/// A sender's file name reduced to ONE name a folder can hold on every platform, or `None` when nothing usable is left.
+/// The last component after either separator; control and bidi-override characters dropped (they disguise what the name says); the characters Windows refuses (`<>:"|?*`, `:` also being its alternate-stream separator) become `_`; trailing dots and spaces trimmed (Windows strips them and then names a different file); `.` and `..` refused; a Windows device name (CON, NUL, COM1…) prefixed with `_`.
+pub fn clean_file_name(name: &str) -> Option<String> {
+    let last = name.rsplit(['/', '\\']).next().unwrap_or("");
+    let bidi = |c: char| matches!(c, '\u{200E}' | '\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}');
+    let mut out: String = last.chars().filter(|c| !c.is_control() && !bidi(*c)).map(|c| if "<>:\"|?*".contains(c) { '_' } else { c }).collect();
+    out.truncate(out.trim_end_matches(['.', ' ']).len());
+    // WHY/PROOF: a file name longer than 255 bytes is refused by ext4, APFS and NTFS alike, so the Save would fail outright; the name is cut at the last whole character within 255 bytes instead.
+    if out.len() > 255 {
+        let mut end = 255;
+        while !out.is_char_boundary(end) {
+            end -= 1;
+        }
+        out.truncate(end);
+    }
+    if out.is_empty() || out == "." || out == ".." {
+        return None;
+    }
+    let stem = out.split('.').next().unwrap_or("").to_ascii_uppercase();
+    let reserved = matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL") || ((stem.starts_with("COM") || stem.starts_with("LPT")) && stem.len() == 4 && stem.as_bytes()[3].is_ascii_digit());
+    if reserved {
+        out.insert(0, '_');
+    }
+    Some(out)
 }
 
 /// A remove whose target is already gone has reached its goal: NotFound becomes Ok, every other failure stays an error for the caller to log.

@@ -947,26 +947,60 @@ impl KeptStream {
 
 /// Interleaved PCM → one envelope per channel (≤2, the card's two halves) — the music-pigeon path: a dropped song runs the same three pyramids a wave does.
 pub fn envelopes_from_pcm(pcm: &[i16], nchan: usize, sample_rate: u32) -> Vec<crate::wave::wave_env::WaveEnv> {
-    let nchan = nchan.max(1); // WHY/PROOF: read from the container header — file data, as above
-    let shown = nchan.min(2);
-    let mut pyr = EnvPyramid::new(shown);
-    for (i, frame) in pcm.chunks_exact(nchan).enumerate() {
-        for ch in 0..shown {
-            pyr.push(ch, i, frame[ch]);
+    let mut e = PcmEnvelopes::default();
+    e.push(pcm, nchan, sample_rate);
+    e.finish()
+}
+
+/// The envelopes of interleaved PCM arriving in pieces (a decoded song, packet by packet). The pyramid folds as it grows, so memory stays the pyramid's own however long the audio runs (security audit UPW-004: a song's whole PCM was held in RAM first, and a compressed file can expand to far more than RAM).
+#[derive(Default)]
+pub struct PcmEnvelopes {
+    pyr: Option<EnvPyramid>,
+    nchan: usize,
+    rate: u32,
+    frames: usize,
+}
+
+impl PcmEnvelopes {
+    /// Feed one piece. The first piece fixes the channel count and rate; a later piece of another channel count is skipped (its frames would interleave wrongly). Returns the frames taken so far.
+    pub fn push(&mut self, pcm: &[i16], nchan: usize, rate: u32) -> usize {
+        let nchan = nchan.max(1); // WHY/PROOF: read from the container header — file data, as above
+        if self.pyr.is_none() {
+            self.pyr = Some(EnvPyramid::new(nchan.min(2)));
+            self.nchan = nchan;
+            self.rate = rate;
         }
+        if nchan != self.nchan {
+            return self.frames;
+        }
+        let shown = nchan.min(2);
+        let pyr = self.pyr.as_mut().unwrap();
+        for frame in pcm.chunks_exact(nchan) {
+            for ch in 0..shown {
+                pyr.push(ch, self.frames, frame[ch]);
+            }
+            self.frames += 1;
+        }
+        self.frames
     }
-    let spb = 1u32 << pyr.s_log2;
-    (0..shown)
-        .filter_map(|ch| {
-            pyr.finish_u8(ch).map(|(bins, peak_q48, data)| crate::wave::wave_env::WaveEnv {
-                bins,
-                sample_rate,
-                samples_per_bin: spb,
-                peak_q48,
-                data: std::sync::Arc::new(data),
+
+    /// The per-channel envelopes (the first two channels), empty when nothing was fed.
+    pub fn finish(self) -> Vec<crate::wave::wave_env::WaveEnv> {
+        let Some(pyr) = self.pyr else { return Vec::new() };
+        let spb = 1u32 << pyr.s_log2;
+        let rate = self.rate;
+        (0..self.nchan.min(2))
+            .filter_map(|ch| {
+                pyr.finish_u8(ch).map(|(bins, peak_q48, data)| crate::wave::wave_env::WaveEnv {
+                    bins,
+                    sample_rate: rate,
+                    samples_per_bin: spb,
+                    peak_q48,
+                    data: std::sync::Arc::new(data),
+                })
             })
-        })
-        .collect()
+            .collect()
+    }
 }
 
 /// Derive every channel's envelope from a held recording — the fallback for short waves (no blob shipped by design), the far channel before its wave.env lands, and every pre-exchange recording. One full decode, off the UI thread; ~real-time-x50 on a laptop.

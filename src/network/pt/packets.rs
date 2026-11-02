@@ -50,6 +50,26 @@ impl PTSpec {
         }
     }
 
+    /// The largest transfer a SPEC may announce. The biggest thing PT carries whole is a CLUTCH offer (~548 KB); files travel as chunks far below this. A receiver allocates what a SPEC announces, so the announcement is held to this (security audit NET-01: an unchecked `total` asked for up to 4 GiB per packet).
+    pub const MAX_TOTAL: u32 = 1 << 24;
+    /// The largest DATA payload a SPEC may announce: one datagram's worth (the sender always uses DEFAULT_PACKET_SIZE).
+    pub const MAX_PACKET: u16 = 1 << 11;
+
+    /// A shape a sender of ours could have made: a datagram-sized packet, a total within MAX_TOTAL, and exactly the packet count that total needs (security audit NET-01). A receiver checks this before allocating anything.
+    pub fn well_formed(&self) -> bool {
+        self.packet_size > 0 && self.packet_size <= Self::MAX_PACKET && self.total_size <= Self::MAX_TOTAL && self.total_packets == self.total_size.div_ceil(self.packet_size as u32)
+    }
+
+    /// Did `signer` sign THIS spec? The header's `hp` must be this spec's own provenance (over its fields) and `ge` that provenance's Ed25519 signature under `signer` — the key alone named nobody (security audit NET-01: any packet carrying a contact's public key passed the gate).
+    pub fn signed_by(&self, header_hp: &[u8; 32], signer: &[u8; 32], signature: &[u8; 64]) -> bool {
+        let prov = self.compute_provenance();
+        if prov != *header_hp {
+            return false;
+        }
+        let Ok(key) = ed25519_dalek::VerifyingKey::from_bytes(signer) else { return false };
+        key.verify_strict(&prov, &ed25519_dalek::Signature::from_bytes(signature)).is_ok()
+    }
+
     /// Serialize to VSF bytes with signature
     pub fn to_vsf_bytes(&self, keypair: &Keypair) -> Vec<u8> {
         use vsf::{VsfBuilder, VsfType};

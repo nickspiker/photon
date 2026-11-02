@@ -927,7 +927,7 @@ impl PhotonApp {
         #[cfg(target_os = "macos")]
         let (base, name) = {
             let dest = fluor::host::file_drag::save_dialog(name, Some(&base)).ok_or(SaveMiss::Cancelled)?;
-            let file = dest.file_name().map(|f| f.to_string_lossy().into_owned()).ok_or(SaveMiss::Failed)?;
+            let file = dest.file_name().and_then(|f| crate::storage::clean_file_name(&f.to_string_lossy())).ok_or(SaveMiss::Failed)?;
             (dest.parent().map(|p| p.to_path_buf()).ok_or(SaveMiss::Failed)?, file)
         };
         #[cfg(target_os = "macos")]
@@ -952,8 +952,9 @@ impl PhotonApp {
 
     /// The name a saved or dragged file lands under: its own, or for a nameless attachment (images travel without filenames) its hash prefix with a magic-sniffed extension.
     pub(super) fn attach_file_name(seed: &[u8; 32], name: &str, content_hash: &[u8; 32]) -> String {
-        if !name.is_empty() {
-            return name.to_string();
+        // The sender's name, reduced to one plain file name (security audit UPW-002): it is joined onto Downloads, a drag target, or Android's staging folder.
+        if let Some(n) = crate::storage::clean_file_name(name) {
+            return n;
         }
         let head = crate::storage::blob_load(seed, content_hash).unwrap_or_default();
         format!("photon-{}.{}", hex::encode(&content_hash[..8]), crate::types::sniff_ext(&head))
@@ -1079,7 +1080,34 @@ mod land_tests {
         assert_eq!(second, first, "the same name lands at the same path");
         assert_eq!(std::fs::read(&second).unwrap(), b"pigeon body two", "and holds the new bytes");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no second file was minted");
+        // A name that is not one plain file name never lands (security audit UPW-002): nothing is written outside the folder.
+        for bad in ["../escape.txt", "/tmp/escape.txt", "a/b.txt", "..", "", "x\u{202E}txt.exe"] {
+            assert!(crate::storage::land_blob(&seed, &hash, &dir, bad).is_none(), "{bad:?} refused");
+        }
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "nothing else landed");
+        assert!(!dir.parent().unwrap().join("escape.txt").exists(), "nothing escaped the folder");
         std::fs::remove_dir_all(&dir).expect("test dir cleanup");
+    }
+
+    /// A sender's name cleaned to one plain file name: the last component of either separator, hidden and Windows-hostile characters handled, device names defused, nothing-left refused.
+    #[test]
+    fn sender_names_clean_to_one_plain_file_name() {
+        use crate::storage::clean_file_name as c;
+        assert_eq!(c("photo.jpg").as_deref(), Some("photo.jpg"));
+        assert_eq!(c("../../.config/autostart/x.desktop").as_deref(), Some("x.desktop"));
+        assert_eq!(c("C:\\Users\\u\\Startup\\run.bat").as_deref(), Some("run.bat"));
+        assert_eq!(c("/home/u/.bashrc").as_deref(), Some(".bashrc"));
+        assert_eq!(c("a:stream.txt").as_deref(), Some("a_stream.txt"));
+        assert_eq!(c("report\u{202E}fdp.exe").as_deref(), Some("reportfdp.exe"));
+        assert_eq!(c("notes. . ").as_deref(), Some("notes"));
+        assert_eq!(c("CON.txt").as_deref(), Some("_CON.txt"));
+        assert_eq!(c("com7").as_deref(), Some("_com7"));
+        assert_eq!(c("compact.txt").as_deref(), Some("compact.txt"));
+        assert_eq!(c("Zoë café.txt").as_deref(), Some("Zoë café.txt"));
+        for none in ["", ".", "..", "dir/", "a/..", "\u{0}\u{7}"] {
+            assert_eq!(c(none), None, "{none:?}");
+        }
+        assert!(c(&"é".repeat(200)).unwrap().len() <= 255);
     }
 }
 

@@ -58,8 +58,15 @@ impl Span {
 /// The scheme allowlist — `https://` and `mailto:` only (Nick's ruling 2026-09-02). Case-insensitive on the scheme, byte-verbatim on the rest; a bare scheme with no target is rejected. `http`, `file`, `javascript`, `data`, custom schemes: all refused, so a link field can never smuggle a dangerous target past the type.
 pub fn href_allowed(href: &str) -> bool {
     let lower = href.to_ascii_lowercase();
-    (lower.starts_with("https://") && href.len() > "https://".len())
-        || (lower.starts_with("mailto:") && href.len() > "mailto:".len())
+    url_chars_ok(href)
+        && ((lower.starts_with("https://") && href.len() > "https://".len())
+            || (lower.starts_with("mailto:") && href.len() > "mailto:".len()))
+}
+
+/// A link's characters, all of them: printable ASCII from RFC 3986 (unreserved, the delimiters, `%` for escapes) and nothing else (security audit UPW-003).
+/// No space, quote, `<>`, backslash, caret, backtick, brace, pipe, control or non-ASCII character ever reaches a browser launcher, where a shell might read one as syntax; a link that fails renders as its text.
+pub fn url_chars_ok(url: &str) -> bool {
+    url.bytes().all(|b| b.is_ascii_alphanumeric() || b"-._~:/?#[]@!$&'()*+,;=%".contains(&b))
 }
 
 /// A message body: an ordered list of spans. `Default` is empty (renders as nothing).

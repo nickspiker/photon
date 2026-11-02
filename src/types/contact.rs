@@ -240,6 +240,7 @@ pub fn valid_marks(content: &str, marks: &[MessageMark]) -> Vec<MessageMark> {
             let d = m.dest.to_ascii_lowercase();
             d.starts_with("https://") || d.starts_with("http://")
         })
+        .filter(|m| crate::types::message_body::url_chars_ok(&m.dest))
         .cloned()
         .collect();
     ok.sort_by_key(|m| m.start);

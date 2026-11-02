@@ -29,8 +29,11 @@ impl MediaSource for Mem {
     }
 }
 
-/// Decode a music blob to interleaved i16 + (channels, rate). `None` for anything symphonia can't read — the row just keeps its bubble.
-fn decode(bytes: &[u8]) -> Option<(Vec<i16>, usize, u32)> {
+/// The longest stretch of a song drawn, in seconds: four and a half hours. A tiny compressed file can claim days of audio, and decoding all of it is CPU nobody asked for (security audit UPW-004); the band shows the first part.
+const MAX_SECONDS_LOG2: u32 = 14;
+
+/// A music pigeon's per-channel envelopes — the exact tensors a wave exchanges, off the UI thread. Symphonia decodes packet by packet straight into the envelope pyramid, so no song's PCM is ever whole in RAM (security audit UPW-004). `None` for anything symphonia can't read — the row just keeps its bubble.
+pub fn envelopes_from_music(bytes: &[u8]) -> Option<Vec<crate::wave::wave_env::WaveEnv>> {
     use symphonia::core::audio::SampleBuffer;
     use symphonia::core::codecs::DecoderOptions;
     use symphonia::core::formats::FormatOptions;
@@ -44,9 +47,7 @@ fn decode(bytes: &[u8]) -> Option<(Vec<i16>, usize, u32)> {
     let track = format.default_track()?;
     let track_id = track.id;
     let mut decoder = symphonia::default::get_codecs().make(&track.codec_params, &DecoderOptions::default()).ok()?;
-    let mut pcm: Vec<i16> = Vec::new();
-    let mut nchan = 0usize;
-    let mut rate = 48_000u32;
+    let mut env = crate::wave::record::PcmEnvelopes::default();
     let mut sbuf: Option<SampleBuffer<i16>> = None;
     while let Ok(packet) = format.next_packet() {
         if packet.track_id() != track_id {
@@ -56,22 +57,18 @@ fn decode(bytes: &[u8]) -> Option<(Vec<i16>, usize, u32)> {
             continue;
         };
         let spec = *audio.spec();
-        nchan = spec.channels.count();
-        rate = spec.rate;
+        let nchan = spec.channels.count();
         let cap = audio.capacity() as u64;
         let sb = sbuf.get_or_insert_with(|| SampleBuffer::<i16>::new(cap, spec));
         if sb.capacity() < audio.frames() * nchan {
             *sb = SampleBuffer::<i16>::new(cap, spec);
         }
         sb.copy_interleaved_ref(audio);
-        pcm.extend_from_slice(sb.samples());
+        let frames = env.push(sb.samples(), nchan, spec.rate);
+        if frames as u64 >= (spec.rate as u64) << MAX_SECONDS_LOG2 {
+            break;
+        }
     }
-    (!pcm.is_empty() && nchan > 0).then_some((pcm, nchan, rate))
-}
-
-/// A music pigeon's per-channel envelopes — the exact tensors a wave exchanges, off the UI thread.
-pub fn envelopes_from_music(bytes: &[u8]) -> Option<Vec<crate::wave::wave_env::WaveEnv>> {
-    let (pcm, nchan, rate) = decode(bytes)?;
-    let envs = crate::wave::record::envelopes_from_pcm(&pcm, nchan, rate);
+    let envs = env.finish();
     (!envs.is_empty()).then_some(envs)
 }

@@ -5367,11 +5367,22 @@ async fn handle_pt_vsf_packet(
             name,
             fields,
             sender_pubkey,
+            provenance_hash,
+            signature,
         } => {
             if name == "pt_spec" {
                 if let Some(spec) = PTSpec::from_vsf_fields(&fields) {
-                    // SECURITY: Validate sender before accepting any transfer Only accept SPEC from known contacts to prevent resource exhaustion
-                    let is_known_contact = match sender_pubkey {
+                    // A SPEC whose shape no sender of ours makes is dropped before anything is allocated for it (security audit NET-01).
+                    if !spec.well_formed() {
+                        crate::logf!("PT: SPEC REJECTED from {} — malformed ({} packets of {} B for {} B)", src_addr, spec.total_packets, spec.packet_size, spec.total_size);
+                        return Some(true);
+                    }
+                    // SECURITY: only a SPEC SIGNED by a known contact's device opens a transfer (it allocates the whole announced size); the header's key alone is a claim anyone can copy from the phonebook (security audit NET-01).
+                    let signed = match (sender_pubkey, signature) {
+                        (Some(k), Some(sig)) => spec.signed_by(&provenance_hash, &k, &sig),
+                        _ => false,
+                    };
+                    let is_known_contact = match sender_pubkey.filter(|_| signed) {
                         Some(pubkey_bytes) => {
                             let sender = DevicePubkey::from_bytes(pubkey_bytes);
                             let contact_list = contacts.lock().unwrap();
@@ -5464,8 +5475,11 @@ enum ParsedPtPacket {
     Section {
         name: String,
         fields: Vec<(String, vsf::VsfType)>,
-        /// Sender's Ed25519 public key from header signature (for authentication)
+        /// Sender's Ed25519 public key from the header — a CLAIM until `signature` verifies under it.
         sender_pubkey: Option<[u8; 32]>,
+        /// The header's provenance hash and Ed25519 signature, for the receiver to verify against the section it signs.
+        provenance_hash: [u8; 32],
+        signature: Option<[u8; 64]>,
     },
 }
 
@@ -5509,6 +5523,11 @@ fn parse_pt_packet(bytes: &[u8]) -> Option<ParsedPtPacket> {
         _ => None,
     };
 
+    let signature = match &header.signature {
+        Some(vsf::VsfType::ge(sig)) => <[u8; 64]>::try_from(sig.as_slice()).ok(),
+        _ => None,
+    };
+
     // Fall back to section body parsing — primary_section resolves the near-form name from the header TOC (the knowledge lives in the vsf crate now).
     let section = header.primary_section(bytes, header_end).ok()?;
     let section_name = section.name.clone();
@@ -5523,6 +5542,8 @@ fn parse_pt_packet(bytes: &[u8]) -> Option<ParsedPtPacket> {
         name: section_name,
         fields,
         sender_pubkey,
+        provenance_hash,
+        signature,
     })
 }
 

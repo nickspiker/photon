@@ -775,10 +775,8 @@ pub fn generate_mceliece460896_keypair() -> (Vec<u8>, Vec<u8>) {
 pub fn mceliece460896_encapsulate(their_public_key: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
     use classic_mceliece_rust::{encapsulate_boxed, PublicKey, CRYPTO_PUBLICKEYBYTES};
 
-    // Copy to Box for PublicKey::from
-    let mut pk_box = vec![0u8; CRYPTO_PUBLICKEYBYTES].into_boxed_slice();
-    pk_box.copy_from_slice(their_public_key);
-    let pk_array: Box<[u8; CRYPTO_PUBLICKEYBYTES]> = pk_box.try_into().ok()?;
+    // A peer's key of any other length is refused, never copied (security audit CSTV-04: `copy_from_slice` panicked on a short or long key, and a panic aborts the process).
+    let pk_array: Box<[u8; CRYPTO_PUBLICKEYBYTES]> = their_public_key.to_vec().into_boxed_slice().try_into().ok()?;
     let pk = PublicKey::from(pk_array);
 
     // Use rng for McEliece encapsulation (another diverse RNG source)
@@ -794,10 +792,8 @@ pub fn mceliece460896_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> O
         decapsulate_boxed, Ciphertext, SecretKey, CRYPTO_CIPHERTEXTBYTES, CRYPTO_SECRETKEYBYTES,
     };
 
-    // Copy to Box for SecretKey::from
-    let mut sk_box = vec![0u8; CRYPTO_SECRETKEYBYTES].into_boxed_slice();
-    sk_box.copy_from_slice(our_secret_key);
-    let sk_array: Box<[u8; CRYPTO_SECRETKEYBYTES]> = sk_box.try_into().ok()?;
+    // A stored key of any other length is refused, never copied (a panic aborts the process).
+    let sk_array: Box<[u8; CRYPTO_SECRETKEYBYTES]> = our_secret_key.to_vec().into_boxed_slice().try_into().ok()?;
     let sk = SecretKey::from(sk_array);
 
     // Copy to array for Ciphertext::from
@@ -842,14 +838,20 @@ pub fn hqc256_encapsulate(their_public_key: &[u8]) -> Option<(Vec<u8>, Vec<u8>)>
 /// Decapsulate HQC-256 Returns 64B shared_secret
 pub fn hqc256_decapsulate(our_secret_key: &[u8], ciphertext: &[u8]) -> Option<Vec<u8>> {
     use pqcrypto_hqc::hqc256;
-    use pqcrypto_traits::kem::{Ciphertext, SecretKey, SharedSecret};
+    use pqcrypto_traits::kem::{Ciphertext, SecretKey};
 
     let sk = <hqc256::SecretKey as SecretKey>::from_bytes(our_secret_key).ok()?;
     let ct = <hqc256::Ciphertext as Ciphertext>::from_bytes(ciphertext).ok()?;
 
-    let ss = hqc256::decapsulate(&ct, &sk);
+    // NOT `hqc256::decapsulate` (security audit CSTV-03): the crate wraps the C call in `assert_eq!(ret, 0)`, and PQClean returns -1 for ANY ciphertext whose re-encryption check fails, so a peer's random bytes of the right length aborted the process.
+    // PQClean's HQC rejects implicitly — on that -1 the secret it writes is derived from the secret key's sigma, not the message — so the secret is kept and the return ignored, exactly as ML-KEM behaves: a forged ciphertext yields a key nobody else holds, and the seal it opens fails there.
+    let mut ss = [0u8; pqcrypto_hqc::ffi::PQCLEAN_HQC256_CLEAN_CRYPTO_BYTES];
+    // SAFETY: `ss` holds CRYPTO_BYTES, and `ct`/`sk` are the crate's own fixed-size types (from_bytes checked their lengths), the sizes the C routine reads.
+    unsafe {
+        pqcrypto_hqc::ffi::PQCLEAN_HQC256_CLEAN_crypto_kem_dec(ss.as_mut_ptr(), Ciphertext::as_bytes(&ct).as_ptr(), SecretKey::as_bytes(&sk).as_ptr());
+    }
 
-    Some(SharedSecret::as_bytes(&ss).to_vec())
+    Some(ss.to_vec())
 }
 
 /// Sort two 32-byte arrays canonically (lower first)

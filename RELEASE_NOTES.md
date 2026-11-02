@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Security fixes from a code review.** A message can no longer run commands on Windows through a notification or a link; a file someone sends can only ever be saved into the folder you save to, whatever its name says; and several crafted messages that could crash Photon (a bad key during a new connection, a bogus transfer announcement, a broken picture or a song that decodes to hours of audio) are now refused or handled safely.
 
 ## v138
 - **Groups can have a picture.** Open a group's Manage page and drop a picture on it (on Android, tap the big circle to choose one); every member sees it in their list and at the top of the conversation, anyone in the group can change it, and Remove picture brings back the members' colours.

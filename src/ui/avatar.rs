@@ -745,86 +745,100 @@ fn encode_av1_square_legacy(rgb_data: &[f32], size: usize) -> Result<Vec<u8>, St
 pub fn decode_avatar(av1_data: &[u8]) -> Result<(usize, usize, Vec<u8>), String> {
     use rav1d::include::dav1d::data::Dav1dData;
     use rav1d::include::dav1d::dav1d::{Dav1dContext, Dav1dSettings};
+    use rav1d::include::dav1d::headers::DAV1D_PIXEL_LAYOUT_I420;
     use rav1d::include::dav1d::picture::Dav1dPicture;
-    use rav1d::src::lib::{
-        dav1d_close, dav1d_data_create, dav1d_default_settings, dav1d_get_picture, dav1d_open,
-        dav1d_picture_unref, dav1d_send_data,
-    };
+    use rav1d::src::lib::{dav1d_close, dav1d_data_create, dav1d_data_unref, dav1d_default_settings, dav1d_get_picture, dav1d_open, dav1d_picture_unref, dav1d_send_data};
     use std::ptr::NonNull;
 
-    // Initialize settings with defaults
+    /// The largest picture decoded here, in pixels: avatars are 256 square and previews at most 512 on an edge, so 2048 square is far above any we make. rav1d's own default is unlimited, and a few hundred bytes of AV1 can declare 65536 square (security audit UPW-005).
+    const FRAME_SIZE_LIMIT: u32 = 1 << 22;
+    /// Send/drain rounds before giving up: a one-picture stream needs two or three; a stream that never yields one ends here instead of spinning (security audit UPW-005).
+    const MAX_ROUNDS: u32 = 1 << 6;
+
     let mut settings = std::mem::MaybeUninit::<Dav1dSettings>::uninit();
     unsafe { dav1d_default_settings(NonNull::new(settings.as_mut_ptr()).unwrap()) };
-    let settings = unsafe { settings.assume_init() };
+    let mut settings = unsafe { settings.assume_init() };
+    settings.frame_size_limit = FRAME_SIZE_LIMIT;
+    // One thread and no frame delay: a picture is out as soon as its data is in, so "all data sent and nothing to get" really means nothing is coming.
+    settings.n_threads = 1;
+    settings.max_frame_delay = 1;
 
-    // Open decoder context
     let mut ctx: Option<Dav1dContext> = None;
-    let result = unsafe {
-        dav1d_open(
-            NonNull::new(&mut ctx as *mut _),
-            NonNull::new(&settings as *const _ as *mut _),
-        )
-    };
+    let result = unsafe { dav1d_open(NonNull::new(&mut ctx as *mut _), NonNull::new(&settings as *const _ as *mut _)) };
     if result.0 < 0 {
         return Err(format!("dav1d_open failed: {}", result.0));
     }
     let ctx = ctx.ok_or("dav1d_open returned null context")?;
 
-    // Create data buffer and copy input
     let mut data = Dav1dData::default();
     let data_ptr = unsafe { dav1d_data_create(NonNull::new(&mut data), av1_data.len()) };
     if data_ptr.is_null() {
         unsafe { dav1d_close(NonNull::new(&mut Some(ctx) as *mut _)) };
         return Err("dav1d_data_create failed".to_string());
     }
-    // Copy input data into the allocated buffer
     unsafe {
         std::ptr::copy_nonoverlapping(av1_data.as_ptr(), data_ptr, av1_data.len());
     }
 
-    // dav1d returns negated errno; EAGAIN means "retry". errno is PLATFORM-SPECIFIC (Linux EAGAIN=11, macOS/BSD EAGAIN=35), and rav1d propagates the host's value (`EAGAIN = libc::EAGAIN`). Hardcoding -11 worked on Linux but on Mac the decoder's EAGAIN (-35) fell thru to the error branch, so every AVIF avatar failed with "dav1d_get_picture failed: -35". Compare against libc::EAGAIN.
+    // dav1d returns negated errno; EAGAIN is platform-specific (Linux 11, macOS/BSD 35) and rav1d passes the host's value through, so it is compared against libc::EAGAIN, never a literal.
     let eagain = -(libc::EAGAIN as i32);
 
-    // Send data to decoder - keep sending until consumed
-    loop {
-        let send_result = unsafe { dav1d_send_data(Some(ctx), NonNull::new(&mut data)) };
-        if send_result.0 == 0 {
-            break; // Data consumed
-        } else if send_result.0 == eagain {
-            // EAGAIN - decoder is busy, try to drain pictures first
-            continue;
-        } else if send_result.0 < 0 {
-            unsafe { dav1d_close(NonNull::new(&mut Some(ctx) as *mut _)) };
-            return Err(format!("dav1d_send_data failed: {}", send_result.0));
-        }
-    }
-
-    // Get decoded picture - may need multiple attempts
+    // THE CANONICAL LOOP (security audit UPW-005): send what is left; whether or not the decoder took it all, ask for a picture. The old loop retried a send that answered EAGAIN without ever draining (rav1d answers EAGAIN while a picture waits), and retried a get forever on a stream that holds no picture — both spun a core for good.
     let mut pic = Dav1dPicture::default();
-    loop {
-        let get_result = unsafe { dav1d_get_picture(Some(ctx), NonNull::new(&mut pic)) };
-        if get_result.0 == 0 {
-            break; // Got a picture
-        } else if get_result.0 == eagain {
-            // EAGAIN - no picture ready yet, decoder needs to process For single-frame decode, this shouldn't happen after send succeeds but let's be safe
-            std::thread::yield_now();
-            continue;
-        } else {
-            unsafe { dav1d_close(NonNull::new(&mut Some(ctx) as *mut _)) };
-            return Err(format!("dav1d_get_picture failed: {}", get_result.0));
+    let mut outcome: Result<(), String> = Err("no picture in the stream".to_string());
+    for _ in 0..MAX_ROUNDS {
+        if data.sz > 0 {
+            let sent = unsafe { dav1d_send_data(Some(ctx), NonNull::new(&mut data)) };
+            if sent.0 < 0 && sent.0 != eagain {
+                outcome = Err(format!("dav1d_send_data failed: {}", sent.0));
+                break;
+            }
+        }
+        let got = unsafe { dav1d_get_picture(Some(ctx), NonNull::new(&mut pic)) };
+        if got.0 == 0 {
+            outcome = Ok(());
+            break;
+        }
+        if got.0 != eagain {
+            outcome = Err(format!("dav1d_get_picture failed: {}", got.0));
+            break;
+        }
+        // Everything sent and still nothing to get: with no threads and no frame delay, nothing is coming.
+        if data.sz == 0 {
+            break;
         }
     }
 
-    // Extract dimensions
+    // One cleanup for every exit: whatever data is unsent, the picture if one came, the context.
+    let finish = |pic: &mut Dav1dPicture, data: &mut Dav1dData, had_pic: bool| unsafe {
+        dav1d_data_unref(NonNull::new(data));
+        if had_pic {
+            dav1d_picture_unref(NonNull::new(pic));
+        }
+        dav1d_close(NonNull::new(&mut Some(ctx) as *mut _));
+    };
+    if let Err(e) = outcome {
+        finish(&mut pic, &mut data, false);
+        return Err(e);
+    }
+
     let width = pic.p.w as usize;
     let height = pic.p.h as usize;
+    // Only the 8-bit 4:2:0 pictures our encoder makes are read: the conversion below indexes the chroma planes at half resolution and one byte per sample, which a 4:0:0 (no chroma planes), 4:4:4 or high-bit-depth stream would not match.
+    let planes = (pic.data[0], pic.data[1], pic.data[2]);
+    let (Some(y_plane), Some(u_plane), Some(v_plane)) = planes else {
+        finish(&mut pic, &mut data, true);
+        return Err("picture has no chroma planes".to_string());
+    };
+    if pic.p.layout != DAV1D_PIXEL_LAYOUT_I420 || pic.p.bpc != 8 {
+        finish(&mut pic, &mut data, true);
+        return Err(format!("picture is not 8-bit 4:2:0 (bpc {})", pic.p.bpc));
+    }
     let stride_y = pic.stride[0] as usize;
     let stride_uv = pic.stride[1] as usize;
-
-    // Get plane pointers
-    let y_ptr = pic.data[0].ok_or("No Y plane")?.as_ptr() as *const u8;
-    let u_ptr = pic.data[1].ok_or("No U plane")?.as_ptr() as *const u8;
-    let v_ptr = pic.data[2].ok_or("No V plane")?.as_ptr() as *const u8;
+    let y_ptr = y_plane.as_ptr() as *const u8;
+    let u_ptr = u_plane.as_ptr() as *const u8;
+    let v_ptr = v_plane.as_ptr() as *const u8;
 
     // Convert YUV 4:2:0 to RGB using VSF colour formulas VSF: Y = (R + 2G + B) / 4, Cb = (B - Y) / 2 + 0.5, Cr = (R - Y) / 2 + 0.5 Inverse: B = 2*(Cb - 0.5) + Y, R = 2*(Cr - 0.5) + Y, G = (4*Y - R - B) / 2
     let mut rgb = vec![0u8; width * height * 3];
@@ -853,12 +867,7 @@ pub fn decode_avatar(av1_data: &[u8]) -> Result<(usize, usize, Vec<u8>), String>
         }
     }
 
-    // Cleanup
-    unsafe {
-        dav1d_picture_unref(NonNull::new(&mut pic));
-        dav1d_close(NonNull::new(&mut Some(ctx) as *mut _));
-    }
-
+    finish(&mut pic, &mut data, true);
     Ok((width, height, rgb))
 }
 
