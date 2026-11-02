@@ -21,7 +21,7 @@ pub const APP: kete::App<'static> = kete::App {
 };
 
 #[cfg(target_os = "android")]
-pub use kete::{android_vault_dirs, set_android_vault_dirs};
+pub use kete::{android_vault_dirs, device_vault_present, set_android_vault_dirs};
 
 /// THE vault open — every runtime site (attest worker, launch, resume) comes thru here and nowhere else.
 ///

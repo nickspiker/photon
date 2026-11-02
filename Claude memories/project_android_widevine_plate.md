@@ -1,19 +1,23 @@
 ---
 name: project_android_widevine_plate
-description: "2026-11-02 Android plate candidate: Widevine deviceUniqueId read locally (no Google in the loop); probe BUILT, logs blake3 prefixes; verify reinstall / per-app / factory reset on the Pixel 8 Pro"
+description: "2026-11-02 Android ROOT = Widevine deviceUniqueId ‖ APK signing cert (verified identical thru a factory reset, read in airplane mode); legacy ANDROID_ID under a CONVERSION PIN until v168; vault/fleet conversion NOT built yet"
 metadata:
   node_type: memory
   type: project
   originSessionId: d6c9db89-ccef-475b-b38b-64f51976930f
-  modified: 2026-11-02T19:44:25.134Z
+  modified: 2026-11-02T19:55:22.248Z
 ---
 
-Until PIPE, Android's plate comes from the DMV (Nick 2026-11-02: "the plate numbers are going to come from the DMV, not me"). ANDROID_ID is per signing key but dies on a factory reset. Widevine `MediaDrm.PROPERTY_DEVICE_UNIQUE_ID` is burned in at manufacture (Google-issued, which is fine), read locally from the TEE with no permission, no session and no provisioning round trip (Google-in-the-loop, which is the no-go). Nick's wanted shape: `hash(serial ‖ photon signing cert)`.
+Until PIPE, Android's root comes from the DMV (Nick 2026-11-02: "the plate numbers are going to come from the DMV, not me"). Widevine `MediaDrm.PROPERTY_DEVICE_UNIQUE_ID` is burned in at manufacture (Google-issued, which is fine), read locally from the TEE with no permission, no DRM session and no provisioning round trip (Google-in-the-loop would be the no-go). Nick's shape: `hash(serial ‖ photon signing cert)`; the BLAKE3 is the unchanged v0 derivation, the fingerprint is the concatenation.
 
-BUILT 2026-11-02 (tohu `device::widevine_id()` + `device::signing_cert()`, photon `widevine_probe()` in jni_android.rs, dev APK built, not yet deployed): logs `widevine probe: id <blake3 prefix> (<n> bytes), level, cdm, plate(id ‖ signing cert) <prefix>` or `unreadable (<exception>)`. Never logs the raw ID.
+VERIFIED 2026-11-02 on the Pixel 8 Pro, airplane mode both times: `id 7907cc35 (32 bytes), level L1, cdm 19.5.0, plate 9f315c60` before AND after a factory reset, byte-identical. ANDROID_ID rotated with the wipe, so the phone became a new fleet device: Nick: "We just found the ira… if it rotates upon reset, that's not it."
 
-RESULT 2026-11-02, Pixel 8 Pro, airplane mode on, dev build installed over USB: `id 7907cc35 (32 bytes), level L1, cdm 19.5.0@BV1A.250226.001, plate 9f315c60`. The read needs no network. FACTORY RESET 2026-11-02: Nick wiped the Pixel, fresh install in airplane mode (set over adb), result `id 7907cc35, plate 9f315c60`, byte-identical. The Widevine ID survives a factory reset; ANDROID_ID did not (the phone is a new fleet device after the wipe). VERIFIED as the Android plate candidate. Still open: per-app scoping (needs a second app with our signing key) and whether to add it as a plate beside the unchanged v0 device_secret or as a versioned v1 oracle with a migration (Nick's call). Fresh-install note: the service, and so the probe, only starts after the POST_NOTIFICATIONS dialog is answered; `adb shell pm grant com.photon.messenger android.permission.POST_NOTIFICATIONS` skips it.
+BUILT 2026-11-02 (phase 1, v0.138.1 dev line): tohu `device::machine_fingerprint()` on Android = `widevine_root()` (ID ‖ cert) or legacy `android_id()` per `android_select_root()` (OnceLock, first call wins, required before any derivation; `android_root()` getter). kete `device_vault_present(app, secret)`. photon `select_android_root()` in jni_android.rs at the NetworkContext oracle site: new-root vault present or no vault → Widevine; only old-root vault present → legacy + "conversion owed" warn; Widevine unreadable → legacy (an error never flips a device onto a different root silently… it logs error). Posture: Android recovery pip 2 on the Widevine root. Logs carry blake3 prefixes only.
 
-To verify on the Pixel 8 Pro (Nick switches it from ferros to Android): deploy with scripts/android/dev-adb.sh, airplane mode, open Photon, pull the log, grep `widevine probe`. Compare across reinstall, a second app with our signing key (per-app scoping question, docs gap 5), and a factory reset only if Nick chooses. If it holds: add as the Android plate beside the unchanged v0 device_secret (never a migration of v0 without a plan). It is a reported value; it does not stop a modified client, only PIPE does.
+ANDROID ROOT CONVERSION PIN: delete at v168 (thirty versions after v138; grep "CONVERSION PIN" in tohu, kete, photon). Like [[project_old_self_import_removal]] (v145).
 
-Related: [[feedback_device_root_never_salted]], [[project_security_audit]], tohu/docs/oracle-hardening.md.
+NOT BUILT (phase 2, the conversion): a phone on the legacy root must move to Widevine before v168. Two halves: (a) the device vault is NAMED from the secret and every entry address mixes it in, so there is no re-key; conversion = open old, load the app state through photon's own load paths, select new, save through the save paths (addresses cannot be enumerated into the new vault blindly). (b) the fleet device key changes: the old key (still readable until the wipe) binds the new key as a sibling (bind_device_held / claim-first ceremony on one phone) and then departs itself (depart_device_consented); friends and FGTW learn the new device thru the normal fleet paths. Identity succession (SuccessorRecord) is for whole-identity re-founding, not this.
+
+Still open: per-app scoping of the Widevine ID (needs a second app signed with the TOKEN key; the cert fold-in makes the family one value regardless). Fresh-install note: the service, and so the oracle, only starts after the POST_NOTIFICATIONS dialog is answered; `adb shell pm grant com.photon.messenger android.permission.POST_NOTIFICATIONS` skips it for tests.
+
+Related: [[feedback_device_root_never_salted]], [[project_security_audit]], [[project_device_identity_model]], tohu/docs/oracle-hardening.md.

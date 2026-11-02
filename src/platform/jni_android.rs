@@ -1663,34 +1663,48 @@ fn derive_device_keypair(fingerprint: &[u8]) -> Keypair {
     Keypair { secret, public }
 }
 
-/// PROBE (tohu/docs/oracle-hardening.md, 2026-11-02): does the Widevine device ID make a factory-reset-proof Android plate, and is it scoped per app?
-/// Logs only BLAKE3 prefixes, never the ID: the raw value is a hardware identifier and the log leaves the phone.
-/// Compare the prefixes across a reinstall, across a second app signed with our key, and across a factory reset; run in airplane mode to see the read needs no network.
-/// Nothing here feeds identity yet; the plate becomes real only once the owner reads the comparison.
+/// Pick the Android device root once per process and return its oracle bytes.
+/// Widevine ‖ signing certificate is the root. ANDROID ROOT CONVERSION PIN, delete at v168 (Nick 2026-11-02: thirty versions after v138): a vault founded under the ANDROID_ID root keeps that root until the conversion moves it, so an existing phone never wakes up as a new device.
+/// The choice is by which device vault is on disk: new root's vault present, or no vault at all, selects Widevine; only the old root's vault present selects the legacy root and logs that a conversion is owed.
+/// Logs carry BLAKE3 prefixes only, never a root: the raw values are hardware identifiers and the log leaves the phone.
 #[cfg(target_os = "android")]
-fn widevine_probe() {
-    match tohu::device::widevine_id() {
-        Ok(wv) => {
-            let id = blake3::hash(&wv.device_unique_id);
-            let plate = match tohu::device::signing_cert() {
-                Ok(cert) => {
-                    let mut h = blake3::Hasher::new();
-                    h.update(&wv.device_unique_id);
-                    h.update(&cert);
-                    hex::encode(&h.finalize().as_bytes()[..4])
-                }
-                Err(e) => format!("signing cert unreadable: {e}"),
-            };
-            info!(
-                "widevine probe: id {} ({} bytes), level {}, cdm {}, plate(id ‖ signing cert) {}",
-                hex::encode(&id.as_bytes()[..4]),
-                wv.device_unique_id.len(),
-                wv.security_level,
-                wv.version,
-                plate
-            );
+fn select_android_root(java_fingerprint: &[u8]) -> Vec<u8> {
+    use tohu::device::AndroidRoot;
+    let prefix = |bytes: &[u8]| hex::encode(&blake3::hash(bytes).as_bytes()[..4]);
+    let secret_of = |root: &[u8]| *derive_device_keypair(root).secret.as_bytes();
+    let widevine = tohu::device::widevine_root();
+    let legacy = tohu::device::android_id();
+    let chosen = match (&widevine, &legacy) {
+        (Ok(w), Ok(l)) => {
+            let new_present = crate::storage::device_vault_present(crate::storage::APP, &secret_of(w));
+            let old_present = crate::storage::device_vault_present(crate::storage::APP, &secret_of(l));
+            if !new_present && old_present {
+                warn!("device root: vault founded under ANDROID_ID {} and none under Widevine {}; keeping the legacy root, conversion owed", prefix(l), prefix(w));
+                AndroidRoot::LegacyAndroidId
+            } else {
+                info!("device root: Widevine {} (vault present: {new_present}; legacy {} vault present: {old_present})", prefix(w), prefix(l));
+                AndroidRoot::Widevine
+            }
         }
-        Err(e) => warn!("widevine probe: unreadable ({e})"),
+        (Err(e), Ok(l)) => {
+            error!("device root: Widevine unreadable ({e}); using the legacy root {}", prefix(l));
+            AndroidRoot::LegacyAndroidId
+        }
+        (Ok(w), Err(e)) => {
+            warn!("device root: ANDROID_ID unreadable ({e}); Widevine {}", prefix(w));
+            AndroidRoot::Widevine
+        }
+        (Err(we), Err(le)) => {
+            error!("device root: both unreadable (Widevine: {we}; ANDROID_ID: {le}); falling back to the Java-pushed fingerprint");
+            // tohu's own derivations (the session capsules) then fail on the read, not on a missing selection.
+            tohu::device::android_select_root(AndroidRoot::LegacyAndroidId);
+            return java_fingerprint.to_vec();
+        }
+    };
+    tohu::device::android_select_root(chosen);
+    match chosen {
+        AndroidRoot::Widevine => widevine.expect("checked Ok above"),
+        AndroidRoot::LegacyAndroidId => legacy.expect("checked Ok above"),
     }
 }
 
@@ -1730,23 +1744,9 @@ impl NetworkContext {
         };
         tohu::set_session_dir(&primary, shadow.as_deref());
 
-        // tohu reads Settings.Secure.ANDROID_ID itself (via the JavaVM handed to it in JNI_OnLoad). Fall back to the Java-pushed `fingerprint` if tohu's fetch errors, so a wrong JNI path logs loudly instead of bricking the app. NOTE: switching the oracle to pure ANDROID_ID changes device_secret vs the old Java-pushed value — existing Android vaults must be cleared.
-        let oracle = match tohu::device::machine_fingerprint() {
-            Ok(id) => {
-                info!(
-                    "NetworkContext: device oracle via tohu (ANDROID_ID), {} bytes",
-                    id.len()
-                );
-                id
-            }
-            Err(e) => {
-                error!(
-                    "NetworkContext: tohu device oracle failed ({e}); falling back to Java-pushed fingerprint"
-                );
-                fingerprint.to_vec()
-            }
-        };
-        widevine_probe();
+        // The device root is the Widevine device ID ‖ our signing certificate, read locally from the TEE: it survives a factory reset, which ANDROID_ID did not (verified on the Pixel 8 Pro 2026-11-02, tohu/docs/oracle-hardening.md).
+        // tohu reads both candidates itself via the JavaVM handed to it in JNI_OnLoad. Fall back to the Java-pushed `fingerprint` only if every read errors, so a wrong JNI path logs loudly instead of bricking the app.
+        let oracle = select_android_root(fingerprint);
         let keypair = derive_device_keypair(&oracle);
         let signing_bundle = crate::network::fgtw::fleet::SigningBundle::derive(&oracle);
         debug_assert_eq!(

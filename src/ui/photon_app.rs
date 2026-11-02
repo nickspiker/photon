@@ -160,7 +160,7 @@ fn posture_colour(filled: usize) -> u32 {
 }
 
 /// Security and Recovery posture for the current identity — each a count of filled pips out of [`POSTURE_PIPS`]. Two orthogonal axes, surfaced on the Ready-screen bottom strip: * Security — how hard it is for an attacker to steal or forge this identity. Bounded by the device root. Today every platform derives `device_secret` from a *readable* fingerprint (Linux machine-id, Windows MachineGuid, macOS IOPlatformUUID), so same-privilege code can lift it: 1 pip everywhere. A root-gated firmware fact would be 2; a hardware enclave or PIPE, 3.
-/// * Recovery — how hard it is for the *owner* to lose this identity for good. For a single device it is whether the root survives a factory reset: macOS's IOPlatformUUID is firmware and re-derives after a wipe (2); Linux machine-id, Windows MachineGuid and Android's ANDROID_ID are software / reset-volatile (1). Device redundancy (Mirrored), a durable anchor (desktop/PIPE) and social vouching raise this toward 3.
+/// * Recovery — how hard it is for the *owner* to lose this identity for good. For a single device it is whether the root survives a factory reset: macOS's IOPlatformUUID is firmware and Android's Widevine ID is burned in, both re-derive after a wipe (2); Linux machine-id, Windows MachineGuid and the legacy Android ANDROID_ID root are software / reset-volatile (1). Device redundancy (Mirrored), a durable anchor (desktop/PIPE) and social vouching raise this toward 3.
 ///
 /// This is the single seam multi-device, vouching and PIPE plug into: they change what this returns and nothing else.
 #[allow(dead_code)]
@@ -168,7 +168,13 @@ fn identity_posture() -> (usize, usize) {
     let security = 1; // readable root on every platform today
     #[cfg(target_os = "macos")]
     let recovery = 2; // IOPlatformUUID is firmware — survives a factory reset
-    #[cfg(not(target_os = "macos"))]
+    // The Widevine root is burned in and survives a factory reset; a phone still on the legacy ANDROID_ID root (conversion pin, delete at v168) does not.
+    #[cfg(target_os = "android")]
+    let recovery = match tohu::device::android_root() {
+        Some(tohu::device::AndroidRoot::Widevine) => 2,
+        _ => 1,
+    };
+    #[cfg(not(any(target_os = "macos", target_os = "android")))]
     let recovery = 1; // software / reset-volatile root, single device
     (security, recovery)
 }
