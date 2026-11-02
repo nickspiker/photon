@@ -19,6 +19,10 @@ pub enum Owed {
 
 static OWED: Mutex<Option<Owed>> = Mutex::new(None);
 
+/// Parked by the worker once the new key is in the chain: the UI thread, which owns the sibling addresses, pushes the extended chain to every sibling and answers here, and only then does the worker carry on.
+/// Without this the old device exited before any sibling heard the add, and the desktop took 82 minutes to find the new key at the seed, rejecting the phone's history requests until then (2026-11-02).
+static CHAIN_PUSH: Mutex<Option<std::sync::mpsc::Sender<()>>> = Mutex::new(None);
+
 /// The root selection hands over what it found; taken once by [`PhotonApp::root_conversion_tick`].
 pub fn note_owed(owed: Owed) {
     if let Ok(mut g) = OWED.lock() {
@@ -30,6 +34,13 @@ impl PhotonApp {
     /// On the status tick, once per process: when the session is live and the device vault is open, start whatever the root selection left owed.
     /// The edge is the first tick with a session and an open vault; nothing is timed.
     pub(super) fn root_conversion_tick(&mut self) {
+        // The worker's one request of this thread: push the chain that now holds the new key to the siblings, then let it carry on.
+        let parked = CHAIN_PUSH.lock().ok().and_then(|mut g| g.take());
+        if let Some(done) = parked {
+            self.fleet_chain_push(&[]);
+            self.fleet_chain_store();
+            crate::log_err!(done.send(()), "the chain-push answer to the root conversion worker");
+        }
         if self.root_conversion_started {
             return;
         }
@@ -80,6 +91,16 @@ fn convert(old: &DeviceSigner, identity_seed: &[u8; 32], hp: &[u8; 32], legacy: 
         crate::logf!("ROOT: the fleet add of the new device failed ({e}); nothing moved, retried at the next start");
         return;
     }
+    // The siblings hear the add now, from this device while it is still a member and still running: the UI thread pushes the chain on its next tick and answers; the seed mirror alone took the desktop 82 minutes to notice.
+    let (pushed_tx, pushed_rx) = std::sync::mpsc::channel();
+    if let Ok(mut g) = CHAIN_PUSH.lock() {
+        *g = Some(pushed_tx);
+    }
+    if pushed_rx.recv().is_err() {
+        crate::log("ROOT: the chain push never answered; the move is retried at the next start");
+        return;
+    }
+    crate::log("ROOT: the extended chain went to the siblings");
     // 2. The vault, entry by entry, at the same addresses.
     let new_secret = tohu::device::device_secret_from(widevine);
     let Some(old_vault) = crate::storage::device_vault() else {

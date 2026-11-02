@@ -1309,6 +1309,8 @@ impl PhotonApp {
         if added_sibling {
             self.lane_pushed_pos.clear();
             self.chain_pushed_osc.clear();
+            // The roster-hash dedupe too: a quiet group has no changed lane, so its roster only ever re-pushes when this map forgets it, and a newcomer that never heard the roster never boots the group (2026-11-02, the converted Pixel saw orange and lime, which had changed lanes, and never Kaitiakitanga).
+            self.molecule_roster_pushed.clear();
         }
     }
 
