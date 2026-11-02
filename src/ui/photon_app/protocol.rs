@@ -551,6 +551,15 @@ impl PhotonApp {
             }
             { needs_redraw = true; self.note_redraw(line!()); }
         }
+        // Save beam video: a beam key like the page's others (this device, or the fleet when it follows), default OFF; applies from the next wave.
+        let beam_save_toggle = self
+            .settings_beam_save_check
+            .as_mut()
+            .map(|cb| (cb.take_toggle(), cb.is_checked()));
+        if let Some((true, checked)) = beam_save_toggle {
+            self.write_beam("beam.save_video", vsf::VsfType::u0(checked));
+            { needs_redraw = true; self.note_redraw(line!()); }
+        }
         // A wave is a call to Android: device-local (unlinked) bool, default ON; flips now, applies at the next wave start.
         let in_call_toggle = self
             .settings_in_call_check
@@ -1297,6 +1306,9 @@ impl PhotonApp {
         }
         if let Some(cb) = self.settings_in_call_check.as_mut() {
             cb.set_label(tr(Msg::InCallMode));
+        }
+        if let Some(cb) = self.settings_beam_save_check.as_mut() {
+            cb.set_label(tr(Msg::BeamSaveVideo));
         }
         if let Some(cb) = self.settings_vibrate_msg_check.as_mut() {
             cb.set_label(tr(Msg::VibrateNewMessage));

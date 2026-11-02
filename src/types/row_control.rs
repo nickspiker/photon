@@ -193,6 +193,8 @@ pub enum AttachRole {
     WaveAudio,
     /// A wave's envelope pyramid: drawn on the card, never shown as a pill.
     WaveEnv,
+    /// A wave's kept beam video (`beam.video`, wave/beam_keep.rs): every camera in it, H.264 in VSF — kept only when the user saves beam video; plays on the replayed wave screen, never as a pill.
+    BeamVideo,
 }
 
 impl AttachRole {
@@ -201,6 +203,7 @@ impl AttachRole {
             AttachRole::File => 1,
             AttachRole::WaveAudio => 2,
             AttachRole::WaveEnv => 3,
+            AttachRole::BeamVideo => 4,
         }
     }
 
@@ -209,6 +212,7 @@ impl AttachRole {
             1 => Some(AttachRole::File),
             2 => Some(AttachRole::WaveAudio),
             3 => Some(AttachRole::WaveEnv),
+            4 => Some(AttachRole::BeamVideo),
             _ => None,
         }
     }

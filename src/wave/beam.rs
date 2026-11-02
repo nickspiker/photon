@@ -92,7 +92,7 @@ fn oti(len: u32) -> raptorq::ObjectTransmissionInformation {
     raptorq::ObjectTransmissionInformation::with_defaults(len as u64, SYMBOL_BYTES)
 }
 
-fn encode_info(info: &Info) -> Vec<u8> {
+pub(crate) fn encode_info(info: &Info) -> Vec<u8> {
     let mut out = Vec::with_capacity(INFO_HEAD + info.colour.len());
     out.push(Kind::Info as u8);
     out.extend_from_slice(&info.width.to_le_bytes());
@@ -103,7 +103,7 @@ fn encode_info(info: &Info) -> Vec<u8> {
     out
 }
 
-fn decode_info(p: &[u8]) -> Option<Info> {
+pub(crate) fn decode_info(p: &[u8]) -> Option<Info> {
     if p.len() < INFO_HEAD || p[0] != Kind::Info as u8 {
         return None;
     }

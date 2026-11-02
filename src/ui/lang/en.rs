@@ -618,6 +618,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::HoldWavesOnDevice => "Hold every wave recording on this device".into(),
         Msg::VoiceDsp => "Use this device's own voice processing on a headset or earpiece too (the speaker always does; applies from the next wave)".into(),
         Msg::InCallMode => "Treat waves as phone calls: other apps' sounds and rings go quiet while you're in a wave (the phone's call audio adds a little delay; applies from the next wave)".into(),
+        Msg::BeamSaveHead => "Saving".into(),
+        Msg::BeamSaveVideo => "Save beam video with the wave's recording (every camera in it — off unless you turn it on; applies from the next wave)".into(),
         Msg::KeepEditHistory => "Show edit history".into(),
         Msg::VibrateIncomingWave => "Vibrate on incoming wave".into(),
         Msg::PresenceCheckbox => "Show my presence to contacts".into(),

@@ -72,7 +72,7 @@ impl PhotonApp {
                 }
                 let is_wave = m.wave.is_some()
                     || matches!(m.reference, Some((crate::types::RefKind::Wave, _)))
-                    || m.file.as_ref().is_some_and(|f| matches!(f.role, crate::types::AttachRole::WaveAudio | crate::types::AttachRole::WaveEnv));
+                    || m.file.as_ref().is_some_and(|f| matches!(f.role, crate::types::AttachRole::WaveAudio | crate::types::AttachRole::WaveEnv | crate::types::AttachRole::BeamVideo));
                 if waves_only && !is_wave {
                     continue;
                 }

@@ -263,6 +263,11 @@ pub enum Target {
 /// GROUP BEAMS (docs/group-waves.md): one transport per live link of the group wave — its far slot, its BeamTx from the link's secret, and whether it has heard the beam's self-description yet.
 /// The group wave keeps it as links come and go (`fan_add` / `fan_remove`), beaming or not, so a transport's chain runs from the link's start and a camera that stops and starts again never restarts it; a sender in group mode sends every frame to all of them.
 static GROUP_FAN: Mutex<Vec<(usize, BeamTx, bool)>> = Mutex::new(Vec::new());
+
+/// Our beam's self-description as last sent (Info, quarter turns) — what a newly armed video spool writes before our first frame in it.
+static TX_DESC: Mutex<(Option<Info>, u8)> = Mutex::new((None, 0));
+/// The video spool generation our track last described itself to (spool::beam_gen).
+static TX_SPOOL_GEN: AtomicU64 = AtomicU64::new(0);
 /// The group beam's frame counter, kept across a camera stopping and starting within the wave: a receiver gives up frame numbers behind what it has already shown, so a restart from 0 would be dropped until it passed them.
 static GROUP_FRAME_NO: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
@@ -316,6 +321,10 @@ impl Outbound {
     }
 
     fn send_info(&mut self, i: &Info) {
+        TX_DESC.lock().unwrap().0 = Some(i.clone());
+        if crate::wave::spool::beam_gen() != 0 {
+            crate::wave::spool::beam_record(crate::wave::spool::BeamRecKind::Info, 0, &beam::encode_info(i));
+        }
         match self {
             Outbound::Pair(tx) => tx.send_info(i),
             Outbound::Group { info, .. } => {
@@ -329,6 +338,10 @@ impl Outbound {
     }
 
     fn send_orient(&mut self, q: u8) {
+        TX_DESC.lock().unwrap().1 = q;
+        if crate::wave::spool::beam_gen() != 0 {
+            crate::wave::spool::beam_record(crate::wave::spool::BeamRecKind::Orient, 0, &[q]);
+        }
         match self {
             Outbound::Pair(tx) => tx.send_orient(q),
             Outbound::Group { orient, .. } => {
@@ -341,6 +354,18 @@ impl Outbound {
     }
 
     fn send_frame(&mut self, frame_no: u32, gains: Gains, au: &[u8]) {
+        // SAVING BEAM VIDEO (opt-in, wave/spool.rs): our track 0 — its description first in each new recording, then every access unit as encoded (one encode, whatever the fan-out).
+        let gen = crate::wave::spool::beam_gen();
+        if gen != 0 {
+            if TX_SPOOL_GEN.swap(gen, Ordering::Relaxed) != gen {
+                let (info, q) = TX_DESC.lock().unwrap().clone();
+                if let Some(i) = info {
+                    crate::wave::spool::beam_record(crate::wave::spool::BeamRecKind::Info, 0, &beam::encode_info(&i));
+                }
+                crate::wave::spool::beam_record(crate::wave::spool::BeamRecKind::Orient, 0, &[q]);
+            }
+            crate::wave::spool::beam_record(crate::wave::spool::BeamRecKind::Frame, 0, &crate::wave::spool::beam_frame_payload(frame_no, gains.0, au));
+        }
         match self {
             Outbound::Pair(tx) => {
                 tx.send_frame(frame_no, gains, au);
@@ -428,6 +453,9 @@ fn decode_loop(stop: Arc<AtomicBool>, shared: Arc<beam::RxShared>, slot: usize) 
     let mut pending: std::collections::BTreeMap<u32, beam::Frame> = std::collections::BTreeMap::new();
     let mut next: Option<u32> = None;
     const REORDER: u32 = 6;
+    // SAVING BEAM VIDEO (opt-in, wave/spool.rs): this receive slot's track (1 + slot; a slot past the u8 track space is not saved), the spool generation it last described itself to, and the rotation it last wrote.
+    let track = u8::try_from(slot + 1).ok();
+    let (mut spool_gen, mut spool_rot) = (0u64, u8::MAX);
     // The pair's receive stats (slot 0): frames decoded since the window opened (counted from `decoded` at its start); it closes every RECV_WINDOW frames.
     const RECV_WINDOW: u64 = 1 << 5;
     let (mut win_t, mut win_base) = (std::time::Instant::now(), 0u64);
@@ -443,6 +471,9 @@ fn decode_loop(stop: Arc<AtomicBool>, shared: Arc<beam::RxShared>, slot: usize) 
                     conv.set_characterization(chr);
                 }
                 crate::logf!("BEAM: peer beam {}×{} @ {} fps, {}, {} colour bytes", info.width, info.height, info.fps, info.codec.name(), info.colour.len());
+                if let (Some(t), true) = (track, crate::wave::spool::beam_gen() != 0) {
+                    crate::wave::spool::beam_record(crate::wave::spool::BeamRecKind::Info, t, &beam::encode_info(&info));
+                }
                 last_info = Some(info);
             }
         }
@@ -479,6 +510,24 @@ fn decode_loop(stop: Arc<AtomicBool>, shared: Arc<beam::RxShared>, slot: usize) 
                         continue;
                     }
                 }
+            }
+            // The access unit as received, in order, before decode — with the track's description first in each new recording and every rotation change.
+            let gen = crate::wave::spool::beam_gen();
+            if let (Some(t), true) = (track, gen != 0) {
+                use crate::wave::spool::{beam_record, BeamRecKind};
+                if spool_gen != gen {
+                    spool_gen = gen;
+                    spool_rot = u8::MAX;
+                    if let Some(i) = shared.info() {
+                        beam_record(BeamRecKind::Info, t, &beam::encode_info(&i));
+                    }
+                }
+                let rot = shared.rotation();
+                if rot != spool_rot {
+                    spool_rot = rot;
+                    beam_record(BeamRecKind::Orient, t, &[rot]);
+                }
+                beam_record(BeamRecKind::Frame, t, &crate::wave::spool::beam_frame_payload(frame.frame_no, frame.gains.0, &frame.bytes));
             }
             let Some(dec) = decoder.as_mut() else { continue };
             match dec.decode(&frame.bytes) {

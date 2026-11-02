@@ -708,6 +708,12 @@ impl PhotonApp {
         }
         // A party only after the session is open: its queue hygiene clears every party.
         let (slot, slot_gen) = crate::platform::audio::claim_slot();
+        // The beam's video beside the audio, when the user saves it: this link's receive slot is track 1 + slot, named by its person (a slot past the u8 track space is not saved).
+        let party = self.group_wave.as_ref().and_then(|w| w.joined.iter().find(|m| m.device == device).map(|m| m.party));
+        if let (Some(p), Some(t)) = (party, u8::try_from(slot + 1).ok()) {
+            let id8: [u8; 8] = wave_id[..8].try_into().unwrap();
+            self.arm_beam_video(&id8, &[(t, p)]);
+        }
         self.start_group_link(device, secret, our_device, slot, slot_gen);
     }
 
@@ -816,8 +822,13 @@ impl PhotonApp {
         }
         // RECORDED BY DEFAULT: every link's spool goes to one keep off the UI thread, which joins the engines first; the recording lands against the wave's row.
         let spent = std::mem::take(&mut w.spent);
+        // The beam video spool stops taking frames; its ticket rides the keep, or its file goes.
+        crate::wave::spool::beam_disarm();
+        let beam = self.beam_ticket.take();
         if w.ever_linked && !spent.is_empty() {
-            self.spawn_group_keep(w.gid, w.offer_osc, w.wave_id, spent);
+            self.spawn_group_keep(w.gid, w.offer_osc, w.wave_id, spent, beam);
+        } else if let Some(b) = beam {
+            crate::wave::spool::beam_discard(b);
         }
         // Our camera: stopped off the UI thread, the phone's pipeline told, the fan gone.
         if let Some(s) = w.beam_tx.take() {
@@ -1089,7 +1100,7 @@ impl PhotonApp {
     }
 
     /// The group keep, off the UI thread: wait for every link's engine (the fill drain may still be writing), merge the spools into one recording, store it; the drain lands the row.
-    fn spawn_group_keep(&mut self, gid: MoleculeId, offer_osc: i64, wave_id: [u8; 16], spent: Vec<(crate::wave::spool::SpoolTicket, Option<std::thread::JoinHandle<()>>, [u8; 32])>) {
+    fn spawn_group_keep(&mut self, gid: MoleculeId, offer_osc: i64, wave_id: [u8; 16], spent: Vec<(crate::wave::spool::SpoolTicket, Option<std::thread::JoinHandle<()>>, [u8; 32])>, beam: Option<crate::wave::spool::BeamTicket>) {
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return;
         };
@@ -1120,7 +1131,9 @@ impl PhotonApp {
                     tickets.push(t);
                 }
                 let result = crate::wave::record::finalize_group(tickets, &seed);
-                crate::log_err!(tx.send(super::wave_ui::WaveKeepResult { peer: [0u8; 32], offer_osc, wave_id8, result, group: Some(gid), parties }), "the group wave keep result to the UI thread");
+                // The beam's video beside it, when it was saved.
+                let video = beam.and_then(|b| crate::wave::beam_keep::keep(b, &seed));
+                crate::log_err!(tx.send(super::wave_ui::WaveKeepResult { peer: [0u8; 32], offer_osc, wave_id8, result, group: Some(gid), parties, video }), "the group wave keep result to the UI thread");
                 if let Some(w) = wake {
                     super::wake_ui(&w);
                 }
@@ -1132,7 +1145,7 @@ impl PhotonApp {
     }
 
     /// The group keep landed: the recording row in the molecule's conversation against the wave's row, carried to our siblings (each member's fleet keeps its own recording, as in a pair).
-    pub(super) fn land_group_keep(&mut self, gid: MoleculeId, offer_osc: i64, kept: Option<crate::wave::record::Kept>, parties: Vec<[u8; 32]>) {
+    pub(super) fn land_group_keep(&mut self, gid: MoleculeId, offer_osc: i64, kept: Option<crate::wave::record::Kept>, parties: Vec<[u8; 32]>, video: Option<crate::wave::beam_keep::VideoKept>) {
         let Some(kept) = kept else {
             crate::log("WAVE: group recording not kept — the WAVE: group keep line(s) above say why");
             return;
@@ -1144,6 +1157,18 @@ impl PhotonApp {
         row.delivered = true;
         row.author = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
         let mut pushed = vec![row.clone()];
+        // The beams' video (saved only when the user turned it on): its own fleet-internal row at +4, each track named by its person.
+        if let Some(v) = video {
+            let vfile = crate::types::AttachRef { hash: v.hash, name: String::new(), size: v.size, role: crate::types::AttachRole::BeamVideo, head: None, wrap: None, parties: v.tracks };
+            let mut vrow = ChatMessage::attachment(vfile, true, offer_osc + 4).with_reference(crate::types::RefKind::Wave, offer_osc + 1);
+            vrow.notified = true;
+            vrow.delivered = true;
+            vrow.author = row.author;
+            pushed.push(vrow.clone());
+            if let Some(conv) = self.conv_by_id_mut(id) {
+                conv.insert_message_sorted(vrow);
+            }
+        }
         if let Some(conv) = self.conv_by_id_mut(id) {
             conv.insert_message_sorted(row);
             if let Some(w) = conv.messages.iter_mut().find(|m| m.timestamp == offer_osc + 1 && m.wave.is_some()) {

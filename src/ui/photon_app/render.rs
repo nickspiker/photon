@@ -6935,6 +6935,15 @@ impl PhotonApp {
                         let row: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = pills.iter().map(|(l, s, en, on)| (l.as_str(), btn_base + *s, *en, green(*on))).collect();
                         flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &row, "Oxanium");
                     }
+                    // ── SAVE BEAM VIDEO (Nick 2026-11-01: "Checkbox in beam settings, unchecked by default"): a wave's beams kept beside its audio, for the replayed wave screen.
+                    {
+                        flow.gap(hspan2 * 0.6);
+                        flow.line(&mut canvas, ctx.text, &tr(Msg::BeamSaveHead), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
+                        let label = tr(Msg::BeamSaveVideo);
+                        if let Some(cb) = self.settings_beam_save_check.as_mut() {
+                            flow_checkbox(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, cb, &label, hspan2);
+                        }
+                    }
                     // ── YOUR CAMERA (Nick 2026-10-31: "a video preview/calibration on the beam settings page"): the camera previewed on the page, the next camera, and Calibrate with its outcome — the picture shows the turn and the calibration exactly as a beam would carry them.
                     {
                         flow.gap(hspan2 * 0.6);

@@ -1791,6 +1791,8 @@ pub struct PhotonApp {
     viewer_base: HitId,
     /// The replayed wave screen (replay.rs): open over the conversation while Some; its hit slots start at `replay_base`.
     wave_replay: Option<replay::WaveReplay>,
+    /// The open beam video spool's ticket for the wave in progress (saved only when the user saves beam video, wave/spool.rs) — its keep or its discard decides the file.
+    beam_ticket: Option<crate::wave::spool::BeamTicket>,
     replay_base: HitId,
     viewer_view_base: HitId,
     /// History pages opened off-thread (see HistPageOpened) — the drain merges; merging is the cheap half since the (timestamp, content-hash) index landed.
@@ -2633,6 +2635,8 @@ pub struct PhotonApp {
     settings_voice_dsp_check: Option<fluor::widgets::Checkbox>,
     /// Wave-page "Treat waves as phone calls" (`waves.in_call`, DEVICE-LOCAL, default ON; Android only): the in-call audio mode during a wave (platform::audio::IN_CALL_MODE), so other apps' sounds go quiet.
     settings_in_call_check: Option<fluor::widgets::Checkbox>,
+    /// Beam-page "Save beam video" (`beam.save_video`, default OFF, with the other beam keys): a wave's beams kept beside its audio (wave/spool.rs, the beam spool).
+    settings_beam_save_check: Option<fluor::widgets::Checkbox>,
     /// The measure-now ritual in flight (the Wave page shows "listening…" while Some) and its last verdict.
     wave_measure_rx: Option<std::sync::mpsc::Receiver<crate::wave::measure::MeasureResult>>,
     wave_measured: Option<crate::wave::measure::MeasureResult>,
@@ -3031,6 +3035,7 @@ impl PhotonApp {
             reader: None,
             viewer_base: HIT_NONE,
             wave_replay: None,
+            beam_ticket: None,
             replay_base: HIT_NONE,
             viewer_view_base: HIT_NONE,
             hist_opened_tx: {
@@ -3458,6 +3463,7 @@ impl PhotonApp {
             settings_wave_hold_check: None,
             settings_voice_dsp_check: None,
             settings_in_call_check: None,
+            settings_beam_save_check: None,
             wave_measure_rx: None,
             wave_measured: None,
             wave_profiles: Vec::new(),
@@ -4192,6 +4198,11 @@ impl PhotonApp {
                         f(cb);
                     }
                     if let Some(cb) = self.settings_in_call_check.as_mut() {
+                        f(cb);
+                    }
+                }
+                SettingsPage::Beam => {
+                    if let Some(cb) = self.settings_beam_save_check.as_mut() {
                         f(cb);
                     }
                 }

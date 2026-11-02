@@ -18,6 +18,8 @@ pub(super) struct WaveKeepResult {
     pub(super) result: Option<crate::wave::record::Kept>,
     /// A GROUP wave's keep (docs/group-waves.md): its row lands in the molecule's conversation, not a contact's.
     pub(super) group: Option<crate::types::molecule::MoleculeId>,
+    /// The beam's kept video, when the user saves beam video and anyone beamed (wave/beam_keep.rs).
+    pub(super) video: Option<crate::wave::beam_keep::VideoKept>,
     /// A group keep's people in channel order (a pair's are named at landing from `peer`).
     pub(super) parties: Vec<[u8; 32]>,
 }
@@ -606,6 +608,11 @@ impl PhotonApp {
         self.wave_minimized = false;
         let secret = self.derive_secret_for(ci, &offer_key, &wave_id, &origin_nonce, &answer_nonce);
         let (engine, spool) = self.spawn_wave_engine(ci, &wave_id, secret, false);
+        // The beam's video beside the audio, when the user saves it: our camera and the far party's (receive slot 0 = track 1).
+        if let Some(peer) = self.active_wave.as_ref().map(|c| c.peer_handle_hash) {
+            let id8: [u8; 8] = wave_id[..8].try_into().unwrap();
+            self.arm_beam_video(&id8, &[(1, peer)]);
+        }
         if let Some(wave) = self.active_wave.as_mut() {
             wave.answer_nonce = Some(answer_nonce);
             wave.secret = secret;
@@ -726,13 +733,15 @@ impl PhotonApp {
             return;
         }
         self.orphan_waves_swept = true;
+        // A beam video spool left by a crash has no register to finish — it goes.
+        crate::wave::spool::beam_sweep_strays();
         let seed = self.session.as_ref().map(|s| s.identity_seed).unwrap_or([0u8; 32]);
         for (ticket, peer, offer_osc, id8) in crate::wave::spool::recover_orphans() {
             crate::logf!(
                 "WAVE: recovering orphaned wave spool ({}) — the crash interrupted its keep; transcoding now",
                 hex::encode(id8)
             );
-            self.spawn_keep_transcode(ticket, peer, offer_osc, seed, id8, None);
+            self.spawn_keep_transcode(ticket, peer, offer_osc, seed, id8, None, None);
         }
     }
 
@@ -1272,6 +1281,11 @@ impl PhotonApp {
                             &nonce,
                         );
                         let (engine, spool) = self.spawn_wave_engine(ci, &wave_id, secret, true);
+                        // The beam's video beside the audio, when the user saves it: our camera and the far party's (receive slot 0 = track 1).
+                        if let Some(peer) = self.active_wave.as_ref().map(|c| c.peer_handle_hash) {
+                            let id8: [u8; 8] = wave_id[..8].try_into().unwrap();
+                            self.arm_beam_video(&id8, &[(1, peer)]);
+                        }
                         if let Some(wave) = self.active_wave.as_mut() {
                             wave.secret = secret;
                             wave.engine = engine;
@@ -1783,6 +1797,9 @@ impl PhotonApp {
         crate::wave::set_wave_peer_device(None);
         crate::wave::set_wave_tx_addr(None);
         crate::platform::audio::stop();
+        // The beam video spool stops taking frames; its ticket rides the keep (or the file goes).
+        crate::wave::spool::beam_disarm();
+        let mut beam = self.beam_ticket.take();
         Self::stop_ring_alert_platform();
         self.wave_minimized = false;
         let peer = self.active_wave.as_ref().map(|c| c.peer_handle_hash);
@@ -1812,16 +1829,20 @@ impl PhotonApp {
                 self.push_rows_to_siblings(ci, std::slice::from_ref(&row), None);
                 if let Some(ticket) = ticket {
                     // Recorded by default: the transcode lands the recording row against this wave row. Land the user in the conversation so the card shows up where it lives.
-                    self.spawn_keep_transcode(ticket, peer, offer_osc, seed, wave_id8, engine_thread);
+                    self.spawn_keep_transcode(ticket, peer, offer_osc, seed, wave_id8, engine_thread, beam.take());
                     self.open_conversation_with(ci);
                 }
             }
+        }
+        // No keep took the beam spool (a wave with no recording): its file goes now.
+        if let Some(b) = beam {
+            crate::wave::spool::beam_discard(b);
         }
         self.scene_dirty = true;
     }
 
     /// Transcode a kept spool to the durable N-channel blob OFF the UI thread (decode+re-encode is O(wave length)); the worker posts (hash,size) back to `drain_wave_keep`, which mints the fleet-internal wave.audio row. A failed transcode drops the ticket → the spool key zeroizes → safe degrade to nothing kept.
-    pub(super) fn spawn_keep_transcode(&mut self, ticket: crate::wave::spool::SpoolTicket, peer: [u8; 32], offer_osc: i64, seed: [u8; 32], wave_id8: [u8; 8], engine_thread: Option<std::thread::JoinHandle<()>>) {
+    pub(super) fn spawn_keep_transcode(&mut self, ticket: crate::wave::spool::SpoolTicket, peer: [u8; 32], offer_osc: i64, seed: [u8; 32], wave_id8: [u8; 8], engine_thread: Option<std::thread::JoinHandle<()>>, beam: Option<crate::wave::spool::BeamTicket>) {
         let tx = self.wave_keep_sender();
         let wake = self.event_proxy.clone();
         // KEEP HOLD (2026-09-11, Emma's 13-minute wave kept 53 minutes after hangup): the phone dozed the moment the wave ended and the transcode crawled in maintenance windows. Kotlin holds a partial wake lock while a keep runs (+1 here, −1 in the drain), and the thread asks for a better-than-background priority.
@@ -1842,7 +1863,9 @@ impl PhotonApp {
                     }
                 }
                 let result = crate::wave::record::finalize_nchannel(ticket, &seed);
-                crate::log_err!(tx.send(WaveKeepResult { peer, offer_osc, wave_id8, result, group: None, parties: Vec::new() }), "hand a finished wave keep to the UI");
+                // The beam's video beside it, when it was saved (its own document, its own blob).
+                let video = beam.and_then(|b| crate::wave::beam_keep::keep(b, &seed));
+                crate::log_err!(tx.send(WaveKeepResult { peer, offer_osc, wave_id8, result, group: None, parties: Vec::new(), video }), "hand a finished wave keep to the UI");
                 if let Some(w) = wake {
                     wake_ui(&w);
                 }
@@ -2008,7 +2031,7 @@ impl PhotonApp {
         for r in pending {
             self.pending_keep_hold = -1; // the keep finished, one way or the other — Kotlin drops the wake lock
             if let Some(gid) = r.group {
-                self.land_group_keep(gid, r.offer_osc, r.result, r.parties);
+                self.land_group_keep(gid, r.offer_osc, r.result, r.parties, r.video);
                 continue;
             }
             match r.result {
@@ -2045,6 +2068,17 @@ impl PhotonApp {
                                     conv.insert_message_sorted(erow);
                                 }
                                 self.send_attach_blob(ci, &eh, None);
+                            }
+                        }
+                        // THE BEAM'S VIDEO (saved only when the user turned it on, wave/beam_keep.rs): its own fleet-internal row at +4 against the wave row, each track named by its person — like the audio, never sent to the friend.
+                        if let Some(v) = r.video.as_ref() {
+                            let vfile = crate::types::AttachRef { hash: v.hash, name: String::new(), size: v.size, role: crate::types::AttachRole::BeamVideo, head: None, wrap: None, parties: v.tracks.clone() };
+                            let mut vrow = ChatMessage::attachment(vfile, true, r.offer_osc + 4).with_reference(crate::types::RefKind::Wave, r.offer_osc + 1);
+                            vrow.notified = true;
+                            vrow.delivered = true;
+                            pushed.push(vrow.clone());
+                            if let Some(conv) = self.conv_mut_of(ci) {
+                                conv.insert_message_sorted(vrow);
                             }
                         }
                         if let Some(conv) = self.conv_mut_of(ci) {
@@ -2367,6 +2401,26 @@ impl PhotonApp {
         // A muted wave stays muted across an engine restart (a reconnect).
         handle.muted.store(self.wave_muted, std::sync::atomic::Ordering::Relaxed);
         (Some(handle), ticket)
+    }
+
+    /// SAVE BEAM VIDEO (Settings → Beam, off by default): open the wave's beam spool once, with our camera as track 0, and name each other track's person (`tracks`: 1 + receive slot, party). Nothing happens unless the user saves beam video.
+    pub(super) fn arm_beam_video(&mut self, wave_id8: &[u8; 8], tracks: &[(u8, [u8; 32])]) {
+        if !crate::wave::beam_settings::current().save_video {
+            return;
+        }
+        use crate::wave::spool::{beam_record, BeamRecKind};
+        if self.beam_ticket.is_none() {
+            self.beam_ticket = crate::wave::spool::beam_arm(wave_id8);
+            if self.beam_ticket.is_none() {
+                return;
+            }
+            if let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+                beam_record(BeamRecKind::Party, 0, &us);
+            }
+        }
+        for (t, p) in tracks {
+            beam_record(BeamRecKind::Party, *t, p);
+        }
     }
 
     /// LAN for the plaid gate (Nick 2026-09-13: "waves haven’t been switching to plaid"): the waves connect on the router's GLOBAL IPv6 even in the same room, so the private-v4-only test never armed plaid. Same rule as the wave screen's cyan ring — private/link-local v4, ULA/link-local v6, or a global v6 on OUR OWN /64.

@@ -775,6 +775,9 @@ pub enum Msg<'a> {
     VoiceDsp,
     /// Wave page (Android): treat a wave as a phone call — the in-communication audio mode, so other apps' sounds go quiet during it.
     InCallMode,
+    /// Beam page: the Save beam video heading and its checkbox (beam.save_video, off by default).
+    BeamSaveHead,
+    BeamSaveVideo,
     KeepEditHistory,
     VibrateIncomingWave,
     PresenceCheckbox,

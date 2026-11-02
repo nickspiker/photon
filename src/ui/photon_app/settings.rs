@@ -1140,7 +1140,7 @@ impl PhotonApp {
     /// Not yet wired to a UI (the per-key link toggle is a designed settings-page control that hasn't landed) — kept as the API half so the storage layer's `set_link` has its app-side entry point.
     #[allow(dead_code)]
     /// Settings → Beam's keys (docs/beams.md "Settings"): per device by default, and one toggle links every one of them to the fleet (Nick 2026-10-26: "the device can maintain its own settings OR sync with the fleet").
-    const BEAM_KEYS: [&'static str; 6] = ["beam.hdr", "beam.size_cap", "beam.fps_cap", "beam.quality", "beam.bitrate_cap", "beam.keep_detail"];
+    const BEAM_KEYS: [&'static str; 7] = ["beam.hdr", "beam.size_cap", "beam.fps_cap", "beam.quality", "beam.bitrate_cap", "beam.keep_detail", "beam.save_video"];
 
     /// Does this device follow the fleet for its beam settings? Only by choice: a device that never chose reads its own values (or the defaults), never another device's.
     pub(super) fn beam_follows_fleet(&self) -> bool {
@@ -1168,7 +1168,11 @@ impl PhotonApp {
                 bitrate_cap: cap(self.beam_value("beam.bitrate_cap"), &BITRATE_CAPS),
                 keep_detail: self.beam_value("beam.keep_detail").as_ref().and_then(as_bool).unwrap_or(d.tuning.keep_detail),
             },
+            save_video: self.beam_value("beam.save_video").as_ref().and_then(as_bool).unwrap_or(d.save_video),
         };
+        if let Some(cb) = self.settings_beam_save_check.as_mut() {
+            cb.set_checked(s.save_video);
+        }
         crate::wave::beam_settings::set(s);
         // Each camera's turns, this device's own keys only (`beam.turns.<camera name>`, never linked: a camera's mounting belongs to its machine).
         let turns: Vec<(String, u8)> = self
@@ -1204,7 +1208,7 @@ impl PhotonApp {
     }
 
     /// Write one beam key where this device keeps it (its own map, unless it follows the fleet), then retune the senders.
-    fn write_beam(&mut self, key: &str, value: vsf::VsfType) {
+    pub(super) fn write_beam(&mut self, key: &str, value: vsf::VsfType) {
         if !self.ensure_fleet_settings() {
             return;
         }

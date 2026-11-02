@@ -536,6 +536,8 @@ impl FluorApp<Px> for PhotonApp {
         } else {
             None
         };
+        // Save beam video (beam.save_video, default OFF, Nick 2026-11-01) — the Beam page, every platform that beams.
+        self.settings_beam_save_check = Some(fluor::widgets::Checkbox::new(&mut self.hit_counter, tr(Msg::BeamSaveVideo), 0., 0., 1., 1., 12., false));
         self.settings_hardlogs_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
             tr(Msg::HardLogs),

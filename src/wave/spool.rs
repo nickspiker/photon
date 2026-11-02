@@ -366,6 +366,183 @@ pub fn shred(ticket: SpoolTicket) {
     drop(ticket);
 }
 
+// ── THE BEAM VIDEO SPOOL (Nick 2026-11-01: "Def H.264 and add that format to VSF" … "Checkbox in beam settings, unchecked by default so it doesn't save video unless they enable it") ──
+// A beam's video beside its wave's audio, only while Settings → Beam → "Save beam video" is on: every encoded access unit we send and every one we receive, sealed record by record under a per-wave key held in RAM (the audio spool's model), in its own runtime-dir file. Records carry a u32 length — an H.264 keyframe passes the audio spool's u16. Nothing here decodes or re-encodes: the keep wraps the access units verbatim in a VSF document (`v(b'm', …)`).
+// A crash mid-beam loses the video (no durable register: the audio's recovery is the record-by-default promise, the video is opt-in); a stray beam spool is removed at the next launch.
+
+/// The beam spool's file prefix in the runtime dir (the audio's is `wavespool-`).
+const BEAM_PREFIX: &str = "beamspool-";
+
+/// What one beam spool record is.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BeamRecKind {
+    /// An encoded access unit: `[frame_no u32][gains 4 × u16][au]`.
+    Frame = 0,
+    /// The track's in-band self-description (`beam::Info`, its wire bytes) as of here.
+    Info = 1,
+    /// The track's quarter turns as of here: `[q u8]`.
+    Orient = 2,
+    /// Whose track this is: `[party 32]` (track 0 is ours; a receive slot's track names its far party when the link comes up).
+    Party = 3,
+}
+
+/// One drained beam record.
+pub struct BeamRec {
+    pub kind: BeamRecKind,
+    /// 0 = our camera; 1 + slot = a received beam.
+    pub track: u8,
+    /// Eagle time the record was taken (beam frames carry no capture time of their own).
+    pub osc: i64,
+    pub payload: Vec<u8>,
+}
+
+/// The open beam spool, shared by the send thread and every decode thread.
+struct BeamSpool {
+    cipher: XChaCha20Poly1305,
+    file: std::fs::File,
+    counter: u64,
+}
+
+static BEAM_SPOOL: std::sync::Mutex<Option<BeamSpool>> = std::sync::Mutex::new(None);
+
+/// Each arm's number: a capture site that sees a new one writes its track's description (Info, Orient) before its first frame, so every recording starts self-described.
+static BEAM_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The open spool's generation, 0 when none is open.
+pub fn beam_gen() -> u64 {
+    if beam_armed() { BEAM_GEN.load(std::sync::atomic::Ordering::Relaxed) } else { 0 }
+}
+
+/// A frame record's payload: `[frame_no u32][gains 4 × u16][au]`, little-endian.
+pub fn beam_frame_payload(frame_no: u32, gains: [u16; 4], au: &[u8]) -> Vec<u8> {
+    let mut p = Vec::with_capacity(4 + 8 + au.len());
+    p.extend_from_slice(&frame_no.to_le_bytes());
+    for g in gains {
+        p.extend_from_slice(&g.to_le_bytes());
+    }
+    p.extend_from_slice(au);
+    p
+}
+
+/// The keep/delete decision material for a beam spool (the audio's `SpoolTicket`, for video).
+pub struct BeamTicket {
+    key: [u8; 32],
+    pub path: std::path::PathBuf,
+}
+
+impl Drop for BeamTicket {
+    fn drop(&mut self) {
+        self.key.zeroize();
+    }
+}
+
+/// Open a wave's beam spool — called at the wave's start when the user saves beam video. Any spool still open (a wave that ended without its keep) closes first.
+pub fn beam_arm(wave_id8: &[u8; 8]) -> Option<BeamTicket> {
+    let dir = crate::storage::runtime_dir();
+    std::fs::create_dir_all(&dir).ok()?;
+    let path = dir.join(format!("{BEAM_PREFIX}{}.tmp", hex::encode(wave_id8)));
+    let key: [u8; 32] = rand::random();
+    let cipher = XChaCha20Poly1305::new_from_slice(&key).ok()?;
+    let file = match std::fs::File::create(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            crate::logf!("BEAM: video spool create FAILED at {} — {}", path.display(), e);
+            return None;
+        }
+    };
+    *BEAM_SPOOL.lock().unwrap() = Some(BeamSpool { cipher, file, counter: 0 });
+    BEAM_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    crate::logf!("BEAM: saving this wave's video ({})", hex::encode(wave_id8));
+    Some(BeamTicket { key, path })
+}
+
+/// Stop taking records (the wave ended); the ticket decides what becomes of the file.
+pub fn beam_disarm() {
+    *BEAM_SPOOL.lock().unwrap() = None;
+}
+
+/// Is a beam spool open — the hot paths skip their copy when not.
+pub fn beam_armed() -> bool {
+    BEAM_SPOOL.lock().unwrap().is_some()
+}
+
+/// Append one record to the open beam spool (a no-op when none is open). Called from the send and decode threads.
+pub fn beam_record(kind: BeamRecKind, track: u8, payload: &[u8]) {
+    let mut g = BEAM_SPOOL.lock().unwrap();
+    let Some(s) = g.as_mut() else { return };
+    let osc = vsf::eagle_time_oscillations();
+    let mut plain = Vec::with_capacity(2 + 8 + payload.len());
+    plain.push(kind as u8);
+    plain.push(track);
+    plain.extend_from_slice(&osc.to_le_bytes());
+    plain.extend_from_slice(payload);
+    let mut nonce = [0u8; 24];
+    nonce[..8].copy_from_slice(&s.counter.to_le_bytes());
+    s.counter += 1;
+    let Ok(sealed) = s.cipher.encrypt(&nonce.into(), plain.as_slice()) else {
+        return;
+    };
+    // WHY/PROOF: a record's length is a u32 on disk — one access unit past 4 GiB is not a video frame; it is refused rather than written with a wrapped length that would corrupt every record after it.
+    let Ok(len) = u32::try_from(sealed.len()) else {
+        return;
+    };
+    let mut rec = Vec::with_capacity(4 + sealed.len());
+    rec.extend_from_slice(&len.to_le_bytes());
+    rec.extend_from_slice(&sealed);
+    if !crate::log_err!(s.file.write_all(&rec), "BEAM: video spool record write") {
+        *g = None; // a failing disk stops the copy rather than tearing every later record
+    }
+}
+
+/// Read a beam spool back (the keep): every record that opens, in order; a torn tail ends the read.
+pub fn beam_drain(t: &BeamTicket) -> Vec<BeamRec> {
+    let mut out = Vec::new();
+    let Ok(bytes) = std::fs::read(&t.path) else { return out };
+    let Ok(cipher) = XChaCha20Poly1305::new_from_slice(&t.key) else { return out };
+    let mut at = 0usize;
+    let mut counter = 0u64;
+    // WHY/PROOF: the file is our own but a crash can tear its last record — every length is checked against what is left before the slice.
+    while at + 4 <= bytes.len() {
+        let len = u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+        at += 4;
+        if at + len > bytes.len() {
+            break;
+        }
+        let mut nonce = [0u8; 24];
+        nonce[..8].copy_from_slice(&counter.to_le_bytes());
+        counter += 1;
+        let Ok(plain) = cipher.decrypt(&nonce.into(), &bytes[at..at + len]) else { break };
+        at += len;
+        if plain.len() < 10 {
+            continue;
+        }
+        let kind = match plain[0] {
+            0 => BeamRecKind::Frame,
+            1 => BeamRecKind::Info,
+            2 => BeamRecKind::Orient,
+            3 => BeamRecKind::Party,
+            _ => continue,
+        };
+        out.push(BeamRec { kind, track: plain[1], osc: i64::from_le_bytes(plain[2..10].try_into().unwrap()), payload: plain[10..].to_vec() });
+    }
+    out
+}
+
+/// Remove a beam spool's file (after its keep, or when the user saves no video).
+pub fn beam_discard(t: BeamTicket) {
+    crate::log_err!(crate::storage::absent_ok(std::fs::remove_file(&t.path)), "BEAM: removing a video spool");
+}
+
+/// Launch: any beam spool left by a crash is removed — there is no register to finish its keep.
+pub fn beam_sweep_strays() {
+    let Ok(entries) = std::fs::read_dir(crate::storage::runtime_dir()) else { return };
+    for e in entries.flatten() {
+        if e.file_name().to_string_lossy().starts_with(BEAM_PREFIX) {
+            crate::log_err!(std::fs::remove_file(e.path()), "BEAM: removing a stray video spool");
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

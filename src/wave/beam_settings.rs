@@ -13,10 +13,12 @@ pub struct BeamSettings {
     /// The widest coded size the ladder may climb to; `None` = the link decides (the whole capture on a LAN path, 1280 wide off it, two bands lower on a metered network).
     pub size_cap: Option<u32>,
     pub tuning: Tuning,
+    /// SAVE BEAM VIDEO (Nick 2026-11-01: "Checkbox in beam settings, unchecked by default so it doesn't save video unless they enable it"): a wave's beams kept beside its audio, every camera in it, for the replayed wave screen. Off unless the user turns it on.
+    pub save_video: bool,
 }
 
 impl BeamSettings {
-    pub const DEFAULT: BeamSettings = BeamSettings { hdr: false, size_cap: None, tuning: Tuning::DEFAULT };
+    pub const DEFAULT: BeamSettings = BeamSettings { hdr: false, size_cap: None, tuning: Tuning::DEFAULT, save_video: false };
 }
 
 /// The choices the page offers, largest first.
