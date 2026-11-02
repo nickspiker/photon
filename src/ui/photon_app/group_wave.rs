@@ -98,7 +98,7 @@ pub(crate) struct GroupWave {
     pub beam_tx: Option<crate::wave::beam_session::Sender>,
     pub beam_opening: Option<std::sync::mpsc::Receiver<Result<crate::wave::beam_session::Sender, String>>>,
     /// Spools of links that have ended (with their engine threads, which the keep joins first), and how many spools this wave has minted (each link's file is named apart).
-    pub spent: Vec<(crate::wave::spool::SpoolTicket, Option<std::thread::JoinHandle<()>>)>,
+    pub spent: Vec<(crate::wave::spool::SpoolTicket, Option<std::thread::JoinHandle<()>>, [u8; 32])>,
     pub spools_minted: u8,
     /// The wave's one encode, shared by every link (engine::GroupTx).
     pub tx: std::sync::Arc<crate::wave::engine::GroupTx>,
@@ -775,7 +775,8 @@ impl PhotonApp {
         link.engine.stop();
         // Its recording joins the wave's keep, with the engine thread the keep waits on (the fill drain may still be writing).
         if let Some(t) = link.spool.take() {
-            w.spent.push((t, link.engine.take_thread()));
+            let party = w.joined.iter().find(|m| m.device == link.device).map_or([0u8; 32], |m| m.party);
+            w.spent.push((t, link.engine.take_thread(), party));
         }
         if link.lead.load(std::sync::atomic::Ordering::Relaxed) {
             if let Some(next) = w.links.first() {
@@ -809,7 +810,8 @@ impl PhotonApp {
         for mut link in w.links.drain(..) {
             link.engine.stop();
             if let Some(t) = link.spool.take() {
-                w.spent.push((t, link.engine.take_thread()));
+                let party = w.joined.iter().find(|m| m.device == link.device).map_or([0u8; 32], |m| m.party);
+                w.spent.push((t, link.engine.take_thread(), party));
             }
         }
         // RECORDED BY DEFAULT: every link's spool goes to one keep off the UI thread, which joins the engines first; the recording lands against the wave's row.
@@ -1087,7 +1089,7 @@ impl PhotonApp {
     }
 
     /// The group keep, off the UI thread: wait for every link's engine (the fill drain may still be writing), merge the spools into one recording, store it; the drain lands the row.
-    fn spawn_group_keep(&mut self, gid: MoleculeId, offer_osc: i64, wave_id: [u8; 16], spent: Vec<(crate::wave::spool::SpoolTicket, Option<std::thread::JoinHandle<()>>)>) {
+    fn spawn_group_keep(&mut self, gid: MoleculeId, offer_osc: i64, wave_id: [u8; 16], spent: Vec<(crate::wave::spool::SpoolTicket, Option<std::thread::JoinHandle<()>>, [u8; 32])>) {
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return;
         };
@@ -1095,6 +1097,9 @@ impl PhotonApp {
         let wake = self.event_proxy.clone();
         self.pending_keep_hold = 1;
         let wave_id8: [u8; 8] = wave_id[..8].try_into().unwrap();
+        // The recording's people in channel order — ours on channel 0, then each spool's far party in the order merge_group_records lays them out (zero = a link whose party was not known).
+        let us = crate::crypto::clutch::identity_party_id(&seed);
+        let parties: Vec<[u8; 32]> = std::iter::once(us).chain(spent.iter().map(|s| s.2)).collect();
         let spawned = std::thread::Builder::new()
             .name("wave-keep".into())
             .spawn(move || {
@@ -1106,7 +1111,7 @@ impl PhotonApp {
                     }
                 }
                 let mut tickets = Vec::new();
-                for (t, th) in spent {
+                for (t, th, _) in spent {
                     if let Some(th) = th {
                         if th.join().is_err() {
                             crate::log("WAVE: a link engine thread panicked before the group keep — its spool merges as it stands");
@@ -1115,7 +1120,7 @@ impl PhotonApp {
                     tickets.push(t);
                 }
                 let result = crate::wave::record::finalize_group(tickets, &seed);
-                crate::log_err!(tx.send(super::wave_ui::WaveKeepResult { peer: [0u8; 32], offer_osc, wave_id8, result, group: Some(gid) }), "the group wave keep result to the UI thread");
+                crate::log_err!(tx.send(super::wave_ui::WaveKeepResult { peer: [0u8; 32], offer_osc, wave_id8, result, group: Some(gid), parties }), "the group wave keep result to the UI thread");
                 if let Some(w) = wake {
                     super::wake_ui(&w);
                 }
@@ -1127,13 +1132,13 @@ impl PhotonApp {
     }
 
     /// The group keep landed: the recording row in the molecule's conversation against the wave's row, carried to our siblings (each member's fleet keeps its own recording, as in a pair).
-    pub(super) fn land_group_keep(&mut self, gid: MoleculeId, offer_osc: i64, kept: Option<crate::wave::record::Kept>) {
+    pub(super) fn land_group_keep(&mut self, gid: MoleculeId, offer_osc: i64, kept: Option<crate::wave::record::Kept>, parties: Vec<[u8; 32]>) {
         let Some(kept) = kept else {
             crate::log("WAVE: group recording not kept — the WAVE: group keep line(s) above say why");
             return;
         };
         let id = crate::types::FriendshipId::from_bytes(gid.0);
-        let file = crate::types::AttachRef { hash: kept.hash, name: String::new(), size: kept.size, role: crate::types::AttachRole::WaveAudio, head: None, wrap: None };
+        let file = crate::types::AttachRef { hash: kept.hash, name: String::new(), size: kept.size, role: crate::types::AttachRole::WaveAudio, head: None, wrap: None, parties };
         let mut row = ChatMessage::attachment(file, true, offer_osc + 2).with_reference(crate::types::RefKind::Wave, offer_osc + 1);
         row.notified = true;
         row.delivered = true;

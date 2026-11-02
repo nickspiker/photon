@@ -180,6 +180,10 @@ pub fn seal_history_page(page: &HistoryPagePlain, key: &[u8; 32]) -> Result<Vec<
             if let Some(w) = fr.wrap {
                 r.push(f("file_wrap", VsfType::hb(w.to_vec())));
             }
+            // A wave recording's parties in channel order: one `file_party` field each, in order (a section keeps repeated fields in sequence).
+            for p in &fr.parties {
+                r.push(f("file_party", VsfType::hb(p.to_vec())));
+            }
         }
         doc = doc.add_section(ROW_SECTION, r);
         for m in &row.marks {
@@ -232,6 +236,7 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
                 size: r.uint("file_size")?,
                 head: r.h32("file_head"),
                 wrap: r.h32("file_wrap"),
+                parties: r.0.get_fields("file_party").iter().map_while(|fl| match fl.values.first() { Some(VsfType::hb(b)) => <[u8; 32]>::try_from(b.as_slice()).ok(), _ => None }).collect(),
             })
         })();
         let attach = (|| {
@@ -380,7 +385,7 @@ mod tests {
             file(3, AttachRef::file([4; 32], "notes.txt", 12)),
             ctl(4, RowControl::Delete { target: 3 }),
             ctl(5, RowControl::Wave(WaveSignal::Hangup { wave_id: [1; 16] })),
-            file(6, AttachRef { hash: [5; 32], name: String::new(), size: 99, role: AttachRole::WaveAudio, head: None, wrap: None }),
+            file(6, AttachRef { hash: [5; 32], name: String::new(), size: 99, role: AttachRole::WaveAudio, head: None, wrap: None, parties: Vec::new() }),
             ctl(7, RowControl::Era(crate::crypto::era::EraSignal::Init { era_next: 2, nonce: [6; 32], prior_tag: 7, kem_set: 3 })),
             ctl(8, RowControl::Probe),
             ctl(9, RowControl::Wave(WaveSignal::Answer { wave_id: [8; 16], nonce: [9; 32], device: None })),

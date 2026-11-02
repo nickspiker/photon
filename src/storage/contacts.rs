@@ -1035,9 +1035,15 @@ fn set_file_fields(rec: Record, msg: &ChatMessage) -> Record {
         Some(h) => rec.set("file_head", Value::Bytes(h.to_vec())),
         None => rec,
     };
-    match f.wrap {
+    let rec = match f.wrap {
         Some(w) => rec.set("file_wrap", Value::Bytes(w.to_vec())),
         None => rec,
+    };
+    // A wave recording's parties in channel order: rārangi has no list value, so the ids lie end to end, 32 bytes each.
+    if f.parties.is_empty() {
+        rec
+    } else {
+        rec.set("file_parties", Value::Bytes(f.parties.concat()))
     }
 }
 
@@ -1049,6 +1055,8 @@ fn record_file(rec: &Record) -> Option<crate::types::AttachRef> {
         size: rec.uint("file_size")?,
         head: rec.bytes("file_head").and_then(|b| <[u8; 32]>::try_from(b).ok()),
         wrap: rec.bytes("file_wrap").and_then(|b| <[u8; 32]>::try_from(b).ok()),
+        // WHY/PROOF: a vault record is disk data — a length that is not a multiple of 32 keeps only the whole ids before the tail.
+        parties: rec.bytes("file_parties").map(|b| b.chunks_exact(32).map(|c| <[u8; 32]>::try_from(c).unwrap()).collect()).unwrap_or_default(),
     })
 }
 
@@ -1710,7 +1718,7 @@ mod tests {
         att.author = Some([5; 32]);
         att.attach = Some(crate::types::AttachMeta { kind: crate::types::AttachKind::Unknown, dims: Some((3, 4)), preview_hash: Some([6; 32]) });
         att.marks = Vec::new();
-        let rec = ChatMessage::attachment(AttachRef { hash: [7; 32], name: String::new(), size: 5, role: AttachRole::WaveAudio, head: None, wrap: None }, true, 30);
+        let rec = ChatMessage::attachment(AttachRef { hash: [7; 32], name: String::new(), size: 5, role: AttachRole::WaveAudio, head: None, wrap: None, parties: Vec::new() }, true, 30);
         let ctl = ChatMessage::control(wave.clone(), false, 10);
 
         {

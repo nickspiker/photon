@@ -226,16 +226,18 @@ pub struct AttachRef {
     pub head: Option<[u8; 32]>,
     /// THE WRAPPED ORIGINAL (storage/wrapped.rs, Nick 2026-10-17): the header hb of the original wrapped in its own VSF document — the address a wrapper-aware build fetches, stores and verifies under. NOT identity, exactly like the head: an older build drops the unknown `fw` field, so identity keeps the raw `hash` until v146 retires the raw form.
     pub wrap: Option<[u8; 32]>,
+    /// A WAVE RECORDING's people, in channel order (Nick 2026-11-01, the replayed wave screen): channel k of the recording is `parties[k]` — channel 0 ourselves, then each link's far party in the order the keep merged them. Empty on every other row and on recordings kept before the field; NOT identity (like the head), and an older build drops the unknown field.
+    pub parties: Vec<[u8; 32]>,
 }
 
 impl AttachRef {
     pub fn file(hash: [u8; 32], name: &str, size: u64) -> Self {
-        AttachRef { hash, name: name.to_string(), size, role: AttachRole::File, head: None, wrap: None }
+        AttachRef { hash, name: name.to_string(), size, role: AttachRole::File, head: None, wrap: None, parties: Vec::new() }
     }
 
     /// A post-flag-day pointer: the original's hash and size, its role, its head — no name (the name lives in the head).
     pub fn pointer(hash: [u8; 32], size: u64, role: AttachRole, head: [u8; 32]) -> Self {
-        AttachRef { hash, name: String::new(), size, role, head: Some(head), wrap: None }
+        AttachRef { hash, name: String::new(), size, role, head: Some(head), wrap: None, parties: Vec::new() }
     }
 
     /// Canonical identity bytes — see [`ident_typed`]. The HEAD is deliberately NOT identity: these bytes feed the braid (a photon's key derives from the previous photon's identity), and a build from before the head drops the unknown field — had the head been identity, the two builds would derive different keys for every photon after a file and the lane would stop decrypting. The head is metadata a merge adopts (`same_identity` + `Conversation::insert_message_sorted`).
@@ -311,6 +313,7 @@ pub fn declare_row_fields(s: SectionSchema) -> SectionSchema {
         .field("fz", TypeConstraint::AnyUnsigned) // attachment size in bytes
         .field("fhd", TypeConstraint::AnyHash) // hb the attachment's HEAD blob (flag day 2026-10-07); absent on older rows — an older build ignores it
         .field("fw", TypeConstraint::AnyHash) // hb the WRAPPED original's header hb (storage/wrapped.rs, 2026-10-17); absent on older rows and from older builds, which fetch by `fh`
+        .field("fp", TypeConstraint::Any) // hb × N a wave recording's parties in channel order (2026-11-01); absent on every other row and from older builds
 }
 
 /// Write a control row's fields.
@@ -361,6 +364,7 @@ pub fn put_file(b: SectionBuilder, f: &AttachRef) -> Result<SectionBuilder, Stri
             Some(w) => b.set("fw", VsfType::hb(w.to_vec())).map_err(e),
             None => Ok(b),
         })
+        .and_then(|b| if f.parties.is_empty() { Ok(b) } else { b.set_multi("fp", f.parties.iter().map(|p| VsfType::hb(p.to_vec())).collect()).map_err(e) })
 }
 
 fn first<'a>(section: &'a SectionBuilder, name: &str) -> Option<&'a VsfType> {
@@ -406,7 +410,9 @@ pub fn get_file(section: &SectionBuilder) -> Option<AttachRef> {
     let size = first(section, "fz")?.as_u64()?;
     let head = first(section, "fhd").and_then(bytes_of).and_then(|b| <[u8; 32]>::try_from(b).ok());
     let wrap = first(section, "fw").and_then(bytes_of).and_then(|b| <[u8; 32]>::try_from(b).ok());
-    Some(AttachRef { hash, name, size, role, head, wrap })
+    // A party that is not 32 bytes ends the list there: the channels after it would be mis-named, so they read as unknown instead.
+    let parties = section.get_fields("fp").first().map(|f| f.values.iter().map_while(|v| bytes_of(v).and_then(|b| <[u8; 32]>::try_from(b).ok())).collect()).unwrap_or_default();
+    Some(AttachRef { hash, name, size, role, head, wrap, parties })
 }
 
 #[cfg(test)]

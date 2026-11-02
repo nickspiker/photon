@@ -18,6 +18,8 @@ pub(super) struct WaveKeepResult {
     pub(super) result: Option<crate::wave::record::Kept>,
     /// A GROUP wave's keep (docs/group-waves.md): its row lands in the molecule's conversation, not a contact's.
     pub(super) group: Option<crate::types::molecule::MoleculeId>,
+    /// A group keep's people in channel order (a pair's are named at landing from `peer`).
+    pub(super) parties: Vec<[u8; 32]>,
 }
 
 /// Format a duration base-aware: `M:SS` in dozenal and arabic, the plain seconds count in hex (hex is linear everywhere, Nick 2026-09-11). A free function so the render can call it under its chrome borrow (the method form reads `&self`). Rendered in the Oxanium face so the dozenal `+glyphs` control-block glyphs resolve. Dozenal seconds pad to two dozenal digits (0–4B).
@@ -1840,7 +1842,7 @@ impl PhotonApp {
                     }
                 }
                 let result = crate::wave::record::finalize_nchannel(ticket, &seed);
-                crate::log_err!(tx.send(WaveKeepResult { peer, offer_osc, wave_id8, result, group: None }), "hand a finished wave keep to the UI");
+                crate::log_err!(tx.send(WaveKeepResult { peer, offer_osc, wave_id8, result, group: None, parties: Vec::new() }), "hand a finished wave keep to the UI");
                 if let Some(w) = wake {
                     wake_ui(&w);
                 }
@@ -2006,7 +2008,7 @@ impl PhotonApp {
         for r in pending {
             self.pending_keep_hold = -1; // the keep finished, one way or the other — Kotlin drops the wake lock
             if let Some(gid) = r.group {
-                self.land_group_keep(gid, r.offer_osc, r.result);
+                self.land_group_keep(gid, r.offer_osc, r.result, r.parties);
                 continue;
             }
             match r.result {
@@ -2015,7 +2017,10 @@ impl PhotonApp {
                     crate::wave::spool::drop_register(&r.wave_id8);
                     if let Some(ci) = self.contact_index_by_handle_hash(&r.peer) {
                         // "wave.audio" (a beam will mint "beam.video") — no POTS in Photon, so nothing here is a "phone call": see docs/waves.md on why that word is retired. The row REFERENCES the wave row (offer_osc+1) and carries the envelope thumbnail, so every sibling folds it into the card and draws the shape before it holds the blob.
-                        let file = crate::types::AttachRef { hash: kept.hash, name: String::new(), size: kept.size, role: crate::types::AttachRole::WaveAudio, head: None, wrap: None };
+                        // Channel 0 is ours, channel 1 theirs — named so the replay screen shows each voice as its person.
+                        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+                        let parties = us.map(|u| vec![u, r.peer]).unwrap_or_default();
+                        let file = crate::types::AttachRef { hash: kept.hash, name: String::new(), size: kept.size, role: crate::types::AttachRole::WaveAudio, head: None, wrap: None, parties };
                         let mut row = ChatMessage::attachment(file, true, r.offer_osc + 2)
                             .with_reference(crate::types::RefKind::Wave, r.offer_osc + 1);
                         row.notified = true;
@@ -2024,7 +2029,7 @@ impl PhotonApp {
                         let mut pushed = vec![row.clone()];
                         // OUR wave.env (the 3-channel u8 tensor, docs in wave/wave_env.rs): its own row at +3 referencing the wave row, sent on the FRIEND chain (this is the exchange — their card colours from our clean mic, ours from theirs), blob pushed ahead of the audio. A short wave minted none.
                         if let Some((eh, ebytes)) = kept.env.clone() {
-                            let efile = crate::types::AttachRef { hash: eh, name: String::new(), size: ebytes.len() as u64, role: crate::types::AttachRole::WaveEnv, head: None, wrap: None };
+                            let efile = crate::types::AttachRef { hash: eh, name: String::new(), size: ebytes.len() as u64, role: crate::types::AttachRole::WaveEnv, head: None, wrap: None, parties: Vec::new() };
                             let ets = r.offer_osc + 3;
                             // The env row lands locally FIRST so the transmit reads its typed file identity off the row (the attachment pattern).
                             let erow_pre = ChatMessage::attachment(efile.clone(), true, ets).with_reference(crate::types::RefKind::Wave, r.offer_osc + 1);
