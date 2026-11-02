@@ -4416,6 +4416,13 @@ impl PhotonApp {
         // Stash a clone for app-level operations that need the keypair after init (avatar upload via `upload_avatar`). The clone is cheap (Ed25519 keypair is ~64 bytes); we can't ask HandleQuery for it back because its constructor moves the keypair into the worker threads.
         self.device_keypair = Some(keypair.clone());
         self.signing_bundle = signing_bundle;
+        // The TPM plate (tohu/docs/oracle-hardening.md): logged beside the machine-id root, nothing derives from it yet. Off the UI thread, since the chip takes up to a second to derive the endorsement key; a BLAKE3 prefix only.
+        #[cfg(target_os = "linux")]
+        std::thread::spawn(|| match tohu::device::tpm_plate() {
+            Ok(plate) => crate::logf!("device plate: tpm {}", hex::encode(&plate[..4])),
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => crate::log("device plate: a TPM is present but Photon may not open it (add this user to the tss group); the machine keeps its machine-id posture"),
+            Err(e) => crate::logf!("device plate: none ({e}); the machine keeps its machine-id posture"),
+        });
         crate::network::fgtw::fleet::install_device_signer(match &self.signing_bundle {
             Some(b) => crate::network::fgtw::fleet::DeviceSigner::Pq(b.clone()),
             None => crate::network::fgtw::fleet::DeviceSigner::Ed(keypair.clone()),
