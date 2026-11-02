@@ -21,7 +21,8 @@ Batch 1 FIXED 2026-11-02:
 - UPW-004: music envelopes stream via record::PcmEnvelopes, capped at 2^14 s.
 - VSF-01..04 (vsf 09bb5d3): short/elements_bytes/decode_len_minus_one, wire counts bounded by bytes left, VsfSection::try_new for TOC names, duplicate header k/g/h refused; tests/hostile_input.rs.
 
-Awaiting Nick (design): device key from machine-id (CSTV-01/NET-03/FGTW-01), identity seed = BLAKE3(handle) (CSTV-02), release `panic = "abort"`, installer verify-by-executing (UPW-007). Next code batch: LIB-01 nunc Roughtime nonce, VSF-05..12 (incl. vsf image::decode loop = same dav1d bug as UPW-005), then Mediums.
+NOT a finding: device key from machine-id (CSTV-01/NET-03/FGTW-01, LIB tohu) — documented interim stand-in for PIPE's ira (tohu README "Status"/"Terminology"; Security posture reports low via hardware:false; OS keystore rejected as a Google dependency). The auditors missed it; never re-raise. AND the stable device-bound identity is anti-theft by design (Nick 2026-11-02: a car that changes plates whenever someone sits in it is harder to CATCH THE THIEF): a stolen device keeps answering as itself to FGTW, the fleet and friends, so it can be recognised, refused and tracked; a random per-install key lets a thief launder the device with a reinstall.
+Awaiting Nick (design): identity seed = BLAKE3(handle) (CSTV-02), release `panic = "abort"`, installer verify-by-executing (UPW-007). Next code batch: LIB-01 nunc Roughtime nonce, VSF-05..12 (incl. vsf image::decode loop = same dav1d bug as UPW-005), then Mediums.
 
 **Why:** Nick asked to "go thru" the audit together (2026-11-02).
 **How to apply:** check this list before re-fixing; keep auditor IDs in code comments so a finding can be traced.
