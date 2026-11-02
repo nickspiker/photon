@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v137
 - **Smoother beams on a busy connection.** When a wave's audio noticed the connection backing up, the video could still read that moment as calm and raise its quality straight into the jam; it now steps down with the audio, and on a home network the picture tops out at 1920 wide instead of the camera's full size, which phones could not decode smoothly.
 - **Groups whose members fell out of step heal themselves.** A group could end up with two versions of its keys after a join, and the two halves then silently dropped each other's photons; every device now agrees on which version wins, and the group hands everyone a fresh one so it comes back together.
 - **The backup launcher copy on Linux survives.** Photon keeps a second copy of itself so it still starts if the first is damaged; on Linux that copy was being cleared out at every launch, and it now lives in its own folder where it stays.
