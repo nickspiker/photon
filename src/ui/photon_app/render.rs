@@ -2862,8 +2862,10 @@ impl PhotonApp {
                         fluor::region::Region::new(pad_x, py, pw, pill_h * 0.9),
                         fluor::region::Region::new(pad_x + pw + line_h * 0.5, py, pw, pill_h * 0.9),
                     ];
-                    // Hit map FIRST: swallow the whole area (stale stamps from the skipped conversation body must not fire); the pills and the view's widgets then win their rects as they draw.
-                    restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, 0, area_top as isize, buf_w as isize, buf_h as isize, self.viewer_base + 3);
+                    // Hit map FIRST: swallow the area (stale stamps from the skipped conversation body must not fire); the pills and the view's widgets then win their rects as they draw.
+                    // INSIDE THIS FRAME'S DAMAGE only (Nick 2026-11-01: "the back button on the image preview screen before the full rez copy comes in, it doesn't work"): a pill re-stamps only the pixels it paints, and while the original is fetched only the progress bar repaints — a whole-area swallow erased Back every frame (the dead-Leave class, 675d88d9).
+                    let d = ctx.damage_clip;
+                    restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, d.x0 as isize, (area_top as isize).max(d.y0 as isize), d.x1 as isize, d.y1 as isize, self.viewer_base + 3);
                     // Topmost first: pills paint before the picture, the picture before the backdrop — everything wins exactly its own pixels.
                     if let Some(v) = self.viewer.as_mut() {
                         let held = crate::storage::blob_present_or_pending(&v.hash);

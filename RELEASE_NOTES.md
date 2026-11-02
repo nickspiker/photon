@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Back works while a picture is still downloading.** On the image screen, the Back button did nothing until the full-size copy had arrived; it now works straight away.
+- **Any tap brings the picture's controls back.** With the controls hidden, tapping beside the picture now brings them back too, not only a tap on the picture itself.
 - **Waves count as calls on Android.** While you are in a wave or beam, other apps' notifications and rings now play as the soft in-call tone instead of at full volume, the way they do during a phone call; Settings → Wave → "Treat waves as phone calls" turns this off if you would rather have the slightly lower audio delay.
 - **Smoother waves right after Photon starts.** Photon no longer fetches files from your other devices and friends while a wave or beam is live — those transfers were crowding out the wave's audio and video on the phone — and picks up where it left off once you leave.
 - **Video from phones whose encoder stalls really recovers now.** The fix for stalling video encoders restarted them on the same setting that stalled, so the picture froze every few seconds; it now switches the setting off as intended.
