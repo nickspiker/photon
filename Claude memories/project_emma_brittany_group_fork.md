@@ -1,12 +1,13 @@
 ---
 name: project_emma_brittany_group_fork
-description: OPEN 2026-11-01 — Emma's phone drops every frame from Brittany's c9b5f417 (377 since 01:50 UTC): same index 1, different root (Brittany f6e94668 vs Emma 256da35c); likely the new atom "blue" 5b0bef4e
+description: 2026-11-01 group era fork (two era-1 roots, each side dropping the other) — FIXED in code: lower root wins everywhere, second join answer can't replace, lowest standing party heals with a whole era over bonds; field test pending
 metadata:
   type: project
 ---
-Emma's phone log 2026-11-01: "CHAT: frame tagged era f6e94668 from c9b5f417 — ours 256da35c, retired none, pending none — dropped", 377 times from 01:50:15 UTC, and "c9b5f417 advertises era#f6e94668 (index 1) for a friendship we hold at era#256da35c (index 1)".
-Same index, different root = two era-1 mints of one group. Emma founded atom "blue" (5b0bef4e) at 01:48:25 and minted era 1 for it at 01:48:34 ("1 to a joiner; pending until the first wrap ACKs"), Brittany joining — the likely fid; not confirmed (the log never names the fid on the drop line).
-Not the bond fix (docs/lanes.md "Which era is live" covers bonds and two-member conversations); a molecule fork needs the group's minter rules (docs/molecules.md §10).
+Emma's phone dropped Brittany's frames ("frame tagged era f6e94668 from c9b5f417 — ours 256da35c … dropped") and Brittany dropped Emma's (627942236 = 0x256da35c): two era-1 mints of one group.
+Likely cause (agent analysis, mint itself not in the logs): two of the sponsor's devices each answered Brittany's Join (fleet_device_acts races on liveness) and minted their own era; install_bind_wrap replaced with whichever wrap landed last; era_superseded_by broke same-index ties by each device's genesis_osc. A group's era advert reached no repair (era_heals only knew bonds).
+FIXED 2026-11-01 (docs/molecules.md §10.4 "One era per index"): molecule chains — lower lane_root wins in era_superseded_by; install_bind_wrap keeps a held era at a higher index or lower root; status era_heals_after → heal_group_era_fork (lowest standing party, one fleet device, fresh WHOLE era past every index over each member's bond; minter cuts over on first bond ACK → after_molecule_cutover).
+Open: never-friended members get no heal over a bond; the Join should name the sponsor device so only it answers (wire change).
 
-**Why:** Brittany's rows in that group never reach Emma, silently.
-**How to apply:** confirm the fid (add it to the drop line), then look at how two era-1 mints arose for one group; related [[project_emma_bond_era_split]], [[project-molecules-build]].
+**Why:** Brittany's rows in that group never reached Emma, silently.
+**How to apply:** field-test a group conversation after the deploy — look for "MOLECULE: … holds a fork" and the cutover lines; related [[project_emma_bond_era_split]], [[project-molecules-build]].

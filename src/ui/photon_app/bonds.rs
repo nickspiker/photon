@@ -308,6 +308,9 @@ impl PhotonApp {
             crate::logf!("ERA: {} cut over {:08x} → {:08x} (era#{}) on the bond's ACK of its delivery — {} pending(s) re-serve on the fresh lane", hex::encode(&conv.as_bytes()[..4]), old_tag, new_tag, era, retired);
             if let Some(ci) = self.pair_contact_of(conv) {
                 self.era_cutover_flush(ci, &conv);
+            } else if self.friendship_chains.iter().any(|(id, c)| *id == conv && c.molecule) {
+                // A GROUP cut over by a delivered era (the fork heal, molecules.rs): its held rows go out again on the new era, as after a mint's cutover.
+                self.after_molecule_cutover(crate::types::molecule::MoleculeId(conv.0));
             } else {
                 self.persist_chains_async(&conv);
             }
@@ -356,7 +359,7 @@ impl PhotonApp {
 
 impl PhotonApp {
     /// Do these chains know the era `tag` — current, pending, or retired? An era they know is a straggler or a cutover in flight; one they do not is a real disagreement.
-    fn chains_know_era(&self, fid: crate::types::FriendshipId, tag: u32) -> bool {
+    pub(super) fn chains_know_era(&self, fid: crate::types::FriendshipId, tag: u32) -> bool {
         self.friendship_chains.iter().find(|(id, _)| *id == fid).is_some_and(|(_, c)| c.era_tag() == Some(tag) || c.pending_era().is_some_and(|p| p.tag == tag) || c.retired_era().is_some_and(|r| r.tag == tag))
     }
 

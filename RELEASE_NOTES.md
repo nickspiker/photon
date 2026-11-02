@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Groups whose members fell out of step heal themselves.** A group could end up with two versions of its keys after a join, and the two halves then silently dropped each other's photons; every device now agrees on which version wins, and the group hands everyone a fresh one so it comes back together.
 - **The backup launcher copy on Linux survives.** Photon keeps a second copy of itself so it still starts if the first is damaged; on Linux that copy was being cleared out at every launch, and it now lives in its own folder where it stays.
 - **Updates retry a mismatched download once.** An update downloaded while a new build was being published could fail its integrity check ("the hash didn't match"); Photon now re-reads the update list and downloads once more, and still refuses anything that fails twice.
 - **Joining a big group wave starts you muted.** The first two people in a group wave or beam come in with their microphones on; from the third person on, you join muted and tap Unmute when you want to speak.

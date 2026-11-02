@@ -5525,6 +5525,12 @@ impl PhotonApp {
         // THE ERA-MISMATCH HEAL first (bonds.rs): a friend's device advertising an era our chains never held is healed by the lower party, no handshake to wait on; what it takes, the ordinary repair below leaves alone.
         let mut healed: Vec<crate::types::friendship::FriendshipId> = Vec::new();
         for (fid, device, tag) in era_heals_after {
+            // A GROUP's era advert has its own heal (molecules.rs): the bond heal below only knows a contact's friendship or bond.
+            if self.friendship_chains.iter().any(|(id, c)| *id == fid && c.molecule) {
+                self.heal_group_era_fork(fid, device, tag);
+                healed.push(fid);
+                continue;
+            }
             let friends_device = self.contacts.iter().any(|c| !c.is_sibling && c.knows_device(&device) && (c.friendship_id == Some(fid) || self.bond_chains_id(c) == Some(fid)));
             if friends_device && self.heal_era_mismatch(fid, tag) {
                 healed.push(fid);

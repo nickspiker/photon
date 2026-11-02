@@ -135,6 +135,14 @@ Theirs: Arrived → Parked (a woven strand is missing: pull it from the sender, 
 | A device that slept thru a mint | — | "Catching up" until its wrap opens. |
 | A sponsor holding a stale offer | — | The offer refreshes in place, or expires with the sponsor. |
 
+
+**One era per index, everywhere (2026-11-01).** Emma and Brittany's group held two era-1 roots: two of the sponsor's devices each answered one Join and minted their own era, the joiner kept whichever wrap landed last, and the sponsor's fleet broke the tie by each device's own cutover clock — so each side dropped the other's frames for good, and a group's era advert reached no repair at all.
+Three rules now hold:
+- Two roots at one index in one lineage: the LOWER root wins, on every device (`FriendshipChains::era_superseded_by` for molecule chains; genesis clocks no longer decide).
+- A second answer to our Join (`install_bind_wrap`) never replaces an era we hold at a higher index, or at the same index under a lower root.
+- A standing member's device advertising an era of the group we never held is a fork: the lowest standing party, on one device of its fleet, mints a fresh era WHOLE past every index seen and delivers it over each member's bond (`heal_group_era_fork`); both sides install it pending and cut over on its first frame, and the minter cuts over on the first bond ACK (re-sending held rows thru `after_molecule_cutover`). Once per (group, advertised tag).
+Still open: a member we never friended has no bond to carry the heal; and the Join is still answered by whichever sponsor device acts — naming the sponsor's device in the Join would stop the second mint at its source (a wire change).
+
 ### 10.5 Screens
 
 - **Ready list.** Molecule rows beside contact rows, one list, sorted by recency of activity ("frecency"). Ring by phase: dashed while Joining, solid when Standing, grey when Left; unread ring as today. Avatar = composite of standing members' gradients.

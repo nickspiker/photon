@@ -628,6 +628,13 @@ impl PhotonApp {
             return;
         }
         let (root, hk) = (<[u8; 32]>::try_from(&secret[..32]).unwrap(), <[u8; 32]>::try_from(&secret[32..]).unwrap());
+        // A SECOND ANSWER to our Join (2026-11-01, Brittany: two of Emma's devices answered, each with its own era 1, and the last to land replaced the first): an era we already hold at a higher index, or at the same index under a lower root, stands — the lower root wins on every device (era_superseded_by), so we keep the one the sponsor's fleet converges on.
+        if let Some((held_era, held_root)) = self.friendship_chains.iter().find(|(id, _)| *id == fid).and_then(|(_, c)| Some((c.era_index, *c.lane_root()?))) {
+            if held_era > w.era || (held_era == w.era && held_root <= root) {
+                crate::logf!("MOLECULE: a second join answer for {} (era {}, root {}) — the era we hold (era {}, root {}) stands", hex::encode(&gid.0[..4]), w.era, hex::encode(&root[..4]), held_era, hex::encode(&held_root[..4]));
+                return;
+            }
+        }
         let kems: Vec<crate::crypto::era::EraDecapKeys> = self.friendship_chains.iter().find(|(id, _)| *id == fid).map(|(_, c)| c.molecule_kems().to_vec()).unwrap_or_default();
         let mut chains = crate::types::FriendshipChains::from_molecule_root(gid, &offer.snapshot.standing(), root, hk, w.era, w.era_lineage);
         chains.set_molecule_kems(kems);
@@ -776,6 +783,53 @@ impl PhotonApp {
 
     /// Is THIS the one device of our fleet that acts on an event every device of ours sees (a join over a bond, a group's leave or cadence)?
     /// For a friend's event it is our fleet's ceremony owner for them (§4.2) while that owner is present; otherwise, and for a group-wide event, the lowest device key among ours that are online.
+    /// THE GROUP ERA HEAL (2026-11-01, Emma and Brittany: one group held two era-1 roots, each side dropping the other's frames for good — a group advert reached no repair at all): a standing member's device advertising an era of this group we never held is a fork. The group's lowest standing party, on one device of its fleet, mints a fresh era WHOLE past every index seen and delivers it over each member's bond (`on_era_delivery` takes a whole era from any standing member); both sides of the fork install it as pending and cut over on its first frame, so the group converges whichever root each held. Once per (group, advertised tag). A member we never friended has no bond to carry it — it follows when a friend's frame on the new era reaches it thru the group.
+    pub(super) fn heal_group_era_fork(&mut self, fid: crate::types::FriendshipId, device: [u8; 32], tag: u32) {
+        let gid = MoleculeId(fid.0);
+        let Some(standing) = self.molecule_rosters.iter().find(|(g, _)| *g == gid).map(|(_, r)| r.standing()) else {
+            return;
+        };
+        let member = self.contacts.iter().any(|c| !c.is_sibling && c.knows_device(&device) && standing.contains(&c.handle_hash));
+        if !member || self.chains_know_era(fid, tag) {
+            return;
+        }
+        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let Some(us) = us.filter(|u| standing.first() == Some(u)) else {
+            return; // the lowest standing party heals; everyone else takes what it delivers
+        };
+        if !self.fleet_device_acts(None) || !self.era_heals.insert((fid, tag, 0)) {
+            return;
+        }
+        let Some((era, lineage)) = self.friendship_chains.iter().find(|(id, _)| *id == fid).map(|(_, c)| (c.era_index, c.era_lineage)) else {
+            return;
+        };
+        let peer_index = self.peer_era_seen.iter().filter(|((f, _), _)| *f == fid).map(|(_, (idx, _))| *idx).max().unwrap_or(0);
+        let next = era.max(peer_index) + 1;
+        let (root, hk): ([u8; 32], [u8; 32]) = (rand::random(), rand::random());
+        if let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid) {
+            chains.install_pending(crate::types::friendship::PendingEra { era_index: next, lane_root: root, history_key: Some(hk), tag: crate::crypto::clutch::era_tag(&root), resp_osc: None });
+        }
+        self.pending_minter.insert(fid, us);
+        self.persist_chains_async(&fid);
+        let mut secret = Vec::with_capacity(64);
+        secret.extend_from_slice(&root);
+        secret.extend_from_slice(&hk);
+        let nonce: [u8; 32] = rand::random();
+        let wire = crate::network::message_package::MoleculeWire { from: us, woven_authors: Vec::new(), blob: None, wrap: None, deliver: Some(crate::network::message_package::EraDeliveryWire { conversation: fid.0, era: next, era_lineage: lineage, nonce, secret }) };
+        let members: Vec<usize> = (0..self.contacts.len()).filter(|&ci| !self.contacts[ci].is_sibling && self.contacts[ci].handle_hash != us && standing.contains(&self.contacts[ci].handle_hash)).collect();
+        let mut sent = 0usize;
+        for ci in members {
+            let ts = crate::network::time_base::stamp_osc();
+            if self.bond_transmit_with(ci, ts, None, Some(&wire), &crate::types::RowControl::Molecule(MoleculeSignal::Deliver)) {
+                sent += 1;
+            }
+            if let Some(bfid) = self.bond_fid_of(ci) {
+                self.deliveries_in_flight.push((bfid, ts, fid));
+            }
+        }
+        crate::logf!("MOLECULE: {} holds a fork — device {} is on era#{:08x}, which we never held; era#{} minted WHOLE and delivered over {} member bond(s), so both sides converge on it", hex::encode(&gid.0[..4]), crate::fp(&device), tag, next, sent);
+    }
+
     pub(super) fn fleet_device_acts(&self, ci: Option<usize>) -> bool {
         let Some(ours) = self.device_keypair.as_ref().map(|k| *k.public.as_bytes()) else {
             return false;

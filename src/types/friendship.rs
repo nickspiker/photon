@@ -1421,6 +1421,10 @@ impl FriendshipChains {
         if self.era_lineage == other.era_lineage && self.era_index != other.era_index {
             return other.era_index > self.era_index;
         }
+        // TWO MINTS OF ONE GROUP ERA (2026-11-01, Emma and Brittany: two of the sponsor's devices each answered a Join and minted era 1 — 256da35c and f6e94668 — and each side dropped the other's frames for good): the lower root wins, a fact every member and every sibling computes alike. genesis_osc is each device's own cutover clock and picks differently on each side.
+        if self.molecule && self.era_lineage == other.era_lineage {
+            return other.lane_root < self.lane_root;
+        }
         if self.genesis_osc != other.genesis_osc {
             return other.genesis_osc > self.genesis_osc;
         }
@@ -2932,6 +2936,19 @@ mod tests {
         assert_eq!(holder.era_index, 1);
         assert_eq!(holder.lane_root(), ratcheted.lane_root());
         assert!(holder.retired_era().is_some(), "the era it held is retired, not destroyed");
+    }
+
+    /// TWO MINTS OF ONE GROUP ERA (2026-11-01, Emma and Brittany): the same index in the same lineage under two roots — the lower root wins on every device, whichever cut over first by its own clock.
+    #[test]
+    fn a_group_era_fork_resolves_to_the_lower_root_everywhere() {
+        let gid = crate::types::molecule::MoleculeId([5u8; 32]);
+        let lineage = [9u8; 32];
+        let mut low = FriendshipChains::from_molecule_root(gid, &[[1u8; 32], [2u8; 32]], [0x25u8; 32], [1u8; 32], 1, lineage);
+        let mut high = FriendshipChains::from_molecule_root(gid, &[[1u8; 32], [2u8; 32]], [0xf6u8; 32], [2u8; 32], 1, lineage);
+        low.genesis_osc = 2_000;
+        high.genesis_osc = 1_000;
+        assert!(high.era_superseded_by(&low), "the lower root wins although its cutover clock is later");
+        assert!(!low.era_superseded_by(&high));
     }
     #[test]
     fn fresh_ceremony_supersede_keeps_the_new_lanes_when_both_eras_are_index_zero() {
