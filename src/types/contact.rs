@@ -1141,6 +1141,19 @@ impl Contact {
         crate::network::traverse::gather::gather_peer_candidates(self).best_pair()
     }
 
+    /// [`race_addrs`](Self::race_addrs) for ONE device of the contact (2026-11-01, Nick's Pixel: 137 file asks addressed to Emma's 8b29d719 went to the contact's address and her Linux box answered them): that device's own candidates, the punch-validated path leading only when it is one of this device's addresses. A pinned device we know no endpoint for falls back to the contact's pair, which is the pinned device's by origin; any other device with no endpoint has no address.
+    pub fn race_addrs_for(&self, device: &[u8; 32]) -> Option<(SocketAddr, Option<SocketAddr>)> {
+        let canon = |a: SocketAddr| SocketAddr::new(a.ip().to_canonical(), a.port());
+        let own: Vec<SocketAddr> = crate::network::traverse::gather::gather_device_candidates(self, device).sorted().into_iter().map(|c| canon(c.addr)).collect();
+        if own.is_empty() {
+            return if self.device_key() == Some(*device) { self.race_addrs() } else { None };
+        }
+        if let Some(v) = self.validated_path.map(|(v, _)| canon(v)).filter(|v| own.contains(v)) {
+            return Some((v, own.iter().copied().find(|a| *a != v)));
+        }
+        crate::network::traverse::gather::gather_device_candidates(self, device).best_pair()
+    }
+
     /// True once the CLUTCH ceremony is Complete — which is cryptographically impossible unless BOTH parties ran it, so it doubles as the mutual-consent signal ("we each added the other"). Used to gate friend-only behaviour like the direct peer-to-peer avatar exchange.
     pub fn is_mutual(&self) -> bool {
         self.clutch_state == ClutchState::Complete
@@ -1586,6 +1599,21 @@ mod fold_honour_tests {
         );
         assert!(sib.get_slot(&our_pid).is_some());
         assert!(sib.get_slot(&sib.handle_hash).is_some());
+    }
+
+    /// ONE DEVICE, ITS OWN ADDRESS (2026-11-01): the contact's validated path belongs to their OTHER device, so an ask for the pinned device must not go there; each device is reached at its own endpoint.
+    #[test]
+    fn race_addrs_for_aims_at_the_device_not_the_person() {
+        let (pinned, other) = ([7u8; 32], [8u8; 32]);
+        let mut c = Contact::new(HandleText::new("friend"), [0x22; 32], DevicePubkey::from_bytes(pinned));
+        let pinned_at: SocketAddr = "203.0.113.9:4383".parse().unwrap();
+        let other_at: SocketAddr = "198.51.100.7:4383".parse().unwrap();
+        c.endpoint_mut(&pinned).note(pinned_at, AddrSource::Record);
+        c.endpoint_mut(&other).note(other_at, AddrSource::Heard);
+        c.validated_path = Some((other_at, std::time::Instant::now()));
+        assert_eq!(c.race_addrs_for(&pinned).map(|p| p.0), Some(pinned_at), "the pinned device at its own address, not the other device's proven path");
+        assert_eq!(c.race_addrs_for(&other).map(|p| p.0), Some(other_at), "the proven path leads for the device it belongs to");
+        assert_eq!(c.race_addrs_for(&[9u8; 32]), None, "an unknown device has no address");
     }
 }
 

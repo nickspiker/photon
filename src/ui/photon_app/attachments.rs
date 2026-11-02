@@ -331,7 +331,7 @@ impl PhotonApp {
             let Some(recipient_key) = c.device_key() else {
                 return; // nowhere to send a blob without a known device
             };
-            (recipient_key, c.race_addrs(), relay_to, token)
+            (recipient_key, c.race_addrs_for(&recipient_key), relay_to, token)
         };
         let Some((peer_addr, alt_addr)) = addr_pair else {
             return;
@@ -396,7 +396,7 @@ impl PhotonApp {
             let Some(recipient_key) = c.device_key() else {
                 return;
             };
-            (recipient_key, c.race_addrs(), relay_to, token)
+            (recipient_key, c.race_addrs_for(&recipient_key), relay_to, token)
         };
         let Some((peer_addr, alt_addr)) = addr_pair else {
             return;
@@ -518,12 +518,14 @@ impl PhotonApp {
                 continue;
             }
             let primary = c.device_key();
-            if let Some((a, alt)) = c.race_addrs() {
+            // The pinned device at ITS OWN addresses (race_addrs_for): the contact's pair can belong to another of their devices, which then answered an ask meant for this one.
+            if let Some((a, alt)) = primary.and_then(|k| c.race_addrs_for(&k)) {
                 let relay = relay_unless_direct_trusted(&c, crate::network::udp::get_local_ip());
                 if let Some(k) = primary {
                     // The pinned DEVICE's own verdict, not the person's (an offline phone ranked as live because its owner's desktop was up, and took the ask).
                     let up = self.device_online(&k).unwrap_or(c.is_online);
-                    let rank = match (is_friend, up, c.validated_path.is_some()) {
+                    let proven = c.validated_path.is_some_and(|(v, _)| v.ip().to_canonical() == a.ip().to_canonical() && v.port() == a.port());
+                    let rank = match (is_friend, up, proven) {
                         (true, true, true) => 0,
                         (true, true, false) => 1,
                         (false, true, _) => 2,
