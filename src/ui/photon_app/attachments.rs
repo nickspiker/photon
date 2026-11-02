@@ -665,6 +665,18 @@ impl PhotonApp {
         }
     }
 
+    /// Another device answered a ping meant for `pinged`: the address we hold for it is that device's, so an ask aimed at `pinged` that has heard nothing of its blob is over. A device already streaming the blob is never left.
+    pub(super) fn fetch_wrong_responder(&mut self, pinged: &[u8; 32], responder: &[u8; 32]) {
+        let heard = self.attach_heard.get(pinged).copied();
+        for (hash, f) in self.attach_fetch_inflight.iter_mut() {
+            if f.asked != Some(*pinged) || f.ended || f.progressed || heard.is_some_and(|h| h > f.at) {
+                continue;
+            }
+            f.ended = true;
+            crate::logf!("attach: device {} answers at {}'s address — the ask for {}… there is over, asking the next", crate::fp(responder), crate::fp(pinged), hex::encode(&hash[..4]));
+        }
+    }
+
     /// The asked device does not hold the blob: that ask is over (one fruitless ask), and the tick asks the next device.
     pub(super) fn fetch_answered_none(&mut self, hash: &[u8; 32], from: &[u8; 32]) {
         if let Some(f) = self.attach_fetch_inflight.get_mut(hash).filter(|f| f.asked == Some(*from)) {
