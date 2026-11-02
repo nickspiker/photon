@@ -176,10 +176,23 @@ pub struct EngineParams {
     pub cal: Option<CalSnapshot>,
     /// The peer sits on a LAN-class direct path — the ladder may climb past 128 kbps to the raw PCM plaid rung.
     pub plaid_allowed: bool,
+    /// Our own global IPv6 /64s (interfaces + reflexive), so a re-point judges LAN-class by the SAME rule the start did ([`lan_class`]).
+    pub lan_prefixes: Vec<[u16; 4]>,
     /// The far slot this engine captures from and plays into (platform::audio PARTIES): 0 for a 1:1 wave, a claimed slot for a group link.
     pub slot: usize,
     /// A GROUP LINK (docs/group-waves.md): the audio session belongs to the group wave, not this engine, and only the lead link does the session-wide work. `None` = a 1:1 wave, which owns the session and is its own lead.
     pub group: Option<GroupLink>,
+}
+
+/// LAN-CLASS FOR PLAID, ONE RULE for the wave's start and every media re-point (2026-11-01, Nick and Emma's jerky beam: the start counted a global v6 on our own /64 as LAN, the re-point did not, so one side dropped raw PCM and the other kept 768 kbps on a crowded link): private or link-local v4 (mapped or not), link-local or unique-local v6, or a global v6 sharing a /64 with one of ours — one router's prefix, the same room.
+pub fn lan_class(a: SocketAddr, our_v6_64s: &[[u16; 4]]) -> bool {
+    match a.ip().to_canonical() {
+        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
+        std::net::IpAddr::V6(v6) => {
+            let s = v6.segments();
+            (s[0] & 0xffc0) == 0xfe80 || (s[0] & 0xfe00) == 0xfc00 || our_v6_64s.iter().any(|p| p[..] == s[..4])
+        }
+    }
 }
 
 /// What a group link's engine needs beyond a 1:1 wave's.
@@ -430,6 +443,7 @@ fn run(
     let mut peer = params.peer_addr;
     // The plaid gate as the engine LIVES it: seeded by the spawn's read of the initial address, re-evaluated on every media re-point (see "PLAID FOLLOWS THE PATH").
     let mut plaid_allowed = params.plaid_allowed;
+    let lan_prefixes = params.lan_prefixes.clone();
     // seq IS the window id — one datagram per window, no independent counter to drift.
     let mut window_id: u32 = 0;
     // The completed window's repair symbol (tier, bytes), waiting to piggyback on the NEXT window's datagram.
@@ -1181,10 +1195,7 @@ fn run(
                     super::set_slot_tx_addr(far, Some(peer));
                     super::set_media_sink_peer(sink_gen, peer);
                     // PLAID FOLLOWS THE PATH (field 2026-09-14 01:42, Emma/Nick: the answering side's engine started aimed at 0.0.0.0 — "plaid off — not a LAN path" — and stayed off for the whole wave after media re-pointed to the origin's LAN address; the origin ran plaid the other way). The gate is re-evaluated on every re-point: a LAN-class peer arms it, a WAN one disarms it (the ladder's next climb or drop honours the new answer).
-                    let lan = match peer.ip().to_canonical() {
-                        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
-                        std::net::IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80 || (v6.segments()[0] & 0xfe00) == 0xfc00,
-                    };
+                    let lan = lan_class(peer, &lan_prefixes);
                     if lan != plaid_allowed {
                         crate::logf!("WAVE: plaid {} — the path is now {}", if lan { "armed" } else { "off" }, if lan { "LAN-class" } else { "not LAN-class" });
                         plaid_allowed = lan;
@@ -2394,7 +2405,7 @@ mod fill_tests {
         let at = w.append_seq(super::super::spool::RAW_FLAG, stamp(base_frame + 16), Some((2, 0)), &[8; RAW_FRAME_BYTES]).unwrap();
         index.push_back(SentFrame { seq: 2, slot: 0, tier: RAW_TIER as u8, at });
         drop(w);
-        let params = EngineParams { secret: [0; 32], we_are_origin: true, peer_addr: "127.0.0.1:1".parse().unwrap(), spool: Some((key, path.clone())), cal: None, plaid_allowed: false, slot: 0, group: None };
+        let params = EngineParams { secret: [0; 32], we_are_origin: true, peer_addr: "127.0.0.1:1".parse().unwrap(), spool: Some((key, path.clone())), cal: None, plaid_allowed: false, lan_prefixes: Vec::new(), slot: 0, group: None };
         let mut reader = None;
         let (t, fno, win) = serve_window(&params, &mut reader, &index, 1).unwrap();
         assert_eq!(t, 0);
@@ -2417,6 +2428,19 @@ mod fill_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// ONE LAN RULE (2026-11-01): the start and the re-point both call lan_class, so a global v6 on our own /64 is LAN on both ends of the decision; another /64, or a public v4, is not.
+    #[test]
+    fn lan_class_counts_our_own_v6_prefix_and_private_ranges() {
+        let ours = [[0x2600, 0x100f, 0xa022, 0x802a]];
+        let a = |s: &str| s.parse::<SocketAddr>().unwrap();
+        assert!(lan_class(a("[2600:100f:a022:802a::5]:4383"), &ours), "a global v6 on our /64");
+        assert!(!lan_class(a("[2600:100f:a020:deec::9]:4383"), &ours), "another /64");
+        assert!(lan_class(a("192.168.1.2:4383"), &[]), "private v4");
+        assert!(lan_class(a("[::ffff:192.168.1.2]:4383"), &[]), "mapped private v4");
+        assert!(lan_class(a("[fe80::1]:4383"), &[]) && lan_class(a("[fd00::1]:4383"), &[]), "link-local and unique-local v6");
+        assert!(!lan_class(a("97.7.22.8:4383"), &ours), "public v4");
+    }
 
     /// Josh's wave (2026-10-29): a mic running raw ~4000 under the 8× opening makeup put ~32000 on the wire; the guard drops the makeup to 1:1 in one step, leaves a normal mic and an unboosted one alone, and only trims a shout to the target.
     #[test]

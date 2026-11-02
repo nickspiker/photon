@@ -730,6 +730,7 @@ impl PhotonApp {
             spool: spool_param,
             cal: self.cal_snapshot(),
             plaid_allowed: self.is_lan_for_plaid(addr),
+            lan_prefixes: self.our_v6_prefixes(),
             slot,
             group: Some(crate::wave::engine::GroupLink { lead: lead.clone(), slot_gen, tx: group_tx }),
         });

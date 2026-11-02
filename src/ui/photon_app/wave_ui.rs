@@ -2354,6 +2354,7 @@ impl PhotonApp {
             spool: spool_param,
             cal: self.ringback_seeded_cal(),
             plaid_allowed: self.is_lan_for_plaid(addr),
+            lan_prefixes: self.our_v6_prefixes(),
             slot: 0,
             group: None,
         });
@@ -2364,13 +2365,23 @@ impl PhotonApp {
 
     /// LAN for the plaid gate (Nick 2026-09-13: "waves haven’t been switching to plaid"): the waves connect on the router's GLOBAL IPv6 even in the same room, so the private-v4-only test never armed plaid. Same rule as the wave screen's cyan ring — private/link-local v4, ULA/link-local v6, or a global v6 on OUR OWN /64.
     pub(super) fn is_lan_for_plaid(&self, a: std::net::SocketAddr) -> bool {
-        if is_lan_addr(a) {
-            return true;
+        crate::wave::engine::lan_class(a, &self.our_v6_prefixes())
+    }
+
+    /// Our global IPv6 /64s: every interface's (getifaddrs) and the reflexive's — what [`crate::wave::engine::lan_class`] compares a peer against, at the start and on every re-point.
+    pub(super) fn our_v6_prefixes(&self) -> Vec<[u16; 4]> {
+        let mut out: Vec<[u16; 4]> = Vec::new();
+        let ours = crate::network::udp::own_interface_addrs().into_iter().map(|a| a.ip).chain(self.our_reflexive.map(|o| o.ip().to_canonical()));
+        for ip in ours {
+            if let std::net::IpAddr::V6(v6) = ip {
+                let s = v6.segments();
+                let p = [s[0], s[1], s[2], s[3]];
+                if !out.contains(&p) {
+                    out.push(p);
+                }
+            }
         }
-        match (a.ip().to_canonical(), self.our_reflexive.map(|o| o.ip().to_canonical())) {
-            (std::net::IpAddr::V6(v6), Some(std::net::IpAddr::V6(ours))) => ours.segments()[..4] == v6.segments()[..4],
-            _ => false,
-        }
+        out
     }
 
     /// The engine's calibration seed: the stored voice profile, with the ringback probe's floor standing in only when nothing is stored (the probe measures the room while nobody talks, so it has no voiced level to give).
@@ -2400,14 +2411,3 @@ impl PhotonApp {
     }
 }
 
-/// A LAN-class direct address: RFC 1918 / link-local IPv4, or link-local / unique-local IPv6 — the plaid rung's licence (raw PCM only where bandwidth is free and the path is one hop of radio).
-#[allow(dead_code)]
-fn is_lan_addr(a: std::net::SocketAddr) -> bool {
-    match a.ip() {
-        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
-        std::net::IpAddr::V6(v6) => {
-            let seg = v6.segments();
-            (seg[0] & 0xffc0) == 0xfe80 || (seg[0] & 0xfe00) == 0xfc00 || v6.to_ipv4_mapped().is_some_and(|v4| v4.is_private() || v4.is_link_local())
-        }
-    }
-}
