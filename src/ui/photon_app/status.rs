@@ -469,6 +469,7 @@ impl PhotonApp {
         // Friend folds proven stale by a ForeignResponder (an unknown device answered for one of their devices): refreshed after the drain.
         let mut stale_folds_after: Vec<[u8; 32]> = Vec::new();
         let mut wrong_responders_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
+        let mut self_atom_wanted_after = false;
         // Wi-Fi Direct credential provisioning, collected on came-online edges (after releasing the checker borrow): the elected-GO side mints/re-offers the pair's group credential once per session (docs/offgrid.md).
         // Wi-Fi Direct beacon answer-back target, collected on the p2p learn edge (the reply teaches the peer OUR group address).
         let mut wfd_beacon_reply: Option<std::net::SocketAddr> = None;
@@ -4586,6 +4587,15 @@ impl PhotonApp {
                     // Gating it on a contact dropped every fleet copy of every group row (field 2026-10-25: a sibling's checkpoint moved the lane past a live frame, and the page that carried the row died here, so the row never landed on that device).
                     // …and a page from a MEMBER of the group, friend or not (docs/conversations.md Phase 2: history recovery reaches molecules), merged from their side in drain_history_pages.
                     let group = self.molecule_rosters.iter().find(|(g, _)| g.token() == conversation_token).map(|(g, _)| *g);
+                    // THE SELF ATOM ON DEMAND (2026-11-02, Nick's reset Pixel: "my Self atom disappeared" — 80 sibling pages for it dropped as "token resolves to no contact"): a device founds the self atom only when it holds a row, and a device that holds none never got one, because the pages that carry them were dropped for want of the atom. A sibling's page for its token proves the fleet holds rows: the atom is founded after this pass (the same atom every device derives from the identity seed), and the sibling's next re-serve lands.
+                    if from_sibling && group.is_none() {
+                        if let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+                            let self_gid = crate::types::molecule::MoleculeId(*crate::types::Conversation::new([us]).id().as_bytes());
+                            if self_gid.token() == conversation_token {
+                                self_atom_wanted_after = true;
+                            }
+                        }
+                    }
                     let molecule_page = group.is_some_and(|gid| from_sibling || super::molecules::group_member_of(&self.contacts, &self.molecule_peers, &self.molecule_rosters, &gid, &sender_pubkey.key).is_some());
                     let routable = contact_idx.is_some() || molecule_page;
                     if key.is_none() || !routable {
@@ -5614,6 +5624,14 @@ impl PhotonApp {
             self.rekey_without_chains(ci);
         }
 
+        // The self atom a sibling's page asked for (see THE SELF ATOM ON DEMAND): founded now, empty, exactly as every device of ours derives it — the sibling's next re-serve fills it.
+        if self_atom_wanted_after {
+            if let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+                if self.found_self_atom(crate::types::Conversation::new([us])).is_some() {
+                    crate::log("MOLECULE: a sibling holds rows of the conversation with only us in it — its atom is founded here to take them");
+                }
+            }
+        }
         for (pinged, responder) in wrong_responders_after {
             self.fetch_wrong_responder(&pinged, &responder);
         }
