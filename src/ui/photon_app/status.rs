@@ -5119,6 +5119,10 @@ impl PhotonApp {
                     if demotes {
                         crate::logf!("TRAVERSE: LAN echo {} does not unseat our public reflexive", addr);
                     } else if self.our_reflexive != Some(addr) {
+                        // The other family's public address is still ours: it moves to the second slot rather than being forgotten.
+                        if let Some(held) = self.our_reflexive.filter(|h| h.is_ipv4() != addr.is_ipv4() && !crate::network::traverse::is_lan_scope(h)) {
+                            self.our_reflexive_other = Some(held);
+                        }
                         self.our_reflexive = Some(addr);
                         crate::logf!("TRAVERSE: our reflexive address = {}", addr);
                         // The re-publish happens in tick, not here: this arm sits inside a borrow of `status_checker`, and publishing also needs `handle_proof`, which can arrive AFTER the first reflexive echo. Comparing against `self_record_published_for` there makes it idempotent and self-retrying instead of a one-shot that could fire too early.
@@ -5159,6 +5163,7 @@ impl PhotonApp {
                         // A MOVE (not the first learn): the reflexive we hold describes the network we left. Forget it here and in the receive loop, so nothing republishes a dead public address; the next pong from any peer relearns it.
                         if moved {
                             self.our_reflexive = None;
+                            self.our_reflexive_other = None;
                             crate::network::traverse::request_reflexive_reset();
                         }
                         // A move — or the FIRST learn after a network change wiped everything (18:51: the flip cleared our_lan_ip, so the new interface's address read as a first learn, not a move, and the reseed edge never fired) — re-asks FGTW while we hold nothing public.

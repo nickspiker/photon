@@ -97,6 +97,7 @@ impl PhotonApp {
         };
         let local = local_ip; // the same beacon-first LAN value the signed record carries — the seed must never publish a WORSE address than gossip does
         let local_port = self.handle_query.as_ref().map_or(0, |hq| hq.port());
+        let reflexive_other = self.our_reflexive_other;
         crate::network::http::runtime().spawn(async move {
             let me = fgtw::pq::FleetSigner::keypair(&signer).public.to_bytes();
             let mask = crate::network::fgtw::fleet::declared_mask(&hp, &me);
@@ -110,7 +111,7 @@ impl PhotonApp {
                 ),
             }
             // EVERY address we have, as one signed set beside the record above (docs/addresses.md stages 2 and 3): the public address peers saw, the beacon-proven LAN address, and every interface's own — two or four v6 on a v6 network, which the single record has no room for.
-            let entries = own_address_set(addr, local, local_port);
+            let entries = own_address_set(addr, reflexive_other, local, local_port);
             match crate::network::fgtw::phonebook_client::publish_address_set(&signer, mask, &hp, &entries).await {
                 Ok(()) => crate::logf!("PHONEBOOK: address set published to the seed registry ({} address(es))", entries.len()),
                 Err(e) => crate::logf!("PHONEBOOK: address set publish failed ({})", e),
@@ -458,10 +459,10 @@ impl PhotonApp {
     }
 }
 
-/// Every address this device can be reached at, as the set it publishes (docs/addresses.md stage 2): `reflexive` (where peers saw us), the beacon-proven `lan` address, then each interface's own address at our listening `port`, v4 before v6.
+/// Every address this device can be reached at, as the set it publishes (docs/addresses.md stage 2): `reflexive` (where peers saw us) and the other family's `reflexive_other`, the beacon-proven `lan` address, then each interface's own address at our listening `port`, v4 before v6.
 /// Interface addresses go only when the port is known (0 = no listener yet): an address without the port we listen on is not somewhere a peer can reach us.
 /// At most `ADDRESS_SET_MAX`, the most useful first — every reader refuses a larger set.
-fn own_address_set(reflexive: std::net::SocketAddr, lan: Option<std::net::IpAddr>, port: u16) -> Vec<fgtw::phonebook::SetAddr> {
+fn own_address_set(reflexive: std::net::SocketAddr, reflexive_other: Option<std::net::SocketAddr>, lan: Option<std::net::IpAddr>, port: u16) -> Vec<fgtw::phonebook::SetAddr> {
     use fgtw::phonebook::{AddrKind, SetAddr};
     let now = vsf::eagle_time_oscillations();
     let canon = |a: std::net::SocketAddr| std::net::SocketAddr::new(a.ip().to_canonical(), a.port());
@@ -472,6 +473,10 @@ fn own_address_set(reflexive: std::net::SocketAddr, lan: Option<std::net::IpAddr
             out.push(SetAddr { addr, kind, seen: now });
         }
     };
+    // The other family's public address (a dual-stack device's v4 mapping beside its v6, or the reverse).
+    if let Some(o) = reflexive_other {
+        push(o, AddrKind::Reflexive);
+    }
     if port != 0 {
         if let Some(ip) = lan {
             push(std::net::SocketAddr::new(ip, port), AddrKind::Interface);

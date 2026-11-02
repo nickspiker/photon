@@ -2847,6 +2847,8 @@ pub struct PhotonApp {
 
     /// This node's own reflexive (public) address, learned via peer-echoed reflection (see [`crate::network::traverse::reflexive`]). `None` until the first signed pong / `ReflectResponse` echo. Fed forward to candidate gathering and the FGTW announce so our published address is the one seen on the live UDP data socket — not fgtw.org's TLS-flow `cf-connecting-ip`, which is only right for cone NATs.
     our_reflexive: Option<std::net::SocketAddr>,
+    /// The last PUBLIC reflexive of the other family than `our_reflexive` (docs/addresses.md stage 2): a dual-stack device is reachable at a v4 mapping and a v6 address at once, and the one slot kept whichever echo came last. Published in the address set beside it; cleared with it on a network change.
+    our_reflexive_other: Option<std::net::SocketAddr>,
     /// Stop flag of the live port-mapping worker (see `start_portmap`); a LAN move retires it and starts one for the new gateway.
     portmap_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// This node's own LAN address, learned from our OWN looped-back discovery beacon (its source is kernel truth for the interface the beacon left on). The LAN counterpart of `our_reflexive`, and the record's LAN slot prefers it over `get_local_ip` — the routing trick asks which interface reaches the INTERNET, which on a phone routing internet over cellular names the CLAT/CGNAT interface while the Wi-Fi holds the real LAN address (the published record then carried no LAN entry and the peer parked on relay, 2026-08-11).
@@ -2899,6 +2901,7 @@ impl PhotonApp {
             hit_counter: 0,
             event_proxy: None,
             our_reflexive: None,
+            our_reflexive_other: None,
             portmap_stop: None,
             our_lan_ip: None,
             self_record_published_for: None,

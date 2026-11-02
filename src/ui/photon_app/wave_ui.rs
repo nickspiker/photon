@@ -788,6 +788,7 @@ impl PhotonApp {
         self.our_lan_ip = None;
         self.our_lan_ips.clear();
         self.our_reflexive = None;
+        self.our_reflexive_other = None;
         self.self_record_published_for = None;
         crate::network::traverse::request_reflexive_reset();
         if let Some(checker) = self.status_checker.as_ref() {
