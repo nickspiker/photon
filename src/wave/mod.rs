@@ -30,6 +30,7 @@ pub mod beam_hdr;
 pub mod beam_settings;
 pub mod beam_colour;
 pub mod beam_keep;
+pub mod replay_video;
 pub mod beam_session;
 pub mod beam_calibrate;
 pub mod h264;

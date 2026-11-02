@@ -41,6 +41,10 @@ pub(crate) struct WaveReplay {
     pub face_diam: usize,
     /// The scrub bar's left and right edges on screen, for the tap-to-seek.
     pub bar: (f32, f32),
+    /// The wave's kept beam, decoding in step with the audio (wave/replay_video.rs) — only when beam video was saved and is held here.
+    pub video: Option<crate::wave::replay_video::ReplayVideo>,
+    /// The recording's first moment (Eagle oscillations): what the playhead's slot is measured from.
+    pub base_osc: i64,
 }
 
 /// Where everything sits: the Back pill, the title line, the stage the tiles divide, the bar and the Play pill.
@@ -122,8 +126,19 @@ impl PhotonApp {
             _ => String::new(),
         };
         let total = self.wave_playback.as_ref().map_or(0, |p| p.total);
+        let base_osc = self.wave_playback.as_ref().map_or(0, |p| p.base_osc);
+        // THE WAVE'S KEPT BEAM (saved only when the user turned it on): the BeamVideo row against the same wave row, decoding on its own worker once it is held here.
+        let video = conv.and_then(|id| self.conv_by_id(id)).and_then(|v| {
+            let wave_ts = v.messages.iter().find(|m| m.file.as_ref().is_some_and(|f| f.hash == hash)).and_then(|m| match m.reference {
+                Some((crate::types::RefKind::Wave, t)) => Some(t),
+                _ => None,
+            })?;
+            v.messages.iter().find(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == wave_ts) && m.file.as_ref().is_some_and(|f| f.role == crate::types::AttachRole::BeamVideo)).and_then(|m| m.file.as_ref().map(|f| f.hash))
+        });
+        // Presence from the cache only (the UI thread makes no vault call): a blob not yet known here is the worker's to find, and its load says so if it is missing.
+        let video = video.filter(|h| crate::storage::blob_present_known(h) != Some(false)).and_then(|h| self.session.as_ref().and_then(|s| crate::wave::replay_video::ReplayVideo::start(s.identity_seed, h)));
         let n = voices.len();
-        self.wave_replay = Some(WaveReplay { hash, title, voices, muted: vec![false; n], paused_at: None, total, faces: Vec::new(), face_diam: 0, bar: (0.0, 0.0) });
+        self.wave_replay = Some(WaveReplay { hash, title, voices, muted: vec![false; n], paused_at: None, total, faces: Vec::new(), face_diam: 0, bar: (0.0, 0.0), video, base_osc });
         crate::logf!("WAVE: replaying {}… — {} voice(s)", hex::encode(&hash[..4]), n);
         self.scene_dirty = true;
     }
@@ -295,12 +310,28 @@ pub(super) fn draw_replay(
     restamp_hit_rect(hit_map, buf_w, buf_h, bx0 as isize, (by + bh * 0.5 - unit * 0.5) as isize, bx1 as isize, (by + bh * 0.5 + unit * 0.5) as isize, base + SLOT_BAR);
     rp.bar = (bx0, bx1);
 
+    // The kept beam follows the audio: the moment the playhead has reached, as slots of 10 ms from the recording's first moment.
+    if let Some(v) = rp.video.as_ref() {
+        v.set_moment(rp.base_osc + pos as i64 * (vsf::OSCILLATIONS_PER_SECOND / 100) as i64);
+    }
     // The stage: one tile per voice, the live group screen's grid.
     let tiles = super::wave_field::face_tiles(g.stage, rp.voices.len(), unit);
     let now_fno = vsf::grid::eagle_to_sample(crate::network::time_base::now_osc()).div_euclid(crate::wave::align::FRAME);
     for (k, (v, ((tx, ty, tw, th), (fx, fy, fr)))) in rp.voices.iter().zip(tiles).enumerate() {
         let muted = rp.muted.get(k).copied().unwrap_or(false);
         let name_style = TextStyle::new(unit * 0.55, if muted { *theme::LABEL_COLOUR } else { v.tint });
+        // Their camera, when the kept beam has a picture of it by now: it fills the tile, the name at its foot, as the live group screen draws a beaming member.
+        if let Some(pic) = rp.video.as_ref().and_then(|vid| vid.picture_of(&v.party)) {
+            text.draw_text_center(canvas, &v.name, (tx + tw / 2) as f32, (ty + th) as f32 - unit * 0.6, &name_style, None, None);
+            // A quarter unit in from each tile edge, so neighbouring frames read as separate frames.
+            let gp = (unit / 4.0) as usize;
+            // WHY/PROOF: a tile on a tiny window can be narrower than its two margins — the plain subtraction would wrap and the blit run past the buffer; the frame then has no size and paints nothing.
+            super::wave_field::paint_picture_rect(canvas, tx + gp, ty + gp, tw.saturating_sub(2 * gp), th.saturating_sub(2 * gp), &pic, false);
+            if k < MAX_TILES {
+                restamp_hit_rect(hit_map, buf_w, buf_h, tx as isize, ty as isize, (tx + tw) as isize, (ty + th) as isize, base + SLOT_TILES + k as HitId);
+            }
+            continue;
+        }
         text.draw_text_center(canvas, &v.name, fx, fy + fr + unit * 0.75, &name_style, None, None);
         if muted {
             text.draw_text_center(canvas, &tr(Msg::WaveUnmute), fx, fy + fr + unit * 1.4, &TextStyle::new(unit * 0.45, *theme::LABEL_COLOUR), None, None);

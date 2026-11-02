@@ -675,6 +675,8 @@ pub struct KeptStream {
     /// The fine envelope from the container header (`nchan × env_len × ENV_COMPONENTS`, eighth-stops).
     pub envelope: Vec<u8>,
     pub env_per_sec: u8,
+    /// The recording's first moment, Eagle oscillations (the container header's base).
+    pub base_osc: i64,
     inner: Inner,
 }
 
@@ -844,7 +846,9 @@ pub fn open_blob(bytes: &[u8]) -> Option<KeptStream> {
         decs: (0..nchan).map(|_| mono_decoder()).collect::<Option<_>>()?,
         subs,
     };
-    Some(KeptStream { nchan, total, envelope, env_per_sec, inner })
+    // The recording's first moment (Eagle oscillations): archive slot k plays what happened at base + k × 10 ms — the clock a kept beam's video follows on replay.
+    let base_osc = i64::from_le_bytes(bytes[8 + 5..8 + 13].try_into().ok()?);
+    Some(KeptStream { nchan, total, envelope, env_per_sec, base_osc, inner })
 }
 
 /// Frames decoded-and-discarded ahead of a seek target so the stateful codec has converged by the time audible output starts (Opus pre-roll is ~80 ms; this is generous).

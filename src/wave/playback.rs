@@ -28,6 +28,8 @@ pub struct PlaybackHandle {
     pub envelope: Vec<u8>,
     pub env_per_sec: u8,
     pub nchan: usize,
+    /// The recording's first moment (Eagle oscillations): slot k is base + k × 10 ms — what a kept beam's video follows on replay.
+    pub base_osc: i64,
     /// Each channel's band powers in the frame just queued (total, red, green, blue — `LiveBands::frame_powers`, the live wave's own measure), so the replayed wave screen rings each person exactly as a live wave would (Nick 2026-11-01: "wave screen replayed").
     levels: Arc<std::sync::Mutex<Vec<[f32; crate::wave::record::ENV_COMPONENTS]>>>,
     /// Channels left out of the mix, one bit per channel (bit k = channel k): a person muted on the replay screen. A recording of more than 64 voices plays the rest unmutable.
@@ -108,6 +110,7 @@ fn spawn(stream: KeptStream, skip: usize) -> Option<PlaybackHandle> {
     let envelope = stream.envelope.clone();
     let env_per_sec = stream.env_per_sec;
     let nchan = stream.nchan;
+    let base_osc = stream.base_osc;
     let flag = stop.clone();
     let done_flag = done.clone();
     let pos_w = pos.clone();
@@ -134,7 +137,7 @@ fn spawn(stream: KeptStream, skip: usize) -> Option<PlaybackHandle> {
         crate::platform::audio::stop();
         return None;
     }
-    Some(PlaybackHandle { stop, done, pos, seek, total, envelope, env_per_sec, nchan, levels, muted })
+    Some(PlaybackHandle { stop, done, pos, seek, total, envelope, env_per_sec, nchan, base_osc, levels, muted })
 }
 
 fn run(mut stream: KeptStream, stop: &AtomicBool, skip: usize, pos: &std::sync::atomic::AtomicUsize, seek: &std::sync::atomic::AtomicUsize, levels: &std::sync::Mutex<Vec<[f32; crate::wave::record::ENV_COMPONENTS]>>, muted: &std::sync::atomic::AtomicU64) {
