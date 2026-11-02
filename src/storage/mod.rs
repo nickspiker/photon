@@ -207,9 +207,41 @@ pub fn set_device_flag(key: &str, on: bool) {
 /// THE CENSUS (Nick's rule, sharpened 2026-08-20): a file in the primary or secondary photon dir either matches `<device token>.vsf` or the log, or it is DELETED — no backups, no folding, no conversion, no exceptions. File-era artifacts (device_binding.vsf, opt-in markers, reboot capsule, blobs/, settings.vsf) die here with everything else: flags and bindings re-arm thru their live vault paths; sealed file content nothing can re-key is dead. Name-independent sweep, so the next stray CLASS never needs its own line. Runs once per process at first device-vault open.
 /// Desktop only: on Android `photon_config_dir` is the app-private files ROOT, which the OS and the JNI layer also write into — sweeping unknown names there would eat platform files; the sandbox already isolates it.
 fn census_sweep(device_secret: &[u8; 32]) {
+    // Android: the files root belongs to the OS too, but the `photon/` subdirectory under each ring dir holds nothing but vault rings, so the census runs there (Nick 2026-11-02: wipe old fragments by default).
+    // Kept: this root's ring, and the legacy ANDROID_ID root's ring while the ANDROID ROOT CONVERSION PIN stands (delete at v168), because a move interrupted before the old ring went is finished from it at the next start.
     #[cfg(target_os = "android")]
-    // WHY: not a Result — Android has no census, so this only marks the param used there.
-    let _ = device_secret;
+    {
+        let mut keep: Vec<String> = Vec::new();
+        let ring = tohu::device_vault_path_name(APP.id, device_secret);
+        keep.push(format!("{}.vsf", ring));
+        if let Ok(legacy) = tohu::device::android_id() {
+            let legacy_ring = tohu::device_vault_path_name(APP.id, &tohu::device::device_secret_from(&legacy));
+            keep.push(format!("{}.vsf", legacy_ring));
+        }
+        let Some((primary, shadow)) = android_vault_dirs() else {
+            return;
+        };
+        let mut targets = vec![std::path::PathBuf::from(primary).join(APP.dir)];
+        if !shadow.is_empty() {
+            let s = std::path::PathBuf::from(shadow).join(APP.dir);
+            if !targets.contains(&s) {
+                targets.push(s);
+            }
+        }
+        for dir in targets {
+            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            for entry in rd.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if keep.iter().any(|k| *k == name) {
+                    continue;
+                }
+                match std::fs::remove_file(entry.path()) {
+                    Ok(()) => crate::logf!("STORAGE: census — {} deleted (the ring dir holds this root's ring and, until v168, the legacy root's; nothing else)", name),
+                    Err(e) => crate::logf!("STORAGE: census — could not remove {}: {}", name, e),
+                }
+            }
+        }
+    }
     #[cfg(not(target_os = "android"))]
     {
         let ring = tohu::device_vault_path_name(APP.id, device_secret);
