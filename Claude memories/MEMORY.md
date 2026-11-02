@@ -53,7 +53,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [Group waves](project_group_waves.md) — BUILT; field test pending · [Group media at any size](project_group_media_scale.md) — 1a+1b+roll BUILT; 2a next
 - [Address sets](project_address_sets.md) — stages 1-3 BUILT; Windows + reflexive split open
 - [Group avatars](project_group_avatars.md) — BUILT 2026-11-02; field test pending
-- [Android Widevine plate](project_android_widevine_plate.md) — 2026-11-02 ROOT = Widevine ‖ signing cert (verified thru a factory reset); legacy ANDROID_ID under CONVERSION PIN until v168; vault+fleet conversion NOT built
+- [Android Widevine plate](project_android_widevine_plate.md) — 2026-11-02 KEY root = Widevine ‖ cert ‖ ANDROID_ID, PLATE = BLAKE3(Widevine ‖ cert) survives a wipe; conversion BUILT (untested on a phone); plate publication NEXT; pin until v168
 - [Security audit](project_security_audit.md) — batch 1 FIXED 2026-11-02; design items await Nick; Mediums next
 - [Group pigeon stuck fetch](project_group_pigeon_stuck_fetch.md) — FIXED · [Self atom on demand](project_self_atom_on_demand.md) — FIXED
 - [Wave replay + beam video](project_wave_replay.md) — BUILT unverified · [Beam settings + g2t](project_beam_settings.md) — BUILT, field test pending

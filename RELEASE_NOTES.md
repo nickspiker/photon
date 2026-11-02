@@ -6,7 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
-- **Android phones keep their identity through a factory reset.** A phone's device identity now comes from a value burned into its secure hardware at the factory and read on the phone itself, never from a server, so wiping the phone no longer turns it into a new device; a phone already set up moves itself over the first time it runs with its identity live, then closes once, and asks for your handle again when you reopen it.
+- **Android phones now carry a plate that survives a factory reset.** A phone's name on the network now comes from a value burned into its secure hardware at the factory and read on the phone itself, never from a server, so a wiped phone is still recognised as the same phone when it comes back; its key still changes with a wipe, so you pair a wiped phone again from another device as before. A phone already set up moves itself onto the new key the first time it runs with its identity live, then closes once, and asks for your handle again when you reopen it.
 - **Security fixes from a code review.** A message can no longer run commands on Windows through a notification or a link; a file someone sends can only ever be saved into the folder you save to, whatever its name says; and several crafted messages that could crash Photon (a bad key during a new connection, a bogus transfer announcement, a broken picture or a song that decodes to hours of audio) are now refused or handled safely.
 
 ## v138
