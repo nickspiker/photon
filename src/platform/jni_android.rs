@@ -1672,17 +1672,23 @@ fn select_android_root(java_fingerprint: &[u8]) -> Vec<u8> {
     use tohu::device::AndroidRoot;
     let prefix = |bytes: &[u8]| hex::encode(&blake3::hash(bytes).as_bytes()[..4]);
     let secret_of = |root: &[u8]| *derive_device_keypair(root).secret.as_bytes();
-    let widevine = tohu::device::widevine_root();
+    // The hardware part is logged on its own as well, so two differently signed builds on one phone show whether Android scopes the Widevine ID per signer.
+    let widevine = tohu::device::widevine_root_parts().map(|(id, cert)| (prefix(&id), [id, cert].concat()));
     let legacy = tohu::device::android_id();
     let chosen = match (&widevine, &legacy) {
-        (Ok(w), Ok(l)) => {
+        (Ok((id_prefix, w)), Ok(l)) => {
             let new_present = crate::storage::device_vault_present(crate::storage::APP, &secret_of(w));
             let old_present = crate::storage::device_vault_present(crate::storage::APP, &secret_of(l));
+            use crate::ui::photon_app::root_conversion::{note_owed, Owed};
             if !new_present && old_present {
-                warn!("device root: vault founded under ANDROID_ID {} and none under Widevine {}; keeping the legacy root, conversion owed", prefix(l), prefix(w));
+                warn!("device root: vault founded under ANDROID_ID {} and none under Widevine {} (hardware id {id_prefix}); keeping the legacy root, conversion owed", prefix(l), prefix(w));
+                note_owed(Owed::Convert { legacy: l.clone(), widevine: w.clone() });
                 AndroidRoot::LegacyAndroidId
             } else {
-                info!("device root: Widevine {} (vault present: {new_present}; legacy {} vault present: {old_present})", prefix(w), prefix(l));
+                info!("device root: Widevine {} (hardware id {id_prefix}; vault present: {new_present}; legacy {} vault present: {old_present})", prefix(w), prefix(l));
+                if old_present {
+                    note_owed(Owed::Cleanup { legacy: l.clone(), widevine: w.clone() });
+                }
                 AndroidRoot::Widevine
             }
         }
@@ -1690,8 +1696,8 @@ fn select_android_root(java_fingerprint: &[u8]) -> Vec<u8> {
             error!("device root: Widevine unreadable ({e}); using the legacy root {}", prefix(l));
             AndroidRoot::LegacyAndroidId
         }
-        (Ok(w), Err(e)) => {
-            warn!("device root: ANDROID_ID unreadable ({e}); Widevine {}", prefix(w));
+        (Ok((id_prefix, w)), Err(e)) => {
+            warn!("device root: ANDROID_ID unreadable ({e}); Widevine {} (hardware id {id_prefix})", prefix(w));
             AndroidRoot::Widevine
         }
         (Err(we), Err(le)) => {
@@ -1703,7 +1709,7 @@ fn select_android_root(java_fingerprint: &[u8]) -> Vec<u8> {
     };
     tohu::device::android_select_root(chosen);
     match chosen {
-        AndroidRoot::Widevine => widevine.expect("checked Ok above"),
+        AndroidRoot::Widevine => widevine.expect("checked Ok above").1,
         AndroidRoot::LegacyAndroidId => legacy.expect("checked Ok above"),
     }
 }

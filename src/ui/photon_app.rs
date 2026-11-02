@@ -63,6 +63,8 @@ mod conv_panel;
 mod drafts;
 mod molecules;
 mod group_avatar;
+#[cfg(target_os = "android")]
+pub mod root_conversion;
 mod devices;
 mod holdings;
 mod space;
@@ -2060,6 +2062,9 @@ pub struct PhotonApp {
     search_status: Option<(String, u32)>,
     /// Device keypair injected externally (Android: from `NetworkContext` via `set_device_keypair` before `init`). When `Some`, `init` uses it directly; when `None`, `init` derives a fresh keypair from `get_machine_fingerprint` (desktop path). Android MUST set this before `init` runs — leaving it `None` on Android would silently downgrade to a zeroed placeholder keypair, which would be a critical key-derivation failure.
     device_keypair: Option<crate::network::fgtw::Keypair>,
+    /// ANDROID ROOT CONVERSION PIN, delete at v168: the one-shot latch for `root_conversion_tick`.
+    #[cfg(target_os = "android")]
+    root_conversion_started: bool,
     /// This device's full signing bundle — Ed25519 plus the Falcon and SPHINCS+ keys derived from the same machine fingerprint — when that fingerprint was available to Rust at init. `None` on Android, where the fingerprint lives Java-side and only the Ed25519 keypair is injected; such a device signs single-egg and cannot lift the fleet floor until the fingerprint reaches the native side.
     signing_bundle: Option<crate::network::fgtw::fleet::SigningBundle>,
     /// One-shot Android soft-keyboard request. `change_focus` sets `Some(true)` when focus enters a textbox and `Some(false)` when it leaves; `wants_keyboard` returns and clears the value. The Activity reads the JNI signal after each touch and calls `InputMethodManager.show/hide` accordingly. Stays `None` on idle frames so the Activity doesn't churn the IME.
@@ -3220,6 +3225,8 @@ impl PhotonApp {
             hourglass_rng: 0x9E37_79B9_7F4A_7C15,
             search_status: None,
             device_keypair: None,
+            #[cfg(target_os = "android")]
+            root_conversion_started: false,
             pending_keyboard_request: None,
             pending_input_reset: false,
             add_device_status: String::new(),
