@@ -1,7 +1,7 @@
 # AGENT.md - Code Generation Rules
 ## Rule -1: House Formats Only — Formats, Codecs, and Storage Locations Are OWNER Decisions
 
-The house formats are: **VSF** (every file/wire/vault structure), **AV1 via rav1e/rav1d** (the only image encoding — avatars, Photon-only at rest), **Opus** (audio), **blake3** (hashing), **XChaCha20-Poly1305** (sealing).
+The house formats are: **VSF** (every file/wire/vault structure), **AV1 via rav1e/rav1d** (the only image encoding — avatars, Photon-only at rest), **Opus** (audio), **H.264** (beam video — live on the wire, and at rest only inside VSF as `v(b'm')` when a user opts in to saving beam video; Nick 2026-11-01), **blake3** (hashing), **XChaCha20-Poly1305** (sealing).
 
 **You may NOT introduce:**
 - Any output format or ENCODER not on that list (JPEG, PNG, WebP, protobuf, JSON-at-rest, SQLite, …). Decoding foreign images for ingest is fine; encoding to one is not. A session once bolted an adjustable-quality JPEG encoder beside the AV1 pipeline and it shipped — a forensically-identifiable foreign format the owner never approved. That class is now gate-enforced (`scripts/lib/artifact-gate.sh`).
