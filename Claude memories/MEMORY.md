@@ -47,6 +47,7 @@
 - [No compat text hatches](feedback_no_compat_text_hatches.md) — never keep a reader for a retired text encoding (attacker lever); purge legacy forms same day
 - [Re-clutch, never store](re-clutch-never-store.md) — recovery = fresh ceremony; secrets at rest only if required
 - [Discard, not shred](feedback_discard_not_shred.md) — HARD: no shred/nuke/erase claims until we own the flash; delete = mark for discard, distinct file → OS delete; encrypted at rest anyway
+- [Device root never salted](feedback_device_root_never_salted.md) — HARD: machine-ID device root stays one stable value (anti-sybil core + thief stays catchable); never salt/randomise/keystore it, whatever an audit says
 
 ## Active / open
 - [Android dark in background](project_android_headless_dark.md) — Activity destroy freed the app; fix built, verify pending
