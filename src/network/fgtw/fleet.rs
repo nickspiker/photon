@@ -175,7 +175,7 @@ pub fn ensure_member(
     handle_proof: &[u8; 32],
     identity_seed: &[u8; 32],
 ) -> Result<(), String> {
-    fgtw::client::ensure_member(&PhotonTransport, &signer_for(device_key), handle_proof, identity_seed)
+    fgtw::client::ensure_member(&PhotonTransport, &signer_for(device_key), handle_proof, identity_seed, tohu::device::plate())
 }
 
 /// The current device-pubkey member set (empty if no fleet yet).
@@ -210,7 +210,7 @@ pub fn current_members_with_ts(handle_proof: &[u8; 32]) -> Result<(Vec<[u8; 32]>
 
 /// Publish this device's key bundle to the chain — the op that lifts the fleet's scheme floor once every member has done it. Idempotent when the chain already holds at least this bundle.
 pub fn declare_device(signer: &impl FleetSigner, handle_proof: &[u8; 32]) -> Result<(), String> {
-    fgtw::client::declare_device(&PhotonTransport, signer, handle_proof)
+    fgtw::client::declare_device(&PhotonTransport, signer, handle_proof, tohu::device::plate())
 }
 
 /// Whatever this device can sign with: the full three-scheme bundle when the fingerprint was in Rust's hands to derive it from, else the bare Ed25519 keypair. One type for every fleet-write site, so a site never has to know which it holds — the fold decides what a bare keypair can and cannot do.
@@ -283,7 +283,8 @@ impl FleetSigner for DeviceSigner {
 
 /// This device's binding request for fleet `handle_proof`: "I consent to join", signed by the device key with one egg per scheme it holds (its bundle rides along), co-signed by `Ed25519(identity_seed)` (the registry's handle-knowledge gate), stamped now. The same bytes the seed's `bindreq_put` would mint — built here so the LAN copy and the registry copy are ONE request with one `t` (the Add's `consent_t`, and the BLE beacon's stamp).
 pub fn make_bind_request(device_key: &impl FleetSigner, identity_seed: &[u8; 32], handle_proof: &[u8; 32], nfc_secret: &[u8; 32]) -> BindRequest {
-    fgtw::protocol::bind_request(device_key, identity_seed, handle_proof, vsf::eagle_time_oscillations(), nfc_secret)
+    // The plate of this hardware rides the request under both signatures, so the sponsor's Add names it as the joiner's own word (tohu/docs/oracle-hardening.md).
+    fgtw::protocol::bind_request_plated(device_key, identity_seed, handle_proof, vsf::eagle_time_oscillations(), nfc_secret, tohu::device::plate())
 }
 
 /// Post an already-built binding request to the seed's registry (the `bindreq_put` body, field for field). `Err("device_owned…")` is the seed's one-owner verdict and stays a verdict; any other error is the seed being unreachable — the LAN copy carries the request regardless.
@@ -296,6 +297,9 @@ pub fn bindreq_post(req: &BindRequest, handle_proof: &[u8; 32]) -> Result<(), St
     section.add_field("is", vsf::VsfType::ge(req.identity_sig.clone()));
     if let Some(b) = &req.bundle {
         section.add_field("kb", vsf::VsfType::ge(b.to_bytes()));
+    }
+    if let Some(p) = &req.plate {
+        section.add_field("pl", vsf::VsfType::hb(p.to_vec()));
     }
     section.add_field("nh", vsf::VsfType::hb(req.nfc_hash.to_vec()));
     let body = vsf::VsfBuilder::new()
@@ -409,10 +413,8 @@ pub fn bind_device_held(
         if members.contains(&req.device_pubkey) {
             return Ok(blob); // already in — idempotent
         }
-        match &req.bundle {
-            Some(b) => blob.add_declared(member_key, req.device_pubkey, vsf::eagle_time_oscillations(), req.t, req.device_sig.clone(), b.clone()),
-            None => blob.add(member_key, req.device_pubkey, vsf::eagle_time_oscillations(), req.t, req.device_sig.clone()),
-        }
+        // The joiner's bundle and plate ride its own signed request onto the Add.
+        blob.add_with(member_key, req.device_pubkey, vsf::eagle_time_oscillations(), req.t, req.device_sig.clone(), req.bundle.clone(), req.plate);
         match publish(&blob) {
             Ok(()) => return Ok(blob),
             Err(e) if e.contains("stale") => continue,
@@ -516,6 +518,7 @@ pub fn bindreq_put(
         identity_seed,
         handle_proof,
         nfc_secret,
+        tohu::device::plate(),
     )
 }
 

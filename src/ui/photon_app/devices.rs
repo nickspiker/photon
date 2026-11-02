@@ -1902,6 +1902,15 @@ impl PhotonApp {
     /// Phase ONE of the two-phase ceremony: publish the consent-carrying Add for a fully-matched candidate. The chain entry is KEYLESS until the human confirms green — `spawn_confirm_add` holds the rotation.
     pub(super) fn spawn_bind_device(&mut self, req: crate::network::fgtw::fleet::BindRequest) {
         use crate::network::fgtw::fleet;
+        // The joiner's plate against this fleet's locked plates: a device the owner locked out, wiped and brought back under a fresh key is the same hardware, and the words matching does not readmit it (fleet::FleetOp::plate).
+        if let (Some(plate), Some(hp)) = (req.plate, self.our_handle_proof()) {
+            let locked = fleet::held_chain(&hp).and_then(|c| c.locked_plates().ok()).unwrap_or_default();
+            if locked.contains(&plate) {
+                crate::logf!("ADD-DEVICE: refused — the joiner's plate {} is one this fleet locked out", hex::encode(&plate[..4]));
+                self.add_device_status = tr(Msg::AddDeviceError("this is a device you locked out; unlock it on the Fleet page first")).into_owned();
+                return;
+            }
+        }
         self.add_device_status = tr(Msg::WordsMatched).into_owned();
         self.add_device_checking = true;
         if let (Some(hp), Some(kp), Some(tx)) = (
