@@ -165,6 +165,34 @@ impl TitleRecord {
     }
 }
 
+/// The group's AVATAR (Nick 2026-11-02, "molecule avatars, drag/drop onto the molecule info page"): one more roster record, exactly like the title — any standing member signs a new one, newest wins. It names the picture by its blob hash (the house image: AV1 inside a VSF document, `avatar_scoped::avatar_plaintext`), which members fetch like any of the group's files — sealed under the group's key on the wire, in each member's vault at rest, never on FGTW. `image: None` takes it away: the group draws its members' pie again.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AvatarRecord {
+    pub party: PartyId,
+    pub image: Option<[u8; 32]>,
+    pub signed_osc: i64,
+    pub signature: [u8; 64],
+    pub signer_device: [u8; 32],
+}
+
+impl AvatarRecord {
+    pub fn signing_bytes(&self) -> Vec<u8> {
+        let mut b = Vec::with_capacity(32 * 3 + 8 + 1 + 25);
+        b.extend_from_slice(b"PHOTON_MOLECULE_AVATAR_v\x01");
+        b.extend_from_slice(&self.party);
+        match self.image {
+            Some(h) => {
+                b.push(1);
+                b.extend_from_slice(&h);
+            }
+            None => b.push(0),
+        }
+        b.extend_from_slice(&self.signed_osc.to_le_bytes());
+        b.extend_from_slice(&self.signer_device);
+        b
+    }
+}
+
 /// One DEVICE's published KEM bundle (§3 Eras, D11): the public half of the hybrid keypair every era secret is wrapped to. Signed by the device that owns the decapsulation keys, newest wins per (party, device); a device publishes a fresh one on its first frame of each era. The private half is `EraDecapKeys` in that device's chains blob, nowhere else.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BundleRecord {
@@ -232,6 +260,8 @@ pub struct Roster {
     pub members: crate::linear_map::SortedMap<PartyId, MemberRecord>,
     pub leaves: crate::linear_map::SortedMap<PartyId, LeaveRecord>,
     pub title: Option<TitleRecord>,
+    /// The group's picture (newest wins), `None` until anyone sets one.
+    pub avatar: Option<AvatarRecord>,
     /// Keyed by (party, device) — every device of every member publishes its own.
     pub bundles: crate::linear_map::SortedMap<(PartyId, [u8; 32]), BundleRecord>,
     /// Keyed by (voucher, subject): EVERY record ever merged, newest last (testimony; a departed voucher's late withdrawal must not erase its earlier vouch, so nothing is replaced).
@@ -276,6 +306,20 @@ impl Roster {
                 true
             }
         }
+    }
+    /// Avatar: newest wins, whoever signed it — a removal is a record too, so it outranks an older picture.
+    pub fn merge_avatar(&mut self, rec: AvatarRecord) -> bool {
+        match self.avatar.as_ref() {
+            Some(cur) if cur.signed_osc >= rec.signed_osc => false,
+            _ => {
+                self.avatar = Some(rec);
+                true
+            }
+        }
+    }
+    /// The group's picture blob, when one is set.
+    pub fn avatar_image(&self) -> Option<[u8; 32]> {
+        self.avatar.as_ref().and_then(|a| a.image)
     }
     /// Bundle: newest wins per (party, device).
     pub fn merge_bundle(&mut self, rec: BundleRecord) -> bool {
@@ -402,6 +446,9 @@ impl Roster {
         if let Some(t) = other.title {
             changed |= self.merge_title(t);
         }
+        if let Some(a) = other.avatar {
+            changed |= self.merge_avatar(a);
+        }
         for (_, l) in other.leaves {
             changed |= self.merge_leave(l);
         }
@@ -424,7 +471,7 @@ impl FoldPartition {
     /// How many records wait on a fold.
     pub fn parked_count(&self) -> usize {
         let p = &self.parked;
-        p.members.len() + p.leaves.len() + p.bundles.len() + p.vouches.values().map(Vec::len).sum::<usize>() + usize::from(p.title.is_some())
+        p.members.len() + p.leaves.len() + p.bundles.len() + p.vouches.values().map(Vec::len).sum::<usize>() + usize::from(p.title.is_some()) + usize::from(p.avatar.is_some())
     }
 }
 
@@ -529,6 +576,13 @@ pub fn partition_by_fold(snapshot: Roster, held_genesis: Option<&GenesisRecord>,
             Verdict::Take => out.verified.title = Some(t),
             Verdict::Park => out.parked.title = Some(t),
             Verdict::Refuse(why) => out.refused.push(format!("title by {} {why}", crate::fp(&t.party))),
+        }
+    }
+    if let Some(a) = snapshot.avatar {
+        match judge(&a.party, &a.signer_device, &a.signing_bytes(), &a.signature, a.signed_osc) {
+            Verdict::Take => out.verified.avatar = Some(a),
+            Verdict::Park => out.parked.avatar = Some(a),
+            Verdict::Refuse(why) => out.refused.push(format!("avatar by {} {why}", crate::fp(&a.party))),
         }
     }
     out
@@ -698,6 +752,13 @@ pub fn vouch_record(voucher: PartyId, subject: PartyId, withdrawn: bool, device_
 /// Mint a title record signed by this device on behalf of `party`.
 pub fn title_record(party: PartyId, title: &str, device_seed: &[u8; 32]) -> TitleRecord {
     let mut rec = TitleRecord { party, title: title.to_string(), signed_osc: crate::network::time_base::now_osc(), signature: [0u8; 64], signer_device: device_pubkey(device_seed) };
+    rec.signature = sign_record(&rec.signing_bytes(), device_seed);
+    rec
+}
+
+/// Mint an avatar record signed by this device on behalf of `party`: `Some(blob)` sets the group's picture, `None` takes it away.
+pub fn avatar_record(party: PartyId, image: Option<[u8; 32]>, device_seed: &[u8; 32]) -> AvatarRecord {
+    let mut rec = AvatarRecord { party, image, signed_osc: crate::network::time_base::now_osc(), signature: [0u8; 64], signer_device: device_pubkey(device_seed) };
     rec.signature = sign_record(&rec.signing_bytes(), device_seed);
     rec
 }
@@ -898,6 +959,13 @@ mod tests {
         assert!(r.merge_title(TitleRecord { party: [3; 32], title: "taco".into(), signed_osc: 80, signature: [0; 64], signer_device: [0; 32] }));
         assert!(!r.merge_title(TitleRecord { party: [1; 32], title: "old".into(), signed_osc: 79, signature: [0; 64], signer_device: [0; 32] }));
         assert_eq!(r.title(), "taco");
+        // Avatar: newest wins too, and a removal is newer than the picture it removes.
+        assert_eq!(r.avatar_image(), None);
+        assert!(r.merge_avatar(AvatarRecord { party: [3; 32], image: Some([7; 32]), signed_osc: 81, signature: [0; 64], signer_device: [0; 32] }));
+        assert!(!r.merge_avatar(AvatarRecord { party: [1; 32], image: Some([8; 32]), signed_osc: 80, signature: [0; 64], signer_device: [0; 32] }));
+        assert_eq!(r.avatar_image(), Some([7; 32]));
+        assert!(r.merge_avatar(AvatarRecord { party: [1; 32], image: None, signed_osc: 82, signature: [0; 64], signer_device: [0; 32] }));
+        assert_eq!(r.avatar_image(), None);
     }
 
     #[test]

@@ -1652,6 +1652,9 @@ impl PhotonApp {
 
     /// Persist a group's index entry + roster. Chains persist thru the standard chains path on their own mutation edges.
     pub(super) fn persist_molecule(&mut self, gid: &MoleculeId) {
+        // Every roster change passes here: its picture may have changed, so the sweep fetches it and the next tick reads it (group_avatar.rs).
+        self.group_faces_dirty = true;
+        self.replicate_dirty = true;
         let Some(storage) = self.storage.as_ref() else {
             return;
         };

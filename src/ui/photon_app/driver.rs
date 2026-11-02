@@ -318,7 +318,7 @@ impl FluorApp<Px> for PhotonApp {
         reserve_hits(&mut self.hit_counter, SETTINGS_PILL_SLOTS); // the Fleet page's slot map runs to 56 + six rows; the dispatch windows below read the SAME constant (the 2026-10-06 sweep found 39 reserved against pills stamped at 56+ — the Lock-out pill bug)
         reserve_hits(&mut self.hit_counter, 1);
         self.conv_panel_btn_base = self.hit_counter;
-        reserve_hits(&mut self.hit_counter, super::conv_panel::CONV_PANEL_SLOTS); // conversation-panel pills 0..8 and 40 Bonds rows
+        reserve_hits(&mut self.hit_counter, super::conv_panel::CONV_PANEL_SLOTS); // conversation-panel pills 0..9 and 40 Bonds rows
         reserve_hits(&mut self.hit_counter, 1);
         self.conv_nav_base = self.hit_counter;
         reserve_hits(&mut self.hit_counter, crate::ui::state::ConversationPage::RAIL.len() as HitId); // conversation-panel rail rows
@@ -750,6 +750,7 @@ impl FluorApp<Px> for PhotonApp {
             // Android: a tap opens the system image picker directly (the picker IS the update mechanism — tapping the grey circle is self-evident, so no on-screen prompt). Desktop: no picker — the avatar updates by drag/drop — the tap is swallowed here.
             #[cfg(target_os = "android")]
             {
+                self.avatar_pick_for = None;
                 self.pending_picker_request = true;
             }
             ctx.window.request_redraw();
@@ -1197,6 +1198,7 @@ impl FluorApp<Px> for PhotonApp {
                         #[cfg(target_os = "android")]
                         {
                             self.change_focus(None);
+                            self.avatar_pick_for = None;
                             self.pending_picker_request = true;
                         }
                         #[cfg(not(target_os = "android"))]
@@ -2094,6 +2096,13 @@ impl FluorApp<Px> for PhotonApp {
                         self.scene_dirty = true;
                         changed = true;
                     }
+                    // A group's big avatar on its Manage page shows the same hint (group_avatar.rs).
+                    let want = matches!(self.state, AppState::ConversationPanel(crate::ui::state::ConversationPage::Manage)) && self.conv_panel_btn_base != HIT_NONE && new_hit == self.conv_panel_btn_base + super::conv_panel::SLOT_AVATAR;
+                    if self.group_face_hovered != want {
+                        self.group_face_hovered = want;
+                        self.scene_dirty = true;
+                        changed = true;
+                    }
                 }
                 if changed {
                     ctx.window.request_redraw();
@@ -2967,6 +2976,17 @@ impl FluorApp<Px> for PhotonApp {
                         ctx.window.request_redraw();
                         return EventResponse::Handled;
                     }
+                }
+                // A GROUP's Manage page (group_avatar.rs): a picture dropped anywhere on it becomes the group's picture, unless we have left the group.
+                if let AppState::ConversationPanel(crate::ui::state::ConversationPage::Manage) = self.state {
+                    if let Some(gid) = self.active_molecule().map(|gi| self.molecule_rosters[gi].0).filter(|g| !self.molecule_is_left(g)) {
+                        match std::fs::read(path) {
+                            Ok(bytes) => self.set_molecule_avatar(gid, bytes),
+                            Err(e) => crate::logf!("group avatar drop: read failed: {}", e),
+                        }
+                        ctx.window.request_redraw();
+                    }
+                    return EventResponse::Handled;
                 }
                 // Desktop avatar update: a file dropped on the window (Ready screen) is read and run thru the same encode→save→load→install→upload pipeline as the Android picker. Ignored off the Ready screen and when no handle is attested yet (set_avatar_from_file no-ops without a handle). Android has no drop path — it uses the picker.
                 if matches!(self.state, AppState::Ready) {

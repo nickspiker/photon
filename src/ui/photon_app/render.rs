@@ -399,7 +399,7 @@ impl PhotonApp {
             // The conversation panel rides the SAME scroll fields + extents machinery as settings (it's the structural mirror). Rail = pinned Back + the rail pages; content rows come from the one budget the render arm also reads (Bonds sized by the rows as last drawn).
             let sl = SettingsLayout::compute(&ctx.viewport);
             self.settings_rail_extent = (sl.nav_row_h() * (crate::ui::state::ConversationPage::RAIL.len() as Coord + 1.0) - sl.rail_inset().h).max(0.0); // (no scroll when it fits)
-            let n = conversation_page_rows(page, self.bond_rows.len());
+            let n = conversation_page_rows(page, self.bond_rows.len(), self.active_molecule().is_some());
             self.settings_content_extent = (sl.content_line_h() * n as Coord - sl.content_inset().h).max(0.0); // (no scroll when it fits)
             (self.settings_rail_scroll, self.settings_content_scroll)
         } else {
@@ -2296,6 +2296,10 @@ impl PhotonApp {
                     }
                 }
 
+                // A group's picture at the row diameter (group_avatar.rs).
+                if let Some(h) = view.face.as_ref() {
+                    super::group_avatar::scale(&mut self.group_faces, h, diam);
+                }
                 // Our face at the row diameter, for our own row in the member picker.
                 if matches!(*row, ReadyRow::Me) && self.own_avatar_row.as_ref().is_none_or(|(d, _)| *d != diam) {
                     if let Some(base) = self.device_avatar_pixels.as_ref() {
@@ -2317,6 +2321,11 @@ impl PhotonApp {
                             diam,
                             Some(rows_clip),
                         );
+                    }
+                    (_, Some(_)) if view.face.is_some_and(|h| super::group_avatar::face_at(&self.group_faces, &h, diam).is_some()) => {
+                        // The group's own picture (group_avatar.rs).
+                        let h = view.face.unwrap();
+                        crate::ui::avatar_render::draw_avatar(&mut canvas, avatar_cx, cy, avatar_r, super::group_avatar::face_at(&self.group_faces, &h, diam).unwrap(), diam, Some(rows_clip));
                     }
                     (_, Some(seeds)) => {
                         // The group's avatar: a pie of its members' gradients at the row diameter.
@@ -2483,6 +2492,11 @@ impl PhotonApp {
                         self.contacts[ci].avatar_scaled_diameter = diam;
                     }
                 }
+                // The group's picture at the same diameter (group_avatar.rs), scaled BEFORE the immutable borrows below.
+                let group_face = active_gi.and_then(|gi| self.molecule_rosters[gi].1.avatar_image());
+                if let Some(h) = group_face.as_ref() {
+                    super::group_avatar::scale(&mut self.group_faces, h, diam);
+                }
                 // The roster, when the conversation carries one.
                 let roster_src = active_gi.map(|gi| {
                     let (gid, roster) = &self.molecule_rosters[gi];
@@ -2600,7 +2614,7 @@ impl PhotonApp {
                 let content_clip = fluor::paint::Clip::new(inset.x as usize, inset.y as usize, inset.right() as usize, inset.bottom() as usize);
                 let tspan = layout.unit * 0.72;
                 let hspan2 = tspan * 0.75;
-                let n = super::conversation_page_rows(page, bonds.len());
+                let n = super::conversation_page_rows(page, bonds.len(), roster_src.is_some());
                 let rows = rows_n(layout.content_scrolled(n, settings_content_scroll), n);
                 let pill = |r: fluor::region::Region, frac: f32| fluor::region::Region::new(r.x + r.w * 0.1, r.y, r.w * frac, r.h * 0.9);
                 let btn = self.conv_panel_btn_base;
@@ -2639,7 +2653,7 @@ impl PhotonApp {
                                 super::BondKind::Invited => false,
                                 super::BondKind::Friend => editable,
                             };
-                            let hid = if tappable { btn + 8 + k as HitId } else { HIT_NONE };
+                            let hid = if tappable { btn + super::conv_panel::SLOT_BONDS + k as HitId } else { HIT_NONE };
                             // Avatar: the contact's own picture as the contacts list draws it, else its deterministic gradient (a member we never friended: their party's).
                             let ar = r.h * 0.36;
                             let acx = r.x + r.h * 0.55;
@@ -2755,9 +2769,35 @@ impl PhotonApp {
                     ConversationPage::Manage => {
                         settings_line(&mut canvas, ctx.text, rows[0], &tr(Msg::ConversationPageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                         let left = roster_src.as_ref().is_some_and(|(_, _, phase, ..)| *phase == crate::storage::molecule::MoleculePhase::Left);
+                        // THE GROUP'S PICTURE (group_avatar.rs, Nick 2026-11-02): the big avatar over rows 1–5, the drop hint under it on hover (desktop), Remove under that while one is set; every row below moves down by `fo`.
+                        let fo = if roster_src.is_some() { super::MANAGE_FACE_ROWS } else { 0 };
+                        if let Some((gid, roster, ..)) = roster_src.as_ref() {
+                            let block = fluor::region::Region::new(rows[1].x, rows[1].y, rows[1].w, rows[1].h * 5.0);
+                            let (cx, cy) = (block.center_x(), block.center_y());
+                            // Tappable unless we have left: Android picks a picture, the desktop's hover shows the hint (and a tap says to drop one).
+                            if !left {
+                                stamp_hit_circle_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, cx, cy, avatar_r, btn + super::conv_panel::SLOT_AVATAR);
+                            }
+                            match group_face.as_ref().and_then(|h| super::group_avatar::face_at(&self.group_faces, h, diam)) {
+                                Some(scaled) => crate::ui::avatar_render::draw_avatar(&mut canvas, cx, cy, avatar_r, scaled, diam, Some(content_clip)),
+                                None => {
+                                    // No picture (or not here yet): the members' pie the group's row wears.
+                                    let seeds: Vec<u64> = roster.standing().iter().filter(|p| **p != our_hh).map(|p| proof_gradient_seed(&roster.members.get(p).map_or(*p, |m| m.handle_proof))).collect();
+                                    let gd = diam.max(1); // an avatar is at least one pixel across — see `disk_px`
+                                    crate::ui::avatar_render::draw_avatar(&mut canvas, cx, cy, avatar_r, &molecule_avatar_rgb(&seeds, proof_gradient_seed(&gid.0), gd), gd, Some(content_clip));
+                                }
+                            }
+                            #[cfg(not(target_os = "android"))]
+                            if self.group_face_hovered && !left {
+                                ctx.text.draw_text_center(&mut canvas, &tr(Msg::GroupAvatarDropHint), cx, rows[6].center_y(), &TextStyle::new(hspan2 * 0.8, fluor::theme::HINT_COLOUR).weight(500).font("Oxanium"), Some(content_clip), None);
+                            }
+                            if group_face.is_some() && !left {
+                                draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[7], 0.5), &tr(Msg::RemoveGroupAvatarPill), btn + super::conv_panel::SLOT_AVATAR_REMOVE, ctx.pressed_hit);
+                            }
+                        }
                         // Row 1: the title box + Rename (a roster record anyone may post), where the conversation carries a shared title.
                         if roster_src.is_some() {
-                            let r1 = rows[1];
+                            let r1 = rows[fo + 1];
                             if let Some(tb) = self.molecule_title_textbox.as_mut() {
                                 let tb_left = r1.x + r1.w * 0.05;
                                 let tb_w = (r1.w * 0.55).max(hspan2 * 6.0);
@@ -2778,23 +2818,23 @@ impl PhotonApp {
                             (None, Some(e)) => e,
                             (None, None) => String::new(),
                         };
-                        settings_line(&mut canvas, ctx.text, rows[2], &line2, hspan2, *theme::LABEL_COLOUR, 400);
+                        settings_line(&mut canvas, ctx.text, rows[fo + 2], &line2, hspan2, *theme::LABEL_COLOUR, 400);
                         // Row 3: Mute (this device only).
                         if let Some((.., muted, _)) = roster_src.as_ref() {
-                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[3], 0.5), &tr(Msg::MutePill { muted: *muted }), btn + 1, ctx.pressed_hit, true, muted.then_some(*theme::PILL_GREEN), "Oxanium");
+                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[fo + 3], 0.5), &tr(Msg::MutePill { muted: *muted }), btn + 1, ctx.pressed_hit, true, muted.then_some(*theme::PILL_GREEN), "Oxanium");
                         }
                         // Rows 4–6: clearing, two-tap each, then the note that says whose copies they touch.
                         if !pair_is_sibling {
-                            Self::draw_clear_pills(self.contact_clear_armed, btn + 4, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, [rows[4], rows[5], rows[6]], hspan2, ctx.pressed_hit);
+                            Self::draw_clear_pills(self.contact_clear_armed, btn + 4, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, [rows[fo + 4], rows[fo + 5], rows[fo + 6]], hspan2, ctx.pressed_hit);
                         }
                         // Rows 7–8: leaving — the only way out (Nick 2026-10-24: nobody removes anyone).
                         if pair_is_sibling {
-                            settings_line(&mut canvas, ctx.text, rows[7], &tr(Msg::SiblingSignsItselfOut), hspan2, *theme::LABEL_COLOUR, 400);
+                            settings_line(&mut canvas, ctx.text, rows[fo + 7], &tr(Msg::SiblingSignsItselfOut), hspan2, *theme::LABEL_COLOUR, 400);
                         } else if left {
-                            settings_line(&mut canvas, ctx.text, rows[7], &tr(Msg::YouLeftNote), hspan2, *theme::LABEL_COLOUR, 400);
+                            settings_line(&mut canvas, ctx.text, rows[fo + 7], &tr(Msg::YouLeftNote), hspan2, *theme::LABEL_COLOUR, 400);
                         } else if roster_src.is_some() || remote == 0 {
-                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[7], 0.5), &tr(Msg::LeaveMoleculePill { armed: self.molecule_leave_armed }), btn, ctx.pressed_hit);
-                            settings_line(&mut canvas, ctx.text, rows[8], &tr(Msg::LeaveMoleculeNote), hspan2, *theme::LABEL_COLOUR, 400);
+                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[fo + 7], 0.5), &tr(Msg::LeaveMoleculePill { armed: self.molecule_leave_armed }), btn, ctx.pressed_hit);
+                            settings_line(&mut canvas, ctx.text, rows[fo + 8], &tr(Msg::LeaveMoleculeNote), hspan2, *theme::LABEL_COLOUR, 400);
                         }
                     }
                     ConversationPage::Person(party) => {
@@ -3117,6 +3157,12 @@ impl PhotonApp {
                     let (_, _, avatar_r) = conv_layout.avatar_center_radius();
                     let avatar_diam = (avatar_r * 2.0) as usize;
                     let avatar_cx = buf_w as f32 * 0.5;
+                    // A group's own picture (group_avatar.rs), scaled here before the closure below borrows; the gradient stays when none is set or read yet.
+                    let group_face = if hdr.roster { self.molecule_rosters.iter().find(|(g, _)| g.0 == *hdr.conv_id.as_bytes()).and_then(|(_, r)| r.avatar_image()) } else { None };
+                    if let Some(h) = group_face.as_ref() {
+                        super::group_avatar::scale(&mut self.group_faces, h, avatar_diam);
+                    }
+                    let group_face_px = group_face.and_then(|h| super::group_avatar::face_at(&self.group_faces, &h, avatar_diam));
                     // Relationship colour inputs, hoisted above the avatar closure so both it and the header share them. Our pid feeds the relationship digest — a keyed colour, not a self-check; "is this me" is the participant count.
                     let our_handle_hash = self
                         .session
@@ -3176,6 +3222,8 @@ impl PhotonApp {
                                     avatar_diam,
                                     clip,
                                 );
+                            } else if let Some(px) = group_face_px {
+                                crate::ui::avatar_render::draw_avatar(canvas, avatar_cx, cy, avatar_r, px, avatar_diam, clip);
                             } else {
                                 let gd = disk_px(avatar_r * 2.0);
                                 let seed = proof_gradient_seed(&hdr.seed);
@@ -7759,6 +7807,8 @@ struct RowView {
     /// A conversation row's pie: the gradient seed of each standing member other than us — the very gradient that person's own row wears (D3, docs/conversations.md: a person looks the same in every conversation on our devices), painted at the row diameter in the loop; `None` = a contact's scaled cache or the gradient seed.
     pie: Option<Vec<u64>>,
     gradient_seed: u64,
+    /// A group's own picture (group_avatar.rs), drawn instead of its pie once it is read and scaled.
+    face: Option<[u8; 32]>,
 }
 
 /// The field-precise slice of the app the row views read — disjoint from the chrome borrow the row loop holds.
@@ -7787,6 +7837,7 @@ impl RowView {
             hit: HIT_NONE,
             pie: None,
             gradient_seed: proof_gradient_seed(&own_proof),
+            face: None,
         }
     }
 
@@ -7803,6 +7854,7 @@ impl RowView {
             hit: HIT_NONE,
             pie: Some(members.iter().map(|p| proof_gradient_seed(&o.snapshot.members.get(p).map_or(*p, |m| m.handle_proof))).collect()),
             gradient_seed: proof_gradient_seed(&o.molecule_id.0),
+            face: None,
         }
     }
 
@@ -7822,6 +7874,7 @@ impl RowView {
             hit: if ci < 256 { app.contact_hit_base + ci as HitId } else { HIT_NONE },
             pie: None,
             gradient_seed: proof_gradient_seed(&c.handle_proof),
+            face: None,
         }
     }
 
@@ -7851,6 +7904,7 @@ impl RowView {
             hit: if gi < 64 { app.molecule_hit_base + gi as HitId } else { HIT_NONE },
             pie: Some(members.iter().map(|p| proof_gradient_seed(&roster.members.get(p).map_or(*p, |m| m.handle_proof))).collect()),
             gradient_seed: proof_gradient_seed(&gid.0),
+            face: roster.avatar_image(),
         }
     }
 }

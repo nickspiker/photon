@@ -304,6 +304,8 @@ impl PhotonApp {
             self.scene_dirty = true;
             // New presence answers can name files this device lacks: the replication sweep looks again.
             self.replicate_dirty = true;
+            // … and a group picture whose presence was pending may be held now.
+            self.group_faces_dirty = true;
         }
         let wanted = crate::storage::take_presence_wanted();
         if wanted.is_empty() {

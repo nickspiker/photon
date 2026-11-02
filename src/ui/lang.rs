@@ -580,6 +580,10 @@ pub enum Msg<'a> {
     BootPill { armed: bool },
     /// Person page: open (or found) the conversation of exactly the two of you.
     MessagePill,
+    /// A group's Manage page: the hint under its big avatar while the pointer is over it (desktop).
+    GroupAvatarDropHint,
+    /// A group's Manage page: take the group's picture away (the members' pie again).
+    RemoveGroupAvatarPill,
     // ---- groups (docs/molecules.md §10.5) ----
     /// The Ready list's filter strip (FilterAll is the stream filter's, shared).
     /// The Ready strip pill for group invitations waiting on us (a count follows it).

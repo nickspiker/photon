@@ -8,15 +8,17 @@ use vsf::schema::{SectionSchema, TypeConstraint};
 use vsf::VsfType;
 
 use crate::storage::{FlatStorage, StorageError};
-use crate::types::molecule::{BundleRecord, GenesisRecord, MoleculeId, LeaveRecord, MemberRecord, Roster, TitleRecord, VouchRecord};
+use crate::types::molecule::{BundleRecord, GenesisRecord, MoleculeId, LeaveRecord, MemberRecord, Roster, TitleRecord, VouchRecord, AvatarRecord};
 
 /// The roster's section names, shared by the writer and the reader — the two must never drift.
-/// One `molecule_roster` section names the group; every signed record is its OWN section beside it (one per member, leave, bundle, vouch; at most one genesis and one title), so a record's fields travel together and a torn record is dropped alone.
+/// One `molecule_roster` section names the group; every signed record is its OWN section beside it (one per member, leave, bundle, vouch; at most one genesis, one title and one avatar), so a record's fields travel together and a torn record is dropped alone.
 const ROSTER_SECTION: &str = "molecule_roster";
 const GENESIS_SECTION: &str = "genesis";
 const MEMBER_SECTION: &str = "member";
 const LEAVE_SECTION: &str = "leave";
 const TITLE_SECTION: &str = "title";
+/// The group's picture: `image` names its blob, and is absent when the record takes the picture away.
+const AVATAR_SECTION: &str = "avatar";
 const BUNDLE_SECTION: &str = "bundle";
 const VOUCH_SECTION: &str = "vouch";
 
@@ -80,6 +82,14 @@ pub fn roster_to_vsf_bytes(molecule_id: &MoleculeId, roster: &Roster) -> Result<
             TITLE_SECTION,
             vec![f("party", hb(&t.party)), f("title", VsfType::x(t.title.clone())), f("osc", e6(t.signed_osc)), f("sig", hb(&t.signature)), f("signer", hb(&t.signer_device))],
         );
+    }
+    if let Some(a) = roster.avatar.as_ref() {
+        let mut fields = vec![f("party", hb(&a.party))];
+        if let Some(image) = a.image.as_ref() {
+            fields.push(f("image", hb(image)));
+        }
+        fields.extend([f("osc", e6(a.signed_osc)), f("sig", hb(&a.signature)), f("signer", hb(&a.signer_device))]);
+        doc = doc.add_section(AVATAR_SECTION, fields);
     }
     let mut bundles: Vec<&BundleRecord> = roster.bundles.values().collect();
     bundles.sort_unstable_by_key(|b| (b.party, b.device));
@@ -178,6 +188,11 @@ pub fn roster_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<(MoleculeId, Roster), S
     if let Some(t) = of(TITLE_SECTION).next() {
         if let (Some(party), Some(title), Some(signed_osc), Some(signature), Some(signer_device)) = (t.h32("party"), t.text("title"), t.osc("osc"), t.h64("sig"), t.h32("signer")) {
             roster.merge_title(TitleRecord { party, title, signed_osc, signature, signer_device });
+        }
+    }
+    if let Some(a) = of(AVATAR_SECTION).next() {
+        if let (Some(party), Some(signed_osc), Some(signature), Some(signer_device)) = (a.h32("party"), a.osc("osc"), a.h64("sig"), a.h32("signer")) {
+            roster.merge_avatar(AvatarRecord { party, image: a.h32("image"), signed_osc, signature, signer_device });
         }
     }
     for l in of(LEAVE_SECTION) {
@@ -732,6 +747,16 @@ mod tests {
         let (_, back) = roster_from_vsf_bytes(&bytes).expect("decode");
         assert_eq!(back.title(), "taco");
         assert_eq!(back.title.as_ref(), Some(&title));
+        let avatar = crate::types::molecule::avatar_record(birth.founder_member.party, Some([0x5A; 32]), &seed);
+        let mut with_avatar = back.clone();
+        with_avatar.merge_avatar(avatar.clone());
+        let (_, pic) = roster_from_vsf_bytes(&roster_to_vsf_bytes(&birth.molecule_id, &with_avatar).expect("encode")).expect("decode");
+        assert_eq!(pic.avatar.as_ref(), Some(&avatar));
+        assert!(verify_record(&avatar.signing_bytes(), &avatar.signature, &avatar.signer_device));
+        let removed = crate::types::molecule::avatar_record(birth.founder_member.party, None, &seed);
+        with_avatar.avatar = Some(removed.clone());
+        let (_, gone) = roster_from_vsf_bytes(&roster_to_vsf_bytes(&birth.molecule_id, &with_avatar).expect("encode")).expect("decode");
+        assert_eq!(gone.avatar.as_ref(), Some(&removed), "a removal rides with no image");
         let b = back.newest_bundle(&device_pubkey(&seed)).expect("bundle rides");
         assert_eq!(b, &bundle);
         assert!(verify_record(&b.signing_bytes(), &b.signature, &b.device));

@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Groups can have a picture.** Open a group's Manage page and drop a picture on it (on Android, tap the big circle to choose one); every member sees it in their list and at the top of the conversation, anyone in the group can change it, and Remove picture brings back the members' colours.
 - **A sent invite stays sent.** In a group's member list, someone you've already invited now shows as invited with no checkbox — an invite can't be taken back, so the box no longer suggests it can.
 - **Files show what they are.** A file Photon can't preview (a password database, an archive, a program) now shows a small icon for its kind before its name, so it reads as a file at a glance.
 - **Save beam video, if you want it.** A new checkbox in Settings → Beam keeps a beam's video with its recording — every camera that was in it — and the recording's replay screen then plays the video in each person's tile; it is off unless you turn it on.

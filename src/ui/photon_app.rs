@@ -62,6 +62,7 @@ mod conversation;
 mod conv_panel;
 mod drafts;
 mod molecules;
+mod group_avatar;
 mod devices;
 mod holdings;
 mod space;
@@ -2382,6 +2383,17 @@ pub struct PhotonApp {
     zoom_restored: bool,
     /// The picked avatar's display pixels, arriving from the OFF-THREAD set pipeline (decode runs there too — a 50MP photo must not stall a frame). Installed + repainted in tick.
     avatar_set_rx: Option<std::sync::mpsc::Receiver<Vec<u8>>>,
+    /// GROUP AVATARS (group_avatar.rs): each decoded group picture with its scaled copies; the worker's channel; the pictures being read, and those that read as no picture; the edge that makes the next tick look again.
+    group_faces: Vec<group_avatar::GroupFace>,
+    group_face_tx: std::sync::mpsc::Sender<group_avatar::GroupFaceDone>,
+    group_face_rx: std::sync::mpsc::Receiver<group_avatar::GroupFaceDone>,
+    group_faces_decoding: Vec<[u8; 32]>,
+    group_faces_unreadable: Vec<[u8; 32]>,
+    group_faces_dirty: bool,
+    /// The group an Android picker pick is for (the tap on a group's big avatar); `None` = our own avatar.
+    avatar_pick_for: Option<crate::types::molecule::MoleculeId>,
+    /// The pointer is over a group's big avatar on its Manage page: the drag/drop hint shows (desktop).
+    group_face_hovered: bool,
     /// One-shot Android image-picker request. Set when the user taps the avatar; consumed by the JNI poll (`nativePollAvatarPicker`) which signals the Activity to launch `ACTION_GET_CONTENT`. Stays `None` on idle frames so the Activity doesn't churn.
     pending_picker_request: bool,
     /// One-shot signal for the Android sticky session broadcast: 1=send, -1=clear, 0=nothing. Set by attest success and []n nuke.
@@ -2465,7 +2477,7 @@ pub struct PhotonApp {
     // --- Settings panel (STUB) ---
     /// Base hit id for the settings nav-rail rows. Row `i` (page `SettingsPage::ALL[i]`) stamps `settings_nav_base + i`. Allocated in `init`.
     settings_nav_base: HitId,
-    /// The conversation panel (docs/conversations.md Phase 1): rail rows [conv_nav_base, +3) are `ConversationPage::RAIL`; pills and rows [conv_panel_btn_base, +48): 0 = Leave (two-tap), 1 = Mute, 2 = Rename, 3 = Boot (two-tap, a Person page), 4 = Clear waves, 5 = Clear everything (two-tap each), 8.. = the Bonds rows.
+    /// The conversation panel (docs/conversations.md Phase 1): rail rows [conv_nav_base, +3) are `ConversationPage::RAIL`; pills and rows [conv_panel_btn_base, +49): 0 = Leave (two-tap), 1 = Mute, 2 = Rename, 3 = Boot (two-tap, a Person page), 4 = Clear waves, 5 = Clear everything (two-tap each), 6 = Message, 7 = a group's big avatar, 8 = Remove its picture, 9.. = the Bonds rows.
     conv_panel_btn_base: HitId,
     conv_nav_base: HitId,
     /// Boot two-tap arm (event-shown, interaction-cleared — any other press on the panel disarms).
@@ -2896,6 +2908,7 @@ impl PhotonApp {
         #[cfg(target_os = "android")]
         let (start_in_background, resident_mode) = (false, false);
         let (holdings_tx, holdings_rx) = std::sync::mpsc::channel();
+        let (group_face_tx, group_face_rx) = std::sync::mpsc::channel();
         Self {
             start_in_background,
             resident_mode,
@@ -3328,6 +3341,14 @@ impl PhotonApp {
             pending_zoom_restore: None,
             zoom_restored: false,
             avatar_set_rx: None,
+            group_faces: Vec::new(),
+            group_face_tx,
+            group_face_rx,
+            group_faces_decoding: Vec::new(),
+            group_faces_unreadable: Vec::new(),
+            group_faces_dirty: true,
+            avatar_pick_for: None,
+            group_face_hovered: false,
             active_conversation: None,
             contact_hit_base: HIT_NONE,
             molecule_hit_base: HIT_NONE,
@@ -3669,6 +3690,11 @@ impl PhotonApp {
 
     /// Encode + save + reload an avatar image picked from the OS image picker. Pipeline: raw file bytes → `encode_avatar_from_image` (handles JPEG/PNG/WebP and the ICC-profile colour management — VSF spectral γ=2.0 RGB out) → `save_avatar` (encrypted handle-keyed storage) → `load_avatar` (round-trip check) → `vsf_rgb_to_bt2020` (display conversion for the Android BT.2020 buffer tag) → installed as `device_avatar_pixels` with the scaled cache invalidated. Uploads to FGTW when a `handle_proof` is available so other devices can fetch it. Skipped if the user hasn't attested yet (no handle to derive the storage key from).
     pub fn set_avatar_from_file(&mut self, image_bytes: Vec<u8>) {
+        // A pick made from a group's Manage page is that group's picture (group_avatar.rs).
+        if let Some(gid) = self.avatar_pick_for.take() {
+            self.set_molecule_avatar(gid, image_bytes);
+            return;
+        }
         let identity_seed = match &self.session {
             Some(s) => s.identity_seed,
             None => {
@@ -4394,13 +4420,18 @@ fn settings_page_rows(page: SettingsPage) -> usize {
     }
 }
 
+/// The rows a group's picture takes at the top of its Manage page, after the heading: five for the avatar block, one for the drop hint under it, one for Remove.
+const MANAGE_FACE_ROWS: usize = 7;
+
 /// Natural row count per conversation-panel page — the scroll-extent input, mirroring [`settings_page_rows`], one budget for every conversation at any size (docs/conversations.md Phase 1).
 /// Bonds = heading + note + one row per member, invite and friend + one spare; a Person page's first rows are consumed by the avatar block (drawn at row height ×N, not text). The render arm calls the same function, so the drawn rows and the scroll extent can never disagree.
-fn conversation_page_rows(page: crate::ui::state::ConversationPage, bond_rows: usize) -> usize {
+fn conversation_page_rows(page: crate::ui::state::ConversationPage, bond_rows: usize, group: bool) -> usize {
     use crate::ui::state::ConversationPage;
     match page {
         ConversationPage::Bonds => 3 + bond_rows,
         ConversationPage::Stats => 9,
+        // A group's Manage page opens with its picture (group_avatar.rs): the block, the hint under it, and Remove.
+        ConversationPage::Manage if group => 9 + MANAGE_FACE_ROWS,
         ConversationPage::Manage => 9,
         ConversationPage::Person(_) => 20,
     }

@@ -955,6 +955,11 @@ impl PhotonApp {
         self.device_avatar_scaled = None;
         self.device_avatar_scaled_diameter = 0;
         self.avatar_set_rx = None; // an in-flight avatar pick must not install under the next identity
+        self.group_faces.clear();
+        self.group_faces_decoding.clear();
+        self.group_faces_unreadable.clear();
+        self.group_faces_dirty = true;
+        self.avatar_pick_for = None;
         self.pending_fleet_key = None;
         self.probed_session = None;
         self.probed_handle = None;

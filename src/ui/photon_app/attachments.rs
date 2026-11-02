@@ -772,6 +772,9 @@ impl PhotonApp {
                         .collect()
                 })
                 .unwrap_or_default();
+            // A group's PICTURE (group_avatar.rs) rides with its files: a few KB, fetched on any network, like a head.
+            let mut hashes = hashes;
+            hashes.extend(self.molecule_rosters.iter().find(|(g, _)| g.0 == *cid.as_bytes()).and_then(|(_, r)| r.avatar_image()));
             for h in hashes {
                 if self.attach_auto_fetched.contains(&h) || self.attach_fetch_inflight.contains_key(&h) {
                     continue;
@@ -1018,6 +1021,8 @@ impl PhotonApp {
             }
             // The landing is the fetch's end edge: nothing re-asks for a blob that is here.
             self.attach_fetch_inflight.remove(&r.content_hash);
+            // A group's picture may be what landed (group_avatar.rs).
+            self.group_faces_dirty = true;
             // A blob a leaver asked us to take (holdings.rs): one fewer item at risk on its screen.
             self.holdings_pull_settled(&r.content_hash, true);
             // A recording landing is the disk's edge (space.rs).

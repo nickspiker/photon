@@ -79,6 +79,7 @@
 - [Group waves](project_group_waves.md) — 2026-10-26 waves+beams in molecules BUILT (mesh, beam fan, roll, recorded, reconnect, express, never-friended members); field test pending
 - [Group media at any size](project_group_media_scale.md) — docs/group-media-scale.md; 1a+1b+roll call BUILT; relay = member peer-to-peer only, no fgtw, only w/o direct path, only if faster (Nick 2026-11-01); 2a sender keys next
 - [Address sets](project_address_sets.md) — 2026-11-01 docs/addresses.md: stages 1-3 BUILT (every address per device, own getifaddrs set, phonebook kind 4, worker deployed); Windows + v4/v6 reflexive split open
+- [Group avatars](project_group_avatars.md) — 2026-11-02 BUILT: AvatarRecord + AV1-in-VSF blob fetched like group files; Manage page big avatar (drop / Android tap); field test pending
 - [Group pigeon stuck fetch](project_group_pigeon_stuck_fetch.md) — 2026-11-01 FIXED: fetch aimed at a friend's offline pinned device never ended (person-level is_online); per-device verdict now
 - [Wave replay + beam video](project_wave_replay.md) — 2026-11-01 BUILT unverified: replayed wave screen, opt-in kept beam video (H.264 in VSF), one person page; field test pending
 - [Self atom on demand](project_self_atom_on_demand.md) — 2026-11-02 FIXED: reset device never founded the self atom and dropped its pages; a sibling page now founds it

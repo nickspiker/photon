@@ -51,6 +51,9 @@ impl PhotonApp {
         timed_drain!("attach_prep", self.drain_attach_prepared());
         // Decoded attachment pictures → the cache; preview wants → decode jobs / fetches.
         timed_drain!("presence", self.drain_presence_probes());
+        // Group pictures: ours made, held ones read (group_avatar.rs); then one look on the edge a roster change, a landing or a presence answer raised.
+        timed_drain!("group_faces", self.drain_group_faces());
+        self.group_faces_tick();
         timed_drain!("img_decoded", self.drain_img_decoded());
         timed_drain!("img_view", self.drain_img_view());
         timed_drain!("img_wants", self.drain_img_wants());

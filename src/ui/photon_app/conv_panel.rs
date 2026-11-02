@@ -11,9 +11,12 @@ const SLOT_BOOT: HitId = 3;
 const SLOT_CLEAR_WAVES: HitId = 4;
 const SLOT_CLEAR_ALL: HitId = 5;
 const SLOT_MESSAGE: HitId = 6;
-const SLOT_BONDS: HitId = 8;
+/// A group's big avatar on its Manage page (group_avatar.rs): Android picks a picture, the desktop's hover hint says to drop one.
+pub(super) const SLOT_AVATAR: HitId = 7;
+pub(super) const SLOT_AVATAR_REMOVE: HitId = 8;
+pub(super) const SLOT_BONDS: HitId = 9;
 /// The slot span reserved in init: the pills, then 40 Bonds rows.
-pub(super) const CONV_PANEL_SLOTS: HitId = 48;
+pub(super) const CONV_PANEL_SLOTS: HitId = SLOT_BONDS + 40;
 
 impl PhotonApp {
     /// The one other person the open conversation is with — None for a group, our own notes, or a sibling's row. Such a conversation's panel IS that person's page (Nick 2026-11-01: "the person management page is distinct from the one in a conversation, can we combine those?").
@@ -182,6 +185,27 @@ impl PhotonApp {
                     let title: String = self.molecule_title_textbox.as_ref().map(|t| t.chars.iter().collect()).unwrap_or_default();
                     self.rename_molecule(gid, &title);
                     self.change_focus(None);
+                }
+            }
+            SLOT_AVATAR => {
+                // Android: the system picker, its pick routed to this group (set_avatar_from_file). Desktop: a picture is dropped, never picked — say so.
+                if let Some(gid) = gid.filter(|g| !self.molecule_is_left(g)) {
+                    #[cfg(target_os = "android")]
+                    {
+                        self.change_focus(None);
+                        self.avatar_pick_for = Some(gid);
+                        self.pending_picker_request = true;
+                    }
+                    #[cfg(not(target_os = "android"))]
+                    {
+                        let _ = gid;
+                        self.ready_toast = Some(tr(Msg::DragDropAvatar).into_owned());
+                    }
+                }
+            }
+            SLOT_AVATAR_REMOVE => {
+                if let Some(gid) = gid {
+                    self.remove_molecule_avatar(gid);
                 }
             }
             SLOT_MESSAGE => {
