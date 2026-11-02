@@ -22,14 +22,20 @@ pub struct VideoKept {
 /// Drain a beam spool into the `beam.video` document and store it. `None` when the spool holds no frame (nobody beamed), or the vault refuses the blob. The spool file goes either way.
 pub fn keep(ticket: BeamTicket, identity_seed: &[u8; 32]) -> Option<VideoKept> {
     let recs = beam_drain(&ticket);
-    beam_discard(ticket);
-    let (bytes, tracks) = document(&recs)?;
+    // Stored FIRST, then the spool and its register go: a crash between the two recovers the spool again, never loses both.
+    let Some((bytes, tracks)) = document(&recs) else {
+        beam_discard(ticket);
+        return None;
+    };
+    drop(recs);
     let hash = *blake3::hash(&bytes).as_bytes();
     let size = bytes.len() as u64;
     if let Err(e) = crate::storage::blob_store_any(identity_seed, &hash, &bytes) {
         crate::logf!("BEAM: video keep failed — the vault refused the {} byte document: {}", size, e);
+        beam_discard(ticket);
         return None;
     }
+    beam_discard(ticket);
     crate::logf!("BEAM: video kept — {} track(s), {} bytes as blob {}…", tracks.len(), size, hex::encode(&hash[..4]));
     Some(VideoKept { hash, size, tracks })
 }

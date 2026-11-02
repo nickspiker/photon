@@ -733,16 +733,22 @@ impl PhotonApp {
             return;
         }
         self.orphan_waves_swept = true;
-        // A beam video spool left by a crash has no register to finish — it goes.
-        crate::wave::spool::beam_sweep_strays();
         let seed = self.session.as_ref().map(|s| s.identity_seed).unwrap_or([0u8; 32]);
+        let mut claimed: Vec<[u8; 8]> = Vec::new();
         for (ticket, peer, offer_osc, id8) in crate::wave::spool::recover_orphans() {
             crate::logf!(
                 "WAVE: recovering orphaned wave spool ({}) — the crash interrupted its keep; transcoding now",
                 hex::encode(id8)
             );
-            self.spawn_keep_transcode(ticket, peer, offer_osc, seed, id8, None, None);
+            // The beam's video the same crash left, when it was being saved: it rides the same keep.
+            let beam = crate::wave::spool::recover_beam(&id8);
+            if beam.is_some() {
+                claimed.push(id8);
+            }
+            self.spawn_keep_transcode(ticket, peer, offer_osc, seed, id8, None, beam);
         }
+        // Every beam spool no recovered wave claimed goes, with its register.
+        crate::wave::spool::beam_sweep_strays(&claimed);
     }
 
     /// The ring-lease heartbeat (Nick 2026-09-08). Origin: while Outgoing, re-express the offer every ~1s so every ringing answering device keeps its lease — the beat stops the instant we leave Outgoing (answered by anyone / hung up), which is the universal, loss-proof stop. Answerer: a Ringing wave with no offer beat for ~3s lapses SILENTLY (no row — the origin signs the missed-wave record, never the receiver). Instant stops (Hangup/Decline/sibling-answer) still fire on their edges; this is the backstop for when no edge is ever delivered (the desktop+mac forever-ring, 2026-09-08).

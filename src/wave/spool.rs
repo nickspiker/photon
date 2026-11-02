@@ -428,6 +428,8 @@ pub fn beam_frame_payload(frame_no: u32, gains: [u16; 4], au: &[u8]) -> Vec<u8> 
 pub struct BeamTicket {
     key: [u8; 32],
     pub path: std::path::PathBuf,
+    /// The wave it belongs to — names its durable register.
+    id8: [u8; 8],
 }
 
 impl Drop for BeamTicket {
@@ -453,7 +455,9 @@ pub fn beam_arm(wave_id8: &[u8; 8]) -> Option<BeamTicket> {
     *BEAM_SPOOL.lock().unwrap() = Some(BeamSpool { cipher, file, counter: 0 });
     BEAM_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     crate::logf!("BEAM: saving this wave's video ({})", hex::encode(wave_id8));
-    Some(BeamTicket { key, path })
+    let t = BeamTicket { key, path, id8: *wave_id8 };
+    persist_beam_register(&t);
+    Some(t)
 }
 
 /// Stop taking records (the wave ended); the ticket decides what becomes of the file.
@@ -531,14 +535,57 @@ pub fn beam_drain(t: &BeamTicket) -> Vec<BeamRec> {
 /// Remove a beam spool's file (after its keep, or when the user saves no video).
 pub fn beam_discard(t: BeamTicket) {
     crate::log_err!(crate::storage::absent_ok(std::fs::remove_file(&t.path)), "BEAM: removing a video spool");
+    drop_beam_register(&t.id8);
 }
 
-/// Launch: any beam spool left by a crash is removed — there is no register to finish its keep.
-pub fn beam_sweep_strays() {
+// THE BEAM SPOOL'S DURABLE REGISTER (Nick 2026-11-01: "How is the video lost on crash?" → "Yes"): the audio's model for video — the spool key persisted in the device vault the moment the spool opens, so a crash mid-beam recovers at the next launch beside the wave's audio (recover_orphans) instead of leaving ciphertext nobody can open.
+
+fn beam_reg_key(wave_id8: &[u8; 8]) -> String {
+    format!("beam.spool.{}", hex::encode(wave_id8))
+}
+
+fn persist_beam_register(t: &BeamTicket) {
+    let Some(v) = crate::storage::device_vault() else {
+        return;
+    };
+    match v.write(&beam_reg_key(&t.id8), &t.key) {
+        Ok(()) => crate::logf!("BEAM: video spool register persisted ({})", hex::encode(t.id8)),
+        Err(e) => crate::logf!("BEAM: video spool register persist FAILED ({}) — a crash mid-beam loses this video", e),
+    }
+}
+
+fn drop_beam_register(wave_id8: &[u8; 8]) {
+    if let Some(v) = crate::storage::device_vault() {
+        crate::log_err!(v.delete(&beam_reg_key(wave_id8)), "BEAM: dropping the video spool register");
+    }
+}
+
+/// Launch recovery, beside the audio's: the beam spool a crash left for this wave, when its register survives — ready for the same keep.
+pub fn recover_beam(wave_id8: &[u8; 8]) -> Option<BeamTicket> {
+    let path = crate::storage::runtime_dir().join(format!("{BEAM_PREFIX}{}.tmp", hex::encode(wave_id8)));
+    if !path.exists() {
+        drop_beam_register(wave_id8);
+        return None;
+    }
+    let reg = crate::storage::device_vault()?.read(&beam_reg_key(wave_id8)).ok()??;
+    let key: [u8; 32] = reg.as_slice().try_into().ok()?;
+    crate::logf!("BEAM: recovering the video a crash left for wave {}", hex::encode(wave_id8));
+    Some(BeamTicket { key, path, id8: *wave_id8 })
+}
+
+/// Launch, after the audio's recovery: every beam spool no recovered wave claimed goes, with its register (a wave whose audio did not survive has nothing for its video to sit beside).
+pub fn beam_sweep_strays(claimed: &[[u8; 8]]) {
     let Ok(entries) = std::fs::read_dir(crate::storage::runtime_dir()) else { return };
     for e in entries.flatten() {
-        if e.file_name().to_string_lossy().starts_with(BEAM_PREFIX) {
-            crate::log_err!(std::fs::remove_file(e.path()), "BEAM: removing a stray video spool");
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Some(hexid) = name.strip_prefix(BEAM_PREFIX).and_then(|n| n.strip_suffix(".tmp")) else { continue };
+        let id8 = hex::decode(hexid).ok().and_then(|b| <[u8; 8]>::try_from(b).ok());
+        if id8.is_some_and(|i| claimed.contains(&i)) {
+            continue;
+        }
+        crate::log_err!(std::fs::remove_file(e.path()), "BEAM: removing a stray video spool");
+        if let Some(i) = id8 {
+            drop_beam_register(&i);
         }
     }
 }
