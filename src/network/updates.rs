@@ -309,14 +309,53 @@ pub fn our_row(rows: &[ManifestRow]) -> Option<ManifestRow> {
         .cloned()
 }
 
-/// Download an artefact to `dest`, then gate it twice: BLAKE3 against the signed manifest's hash, and (for desktop binaries) the appended Ed25519 self-signature on disk. Nothing execs unless both pass. `progress(done, total)` fires as chunks stream in (total = 0 when the server sent no length) — the Updates page renders it as the download bar.
+/// How one download attempt failed: the bytes arrived but did not hash to the signed manifest's value, or anything else (network, disk, signature).
+#[cfg(not(target_os = "ferros"))]
+enum FetchError {
+    Mismatch(String),
+    Failed(String),
+}
+
+#[cfg(not(target_os = "ferros"))]
+impl From<String> for FetchError {
+    fn from(s: String) -> Self {
+        FetchError::Failed(s)
+    }
+}
+
+/// [`download_once`], with ONE more try after a hash mismatch (Nick 2026-11-01 asked "depends on how it fails?" — this is the one failure a retry cures): the manifest and the artefact live at fixed URLs uploaded one after the other, so a fetch that lands between the two uploads gets a hash from one publish and bytes from the other. The manifest is re-read (`refresh`) and the artefact fetched again against it; a second mismatch — corruption or tampering rather than a race — is refused as before. Every other failure is final at once.
 #[cfg(not(target_os = "ferros"))]
 fn download_verified(
     row: &ManifestRow,
     dest: &PathBuf,
     check_binary_sig: bool,
     progress: &dyn Fn(u64, u64),
-) -> Result<(), String> {
+    refresh: &dyn Fn() -> Option<ManifestRow>,
+) -> Result<ManifestRow, String> {
+    match download_once(row, dest, check_binary_sig, progress) {
+        Ok(()) => Ok(row.clone()),
+        Err(FetchError::Failed(e)) => Err(e),
+        Err(FetchError::Mismatch(e)) => {
+            let Some(fresh) = refresh() else {
+                return Err(e);
+            };
+            crate::logf!("UPDATE: {} — re-read the manifest ({} → {}), one more try", e, row.version_string(), fresh.version_string());
+            match download_once(&fresh, dest, check_binary_sig, progress) {
+                Ok(()) => Ok(fresh),
+                Err(FetchError::Mismatch(e2)) | Err(FetchError::Failed(e2)) => Err(e2),
+            }
+        }
+    }
+}
+
+/// Download an artefact to `dest`, then gate it twice: BLAKE3 against the signed manifest's hash, and (for desktop binaries) the appended Ed25519 self-signature on disk. Nothing execs unless both pass. `progress(done, total)` fires as chunks stream in (total = 0 when the server sent no length) — the Updates page renders it as the download bar.
+#[cfg(not(target_os = "ferros"))]
+fn download_once(
+    row: &ManifestRow,
+    dest: &PathBuf,
+    check_binary_sig: bool,
+    progress: &dyn Fn(u64, u64),
+) -> Result<(), FetchError> {
     use std::io::Read;
     // Already-staged short-circuit: if the destination file already holds bytes matching the signed manifest hash, we downloaded this exact artefact on a prior attempt (user hit Update, then skipped the install). Re-verify from disk and skip the network entirely — otherwise every re-press re-pulls the full ~36MB APK / binary, hammering a metered connection for nothing (the observed "wrecks my hotspot for 30s" on a repeat Update). The hash is the same integrity anchor as a fresh download.
     if let Ok(existing) = std::fs::read(dest) {
@@ -372,10 +411,10 @@ fn download_verified(
     }
     let got = blake3::hash(&bytes);
     if got.as_bytes() != &row.hash {
-        return Err(format!(
+        return Err(FetchError::Mismatch(format!(
             "downloaded {} bytes but the hash didn't match the signed manifest (stale CDN copy?) — nothing installed, running version untouched; retry shortly",
             bytes.len()
-        ));
+        )));
     }
     std::fs::write(dest, &bytes).map_err(|e| format!("artefact write: {e}"))?;
     if check_binary_sig {
@@ -468,19 +507,20 @@ fn mirror_into(src: &std::path::Path, dest: &std::path::Path) -> Result<(), Stri
 
 /// Desktop one-click apply: download next to the current exe, verify (hash + appended signature), swap atomically, then mirror the verified binary into the OTHER install copies. Returns the re-exec target (the shim where present, else the swapped exe). Unix: rename() over the path is atomic and the running process keeps its open inode. Windows: the running exe is locked against overwrite but CAN be renamed aside — shuffle to .old (deleted on some future launch), place the new exe, done.
 #[cfg(target_os = "ferros")]
-pub fn apply_desktop_blocking(_row: &ManifestRow, _progress: &dyn Fn(u64, u64)) -> Result<PathBuf, String> {
+pub fn apply_desktop_blocking(_row: &ManifestRow, _channel: Channel, _progress: &dyn Fn(u64, u64)) -> Result<PathBuf, String> {
     Err("no update server from ferros".to_string())
 }
 
 #[cfg(not(any(target_os = "android", target_os = "ferros")))]
 pub fn apply_desktop_blocking(
     row: &ManifestRow,
+    channel: Channel,
     progress: &dyn Fn(u64, u64),
 ) -> Result<PathBuf, String> {
     // Resolve to the REAL install path (never a "(deleted)" ghost) so the swap + re-exec land on the actual binary, not a garbage-named sibling.
     let exe = installed_exe_path()?;
     let staged = exe.with_extension("update-staged");
-    download_verified(row, &staged, true, progress)?;
+    download_verified(row, &staged, true, progress, &|| fetch_manifest_blocking(channel).ok().and_then(|r| our_row(&r)))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -557,12 +597,13 @@ pub fn sweep_old_binary() {
 #[cfg(target_os = "android")]
 pub fn download_apk_blocking(
     row: &ManifestRow,
+    channel: Channel,
     progress: &dyn Fn(u64, u64),
 ) -> Result<PathBuf, String> {
     let dir = kete::android_vault_dirs()
         .map(|(files, _)| files)
         .ok_or("android files dir not wired")?;
     let dest = std::path::Path::new(&dir).join("photon-update.apk");
-    download_verified(row, &dest, false, progress)?;
+    download_verified(row, &dest, false, progress, &|| fetch_manifest_blocking(channel).ok().and_then(|r| our_row(&r)))?;
     Ok(dest)
 }

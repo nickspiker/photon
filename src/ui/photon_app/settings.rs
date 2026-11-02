@@ -211,7 +211,7 @@ impl PhotonApp {
             };
             #[cfg(not(target_os = "android"))]
             {
-                match crate::network::updates::apply_desktop_blocking(&row, &progress) {
+                match crate::network::updates::apply_desktop_blocking(&row, channel, &progress) {
                     Ok(exe) => {
                         crate::log_err!(tx.send(UpdateEvent::Applied(exe)), "hand an applied update to the UI");
                     }
@@ -222,7 +222,7 @@ impl PhotonApp {
             }
             #[cfg(target_os = "android")]
             {
-                match crate::network::updates::download_apk_blocking(&row, &progress) {
+                match crate::network::updates::download_apk_blocking(&row, channel, &progress) {
                     Ok(path) => {
                         crate::log_err!(tx.send(UpdateEvent::ApkReady(path.to_string_lossy().into_owned())), "hand a staged APK to the UI");
                     }

@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Updates retry a mismatched download once.** An update downloaded while a new build was being published could fail its integrity check ("the hash didn't match"); Photon now re-reads the update list and downloads once more, and still refuses anything that fails twice.
 - **Joining a big group wave starts you muted.** The first two people in a group wave or beam come in with their microphones on; from the third person on, you join muted and tap Unmute when you want to speak.
 - **Files in groups reach everyone.** A device fetching a group's file from a friend could wait forever on that friend's phone while it was off, because the friend's other devices made the person look online; it now sees that one device is off, moves on, and finds the file on another device — often one of your own.
 - **Back works while a picture is still downloading.** On the image screen, the Back button did nothing until the full-size copy had arrived; it now works straight away.
