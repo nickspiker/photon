@@ -10,3 +10,5 @@ FIXED: status.rs — a from_sibling page whose token is the derived self atom's 
 
 **Why:** a deliberate "never found empty" rule plus a drop gate made a deadlock on any device that lost its local rows.
 **How to apply:** verify on the Pixel: look for "a sibling holds rows of the conversation with only us in it" then pages landing. Related: [[project_conversation_convergence]].
+
+2026-11-02 later: the Passwords.kdbx pigeon (desktop → Pixel "notes") showed as an empty line with Save → "fetching from devices", then appeared after Nick went back and forward in the conversation — the row (head/name, presence) did not refresh while it was on screen; re-entry fixed it. Nick: "I'll sort that later" — OPEN, not investigated (the 14:40 log held no Save attempt).

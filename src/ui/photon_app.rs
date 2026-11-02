@@ -953,7 +953,7 @@ const DEFAULT_REACTIONS: [&str; 5] = [
     "\u{1F44E}",
 ];
 
-/// The bubble text for a ROW. THE ATTACHMENT IS THE MESSAGE (Nick 2026-09-12: "just show the image or code or waveform or thumbnail, that's it"): a picture row has no text at all (the band above is the row), a code or text row shows its first lines, anything without a visual shows its bare filename. No kind glyph, no size, no hint — the size and the actions live in the details strip a tap on the row opens.
+/// The bubble text for a ROW. THE ATTACHMENT IS THE MESSAGE (Nick 2026-09-12: "just show the image or code or waveform or thumbnail, that's it"): a picture row has no text at all (the band above is the row), a code or text row shows its first lines, anything without a visual shows its kind's glyph and its filename (Nick 2026-11-02, a distinct icon for files with no preview). No size, no hint — the size and the actions live in the details strip a tap on the row opens.
 /// The group offer row (docs/molecules.md §10.1): the bare Offer kind marker, in either direction.
 fn is_bond_offer_row(m: &crate::types::ChatMessage) -> bool {
     m.control == Some(crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Offer))
@@ -977,7 +977,8 @@ fn display_row(msg: &crate::types::ChatMessage) -> String {
                     return lines.join("\n");
                 }
             }
-            return if name.is_empty() { a.kind.glyph().to_string() } else { name };
+            // A FILE WITH NO VISUAL leads with its kind's glyph (Nick 2026-11-02: "would be nice to have a distinct icon for attachments that we don't generate previews for") — the row reads as a file at a glance, the name after it.
+            return if name.is_empty() { a.kind.glyph().to_string() } else { format!("{} {}", a.kind.glyph(), name) };
         }
     }
     display_content(msg)
