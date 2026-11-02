@@ -80,6 +80,7 @@
 - [Group media at any size](project_group_media_scale.md) — docs/group-media-scale.md; 1a+1b+roll call BUILT; relay = member peer-to-peer only, no fgtw, only w/o direct path, only if faster (Nick 2026-11-01); 2a sender keys next
 - [Address sets](project_address_sets.md) — 2026-11-01 docs/addresses.md: stages 1-3 BUILT (every address per device, own getifaddrs set, phonebook kind 4, worker deployed); Windows + v4/v6 reflexive split open
 - [Group pigeon stuck fetch](project_group_pigeon_stuck_fetch.md) — 2026-11-01 FIXED: fetch aimed at a friend's offline pinned device never ended (person-level is_online); per-device verdict now
+- [Wave replay + beam video](project_wave_replay.md) — 2026-11-01 BUILT unverified: replayed wave screen, opt-in kept beam video (H.264 in VSF), one person page; field test pending
 - [Emma bond era split](project_emma_bond_era_split.md) — 2026-11-01 CONVICTED + FIXED (docs/lanes.md "Which era is live"): friend-seen era wins adoption, unconfirmed eras stay local, fleet-first; field test pending
 - [Emma–Brittany group fork](project_emma_brittany_group_fork.md) — 2026-11-01 FIXED in code: lower root wins, second join answer can't replace, lowest party heals with a whole era; field test pending
 - [Beam settings + g2t](project_beam_settings.md) — 2026-10-26 BUILT: Beam page (per-device keys, follow-fleet toggle, 5 live controls, test patterns) + HLG10→g2t HDR beams; field test pending
