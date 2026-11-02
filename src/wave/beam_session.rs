@@ -540,11 +540,10 @@ impl Drop for Sender {
     }
 }
 
-/// The ladder's ceiling for a capture's bands: the whole capture on a LAN-fast path (a round trip of 15 ms or less), else the highest band no wider than 1280 — the far side's software decoder is the limit off the LAN — and two bands lower again on a metered network.
+/// The ladder's ceiling for a capture's bands: the highest band no wider than 1920 on a LAN-fast path (a round trip of 15 ms or less), else no wider than 1280 — the far side's decoder is the limit, not the LAN (2026-11-01, Nick and Emma: on one LAN the beam reached the whole 2560×1920 capture at 7.4 Mbit/s and Emma's phone decoded about ten frames a second) — and two bands lower again on a metered network. The receiver stating its own decode ceiling is the real answer and needs a wire field; until then the far side is assumed to be a phone.
 fn ceiling(bands: &[(u16, u16)]) -> usize {
     let lan = super::LAST_LINK_RTT_MS.load(Ordering::Relaxed) <= 15;
-    // WHY/PROOF: `bands` is the camera's mode list as the OS reports it, which can be empty — the ceiling is then rung 0, not a wrapped rung past the list.
-    let mut top = if lan { bands.len().saturating_sub(1) } else { super::beam_ladder::top_within(bands, 1280) };
+    let mut top = super::beam_ladder::top_within(bands, if lan { 1920 } else { 1280 });
     if crate::network::wfd::net_metered() {
         // WHY/PROOF: the ladder's floor — a capture with fewer than three bands stays at rung 0 on a metered link, never wraps to a rung that does not exist.
         top = top.saturating_sub(2);

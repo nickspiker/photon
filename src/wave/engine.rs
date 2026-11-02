@@ -592,6 +592,8 @@ fn run(
     // Peer-loss governance state (see LINK_TAIL_V2): the tail byte's per-second baseline, the peer's max reported loss this local second, whether this peer speaks the byte at all, the last moment they reported loss, and the fill-ask pressure counter.
     let mut tail_lost_base: u64 = 0;
     let mut peer_loss_sec_max: u32 = 0;
+    // The audio stepped down on a building queue this second: the drop clears the slope ring, so the video verdict would read the same second as calm and climb into the queue (2026-11-01, Nick and Emma: the beam reached 2560×1920 at 7.4 Mbit/s nine seconds after the audio found 680 kbit/s of room).
+    let mut slope_dropped_sec = false;
     // The next datagram carries the latency tail (LINK_TAIL_V3) — raised on the 1 s cadence.
     let mut send_l_tail = true;
     let mut peer_loss_max_wave: u32 = 0;
@@ -1791,6 +1793,7 @@ fn run(
                             last_slope_drop = now;
                             clean_rx_windows = 0;
                             slope_buckets.clear();
+                            slope_dropped_sec = true;
                             crate::logf!("WAVE: tier down → {} kbps (rtt slope {:.0} ms/s: the queue is building — capacity ≈ {:.0} kbps, one jump to the rung under it)", TIER_RATES[pending_tier] / 1000, slope_ms, r / (1.0 + s) / 1000.0);
                         }
                     }
@@ -1807,10 +1810,11 @@ fn run(
                     // Delay held well over the floor (the loss corroboration's own margin), or no round trip at all this second once the wave has seen one, is a full queue or a blackout, never clean.
                     let standing_queue = rtt_n > 0 && rtt_min != u32::MAX && rtt_ema - rtt_min as f32 > LOSS_BLOAT_CORROBORATION_MS;
                     let blacked_out = rtt_n > 0 && verdict_rtt_n == 0;
-                    let congested = (peer_loss_sec_max >= LOSSES_TO_DROP as u32 && (queue_agrees || peer_loss_sec_max >= PEER_LOSS_CATASTROPHIC)) || slope_now > SLOPE_DROP_MS_PER_SEC || standing_queue || blacked_out;
-                    let clean = peer_loss_sec_max == 0 && slope_now <= SLOPE_CLIMB_MS_PER_SEC && !standing_queue && !blacked_out;
+                    let congested = (peer_loss_sec_max >= LOSSES_TO_DROP as u32 && (queue_agrees || peer_loss_sec_max >= PEER_LOSS_CATASTROPHIC)) || slope_now > SLOPE_DROP_MS_PER_SEC || standing_queue || blacked_out || slope_dropped_sec;
+                    let clean = peer_loss_sec_max == 0 && slope_now <= SLOPE_CLIMB_MS_PER_SEC && !standing_queue && !blacked_out && !slope_dropped_sec;
                     if is_lead() { super::publish_link_verdict(congested, clean); }
                     verdict_rtt_n = 0;
+                    slope_dropped_sec = false;
                 }
                 peer_loss_sec_max = 0;
                 tail_lost_base = windows_lost;
