@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Files in groups reach everyone.** A device fetching a group's file from a friend could wait forever on that friend's phone while it was off, because the friend's other devices made the person look online; it now sees that one device is off, moves on, and finds the file on another device — often one of your own.
 - **Back works while a picture is still downloading.** On the image screen, the Back button did nothing until the full-size copy had arrived; it now works straight away.
 - **Any tap brings the picture's controls back.** With the controls hidden, tapping beside the picture now brings them back too, not only a tap on the picture itself.
 - **Waves count as calls on Android.** While you are in a wave or beam, other apps' notifications and rings now play as the soft in-call tone instead of at full volume, the way they do during a phone call; Settings → Wave → "Treat waves as phone calls" turns this off if you would rather have the slightly lower audio delay.

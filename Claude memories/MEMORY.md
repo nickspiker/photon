@@ -79,6 +79,7 @@
 - [Group waves](project_group_waves.md) — 2026-10-26 waves+beams in molecules BUILT (mesh, beam fan, roll, recorded, reconnect, express, never-friended members); field test pending
 - [Group media at any size](project_group_media_scale.md) — docs/group-media-scale.md; 1a party table + 1b encode once + newcomer-only roll call BUILT 2026-10-31 (field test pending); 2a sender keys next
 - [Address sets](project_address_sets.md) — 2026-11-01 docs/addresses.md: stages 1-3 BUILT (every address per device, own getifaddrs set, phonebook kind 4, worker deployed); Windows + v4/v6 reflexive split open
+- [Group pigeon stuck fetch](project_group_pigeon_stuck_fetch.md) — 2026-11-01 FIXED: fetch aimed at a friend's offline pinned device never ended (person-level is_online); per-device verdict now
 - [Emma bond era split](project_emma_bond_era_split.md) — 2026-11-01 CONVICTED + FIXED (docs/lanes.md "Which era is live"): friend-seen era wins adoption, unconfirmed eras stay local, fleet-first; field test pending
 - [Emma–Brittany group fork](project_emma_brittany_group_fork.md) — OPEN 2026-11-01: two era-1 roots for one group (likely atom "blue"), Emma drops all of Brittany's frames
 - [Beam settings + g2t](project_beam_settings.md) — 2026-10-26 BUILT: Beam page (per-device keys, follow-fleet toggle, 5 live controls, test patterns) + HLG10→g2t HDR beams; field test pending

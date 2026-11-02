@@ -521,7 +521,9 @@ impl PhotonApp {
             if let Some((a, alt)) = c.race_addrs() {
                 let relay = relay_unless_direct_trusted(&c, crate::network::udp::get_local_ip());
                 if let Some(k) = primary {
-                    let rank = match (is_friend, c.is_online, c.validated_path.is_some()) {
+                    // The pinned DEVICE's own verdict, not the person's (an offline phone ranked as live because its owner's desktop was up, and took the ask).
+                    let up = self.device_online(&k).unwrap_or(c.is_online);
+                    let rank = match (is_friend, up, c.validated_path.is_some()) {
                         (true, true, true) => 0,
                         (true, true, false) => 1,
                         (false, true, _) => 2,
@@ -623,13 +625,12 @@ impl PhotonApp {
     }
 
     /// The device's online verdict as this device holds it — a contact's own device, or one of a friend's other known devices; None when no contact names it.
+    /// THE DEVICE'S OWN VERDICT FIRST (2026-11-01, Nick's desktop: an ask for Emma's group-wave recording aimed at her offline 8b29d719 sat four hours — the contact's is_online is the PERSON, kept true by her other devices, so the pinned device's 34 timeouts never ended the ask). Every pong and timeout lands on the pinged device's endpoint; the person's flag is the fallback for a device no endpoint names yet.
     fn device_online(&self, dev: &[u8; 32]) -> Option<bool> {
-        self.contacts.iter().find_map(|c| {
-            if c.device_key() == Some(*dev) {
-                return Some(c.is_online);
-            }
-            c.device_endpoints.iter().find(|ep| ep.pubkey == *dev).map(|ep| ep.online)
-        })
+        self.contacts
+            .iter()
+            .find_map(|c| c.device_endpoints.iter().find(|ep| ep.pubkey == *dev).map(|ep| ep.online))
+            .or_else(|| self.contacts.iter().find(|c| c.device_key() == Some(*dev)).map(|c| c.is_online))
     }
 
     /// QUIET, from edges alone (Nick 2026-10-21: "I don't like timers"): every ask ends in an event — the blob's frames (progress), "not held" (attach_none), the transport giving up on the device (a dead address, the relay's offline word), or the device's offline verdict.
