@@ -348,6 +348,8 @@ pub enum Msg<'a> {
     MessagesDelivered(usize),
     ChatDaysSpan(usize),
     ContactFleetPinned(usize),
+    /// Person page: how many of their devices answer right now.
+    DevicesOnline(usize),
     PublishedNameExplainer(&'a str),
     EditingSnippet(&'a str),
     ReactSnippet(&'a str),

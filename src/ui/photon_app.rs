@@ -747,6 +747,14 @@ enum BondKind {
     Friend,
 }
 
+/// Where the person page was opened from, so Back returns there (Nick 2026-11-01, one person page from everywhere): the People list (looking is not reading — Back goes to Ready and marks nothing), a conversation's orb (Back returns to that conversation), or a group's member list (Back returns to Bonds).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PersonReturn {
+    Conversation,
+    Ready,
+    Bonds,
+}
+
 /// One row of the Bonds page.
 #[derive(Clone, Debug)]
 struct BondRow {
@@ -2455,8 +2463,8 @@ pub struct PhotonApp {
     conv_nav_base: HitId,
     /// Boot two-tap arm (event-shown, interaction-cleared — any other press on the panel disarms).
     contact_boot_armed: bool,
-    /// The Person page was opened from the People list (docs/conversations.md D8, revised 2026-10-29): Back returns to Ready, not to a conversation's Bonds.
-    person_from_ready: bool,
+    /// Where the person page (and, for a two-person conversation, its whole panel) was opened from — Back returns there (`PersonReturn`).
+    person_return: PersonReturn,
     /// One-shot residency bypass: Shift+Escape sets it so the next close-requested actually exits instead of hiding.
     exit_requested: bool,
     /// Live shift-key mirror (refreshed each `on_event`) so `on_close_requested` — which gets no Context — can honor "shift+close = real exit".
@@ -3354,7 +3362,7 @@ impl PhotonApp {
             conv_panel_btn_base: HIT_NONE,
             conv_nav_base: HIT_NONE,
             contact_boot_armed: false,
-            person_from_ready: false,
+            person_return: PersonReturn::Conversation,
             exit_requested: false,
             shift_held: false,
             msg_hit_base: HIT_NONE,
@@ -4376,7 +4384,7 @@ fn conversation_page_rows(page: crate::ui::state::ConversationPage, bond_rows: u
         ConversationPage::Bonds => 3 + bond_rows,
         ConversationPage::Stats => 9,
         ConversationPage::Manage => 9,
-        ConversationPage::Person(_) => 16,
+        ConversationPage::Person(_) => 20,
     }
 }
 

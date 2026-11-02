@@ -164,6 +164,9 @@ impl PhotonApp {
         let active_ci = self.active_contact();
         // The open conversation's HEADER (ConvHeader): one view at any size, resolved here before the borrow — a group is no longer painted thru a transient contact.
         let active_gi = self.active_molecule();
+        // The conversation panel's rail and the two-person conversation's person — asked here, before the chrome borrow (the panel draws inside it).
+        let conv_rail = self.conversation_rail();
+        let conv_pair_person = self.pair_person();
         let conv_hdr: Option<super::ConvHeader> = self.conv_header();
         let active_gid: Option<crate::types::molecule::MoleculeId> = active_gi.map(|gi| self.molecule_rosters[gi].0);
         // Where a roster-backed conversation stands (Joining, CatchingUp, Standing, Left) — the status line under its header reads it, as a pair's reads its CLUTCH step.
@@ -2457,6 +2460,10 @@ impl PhotonApp {
                 let seed_ref = self.session.as_ref().map(|se| se.identity_seed);
                 // The person a Person page shows, as a contact row when they are one of ours.
                 let person = if let ConversationPage::Person(p) = page { Some(p) } else { None };
+                // The rail for this conversation (a two-person one: About · In numbers), the same list the tap handler reads.
+                let rail_pages = &conv_rail;
+                // This page is the person of a two-person conversation (the panel IS theirs): the conversation's own actions live on it.
+                let own_pair_page = person.is_some() && person == conv_pair_person;
                 let person_ci = person.and_then(|p| self.contacts.iter().position(|c| c.handle_hash == p && !c.is_sibling));
                 // Avatar cache at the Person-page diameter, rebuilt BEFORE the immutable borrows below.
                 let avatar_r = layout.unit * 2.0;
@@ -2559,7 +2566,7 @@ impl PhotonApp {
                 }
                 let pages_top = rail_inset.y + nav_h;
                 let pages_clip = fluor::paint::Clip::new(layout.rail.x as usize, pages_top.max(layout.rail.y) as usize, layout.rail.right() as usize, layout.rail.bottom() as usize);
-                for (i, p) in ConversationPage::RAIL.iter().enumerate() {
+                for (i, p) in rail_pages.iter().enumerate() {
                     let r = fluor::region::Region::new(rail_inset.x, pages_top - settings_rail_scroll + i as Coord * nav_h, rail_inset.w, nav_h);
                     if r.bottom() <= pages_top || r.y >= layout.rail.bottom() {
                         continue;
@@ -2824,6 +2831,11 @@ impl PhotonApp {
                             },
                         };
                         settings_line(&mut canvas, ctx.text, rows[10], &tr(Msg::YouIdentity), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                        // Their devices, and how many answer right now (each device's own verdict, DeviceEndpoint.online).
+                        let identity_line = match contact {
+                            Some(c) => format!("{} \u{00b7} {}", identity_line, tr(Msg::DevicesOnline(c.device_endpoints.iter().filter(|e| e.online).count()))),
+                            None => identity_line.into_owned(),
+                        };
                         settings_line(&mut canvas, ctx.text, rows[11], &identity_line, hspan2, *theme::LABEL_COLOUR, 400);
                         // The deterministic two-word voca pseudonym, always shown even when a published name renders elsewhere: it derives from the party id, so it's the one name that can't be changed or spoofed — the human-checkable identity anchor (compare it out-of-band and you've verified the person).
                         settings_line(&mut canvas, ctx.text, rows[12], &tr(Msg::PublishedNameExplainer(&crate::network::fgtw::fleet::keyed_pseudonym(&party))), hspan2, *theme::LABEL_COLOUR, 400);
@@ -2832,6 +2844,10 @@ impl PhotonApp {
                             draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[13], 0.5), &tr(Msg::BootPill { armed: self.contact_boot_armed }), btn + 3, ctx.pressed_hit);
                             settings_line(&mut canvas, ctx.text, rows[14], &tr(Msg::BootRemovesEverywhere), hspan2, *theme::LABEL_COLOUR, 400);
                             settings_line(&mut canvas, ctx.text, rows[15], &tr(Msg::BootOstracism), hspan2, *theme::LABEL_COLOUR, 400);
+                        }
+                        // YOUR CONVERSATION WITH THEM (Nick 2026-11-01, one person page): its clearing lives here, two-tap each, the same pills a group's Manage page draws — only on the page of the person this conversation is with, never on a group member's (those pills act on the open conversation).
+                        if own_pair_page {
+                            Self::draw_clear_pills(self.contact_clear_armed, btn + 4, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, [rows[16], rows[17], rows[18]], hspan2, ctx.pressed_hit);
                         }
                     }
                 }

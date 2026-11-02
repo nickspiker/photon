@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **One page for each person.** Tapping someone in People, the button at the top of your conversation with them, or their name in a group's member list now opens the same page — who they are, their devices online, verification, Message, Boot, and clearing your conversation with them — and Back returns to where you came from.
 
 ## v137
 - **Smoother beams on a busy connection.** When a wave's audio noticed the connection backing up, the video could still read that moment as calm and raise its quality straight into the jam; it now steps down with the audio, and on a home network the picture tops out at 1920 wide instead of the camera's full size, which phones could not decode smoothly.

@@ -130,6 +130,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::MessagesDelivered(n) => format!("{} of your messages delivered", fmt_mag(n as u64)).into(),
         Msg::ChatDaysSpan(n) => if n == 1 { format!("chatting across {} day", fmt_mag(1)) } else { format!("chatting across {} days", fmt_mag(n as u64)) }.into(),
         Msg::ContactFleetPinned(n) => format!("identity pinned since first fold \u{00b7} {} {} in their fleet", fmt_mag(n as u64), if n == 1 { "device" } else { "devices" }).into(),
+        Msg::DevicesOnline(n) => format!("{} online now", fmt_mag(n as u64)).into(),
         Msg::PublishedNameExplainer(name) => format!("always \u{201c}{name}\u{201d} \u{2014} derived from their identity, can\u{2019}t be changed").into(),
         Msg::EditingSnippet(s) => format!("editing \u{00bb} {s}").into(),
         Msg::ReactSnippet(s) => format!("react \u{00bb} {s}").into(),

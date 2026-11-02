@@ -16,7 +16,27 @@ const SLOT_BONDS: HitId = 8;
 pub(super) const CONV_PANEL_SLOTS: HitId = 48;
 
 impl PhotonApp {
-    /// The orb inside a conversation opens its panel on Bonds — the same page for every conversation.
+    /// The one other person the open conversation is with — None for a group, our own notes, or a sibling's row. Such a conversation's panel IS that person's page (Nick 2026-11-01: "the person management page is distinct from the one in a conversation, can we combine those?").
+    pub(super) fn pair_person(&self) -> Option<[u8; 32]> {
+        if self.active_molecule().is_some() {
+            return None;
+        }
+        let c = self.contacts.get(self.active_contact()?)?;
+        if c.is_sibling || self.our_party_id(c).is_none_or(|us| c.remote_count(&us) == 0) {
+            return None;
+        }
+        Some(c.handle_hash)
+    }
+
+    /// The rail's pages for the open conversation: a two-person conversation's are the person (About) and its numbers; every other conversation's are Bonds · In numbers · Manage. The render arm draws this list and the tap reads it back by index.
+    pub(super) fn conversation_rail(&self) -> Vec<ConversationPage> {
+        match self.pair_person() {
+            Some(p) => vec![ConversationPage::Person(p), ConversationPage::Stats],
+            None => ConversationPage::RAIL.to_vec(),
+        }
+    }
+
+    /// The orb inside a conversation opens its panel: a two-person conversation on the person's own page, any other on Bonds.
     pub(super) fn open_conversation_panel(&mut self, text: &mut fluor::text::TextRenderer) -> bool {
         if self.active_conversation.is_none() {
             return false;
@@ -30,7 +50,8 @@ impl PhotonApp {
                 tb.set_text(&title, text);
             }
         }
-        self.state = AppState::ConversationPanel(ConversationPage::Bonds);
+        self.person_return = PersonReturn::Conversation;
+        self.state = AppState::ConversationPanel(self.conversation_rail()[0]);
         true
     }
 
@@ -43,8 +64,10 @@ impl PhotonApp {
 
     /// Show one page of the panel, fresh from its top (the settings rule).
     fn goto_conversation_page(&mut self, page: ConversationPage) {
-        // Every page change inside the panel belongs to the conversation; only open_person_page marks a Person page as reached from People.
-        self.person_from_ready = false;
+        // A group member's page reached from Bonds returns to Bonds only while it is open; any other page of a group's panel returns to the conversation. A two-person conversation's panel keeps where it was opened from across its pages (About and In numbers are both the person's).
+        if self.person_return == PersonReturn::Bonds {
+            self.person_return = PersonReturn::Conversation;
+        }
         self.change_focus(None);
         self.disarm_conversation_panel();
         self.settings_content_scroll = 0.0;
@@ -68,22 +91,25 @@ impl PhotonApp {
         self.spawn_avatar_download(ci);
         let party = self.contacts[ci].handle_hash;
         self.goto_conversation_page(ConversationPage::Person(party));
-        self.person_from_ready = true;
+        self.person_return = PersonReturn::Ready;
     }
 
-    /// Back / Escape: a Person page reached from People returns to Ready, one reached from Bonds returns to Bonds; any other page returns to the conversation, which is front-of-eyes again (clear any unread that slipped in).
+    /// Back / Escape returns to where the page was opened from: the People list (nothing read), a group's Bonds, or the conversation, which is front-of-eyes again (clear any unread that slipped in).
     pub(super) fn leave_conversation_panel(&mut self) {
-        if self.person_from_ready && matches!(self.state, AppState::ConversationPanel(ConversationPage::Person(_))) {
-            self.person_from_ready = false;
-            self.change_focus(None);
-            self.disarm_conversation_panel();
-            self.state = AppState::Ready;
-            self.set_active_conversation(None);
-            return;
-        }
-        if matches!(self.state, AppState::ConversationPanel(ConversationPage::Person(_))) {
-            self.goto_conversation_page(ConversationPage::Bonds);
-            return;
+        match self.person_return {
+            PersonReturn::Ready => {
+                self.person_return = PersonReturn::Conversation;
+                self.change_focus(None);
+                self.disarm_conversation_panel();
+                self.state = AppState::Ready;
+                self.set_active_conversation(None);
+                return;
+            }
+            PersonReturn::Bonds if matches!(self.state, AppState::ConversationPanel(ConversationPage::Person(_))) => {
+                self.goto_conversation_page(ConversationPage::Bonds);
+                return;
+            }
+            _ => {}
         }
         self.change_focus(None);
         self.disarm_conversation_panel();
@@ -115,8 +141,9 @@ impl PhotonApp {
             self.molecule_leave_armed = false;
             self.scene_dirty = true;
         }
-        if self.conv_nav_base != HIT_NONE && hit_id >= self.conv_nav_base && hit_id < self.conv_nav_base + ConversationPage::RAIL.len() as HitId {
-            let p = ConversationPage::RAIL[(hit_id - self.conv_nav_base) as usize];
+        let rail = self.conversation_rail();
+        if self.conv_nav_base != HIT_NONE && hit_id >= self.conv_nav_base && hit_id < self.conv_nav_base + rail.len() as HitId {
+            let p = rail[(hit_id - self.conv_nav_base) as usize];
             self.goto_conversation_page(p);
             return true;
         }
@@ -162,8 +189,13 @@ impl PhotonApp {
                 let ConversationPage::Person(party) = page else {
                     return true;
                 };
+                // Already the conversation of the two of you, opened from it: Message goes back to it.
+                if self.person_return == PersonReturn::Conversation && self.pair_person() == Some(party) {
+                    self.leave_conversation_panel();
+                    return true;
+                }
                 if let Some(ci) = self.contacts.iter().position(|c| c.handle_hash == party && !c.is_sibling) {
-                    self.person_from_ready = false;
+                    self.person_return = PersonReturn::Conversation;
                     self.disarm_conversation_panel();
                     if self.contacts[ci].friendship_id.is_none() {
                         self.found_pair_conversation(ci);
@@ -210,7 +242,10 @@ impl PhotonApp {
                     return true;
                 };
                 match row.kind {
-                    super::BondKind::You | super::BondKind::Member => self.goto_conversation_page(ConversationPage::Person(row.party)),
+                    super::BondKind::You | super::BondKind::Member => {
+                        self.goto_conversation_page(ConversationPage::Person(row.party));
+                        self.person_return = PersonReturn::Bonds;
+                    }
                     super::BondKind::Invited | super::BondKind::Friend => {
                         if let Some(gid) = gid {
                             let key = (gid, row.party);

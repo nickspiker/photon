@@ -144,7 +144,7 @@ Under braid v2 a row's text itself can be discarded once its 32-byte strand valu
 
 **Built (v106):**
 - **Boot sticks.** The booted ledger (`storage::booted`, per device, loaded with the contacts at attest) records every boot, ours or a sibling's tombstone. Every roster push re-emits it as a tombstone; the roster merge, the cloud-backup merge (whose restored stubs now stamp older than any roster entry) and chain-sync adoption all refuse a booted contact; a boot rewrites the cloud backup at once. A deliberate re-add, stamped after the boot, lifts it.
-- **Clear waves / clear history** (contact panel, Manage, two-tap): every matching row is marked deleted across our fleet in page-sized pushes, and recordings and attachments are deleted from the vault on every device that applies the tombstones. The friend is not told; their copy is theirs.
+- **Clear waves / clear history** (the person page of your conversation with them, or a group's Manage, two-tap): every matching row is marked deleted across our fleet in page-sized pushes, and recordings and attachments are deleted from the vault on every device that applies the tombstones. The friend is not told; their copy is theirs.
 
 **Not built:** Appear offline, Mute, Unfriend's goodbye, date-range and per-kind selectors beyond waves, "ask them too", and discarding a deleted row's text under braid v2.
 
