@@ -78,6 +78,7 @@ mod music_play;
 mod peers;
 mod protocol;
 mod render;
+mod replay;
 mod settings;
 mod status;
 mod sync;
@@ -1788,6 +1789,9 @@ pub struct PhotonApp {
     viewer: Option<viewer::Viewer>,
     reader: Option<viewer::Reader>,
     viewer_base: HitId,
+    /// The replayed wave screen (replay.rs): open over the conversation while Some; its hit slots start at `replay_base`.
+    wave_replay: Option<replay::WaveReplay>,
+    replay_base: HitId,
     viewer_view_base: HitId,
     /// History pages opened off-thread (see HistPageOpened) — the drain merges; merging is the cheap half since the (timestamp, content-hash) index landed.
     hist_opened_tx: std::sync::mpsc::Sender<HistPageOpened>,
@@ -3026,6 +3030,8 @@ impl PhotonApp {
             viewer: None,
             reader: None,
             viewer_base: HIT_NONE,
+            wave_replay: None,
+            replay_base: HIT_NONE,
             viewer_view_base: HIT_NONE,
             hist_opened_tx: {
                 let (tx, _) = std::sync::mpsc::channel();

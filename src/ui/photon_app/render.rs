@@ -698,6 +698,14 @@ impl PhotonApp {
             self.wave_field_avatars = None;
             self.wave_field_tabs = Default::default();
         }
+        // THE REPLAYED WAVE SCREEN's faces (replay.rs), scaled at its tile size before the paint borrows `self`.
+        if let Some(n) = self.wave_replay.as_ref().map(|r| r.voices.len()) {
+            let area_top = if cfg!(target_os = "android") { crate::ui::safe_top_px() as f32 } else { fluor::host::chrome::strip_height(ctx.viewport) };
+            let g = super::replay::replay_geom(buf_w, buf_h, wave_unit, area_top);
+            if let Some(&(_, (_, _, r))) = super::wave_field::face_tiles(g.stage, n, wave_unit).first() {
+                self.refresh_replay_faces(((r * 2.0) as usize).max(2));
+            }
+        }
         // THE GROUP TILES (docs/group-waves.md; one grid for faces and pictures, 2026-10-31): each member a tile on the stage — their faces scaled here, before the paint borrows `self`.
         let group_roll: Vec<(super::group_wave::RollFace, ((usize, usize, usize, usize), (f32, f32, f32)))> = match wave_layout.filter(|_| group_layout) {
             Some(l) => {
@@ -2858,8 +2866,17 @@ impl PhotonApp {
         if matches!(self.state, AppState::Conversation) {
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             // ── DISTINCT VIEWER SCREEN (2026-09-11) ── while the image viewer or text reader is open it IS the conversation screen: the header, message walk, and composer are skipped entirely. They used to render every frame under an opaque pane that discarded them pixel by pixel (full shaping + paint cost for a black rectangle — Nick: "thrashing the CPU, RAM and bus for literally no reason"), and the pane itself was painted FIRST, so under topmost-first under-blend the pane swallowed its own image and pills too (the documented 2026-08-31 backdrop-order class).
-            let viewer_open = self.viewer.is_some() || self.reader.is_some();
-            if viewer_open {
+            let viewer_open = self.viewer.is_some() || self.reader.is_some() || self.wave_replay.is_some();
+            // THE REPLAYED WAVE SCREEN (replay.rs): over the conversation like the viewer, the body skipped.
+            if self.viewer.is_none() && self.reader.is_none() {
+                if let Some(rp) = self.wave_replay.as_mut() {
+                    let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
+                    let area_top = if cfg!(target_os = "android") { crate::ui::safe_top_px() as f32 } else { fluor::host::chrome::strip_height(ctx.viewport) };
+                    let pb = self.wave_playback.as_ref().filter(|_| self.wave_playback_hash == Some(rp.hash));
+                    super::replay::draw_replay(rp, pb, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, unit, area_top, self.replay_base, ctx.pressed_hit, ctx.damage_clip);
+                }
+            }
+            if self.viewer.is_some() || self.reader.is_some() {
                 if let Some(open_id) = self.active_conversation {
                     let ru = ctx.viewport.ru;
                     let unit = ReadyLayout::compute(buf_w, buf_h, ru).unit_height;

@@ -550,6 +550,10 @@ pub enum Msg<'a> {
     /// The kind as a word for the stats line.
     AttachKindName(crate::types::AttachKind),
     PlayPill,
+    /// The replayed wave screen's pause (replay.rs).
+    PausePill,
+    /// The replayed wave screen: a voice its recording does not name, by its place (1-based for people).
+    ReplayVoice(usize),
     DeletePill,
     DeletingPill,
     StopPill,

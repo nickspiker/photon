@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Recordings replay on their own screen.** Play on a wave's recording now opens a screen with everyone who was in it — each face lights up with their own voice as it plays, a scrub bar and Play/Pause sit underneath, and tapping someone mutes just them; it works the same for two people or a whole group, and a group's recording can be exported too.
 - **One page for each person.** Tapping someone in People, the button at the top of your conversation with them, or their name in a group's member list now opens the same page — who they are, their devices online, verification, Message, Boot, and clearing your conversation with them — and Back returns to where you came from.
 
 ## v137

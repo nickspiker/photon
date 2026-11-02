@@ -197,6 +197,14 @@ Colour is the spectral balance the AGB way: each band's power over the geometric
 
 Route and latency are different axes. Latency is the stream's path: exclusive MMAP, low-latency mode, 96-frame bursts, a 4 ms buffer. Route is which transducer the audio policy attaches the stream to. Android couples them only thru the IN_COMMUNICATION audio mode, which wakes the vendor voice pipeline (the 80 ms floor of 2026-08-19) — and that mode is never entered. Instead the OUTPUT stream carries the voice-communication usage (a policy label, nothing more) and Kotlin's `setCommunicationDevice` (API 31) points this app's voice-usage streams at the built-in earpiece for the wave, cleared at hangup. Wired and Bluetooth routes are left where the OS put them. The volume mirror reads the voice stream at the earpiece's curve while routed. The proof of the trade is the `AAudio out up` line: Exclusive/LowLatency at 4 ms, or the vendor policy has intervened on that device.
 
+## The replayed wave screen (2026-11-01)
+
+Nick 2026-11-01: "The UI for playing back a wave isn't super great in the molecule. would be nice to have video too and make it uniform somehow" → "Wave screen replayed is good".
+The wave card's Play opens a screen of its own (src/ui/photon_app/replay.rs), drawn over the conversation as the image viewer is: one tile per voice at any size (the live group screen's `face_tiles` grid), each face ringed by its own voice as the playback reaches it — the live wave's band powers (`LiveBands::frame_powers`, one rig per channel in the playback worker), so a replay colours exactly as the wave did — a scrub bar with the elapsed and total times, Play/Pause, and a tap on a face to leave that voice out of the mix (the playback's per-channel mute mask). Back returns to the conversation and the recording keeps playing on the card.
+Each recording row names its voices in channel order (`AttachRef::parties`, the row field `fp`): a pair's is us then them, a group's is us then each link's far party in the order the keep merged the spools. A recording kept before the field reads as us and, in a pair, the other person; any channel past the named ones is "voice N".
+Export works in a group too (it named the file from a pair's contact and so did nothing in a group).
+Still to come: beam video in the replay (an opt-in Beam setting, off by default, Nick 2026-11-01), the card's lanes for more than two voices, and naming each channel in the VSF export.
+
 ## A wave is a call to Android (2026-11-01)
 
 Nick 2026-11-01: "lets things ring me obnoxiously loud … I think it needs to be a setting … we default to Android call audio unless there's another way to tell android".

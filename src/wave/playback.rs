@@ -28,8 +28,8 @@ pub struct PlaybackHandle {
     pub envelope: Vec<u8>,
     pub env_per_sec: u8,
     pub nchan: usize,
-    /// Each channel's loudness in the frame just queued — mean square of its samples as f32 bits, one per channel — what the replayed wave screen lights each person's ring with (Nick 2026-11-01: "wave screen replayed").
-    levels: Arc<Vec<std::sync::atomic::AtomicU32>>,
+    /// Each channel's band powers in the frame just queued (total, red, green, blue — `LiveBands::frame_powers`, the live wave's own measure), so the replayed wave screen rings each person exactly as a live wave would (Nick 2026-11-01: "wave screen replayed").
+    levels: Arc<std::sync::Mutex<Vec<[f32; crate::wave::record::ENV_COMPONENTS]>>>,
     /// Channels left out of the mix, one bit per channel (bit k = channel k): a person muted on the replay screen. A recording of more than 64 voices plays the rest unmutable.
     muted: Arc<std::sync::atomic::AtomicU64>,
 }
@@ -52,10 +52,10 @@ impl PlaybackHandle {
         self.pos.load(Ordering::Relaxed)
     }
 
-    /// Channel `k`'s loudness in the frame just played (mean square, 0 = silence or no such channel).
-    pub fn level(&self, k: usize) -> f32 {
+    /// Channel `k`'s band powers in the frame just played (silence, or no such channel, reads zero).
+    pub fn frame(&self, k: usize) -> [f32; crate::wave::record::ENV_COMPONENTS] {
         // WHY/PROOF: `k` comes from the replay screen's tiles, which may name more people than the recording has channels (a roster larger than the links that were up).
-        self.levels.get(k).map_or(0.0, |l| f32::from_bits(l.load(Ordering::Relaxed)))
+        self.levels.lock().unwrap().get(k).copied().unwrap_or_default()
     }
 
     /// Leave channel `k` out of the mix, or bring it back.
@@ -111,7 +111,8 @@ fn spawn(stream: KeptStream, skip: usize) -> Option<PlaybackHandle> {
     let flag = stop.clone();
     let done_flag = done.clone();
     let pos_w = pos.clone();
-    let levels: Arc<Vec<std::sync::atomic::AtomicU32>> = Arc::new((0..nchan).map(|_| std::sync::atomic::AtomicU32::new(0)).collect());
+    // One entry per channel the worker writes — sized as `run` sizes its stride (a header claiming no channels plays as one).
+    let levels = Arc::new(std::sync::Mutex::new(vec![[0f32; crate::wave::record::ENV_COMPONENTS]; nchan.max(1)]));
     let muted = Arc::new(std::sync::atomic::AtomicU64::new(0));
     let (levels_w, muted_w) = (levels.clone(), muted.clone());
     // We are the owner (checked !is_active() above): start flips ACTIVE false→true.
@@ -136,8 +137,9 @@ fn spawn(stream: KeptStream, skip: usize) -> Option<PlaybackHandle> {
     Some(PlaybackHandle { stop, done, pos, seek, total, envelope, env_per_sec, nchan, levels, muted })
 }
 
-fn run(mut stream: KeptStream, stop: &AtomicBool, skip: usize, pos: &std::sync::atomic::AtomicUsize, seek: &std::sync::atomic::AtomicUsize, levels: &[std::sync::atomic::AtomicU32], muted: &std::sync::atomic::AtomicU64) {
+fn run(mut stream: KeptStream, stop: &AtomicBool, skip: usize, pos: &std::sync::atomic::AtomicUsize, seek: &std::sync::atomic::AtomicUsize, levels: &std::sync::Mutex<Vec<[f32; crate::wave::record::ENV_COMPONENTS]>>, muted: &std::sync::atomic::AtomicU64) {
     let nchan = stream.nchan.max(1); // WHY/PROOF: the stream's channel count is the container header's — file data; the frame stride divides by it
+    let mut bands: Vec<crate::wave::record::LiveBands> = (0..nchan).map(|_| crate::wave::record::LiveBands::new()).collect();
     // Seek = a length-prefix walk to just before the mark plus a few priming decodes (KeptStream::seek) — never a decode of everything before it.
     if skip > 0 {
         stream.seek(skip);
@@ -156,11 +158,13 @@ fn run(mut stream: KeptStream, stop: &AtomicBool, skip: usize, pos: &std::sync::
         let Some(inter) = stream.next_frame() else {
             break;
         };
-        // Each channel's loudness this frame (mean square), for the replay screen's rings.
-        let frames = inter.len() / nchan;
-        for (k, l) in levels.iter().enumerate().take(nchan) {
-            let ms = inter.iter().skip(k).step_by(nchan).map(|&s| (s as f32) * (s as f32)).sum::<f32>() / frames.max(1) as f32; // WHY/PROOF: a frame with no samples (a zero-length decode) divides by one and reads silent, never NaN
-            l.store(ms.to_bits(), Ordering::Relaxed);
+        // Each channel's band powers this frame, for the replay screen's rings — the live wave's own measure, one filter rig per channel.
+        {
+            let mut out = levels.lock().unwrap();
+            for (k, rig) in bands.iter_mut().enumerate() {
+                let chan: Vec<i16> = inter.iter().skip(k).step_by(nchan).copied().collect();
+                out[k] = rig.frame_powers(&chan);
+            }
         }
         // Downmix to mono: average the channels (÷nchan avoids the +6 dB sum overflow), leaving out every muted one.
         let mask = muted.load(Ordering::Relaxed);

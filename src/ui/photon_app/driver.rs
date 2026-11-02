@@ -372,6 +372,9 @@ impl FluorApp<Px> for PhotonApp {
         reserve_hits(&mut self.hit_counter, 2); // the filter (cycles) / New atom
         self.invite_hit_base = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 32); // invitation rows: Bind + Decline for 16 open invitations
+        // The replayed wave screen (replay.rs): Back, Play/Pause, the bar, the area swallow, then one slot per voice tile.
+        self.replay_base = self.hit_counter;
+        reserve_hits(&mut self.hit_counter, super::replay::REPLAY_HIT_IDS);
         // Wave controls (docs/waves.md) — retained Buttons with placeholder geometry; real rect/label/font-size land each frame in the render overlay block (phase-dependent). Registered cross-screen in `visit_app_widgets`, so hover/press/dispatch ride the same walk as every other Button. Construction order fixes the contiguous-id contract: status / start / action / decline. "Open Sans" matches the old hand-rolled pills' face.
         self.wave_status_btn = Some(Button::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
         self.wave_start_btn = Some(Button::with_depth(
@@ -1572,7 +1575,8 @@ impl FluorApp<Px> for PhotonApp {
                             });
                             if let Some(hash) = rec_hash {
                                 if crate::storage::blob_present(&hash) {
-                                    self.toggle_recording_playback(hash);
+                                    // Playing this one: the pill is Stop. Otherwise Play opens the replayed wave screen (replay.rs) and starts it.
+                                    if self.wave_playback_hash == Some(hash) { self.toggle_recording_playback(hash); } else { self.open_replay(hash); }
                                 } else {
                                     self.attach_fetch_in(sci, &hash);
                                     self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
@@ -1680,7 +1684,8 @@ impl FluorApp<Px> for PhotonApp {
                                     self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
                                 } else if is_rec {
                                     // A kept wave recording — tap toggles play/stop on this very bubble (wave/playback.rs); the bubble label shows ■ progress while it plays. No more force-close to stop (field 2026-09-08).
-                                    self.toggle_recording_playback(hash);
+                                    // Playing this one: the pill is Stop. Otherwise Play opens the replayed wave screen (replay.rs) and starts it.
+                                    if self.wave_playback_hash == Some(hash) { self.toggle_recording_playback(hash); } else { self.open_replay(hash); }
                                 } else {
                                     match self.attach_save(&name, &hash) {
                                         Ok(dest) => {
@@ -1706,7 +1711,7 @@ impl FluorApp<Px> for PhotonApp {
                         14 | 15 => {
                             let fmt = crate::wave::export::ExportFormat::ALL[(slot - 14) as usize];
                             self.wave_export_choosing = None;
-                            if let Some(ci) = self.pair_contact_of(sci) { self.wave_export_start(ci, ts, fmt); };
+                            self.wave_export_start(sci, ts, fmt);
                         }
                         // WAVE BACK (the wave card's option): place a wave to this conversation's contact; the strip closes.
                         6 => {
@@ -1753,6 +1758,11 @@ impl FluorApp<Px> for PhotonApp {
                     self.scene_dirty = true;
                     ctx.window.request_redraw();
                 }
+                return EventResponse::Handled;
+            }
+            // The replayed wave screen's controls and tiles (replay.rs).
+            if self.on_replay_hit(hit_id, x as f32) {
+                ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
             // Viewer / reader pills: back, original (decode the file), save; the pane hit swallows.
@@ -2212,7 +2222,7 @@ impl FluorApp<Px> for PhotonApp {
                     return EventResponse::Handled;
                 }
                 // The viewer / reader own the wheel while open: pixel deltas (touch drag, trackpads) PAN; line deltas (a wheel) ZOOM the picture or SCROLL the text.
-                if self.viewer.is_some() || self.reader.is_some() {
+                if self.viewer.is_some() || self.reader.is_some() || self.wave_replay.is_some() {
                     let (dx, dy, pixel) = match delta {
                         MouseScrollDelta::Lines(x, y) => (*x, *y, false),
                         MouseScrollDelta::Pixels(x, y) => (*x as f32, *y as f32, true),

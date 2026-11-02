@@ -824,9 +824,9 @@ impl PhotonApp {
     }
 
     /// EXPORT a kept wave in `fmt` (wave/export.rs): the vault read and the decode run on a worker — an hour of audio decodes for seconds and the UI thread never touches the vault — then the file goes where Save puts files (Downloads; on Android the public Downloads/Photon). The result toasts from the tick drain.
-    pub(super) fn wave_export_start(&mut self, sci: usize, ts: i64, fmt: crate::wave::export::ExportFormat) {
+    pub(super) fn wave_export_start(&mut self, conv: crate::types::ConversationId, ts: i64, fmt: crate::wave::export::ExportFormat) {
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else { return };
-        let rec = self.conv_of(sci).and_then(|v| {
+        let rec = self.conv_by_id(conv).and_then(|v| {
             v.messages
                 .iter()
                 .filter(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == ts))
@@ -834,7 +834,11 @@ impl PhotonApp {
                 .and_then(|m| m.file_parts().map(|(h, _, _)| h))
         });
         let Some(hash) = rec else { return };
-        let who = self.contacts.get(sci).map(|c| c.display_name()).unwrap_or_default();
+        // The file is named for the conversation: the person in a pair, the group's title in a group (export in a group used to do nothing — it asked for a pair's contact).
+        let who = match self.pair_contact_of(conv) {
+            Some(ci) => self.contacts[ci].display_name(),
+            None => self.molecule_rosters.iter().find(|(g, _)| g.0 == conv.0).map(|(_, r)| r.display_title()).unwrap_or_default(),
+        };
         #[cfg(target_os = "android")]
         let Some(dir) = crate::storage::photon_config_dir().ok().map(|d| d.join("staging")) else { return };
         #[cfg(target_os = "ferros")]

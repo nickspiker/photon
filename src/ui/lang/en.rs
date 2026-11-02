@@ -401,6 +401,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         }
         .into(),
         Msg::PlayPill => "\u{25B6}\u{FE0E} play".into(),
+        Msg::PausePill => "\u{23F8}\u{FE0E} pause".into(),
+        Msg::ReplayVoice(n) => format!("voice {}", fmt_mag(n as u64)).into(),
         Msg::DeletePill => "delete".into(),
         Msg::DeletingPill => "deleting\u{2026}".into(),
         Msg::StopPill => "stop".into(),
