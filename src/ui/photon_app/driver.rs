@@ -4419,7 +4419,13 @@ impl PhotonApp {
         // The TPM plate (tohu/docs/oracle-hardening.md): logged beside the machine-id root, nothing derives from it yet. Off the UI thread, since the chip takes up to a second to derive the endorsement key; a BLAKE3 prefix only.
         #[cfg(target_os = "linux")]
         std::thread::spawn(|| match tohu::device::tpm_plate() {
-            Ok(plate) => crate::logf!("device plate: tpm {}", hex::encode(&plate[..4])),
+            Ok(plate) => {
+                // The key half beside it: the chip's HMAC over a fixed label, the candidate root; a prefix only, and still nothing derives from it.
+                match tohu::device::tpm_root() {
+                    Ok(root) => crate::logf!("device plate: tpm {}, key root {}", hex::encode(&plate[..4]), hex::encode(&root[..4])),
+                    Err(e) => crate::logf!("device plate: tpm {}, key root unavailable ({e})", hex::encode(&plate[..4])),
+                }
+            }
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => crate::log("device plate: a TPM is present but Photon may not open it (add this user to the tss group); the machine keeps its machine-id posture"),
             Err(e) => crate::logf!("device plate: none ({e}); the machine keeps its machine-id posture"),
         });
