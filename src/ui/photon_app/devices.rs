@@ -1258,9 +1258,10 @@ impl PhotonApp {
         }
 
         // Drop de-folded members (device removed from OUR chain) — AND keyless sibling rows (2026-09-01, the ocean-phone ghost): a sibling contact whose device key is None (or stale-era) can never be pinged, never earns a presence verdict, and the old is_some_and kept it forever — where it wedged the fleet-first keygen gate for every friend ceremony. The fold is the authority; a sibling row it can't vouch for is debris.
+        // A sibling row carrying OUR OWN key goes too: the Android root conversion's old device folded the chain that already held the new key and rowed it before exiting, and the carried vault handed that row to the new device, which then relayed history to itself (2026-11-02, "recipient is OUR OWN device — echo refused" ×14).
         let mut removed: Vec<crate::types::Contact> = Vec::new();
         self.contacts.retain(|c| {
-            if c.is_sibling && c.device_key().map_or(true, |k| !members.contains(&k)) {
+            if c.is_sibling && c.device_key().map_or(true, |k| !members.contains(&k) || k == our_device) {
                 removed.push(c.clone());
                 false
             } else {
@@ -1269,9 +1270,11 @@ impl PhotonApp {
         });
         // Ownership is COMPUTED from the fold + presence (era.rs recompute_ceremony_owners, run by the fold-adopt caller once the new fold is stored) — the departed-owner sweep this replaced (Emma's ghost, 2026-09-08: a one-hour device's claim outlived its removal by two weeks) is subsumed: a device not in the fold is never the owner.
         for c in &removed {
+            let key = c.device_key().unwrap_or_default();
             crate::logf!(
-                "SIBLING: reconciled -1 (device {} left the fold)",
-                hex::encode(&c.device_key().unwrap_or_default()[..4])
+                "SIBLING: reconciled -1 (device {} {})",
+                hex::encode(&key[..4]),
+                if key == our_device { "is our own key" } else { "left the fold" }
             );
             changed = true;
             if let Some(storage) = self.storage.as_ref() {
