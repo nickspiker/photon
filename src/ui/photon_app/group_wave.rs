@@ -224,8 +224,11 @@ impl PhotonApp {
             Some(dev) => vec![dev],
             None => roster.standing().into_iter().filter(|p| Some(*p) != us).flat_map(|p| super::molecules::member_devices(&self.contacts, &self.molecule_peers, &p)).collect(),
         };
+        // PEER TO PEER ONLY (Nick 2026-11-01: "Relay peer-peer only, no thru fgtw.org and only if no direct path"): express goes straight to each device's own addresses and never thru the fgtw.org relay. A device with no address here still gets the signal on the group's lane row, which members carry to each other (grp_relay) — the express copy is only ever the fast lane.
         let mut direct = 0usize;
+        let mut unreached = 0usize;
         for dev in &devices {
+            let mut any = false;
             for a in self.device_addresses(dev) {
                 if a.ip().to_canonical().is_loopback() || a.ip().is_unspecified() {
                     continue;
@@ -234,18 +237,13 @@ impl PhotonApp {
                     crate::wave::send_media(f.clone(), a);
                 }
                 direct += 1;
+                any = true;
             }
-            for f in frames.iter().cloned() {
-                let (kp, dev) = (kp.clone(), *dev);
-                let kind = sig.kind();
-                crate::network::http::runtime().spawn(async move {
-                    if let Err(e) = crate::network::fgtw::relay::send_via_relay(&kp, &dev, &f).await {
-                        crate::logf!("WAVE: group express {} via relay to {} failed: {}", kind, crate::fp(&dev), e);
-                    }
-                });
+            if !any {
+                unreached += 1;
             }
         }
-        crate::logf!("WAVE: group express {} fired → {} device(s), {} direct path(s) + the relay × {} era key(s) (id {})", sig.kind(), devices.len(), direct, frames.len(), hex::encode(&sig.wave_id()[..4]));
+        crate::logf!("WAVE: group express {} fired → {} device(s), {} direct path(s) × {} era key(s); {} with no address ride the lane row (id {})", sig.kind(), devices.len(), direct, frames.len(), unreached, hex::encode(&sig.wave_id()[..4]));
     }
 
     /// An express frame no pair opened, tried against every molecule we stand in (current era, then retired): the signing device names the member, who need not be our contact, and the signal goes where the group's lane row would send it. `false` = no group opened it.

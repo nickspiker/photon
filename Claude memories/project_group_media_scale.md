@@ -13,3 +13,5 @@ Still one engine thread per link (not the single group engine) and receive is pe
 
 **Why:** at a thousand, per-link engines and the N² roll call were the walls; the screen (face_tiles) is not the limit until 3b.
 **How to apply:** field-test a 3+ person group wave (lead hand-off: hang up the first-joined link) before building 2a; open questions to Nick: mute-on-join past a size, relay only when no direct path (express currently relays every signal to every device). Related: [[project_group_waves]].
+
+Nick 2026-11-01 decisions: join muted from the THIRD person on (first two live) — BUILT (join_group_wave). Relay: "peer-peer only, no thru fgtw.org and only if no direct path and relay is higher bandwidth (proper bittorrent ideally)" — group express no longer uses the fgtw.org relay (BUILT); media forwarders (2b) follow that rule when built. The 1:1 wave express still uses the fgtw relay (no-ring class risk) — not changed, flagged to Nick.
