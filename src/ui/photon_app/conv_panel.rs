@@ -236,7 +236,7 @@ impl PhotonApp {
                     self.contact_clear_armed = Some(all);
                 }
             }
-            // A BONDS row (Nick 2026-10-24): a member opens their Person page; an invite or a friend toggles a STAGED edit — an invite for a friend, a withdrawal for an open invite. Nothing is sent until the page is left (commit_bonds_if_left), so selecting and unselecting is free.
+            // A BONDS row (Nick 2026-10-24): a member opens their Person page; a friend toggles a STAGED invite, and nothing is sent until the page is left (commit_bonds_if_left), so selecting and unselecting is free. A sent invite is settled — it cannot be undone (Nick 2026-11-02), so its row has no checkbox and takes no tap.
             k if k >= SLOT_BONDS => {
                 let Some(row) = self.bond_rows.get((k - SLOT_BONDS) as usize).cloned() else {
                     return true;
@@ -246,7 +246,9 @@ impl PhotonApp {
                         self.goto_conversation_page(ConversationPage::Person(row.party));
                         self.person_return = PersonReturn::Bonds;
                     }
-                    super::BondKind::Invited | super::BondKind::Friend => {
+                    // A sent invite cannot be undone (Nick 2026-11-02) — its row takes no tap.
+                    super::BondKind::Invited => {}
+                    super::BondKind::Friend => {
                         if let Some(gid) = gid {
                             let key = (gid, row.party);
                             if let Some(i) = self.bonds_staged.iter().position(|s| *s == key) {

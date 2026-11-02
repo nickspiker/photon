@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **A sent invite stays sent.** In a group's member list, someone you've already invited now shows as invited with no checkbox — an invite can't be taken back, so the box no longer suggests it can.
 - **Files show what they are.** A file Photon can't preview (a password database, an archive, a program) now shows a small icon for its kind before its name, so it reads as a file at a glance.
 - **Save beam video, if you want it.** A new checkbox in Settings → Beam keeps a beam's video with its recording — every camera that was in it — and the recording's replay screen then plays the video in each person's tile; it is off unless you turn it on.
 - **Recordings replay on their own screen.** Play on a wave's recording now opens a screen with everyone who was in it — each face lights up with their own voice as it plays, a scrub bar and Play/Pause sit underneath, and tapping someone mutes just them; it works the same for two people or a whole group, and a group's recording can be exported too.

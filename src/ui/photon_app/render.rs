@@ -2621,23 +2621,23 @@ impl PhotonApp {
                         for (k, b) in bonds.iter().enumerate() {
                             let Some(r) = rows.get(2 + k).copied() else { break };
                             let staged = gid.is_some_and(|g| self.bonds_staged.contains(&(g, b.party)));
-                            // Members are locked in (they leave on their own); an open invite is checked until you stage its withdrawal; a friend is unchecked until you stage an invite.
+                            // Members are locked in (they leave on their own); a sent invite cannot be undone (Nick 2026-11-02: "Once the invite to join a molecule gets sent, the checkbox should go bye bye since you cannot undo it"); a friend is unchecked until you stage an invite.
                             let checked = match b.kind {
                                 super::BondKind::You | super::BondKind::Member => true,
-                                super::BondKind::Invited => !staged,
+                                super::BondKind::Invited => true,
                                 super::BondKind::Friend => staged,
                             };
                             let tag = match (b.kind, staged) {
                                 (super::BondKind::Member, _) => Some(tr(Msg::BondMember)),
-                                (super::BondKind::Invited, false) => Some(tr(Msg::BondInvited)),
-                                (super::BondKind::Invited, true) => Some(tr(Msg::BondWillWithdraw)),
+                                (super::BondKind::Invited, _) => Some(tr(Msg::BondInvited)),
                                 (super::BondKind::Friend, true) => Some(tr(Msg::BondWillInvite)),
                                 _ => None,
                             };
-                            // A member's row opens their Person page; an invite or a friend toggles a staged edit where the conversation can grow.
+                            // A member's row opens their Person page; a friend toggles a staged invite where the conversation can grow; a sent invite is settled and takes no tap.
                             let tappable = k < 40 && match b.kind {
                                 super::BondKind::You | super::BondKind::Member => true,
-                                super::BondKind::Invited | super::BondKind::Friend => editable,
+                                super::BondKind::Invited => false,
+                                super::BondKind::Friend => editable,
                             };
                             let hid = if tappable { btn + 8 + k as HitId } else { HIT_NONE };
                             // Avatar: the contact's own picture as the contacts list draws it, else its deterministic gradient (a member we never friended: their party's).
@@ -2660,11 +2660,13 @@ impl PhotonApp {
                                 None => b.name.clone(),
                             };
                             ctx.text.draw_text_left(&mut canvas, &label, name_x, acy, &TextStyle::new(hspan2, colour).weight(if checked { 700 } else { 400 }).font("Oxanium"), None, None);
-                            // The checkbox at the row's right edge — fluor's own, claiming the row's id (a row that cannot be tapped stamps nothing).
-                            let side = r.h * 0.5;
-                            let mut id_slot = hid;
-                            let mut cb = fluor::widgets::checkbox::Checkbox::new(&mut id_slot, "", r.right() - side * 1.5, acy, side, side, hspan2, checked);
-                            cb.render_content_into(&mut canvas, ctx.text, None, if hid != HIT_NONE { Some(&mut chrome.hit_test_map[..]) } else { None });
+                            // The checkbox at the row's right edge — fluor's own, claiming the row's id (a row that cannot be tapped stamps nothing). A sent invite has none: nothing about it can change.
+                            if b.kind != super::BondKind::Invited {
+                                let side = r.h * 0.5;
+                                let mut id_slot = hid;
+                                let mut cb = fluor::widgets::checkbox::Checkbox::new(&mut id_slot, "", r.right() - side * 1.5, acy, side, side, hspan2, checked);
+                                cb.render_content_into(&mut canvas, ctx.text, None, if hid != HIT_NONE { Some(&mut chrome.hit_test_map[..]) } else { None });
+                            }
                             if hid != HIT_NONE {
                                 restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, r.x as isize, r.y as isize, r.right() as isize, r.bottom() as isize, hid);
                             }
