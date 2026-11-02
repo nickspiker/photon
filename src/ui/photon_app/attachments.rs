@@ -559,8 +559,16 @@ impl PhotonApp {
         }
         targets.sort_by_key(|t| t.0);
         // ASK ONLY WHOM WE CAN OPEN (2026-11-01, Nick's Pixel: every launch asked Emma's desktop for ~200 files and dropped all 1076 chunks it sent, holding no key for that token): a device whose answer `attach_wire_key` cannot open is never asked — the same lookup the receive side runs, so an ask and its answer agree. Why one was passed over is said once per device and token.
+        // …AND WHOSE ERA IS OURS (2026-11-01, Nick's Pixel: it held a friendship at era 0 while the friend and Nick's own devices were on era 2 — a key exists, it is just the wrong one, and 103 chunks failed to open): a device that last advertised another era index for this conversation seals under another key.
+        let chain_era = self.friendship_chains.iter().find(|(_, ch)| ch.conversation_token == token).map(|(fid, ch)| (*fid, ch.era_index));
         let mut unopenable = Vec::new();
+        let mut other_era = Vec::new();
         targets.retain(|t| {
+            let era_differs = chain_era.is_some_and(|(fid, ours)| self.peer_era_seen.get(&(fid, t.3)).is_some_and(|(idx, _)| *idx != ours));
+            if era_differs {
+                other_era.push(t.3);
+                return false;
+            }
             let ok = self.attach_wire_key(&t.3, &token).is_some();
             if !ok {
                 unopenable.push(t.3);
@@ -569,6 +577,14 @@ impl PhotonApp {
         });
         for dev in unopenable {
             self.say_key_miss_once("an ask to this device", &dev, &token);
+        }
+        for dev in other_era {
+            static SAID: std::sync::Mutex<Vec<([u8; 32], [u8; 32])>> = std::sync::Mutex::new(Vec::new());
+            let mut said = SAID.lock().unwrap();
+            if !said.contains(&(dev, token)) {
+                said.push((dev, token));
+                crate::logf!("attach: device {} is on another era of conversation {} than we are — not asked, its seal would not open here (said once)", crate::fp(&dev), crate::fp(&token));
+            }
         }
         // A parked sibling cannot answer: asking it burns one of MAX_TRIES rounds and a relay leg into a closed pipe (Emma 2026-10-21: 72 asks at two old phones that never came online).
         // It stays a candidate only when nobody else is left, so a fetch is never dropped for want of a live device.

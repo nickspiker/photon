@@ -848,7 +848,8 @@ fn drain_chunk_intake(intake: std::sync::Arc<std::sync::Mutex<ChunkIntake>>, job
         let plain = match kete::decrypt_bytes(&pc.sealed, &pc.wire_key) {
             Ok(p) => p,
             Err(e) => {
-                crate::logf!("ATTACH: chunk seal open failed: {}", e);
+                // Named (2026-11-01): the drain can run a minute behind arrival, so the PT line before a failure says nothing about who sent it — without sender, token and key the wrong device was suspected.
+                crate::logf!("ATTACH: chunk seal open failed: {} (chunk {} of {}…, from device {}, token {}, our key#{})", e, pc.index, hex::encode(&pc.content_hash[..4]), crate::fp(&pc.sender_pubkey.key), crate::fp(&pc.conversation_token), crate::fp(blake3::hash(&pc.wire_key).as_bytes()));
                 continue;
             }
         };
