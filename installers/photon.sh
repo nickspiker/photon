@@ -4,7 +4,7 @@
 # Corruption/availability resilience ONLY: this shim is itself an unverified file the OS runs directly, so it defends against bit-rot, a nuked folder, or a torn update — never a local attacker who could just replace the shim too.
 # Paths + timeout are env-overridable: install-time mount detection points COPY_B at a second disk where one exists, and the test suite points both at fixtures.
 A="${PHOTON_COPY_A:-$HOME/.local/bin/photon-messenger}"
-B="${PHOTON_COPY_B:-$HOME/.local/share/photon/photon-messenger}"
+B="${PHOTON_COPY_B:-$HOME/.local/lib/photon/photon-messenger}"
 T="${PHOTON_VERIFY_TIMEOUT:-8}"
 
 # `timeout` bounds the one corruption shape running-it can't report cleanly: a copy that HANGS. Stock macOS ships no `timeout`; there we run the verify unbounded (a hang is far rarer than a nuke or bit-flip, which the signature check still catches).

@@ -97,7 +97,7 @@ echo ""
 # Resilient launch (docs/resilient-launch.md): install a SECOND copy under a different XDG root + the verify-and-fallback shim, and point the launcher entry at the shim — so a nuked or corrupt ~/.local/bin still launches. macOS already installs two copies (~/.local/bin + the .app bundle below); its Dock keeps launching the bundle directly for TCC identity, so no shim there yet.
 EXEC_TARGET="$INSTALL_DIR/$BINARY_NAME"
 if [ "$OS" = "Linux" ]; then
-    COPY_B_DIR="$HOME/.local/share/photon"
+    COPY_B_DIR="$HOME/.local/lib/photon" # NOT ~/.local/share/photon: that is photon_data_dir, whose census keeps only the vault and the log and deleted copy B on every launch (2026-11-01)
     mkdir -p "$COPY_B_DIR"
     cp "$INSTALL_DIR/$BINARY_NAME" "$COPY_B_DIR/$BINARY_NAME"
     chmod +x "$COPY_B_DIR/$BINARY_NAME"

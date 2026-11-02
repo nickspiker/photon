@@ -49,7 +49,8 @@ build_sign_install() {
     echo "Installed to $dir/photon-messenger"
 
     # Resilient-launch layout (docs/resilient-launch.md): a SECOND independent copy under a different XDG root (a different mount on a multi-disk box) + the verify-and-fallback shim, so a nuked or corrupt ~/.local/bin still launches. Both copies are the SAME signed binary (sign_binary ran above). Stage-then-rename each, same running-inode reason as above.
-    local dirB="$HOME/.local/share/photon"
+    # ~/.local/lib/photon, NOT ~/.local/share/photon: that is photon_data_dir, whose storage census keeps only the vault and the log and deleted copy B on every launch (Nick 2026-11-01: "your call").
+    local dirB="$HOME/.local/lib/photon"
     mkdir -p "$dirB"
     install -m755 "target/$prof_dir/photon-messenger" "$dirB/photon-messenger.new"
     mv -f "$dirB/photon-messenger.new" "$dirB/photon-messenger"
@@ -62,7 +63,7 @@ build_sign_install() {
     # CHAMELEON (the Calibrate plugin, docs/beams.md §5d; Nick 2026-10-31, desktop cameras too: "that should work for all platforms"): VERICHROME's scanner is closed source, so photon never links it — it ships as its own library beside each installed binary, where src/platform/chameleon_plugin.rs looks. Built only where the private sibling checkout exists, as the Android build does; anywhere else there is no Calibrate button. Never a stale copy: no checkout, no library.
     local cham_so="libchameleon.so"
     [ "$(uname -s)" = "Darwin" ] && cham_so="libchameleon.dylib"
-    # Beside the main copy only: the storage census sweeps every file but the vault and the log out of $dirB (photon_data_dir), copy B included — an open question for the resilient-launch layout (2026-10-31).
+    # Beside the main copy only (copy B moved out of the census-swept data dir to ~/.local/lib/photon on 2026-11-01; chameleon could join it there).
     local cham_dirs=("$dir")
     [ "$(uname -s)" = "Darwin" ] && [ -d "$HOME/Applications/Photon Messenger.app/Contents/MacOS" ] && cham_dirs+=("$HOME/Applications/Photon Messenger.app/Contents/MacOS")
     if [ -f "../chameleon/Cargo.toml" ]; then

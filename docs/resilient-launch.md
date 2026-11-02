@@ -16,7 +16,7 @@ Every desktop platform installs the full signed binary to TWO distinct locations
 Android is the exception: the OS package manager owns the install and restart, so there is one system-managed copy and no shim.
 
 Proposed per-platform layout (copy B prefers a detected second mount; otherwise the path below):
-- Linux: copy A = `~/.local/bin/photon-messenger`, copy B = `~/.local/share/photon/photon-messenger`. The `.desktop` `Exec` points at the shim.
+- Linux: copy A = `~/.local/bin/photon-messenger`, copy B = `~/.local/lib/photon/photon-messenger` (moved from `~/.local/share/photon` on 2026-11-01: that is `photon_data_dir`, whose storage census keeps only the vault and the log and deleted copy B on every launch). The `.desktop` `Exec` points at the shim.
 - Windows: copy A = `%LOCALAPPDATA%\Programs\PhotonMessenger\photon-messenger.exe`, copy B = a second dir (e.g. `%LOCALAPPDATA%\PhotonMessenger\photon-messenger.exe`). The Start-menu shortcut points at the shim.
 - macOS: copy A = the Mach-O inside `~/Applications/Photon Messenger.app/Contents/MacOS`, copy B = `~/.local/bin/photon-messenger`. TCC keys privacy grants to the bundle path, so the bundle MUST stay copy A and the primary launch target — see the TCC note.
 
@@ -82,7 +82,7 @@ Small and contained:
 
 ## Implementation status
 
-- Linux: FULL — two copies (`~/.local/bin` + `~/.local/share/photon`), the shim, `.desktop` → shim, updater dual-install + re-exec via shim, dev.sh dogfoods it. Shipped.
+- Linux: FULL — two copies (`~/.local/bin` + `~/.local/lib/photon`), the shim, `.desktop` → shim, updater dual-install + re-exec via shim, dev.sh dogfoods it. Shipped.
 - macOS: dual-copy only — the installer already writes two copies (`~/.local/bin` + the `.app` bundle) and the updater keeps both fresh, but the Dock still launches the bundle directly (no shim) pending the TCC decision above.
 - Windows: dual-copy only — the installer writes a second copy under `%LOCALAPPDATA%\PhotonMessenger` and the updater keeps both fresh, but the Start-menu shortcut still launches the primary directly (a no-console .vbs/.cmd shim is the remaining piece, and it needs a real Windows box to test).
 - Android: n/a (system-managed).

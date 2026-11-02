@@ -456,7 +456,7 @@ fn resilient_copies() -> Vec<PathBuf> {
     #[cfg(target_os = "linux")]
     let copies = vec![
         home.join(".local/bin/photon-messenger"),
-        home.join(".local/share/photon/photon-messenger"),
+        home.join(".local/lib/photon/photon-messenger"), // not .local/share/photon: photon_data_dir's census deletes everything but the vault and the log
     ];
     #[cfg(target_os = "macos")]
     let copies = vec![
