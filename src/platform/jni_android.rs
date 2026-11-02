@@ -1663,6 +1663,37 @@ fn derive_device_keypair(fingerprint: &[u8]) -> Keypair {
     Keypair { secret, public }
 }
 
+/// PROBE (tohu/docs/oracle-hardening.md, 2026-11-02): does the Widevine device ID make a factory-reset-proof Android plate, and is it scoped per app?
+/// Logs only BLAKE3 prefixes, never the ID: the raw value is a hardware identifier and the log leaves the phone.
+/// Compare the prefixes across a reinstall, across a second app signed with our key, and across a factory reset; run in airplane mode to see the read needs no network.
+/// Nothing here feeds identity yet; the plate becomes real only once the owner reads the comparison.
+#[cfg(target_os = "android")]
+fn widevine_probe() {
+    match tohu::device::widevine_id() {
+        Ok(wv) => {
+            let id = blake3::hash(&wv.device_unique_id);
+            let plate = match tohu::device::signing_cert() {
+                Ok(cert) => {
+                    let mut h = blake3::Hasher::new();
+                    h.update(&wv.device_unique_id);
+                    h.update(&cert);
+                    hex::encode(&h.finalize().as_bytes()[..4])
+                }
+                Err(e) => format!("signing cert unreadable: {e}"),
+            };
+            info!(
+                "widevine probe: id {} ({} bytes), level {}, cdm {}, plate(id ‖ signing cert) {}",
+                hex::encode(&id.as_bytes()[..4]),
+                wv.device_unique_id.len(),
+                wv.security_level,
+                wv.version,
+                plate
+            );
+        }
+        Err(e) => warn!("widevine probe: unreadable ({e})"),
+    }
+}
+
 /// Network context owned by the foreground service. Persists across Activity lifecycle changes; holds the device keypair and peer store. The Activity creates its own HandleQuery on demand via the shared transport.
 #[cfg(target_os = "android")]
 pub struct NetworkContext {
@@ -1715,6 +1746,7 @@ impl NetworkContext {
                 fingerprint.to_vec()
             }
         };
+        widevine_probe();
         let keypair = derive_device_keypair(&oracle);
         let signing_bundle = crate::network::fgtw::fleet::SigningBundle::derive(&oracle);
         debug_assert_eq!(

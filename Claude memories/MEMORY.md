@@ -1,213 +1,116 @@
 # Photon Project Memory Index
+Hooks are reminders; read the topic file before acting on one.
 
 ## Hard rules / feedback
-- [feedback_answer_dont_act.md](feedback_answer_dont_act.md) — a QUESTION gets an answer and a stop; never act (esp. destructively) on a verification question
-- [feedback_build_dev_script.md](feedback_build_dev_script.md) — compile via ./scripts/dev.sh, never bare cargo build; android = scripts/android/dev-adb.sh
-- [feedback-one-build-per-check.md](feedback-one-build-per-check.md) — never build twice to read one result: capture once to scratchpad, grep the capture
-- [feedback_test_discipline.md](feedback_test_discipline.md) — publish IS the compile gate; ONE full cargo test per batch (never --lib alone: skips tests/)
-- [feedback_render_never_touches_vault.md](feedback_render_never_touches_vault.md) — HARD: the UI/render thread makes NO vault call (2026-09-18 ANR); presence = cache + worker probe
-- [feedback_reload_mid_ceremony.md](feedback_reload_mid_ceremony.md) — HARD: never dev.sh/deploy reload mid-CLUTCH or mid-WAVE; check the log for both, batch fixes
-- [Commit trailer](commit-trailer-built-with.md) — end commits "Built with Claude <model>"; never Co-Authored-By, never the PR "Generated with" line
-- [Nick publishes](nick-publishes.md) — Nick INITIATES; when asked, run scripts/release/deploy.sh / publish and push WITH build notes (RELEASE_NOTES.md → Updates panel + site); never unasked
-- [Push after landing](push-after-landing.md) — memories live in 'Claude memories/' of the public photon repo: commit+push memory writes WITH photon
-- [No private handles](no-private-handles.md) — public EXCEPT signing keys + handles (keys/ only); handles never in ANY repo; petnames in prose; [doctrine](project_humanitys_code.md); [never on disk](feedback_never_store_handles.md)
-- [Photon + deps only](feedback_scope_photon_and_deps.md) — HARD: never edit another project (mahere…); likely a wrong-thread request
-- [Stage only your own files](feedback_stage_only_own_files.md) — HARD: stage by explicit path; never `git add -u`/`-A` (shared tree; 2026-09-26 vsf sweep)
-- [feedback_commit_all.md](feedback_commit_all.md) — "commit" includes all modified files unless told otherwise
-- [feedback_source_map.md](feedback_source_map.md) — keep src/lib.rs source-map comment current when pub items/files change
-- [No Python](feedback_no_python.md) — HARD: no Python in the photon repo unless proven necessary; commit generated artifacts (fonts), tools are Rust
-- [Launcher is `photon`](feedback_launcher_named_photon.md) — the resilient launcher is the `photon` command (~/.local/bin/photon), never photon-launch
-- [No wrapped comments](feedback_no_comment_wraps.md) — one sentence per line, never hard-wrapped, any repo; comment-gate.sh enforces
-- [Edges, not timers](edges-not-timers.md) — react on event edges, never timers/debounces; UI too: [feedback_no_time_based_ui.md](feedback_no_time_based_ui.md)
-- [feedback_direct_pixel_no_floaters.md](feedback_direct_pixel_no_floaters.md) — rendering is direct pixel access only; no GPU shaders/float pipeline
-- [feedback_spelling.md](feedback_spelling.md) — thru/thruout/altho; colour British; rest US
-- [Smoothness for humans](feedback_smoothness_for_humans.md) — C¹+ GUI math; humans feel discontinuities
-- [Photons are messages](feedback_photons_are_messages.md) — official 2026-10-06: a message is a photon (docs/lexicon.md); no rename sweep unasked
-- [Atoms, not notes](feedback_atoms_not_notes.md) — never call atoms "notes"; the self-only conversation is one atom among any number
-- [Wave, never call](project_wave_beam_transition.md) — HARD: wave = audio (sound wave), beam = video (beam of light); the word "call" only in the docs/waves.md + lexicon passage that retires it
-- [feedback_stops_not_db.md](feedback_stops_not_db.md) — STOPS not dB: 1 stop = ×2 amplitude
-- [feedback_self_is_a_contact.md](feedback_self_is_a_contact.md) — HARD: self and bob are both people
-- [Any-size conversation](feedback_any_size_conversation.md) — HARD: 1, 2 or N members = ONE model, one CLUTCH, one UI; the friendship/molecule split is debt, never design
-- [feedback_handles_byte_precise.md](feedback_handles_byte_precise.md) — HARD: handles BYTE-PRECISE full-Unicode (whitespace-only valid)
-- [feedback_vsf_readers_width_agnostic.md](feedback_vsf_readers_width_agnostic.md) — VSF ints: writers auto-size, readers widen (as_u64/as_i64), never exact-match
-- [feedback_numbers_binary_at_rest.md](feedback_numbers_binary_at_rest.md) — numbers binary at rest (wire/vault/log); display Arabic mostly, dozenal = the app's Base setting (DMS)
-- [feedback_sed_address_guard.md](feedback_sed_address_guard.md) — verify grep-derived line numbers non-empty before sed address ops
-- [Perl UTF-8 trap](feedback_perl_utf8_trap.md) — perl \x{..} without -CSD double-encodes the whole file; grep diffs for mojibake
-- [Perl pipe delimiter](feedback_perl_pipe_delimiter.md) — never s|..|..| when the pattern holds a closure; Edit tool or s{}{}
-- [pgrep self-match](feedback_pgrep_self_match.md) — pgrep/pkill -f matches your own bash -c; use exact pids + kill -0
-- [feedback_fgtw_deploy_freely.md](feedback_fgtw_deploy_freely.md) — deploy fgtw.org + toka.wasm freely, no confirmation
-- [feedback_terminal_clipboard.md](feedback_terminal_clipboard.md) — spaces around `=` in dev logs
-- [feedback_script_timestamps.md](feedback_script_timestamps.md) — build/deploy scripts end with `completed $(date)`
-- [feedback_voca_camelcase.md](feedback_voca_camelcase.md) — voca values camelCase; spaces opt-in for read-aloud
-- [feedback_no_redundant_disk_ops.md](feedback_no_redundant_disk_ops.md) — safety copy = reflink, never literal; batch repo scans
-- [feedback_legacy_first.md](feedback_legacy_first.md) — port legacy compositing as visible-RGB RMW first; fluor under-blend later
-- [feedback_orb_settings_panel.md](feedback_orb_settings_panel.md) — orb = settings/about/help panel; device mgmt its own page
-- [Persist findings early](persist-findings-early.md) — write load-bearing findings to memory/docs as they land (Nick edits messages)
-- [Epoch is fixed](feedback_epoch_fixed.md) — HARD: never move the epoch; fleet mints on legacy 20:17:40 UTC, TAI def 20:17:48 is +29 s; NO flip (decided 2026-09-26)
-- [No compat text hatches](feedback_no_compat_text_hatches.md) — never keep a reader for a retired text encoding (attacker lever); purge legacy forms same day
-- [Re-clutch, never store](re-clutch-never-store.md) — recovery = fresh ceremony; secrets at rest only if required
-- [Discard, not shred](feedback_discard_not_shred.md) — HARD: no shred/nuke/erase claims until we own the flash; delete = mark for discard, distinct file → OS delete; encrypted at rest anyway
-- [Device root never salted](feedback_device_root_never_salted.md) — HARD: machine-ID device root stays one stable value (anti-sybil core + thief stays catchable); never salt/randomise/keystore it, whatever an audit says
+- [answer, don't act](feedback_answer_dont_act.md) — a question gets an answer and a stop, never an action
+- [build via dev.sh](feedback_build_dev_script.md) — never bare cargo build; android = scripts/android/dev-adb.sh
+- [one build per check](feedback-one-build-per-check.md) — capture once to scratchpad, grep the capture
+- [test discipline](feedback_test_discipline.md) — ONE full cargo test per batch; never --lib alone
+- [render never touches vault](feedback_render_never_touches_vault.md) — HARD: UI thread makes no vault call
+- [no reload mid-ceremony](feedback_reload_mid_ceremony.md) — HARD: never dev.sh/deploy mid-CLUTCH or mid-WAVE; check the log
+- [commit trailer](commit-trailer-built-with.md) — "Built with Claude <model>"; never Co-Authored-By
+- [Nick publishes](nick-publishes.md) — Nick initiates; when asked, deploy.sh + RELEASE_NOTES.md
+- [push after landing](push-after-landing.md) — memories live in 'Claude memories/'; commit+push with photon
+- [no private handles](no-private-handles.md) — handles never in any repo; petnames · [doctrine](project_humanitys_code.md) · [never on disk](feedback_never_store_handles.md)
+- [photon + deps only](feedback_scope_photon_and_deps.md) — HARD: never edit another project
+- [stage own files](feedback_stage_only_own_files.md) — HARD: explicit paths; never git add -u/-A
+- [commit = all modified](feedback_commit_all.md) · [source map](feedback_source_map.md) — keep src/lib.rs map current
+- [no Python](feedback_no_python.md) — HARD; tools are Rust · [launcher is photon](feedback_launcher_named_photon.md)
+- [no wrapped comments](feedback_no_comment_wraps.md) — one sentence per line; comment-gate.sh
+- [edges, not timers](edges-not-timers.md) · [no time-based UI](feedback_no_time_based_ui.md)
+- [direct pixel only](feedback_direct_pixel_no_floaters.md) · [smoothness](feedback_smoothness_for_humans.md) — C¹+ GUI math
+- [spelling](feedback_spelling.md) — thru/altho; colour British; rest US
+- [photons are messages](feedback_photons_are_messages.md) · [atoms, not notes](feedback_atoms_not_notes.md) · [self is a contact](feedback_self_is_a_contact.md)
+- [wave/beam, never call](project_wave_beam_transition.md) — HARD: wave = audio, beam = video
+- [stops not dB](feedback_stops_not_db.md) · [voca camelCase](feedback_voca_camelcase.md) · [orb = settings panel](feedback_orb_settings_panel.md)
+- [any-size conversation](feedback_any_size_conversation.md) — HARD: 1, 2 or N = ONE model; friendship/molecule split is debt
+- [handles byte-precise](feedback_handles_byte_precise.md) — HARD: full Unicode, whitespace-only valid
+- [VSF readers widen](feedback_vsf_readers_width_agnostic.md) · [numbers binary at rest](feedback_numbers_binary_at_rest.md) — display Arabic, dozenal = Base setting
+- Shell traps: [sed address guard](feedback_sed_address_guard.md) · [perl UTF-8](feedback_perl_utf8_trap.md) · [perl pipe delimiter](feedback_perl_pipe_delimiter.md) · [pgrep self-match](feedback_pgrep_self_match.md)
+- [fgtw deploys freely](feedback_fgtw_deploy_freely.md) · [terminal clipboard](feedback_terminal_clipboard.md) — spaces around = · [script timestamps](feedback_script_timestamps.md)
+- [no redundant disk ops](feedback_no_redundant_disk_ops.md) — reflink · [legacy first](feedback_legacy_first.md) · [persist findings early](persist-findings-early.md)
+- [epoch is fixed](feedback_epoch_fixed.md) — HARD: never move it · [no compat text hatches](feedback_no_compat_text_hatches.md) — retired readers die same day
+- [re-clutch, never store](re-clutch-never-store.md) · [discard, not shred](feedback_discard_not_shred.md) — HARD: delete = mark for discard
+- [device root never salted](feedback_device_root_never_salted.md) — HARD: one stable machine-ID root; DMV plates until PIPE; vendor-issued ok, vendor-in-the-loop no
 
 ## Active / open
-- [Android dark in background](project_android_headless_dark.md) — Activity destroy freed the app; fix built, verify pending
-- [Backfill dings](project_backfill_dings.md) — 2026-10-21 re-serve rang per old photon
-- [Redox dropped](project_redox_dropped.md) — 2026-10-15 target removed everywhere; ferros is the next…
-- [Bindreq peer-to-peer](project_bindreq_peer_to_peer.md) — FGTW = phonebook only; bind request goes device to device (BUILT 2026-10-26)
-- [Fleet over the mesh](project_fleet_over_mesh.md) — 2026-10-26 BUILT: chain/bind request/fan-out device to device (fleet_req/resp, bind_req, fanout_resp), chain held on device, seed = mirror asked last; next: attest degrades to the held chain; field test pending
-- [Beams](project_beams.md) — H.264 beams BUILT (desktop + phone); g2t stream planned · [standing-queue verdict](project_beam_standing_queue.md) FIXED 2026-10-27
-- [PT path pace](project_pt_shared_congestion.md) — 2026-10-29 BUILT: one delay-based window per path shared by its transfers (replaced blast-256 that flooded the uplink and starved FGTW); field test pending
-- [Census eats copy B](project_census_eats_copy_b.md) — RESOLVED 2026-11-01: Linux copy B moved to ~/.local/lib/photon (Nick: "your call"); census stays strict
-- [opsin byte order + async loads](project_opsin_android_byte_order_async_loads.md) — 2026-10-05: pixels pack thru fluor::theme::fmt; loads off-thread
-- [Chain = text + pointers](project_chain_text_and_pointers.md) — DOCTRINE: attachments = wrapped VSF blobs keyed by header hb;…
-- [HDR stack](project_hdr_stack.md) — OWNED; Android 10-bit surface merged; peak metric open
-- [New-device history walk](project_new_device_history_walk.md) — Emma: strand miss, walk blocked 3 ways; amber fixed
-- [Phonebook strict anchor](project_phonebook_strict_anchor.md) — 2026-10-21 FIXED: records failed verification a month (strict…
-- [Removal safety](project_device_removal_safety.md) — 2026-10-17 phases 2-3 BUILT: at-risk lines,…
-- [Fleet holds everything](project_fleet_holds_everything.md) — DOCTRINE 2026-10-07: every device copies…
-- [Scroll as a memmove](project_scroll_memmove.md) — 2026-10-06 BUILT (conversation + contacts): band-only paint…
-- [Ideas page](project_ideas_gripes.md) — BUILT: anonymous gripes, PUBLIC list + bucket check + opt-in ticker (2026-10-28)
-- [Braid salt codec](project_braid_salt_codec.md) — 2026-10-01 CONVICTED: "chain fork" = chains-blob codec stored…
-- [Ceremony claim-first](project_ceremony_claim_first.md) — 2026-10-01 BUILT: owner = adding device roster claim; OPEN:…
-- [Consent order deadlock](project_consent_order_deadlock.md) — 2026-10-01 CONVICTED (Jeff): offer before mutuality + dropped… · 2026-10-29 fleet split the knock (Josh) FIXED
-- [Notification tap](project_notification_tap_unwired.md) — 2026-10-25 BUILT Android + Linux (enter_conversation_id);…
-- [Strip selection model](project_strip_selection_model.md) — v110: selection manual only, never stolen, cleared on entry
-- Render hooks: [ready first paint](project_ready_first_paint.md) (v110 hit stamps ride the paint decision) · [hit wipe inside damage](project_hit_wipe_damage.md)
-- [Member relay](project_member_relay.md) — 2026-10-25 grp_relay: members hand ORIGINAL signed group…
-- [Sibling group pages](project_sibling_group_pages.md) — 2026-10-25 FIXED: sibling molecule pages dropped at dispatch; sibling pongs rotated friend lanes
-- [Sticky catching up](project_sticky_catching_up.md) — 2026-10-27 Petunia: an era-0 copy held + replayed forever; FIXED (derived phase, joiners wait for cutover), v132
-- [Old-self import removal](project_old_self_import_removal.md) — DELETE every "OLD-SELF IMPORT" piece at v145 (Nick: version out in 12 versions)
-- [Group waves](project_group_waves.md) — 2026-10-26 waves+beams in molecules BUILT (mesh, beam fan, roll, recorded, reconnect, express, never-friended members); field test pending
-- [Group media at any size](project_group_media_scale.md) — docs/group-media-scale.md; 1a+1b+roll call BUILT; relay = member peer-to-peer only, no fgtw, only w/o direct path, only if faster (Nick 2026-11-01); 2a sender keys next
-- [Address sets](project_address_sets.md) — 2026-11-01 docs/addresses.md: stages 1-3 BUILT (every address per device, own getifaddrs set, phonebook kind 4, worker deployed); Windows + v4/v6 reflexive split open
-- [Group avatars](project_group_avatars.md) — 2026-11-02 BUILT: AvatarRecord + AV1-in-VSF blob fetched like group files; Manage page big avatar (drop / Android tap); field test pending
-- [Security audit](project_security_audit.md) — 2026-11-02 batch 1 FIXED (Critical + clear Highs, vsf hardening, token rotated); design items await Nick; Mediums next
-- [Group pigeon stuck fetch](project_group_pigeon_stuck_fetch.md) — 2026-11-01 FIXED: fetch aimed at a friend's offline pinned device never ended (person-level is_online); per-device verdict now
-- [Wave replay + beam video](project_wave_replay.md) — 2026-11-01 BUILT unverified: replayed wave screen, opt-in kept beam video (H.264 in VSF), one person page; field test pending
-- [Self atom on demand](project_self_atom_on_demand.md) — 2026-11-02 FIXED: reset device never founded the self atom and dropped its pages; a sibling page now founds it
-- [Emma bond era split](project_emma_bond_era_split.md) — 2026-11-01 CONVICTED + FIXED (docs/lanes.md "Which era is live"): friend-seen era wins adoption, unconfirmed eras stay local, fleet-first; field test pending
-- [Emma–Brittany group fork](project_emma_brittany_group_fork.md) — 2026-11-01 FIXED in code: lower root wins, second join answer can't replace, lowest party heals with a whole era; field test pending
-- [Beam settings + g2t](project_beam_settings.md) — 2026-10-26 BUILT: Beam page (per-device keys, follow-fleet toggle, 5 live controls, test patterns) + HLG10→g2t HDR beams; field test pending
-- [File drag-out](project_file_drag_out.md) — 2026-10-26 BUILT unverified: drag files out (mac promise / Win virtual file / X11 staged move) + mac Save panel; no share sheet
-- [One conversation model](project_conversation_convergence.md) — docs/conversations.md; step E stage 5 SHIPPED v132 (2026-10-27); F next
-- [project-molecules-build.md](project-molecules-build.md) — MOLECULES phase 1 BUILT 2026-09-15; join-by-replay SCOPED…
-- [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — 2026-09-18 sibling churn CONVICTED + fixed; ghost 1be949c1…
-- [project_era_ratchet.md](project_era_ratchet.md) — ERA RATCHET stages 1-4 SHIPPED; NEXT stage 5 consent, 6 soak
-- [project_multimonitor_status.md](project_multimonitor_status.md) — phase D + Windows not built; macOS drag VANISHES; [black span after resolution change](project_black_span_after_resolution.md) FIXED 2026-10-27
-- [UI cleanup](project_ui_cleanup.md) — 2026-10-28 started with opsin panel (one budgeted unit, fitted labels, height budget); HUD bound + host insets + Photon screens next
-- [project_notifications_pinned.md](project_notifications_pinned.md) — fleet-wide notification design PINNED (unnotified flag +…
-- [project_windows_dark_theme_bug.md](project_windows_dark_theme_bug.md) — PINNED: install corrupted dark-theme search text
-- [project_doorbell.md](project_doorbell.md) — v1 BUILT; OPEN: sibling bell overwrite
-- [project_offgrid_wfd.md](project_offgrid_wfd.md) — Wi-Fi Direct off-grid v1 BUILT; field test PENDING
-- [AAudio ignores clockid](project_aaudio_clockid_ignored.md) — Pixel HALs stamp MONOTONIC even if asked BOOTTIME; map it
-- [Media fallback rocker](project_media_fallback_rocker.md) — media at 7% while rocker bound VOICE_CALL
-- [Aligner windup](project_aligner_windup.md) — 2026-09-27 CONVICTED: TX slip integrator wound up while…
-- [Playout L/l slips](project_playout_l_slips.md) — 2026-09-28: L = max age of last 256 RECEIVED + repair slack,…
-- [Contact manage](project_contact_nuke_gaps.md) — 2026-09-27 BUILT (v106): Boot sticks via booted ledger;…
-- [Braid v2](project_braid_v2.md) — 2026-09-27 BUILT: per-strand S, agreed per era at CLUTCH;…
-- [Audio picker + levels](project_audio_picker_levels.md) — 2026-09-28: wave FIELD BUILT (ripples from avatars,…
-- [project_log_sweep_eats_fresh.md](project_log_sweep_eats_fresh.md) — 2026-08-21 log vanish never convicted; sweep ages by the…
-- [project_arabic_indexing_fixits.md](project_arabic_indexing_fixits.md) — FIX-IT: decimal-indexed VSF names → multi-value fields
-- [project_zero_sentinel_purge.md](project_zero_sentinel_purge.md) — sentinel purge shipped; convert stragglers when touched
-- [project_rekey_attack_surface.md](project_rekey_attack_surface.md) — rekey threat model (docs/rekey-threat-model.md); first-met…
-- [Canonical wave container](project_wave_canonical_container.md) — LOCK 2026-09-24: frame set by grid index, rows are SPANS, one…
-- [project_recording_fills.md](project_recording_fills.md) — fills verified; next = offline AEC at keep
-- [Fleet epoch arc design](fleet-epoch-arc-design.md) — B1-B3 shipped; closed at…
-- [Messaging solidity Phase A](messaging-solidity-phase-a.md) — friend-plane laws: gaps are transport, advance-on-send,…
-- [succession-emit-side-unwired.md](succession-emit-side-unwired.md) — succession primitive + receive path shipped; emit side unwired
-- [project_keyring_design.md](project_keyring_design.md) — keyring = signed fleet membership chain (fold() is the auth…
+- [Android dark in background](project_android_headless_dark.md) — fix built, verify pending
+- [Backfill dings](project_backfill_dings.md) · [Redox dropped](project_redox_dropped.md) · [Bindreq peer-to-peer](project_bindreq_peer_to_peer.md) — BUILT 2026-10-26
+- [Fleet over the mesh](project_fleet_over_mesh.md) — BUILT 2026-10-26; attest degrades to held chain next; field test pending
+- [Beams](project_beams.md) — H.264 BUILT; [standing queue](project_beam_standing_queue.md) FIXED
+- [PT path pace](project_pt_shared_congestion.md) — 2026-10-29 one delay window per path; field test pending
+- [Census eats copy B](project_census_eats_copy_b.md) — RESOLVED 2026-11-01 (~/.local/lib/photon)
+- [opsin byte order](project_opsin_android_byte_order_async_loads.md) · [Chain = text + pointers](project_chain_text_and_pointers.md) — DOCTRINE
+- [HDR stack](project_hdr_stack.md) — peak metric open · [New-device history walk](project_new_device_history_walk.md)
+- [Phonebook strict anchor](project_phonebook_strict_anchor.md) — FIXED · [Removal safety](project_device_removal_safety.md) — phases 2-3 BUILT
+- [Fleet holds everything](project_fleet_holds_everything.md) — DOCTRINE · [Scroll as memmove](project_scroll_memmove.md) — BUILT
+- [Ideas page](project_ideas_gripes.md) — BUILT 2026-10-28 · [Braid salt codec](project_braid_salt_codec.md) — CONVICTED
+- [Ceremony claim-first](project_ceremony_claim_first.md) — BUILT, OPEN bits · [Consent order deadlock](project_consent_order_deadlock.md) — FIXED 2026-10-29
+- [Notification tap](project_notification_tap_unwired.md) — BUILT · [Strip selection](project_strip_selection_model.md) — manual only
+- Render: [ready first paint](project_ready_first_paint.md) · [hit wipe inside damage](project_hit_wipe_damage.md)
+- [Member relay](project_member_relay.md) · [Sibling group pages](project_sibling_group_pages.md) — FIXED · [Sticky catching up](project_sticky_catching_up.md) — FIXED v132
+- [Old-self import removal](project_old_self_import_removal.md) — DELETE at v145
+- [Group waves](project_group_waves.md) — BUILT; field test pending · [Group media at any size](project_group_media_scale.md) — 1a+1b+roll BUILT; 2a next
+- [Address sets](project_address_sets.md) — stages 1-3 BUILT; Windows + reflexive split open
+- [Group avatars](project_group_avatars.md) — BUILT 2026-11-02; field test pending
+- [Android Widevine plate](project_android_widevine_plate.md) — 2026-11-02 probe BUILT; verify reinstall / per-app / factory reset on the Pixel
+- [Security audit](project_security_audit.md) — batch 1 FIXED 2026-11-02; design items await Nick; Mediums next
+- [Group pigeon stuck fetch](project_group_pigeon_stuck_fetch.md) — FIXED · [Self atom on demand](project_self_atom_on_demand.md) — FIXED
+- [Wave replay + beam video](project_wave_replay.md) — BUILT unverified · [Beam settings + g2t](project_beam_settings.md) — BUILT, field test pending
+- [Emma bond era split](project_emma_bond_era_split.md) — FIXED (docs/lanes.md) · [Emma–Brittany group fork](project_emma_brittany_group_fork.md) — FIXED in code
+- [File drag-out](project_file_drag_out.md) — BUILT unverified · [One conversation model](project_conversation_convergence.md) — step E SHIPPED v132; F next
+- [molecules build](project-molecules-build.md) — phase 1 BUILT · [clutch completion rebroadcast](project_clutch_completion_rebroadcast.md) — fixed
+- [era ratchet](project_era_ratchet.md) — stages 1-4 SHIPPED; 5 consent, 6 soak next
+- [multimonitor](project_multimonitor_status.md) — phase D + Windows unbuilt · [black span after resolution](project_black_span_after_resolution.md) — FIXED
+- [UI cleanup](project_ui_cleanup.md) — opsin panel done; HUD + insets + screens next
+- [notifications pinned](project_notifications_pinned.md) · [Windows dark theme bug](project_windows_dark_theme_bug.md) — PINNED
+- [doorbell](project_doorbell.md) — v1; OPEN sibling bell overwrite · [off-grid WFD](project_offgrid_wfd.md) — v1, field test pending
+- [AAudio ignores clockid](project_aaudio_clockid_ignored.md) · [media fallback rocker](project_media_fallback_rocker.md)
+- [aligner windup](project_aligner_windup.md) · [playout L/l slips](project_playout_l_slips.md) · [contact manage](project_contact_nuke_gaps.md) — v106
+- [braid v2](project_braid_v2.md) — per-strand S · [audio picker + levels](project_audio_picker_levels.md) — wave field BUILT
+- [log sweep eats fresh](project_log_sweep_eats_fresh.md) — never convicted · [arabic indexing fixits](project_arabic_indexing_fixits.md) · [zero sentinel purge](project_zero_sentinel_purge.md)
+- [rekey attack surface](project_rekey_attack_surface.md) — docs/rekey-threat-model.md · [canonical wave container](project_wave_canonical_container.md) — LOCKED
+- [recording fills](project_recording_fills.md) — next offline AEC · [fleet epoch arc](fleet-epoch-arc-design.md) — B1-B3 shipped
+- [messaging solidity A](messaging-solidity-phase-a.md) · [succession emit unwired](succession-emit-side-unwired.md) · [keyring design](project_keyring_design.md)
 
 ## Designs / doctrine (docs/ are canonical)
-- [project_device_sovereignty.md](project_device_sovereignty.md) — subject signs, others verify-or-withhold; pending expires
-- [Bilateral removal](self-only-removal.md) — departure = leaver request + survivor countersign; expulsion…
-- [project_identity_never_dies.md](project_identity_never_dies.md) — no terminal op; brands survive departure; two-signature retire
-- [project_lifecycle_flows.md](project_lifecycle_flows.md) — lifecycle designed (docs/lifecycle.md): D1 KnownHandle, D2…
-- [project_identity_profile.md](project_identity_profile.md) — identity profile designed (docs/identity-profile.md): handle…
-- [project_device_loaners.md](project_device_loaners.md) — loaners = LEASE (docs/device-lease.md); title never moves
-- [project_total_loss_recovery.md](project_total_loss_recovery.md) — total-loss = custodian-authorized chain supersession;…
-- [project_fleet_inbox.md](project_fleet_inbox.md) — fleet inbox designed (docs/fleet-inbox.md); NOT built
-- [project_fleet_routing_scale.md](project_fleet_routing_scale.md) — fleet invariants: any size, no 2-device shortcuts
-- [project_presence_vs_online.md](project_presence_vs_online.md) — presence ≠ online; presence broadcast DEFAULTS OFF
-- [project_pairing_v2.md](project_pairing_v2.md) — pairing v2: masked words, consent egg, two-phase confirm;…
-- [project_peers_are_fgtw.md](project_peers_are_fgtw.md) — decentralize FGTW: peers = trust web; mutual-consent clutch…
-- [project_fleet_key_redesign.md](project_fleet_key_redesign.md) — fleet-key redesign spec'd (docs/fleet-key.md): ira-wrapped,…
-- [reference_braid_novelty.md](reference_braid_novelty.md) — braid prior-art/novelty notes
-- [project-ferros-exec-naming.md](project-ferros-exec-naming.md) — ferros exec: no ambient cwd, bind-dont-search, VSF headers…
-- [project_token_terminology.md](project_token_terminology.md) — whakaira vs ihi; glossary = ferros/GLOSSARY.md
-- [project_secret_memory_hygiene.md](project_secret_memory_hygiene.md) — hot secrets: zeroize + mlock + no-core-dumps
-- [project_session_registers.md](project_session_registers.md) — tohu session = {identity_seed, vault_seed, handle_proof},…
-- [project_identity_storage_model.md](project_identity_storage_model.md) — device identity deterministic from fingerprint; vault…
-- [project_device_identity_model.md](project_device_identity_model.md) — tohu crate (oracle + frozen v0 derivation); deferred…
-- [project_vault_roadmap.md](project_vault_roadmap.md) — vault ring tooling/GC/resurrection/bulk content wait for…
-- [project_retention_winnow.md](project_retention_winnow.md) — winnow waits for device-sync; sync law, loft v1, Vault…
-- [project_storage_layering.md](project_storage_layering.md) — 3 layers: vault / chain-state / rārangi conversation DB
-- [project_rarangi_messages_fleet.md](project_rarangi_messages_fleet.md) — rows: table=friendship_id, pk=monotonic u64; fleet=a…
-- [project_avatar_encryption_wall.md](project_avatar_encryption_wall.md) — avatars sealed under a 64-byte bearer pin; admin can't…
-- [project_vsf_canonical_signing.md](project_vsf_canonical_signing.md) — ONE VSF signing scheme: ge over BLAKE3(file, ge zeroed)
-- [project_nunc_clock_check.md](project_nunc_clock_check.md) — nunc consensus IS the time base (BOOTTIME anchor); refusal…
-- [project_theme_rec2020.md](project_theme_rec2020.md) — theme colours in VSF RGB thru fluor's const vsf() → Rec.2020;…
-- [project_android_ime_model.md](project_android_ime_model.md) — Android IME: surface never resizes (adjustNothing + inset…
-- [project_level_plan_reaim.md](project_level_plan_reaim.md) — LEVEL PLAN tuning ledger 2026-09-15: quiet-anchored gate,…
-- [project_incall_learner.md](project_incall_learner.md) — ECHO DOCTRINE: mic untouched on TX; speaker ducks pre-DAC,…
-- [Eagle units](project_eagle_units_first_principles.md) — one atom, floor rule, Zil = one oscillation, log reputation;…
-- [project_numeral_forms.md](project_numeral_forms.md) — counts linear, magnitudes DMS dozenal, proportions dot-fraction
-- [project_dms_age.md](project_dms_age.md) — DMS age = floor log2 of OSCILLATIONS ago (second 30, hour 42,…
-- [project_dozenal_datetime.md](project_dozenal_datetime.md) — `year month-glyph day weekday ·share`; time of day =…
-- [project_button_one_renderer.md](project_button_one_renderer.md) — ONE pill/button renderer in fluor; never hand-roll squircles
-- [project_textbox_one_registry.md](project_textbox_one_registry.md) — new textbox = register in visit_app_widgets + textboxes_mut only
-- [project_font_bundle.md](project_font_bundle.md) — fonts 100% bundled; FE0F/FE0E pick face; dozenal → Oxanium
+- [device sovereignty](project_device_sovereignty.md) · [bilateral removal](self-only-removal.md) · [identity never dies](project_identity_never_dies.md)
+- [lifecycle flows](project_lifecycle_flows.md) · [identity profile](project_identity_profile.md) · [device loaners = lease](project_device_loaners.md)
+- [total-loss recovery](project_total_loss_recovery.md) · [fleet inbox](project_fleet_inbox.md) — NOT built · [fleet routing scale](project_fleet_routing_scale.md)
+- [presence vs online](project_presence_vs_online.md) — broadcast defaults OFF · [pairing v2](project_pairing_v2.md) · [peers are fgtw](project_peers_are_fgtw.md)
+- [fleet key redesign](project_fleet_key_redesign.md) · [braid novelty](reference_braid_novelty.md) · [ferros exec naming](project-ferros-exec-naming.md)
+- [token terminology](project_token_terminology.md) · [secret memory hygiene](project_secret_memory_hygiene.md) · [session registers](project_session_registers.md)
+- [identity storage model](project_identity_storage_model.md) · [device identity model](project_device_identity_model.md) — tohu oracle + frozen v0
+- [vault roadmap](project_vault_roadmap.md) · [retention winnow](project_retention_winnow.md) · [storage layering](project_storage_layering.md) · [rarangi messages](project_rarangi_messages_fleet.md)
+- [avatar encryption wall](project_avatar_encryption_wall.md) · [VSF canonical signing](project_vsf_canonical_signing.md) — ONE scheme · [nunc clock check](project_nunc_clock_check.md)
+- [theme Rec.2020](project_theme_rec2020.md) · [Android IME model](project_android_ime_model.md) · [level plan](project_level_plan_reaim.md) · [in-call learner](project_incall_learner.md)
+- [Eagle units](project_eagle_units_first_principles.md) · [numeral forms](project_numeral_forms.md) · [DMS age](project_dms_age.md) · [dozenal datetime](project_dozenal_datetime.md)
+- [one button renderer](project_button_one_renderer.md) · [one textbox registry](project_textbox_one_registry.md) · [font bundle](project_font_bundle.md)
 
-## Shipped arcs (hooks)
-- [project_great_cleanup.md](project_great_cleanup.md) — GREAT CLEANUP phases 1-6 shipped 2026-08-20
-- [project_wave_card.md](project_wave_card.md) — WAVE CARD arc shipped 2026-09-12 (PHWAVE9): plaid nowhere at…
-- [project_waves.md](project_waves.md) — waves FIELD-WORKING; Android audio Rust-owned AAudio…
-- [project_attachments.md](project_attachments.md) — typed attachments shipped (kinds, previews, chunked…
-- [project_viewer_is_opsin.md](project_viewer_is_opsin.md) — 2026-09-17 the image viewer IS opsin's embeddable…
-- [project_pigeon_fetch_fanout.md](project_pigeon_fetch_fanout.md) — 2026-09-17 pigeon re-uploads convicted: one device per ask,…
-- [project_links.md](project_links.md) — message links = typed marks; label editable
-- [project_languages.md](project_languages.md) — catalog = exhaustive-match enum; 16 LANGUAGES as of…
-- [project_update_flow.md](project_update_flow.md) — self-update + release notices; RELEASE_NOTES.md → Updates…
-- [project_unattended_reboot.md](project_unattended_reboot.md) — auto-attest-on-reboot shipped; off-by-default toggle
-- [project_bridge.md](project_bridge.md) — BRIDGE (docs/bridge.md) = passless remote shell between…
-- [project_chain_replication.md](project_chain_replication.md) — chains sync fleet-wide (mutated_osc, adopt-iff-newer)
-- [Per-device lanes](per-device-lanes.md) — every device transmits on its own lane; CRDT merge converges
-- [project_fleet_braid_plane.md](project_fleet_braid_plane.md) — §14 cutover closed; durability = docs/durability.md…
-- [project_reserve_delivery.md](project_reserve_delivery.md) — re-serve: durable store outranks pending list
-- [project_history_recovery.md](project_history_recovery.md) — friend backfill + fleet sync shipped; is_online gates removed
-- [project_token_private_identity.md](project_token_private_identity.md) — TOKEN crux solved, phases 1-2 shipped
-- [project_settings_typed_values.md](project_settings_typed_values.md) — fstate v7: settings natively typed VSF; type map + getters in…
-- [project_xchacha_migration.md](project_xchacha_migration.md) — stack-wide XChaCha20-Poly1305 (192-bit nonce)
-- [project_lockout_enforcement.md](project_lockout_enforcement.md) — lockout + handle-confirmed UNLOCK, typed tombstone
-- [UI thread snapshot+CAS](ui-thread-snapshot-cas.md) — workers get snapshots, commits CAS, writers fire post-durability
-- [Lane rotation wedge heal](lane-rotation-wedge-heal.md) — exhausted pendings → rotate lane, re-serve at original stamps
-- Smaller: [connection-flow ladder](connection-flow-revision.md) · [window geometry](project_window_geometry_shipped.md) · [wave fishtank on cellular](project_wave_fishtank_cellular.md)
-- [project_fgtw_migration_state.md](project_fgtw_migration_state.md) — fgtw crate extraction thru M3; stays std until ferros…
-- [project_manifestus_custodes_split.md](project_manifestus_custodes_split.md) — manifestus = storage engine (was custodes)
+## Shipped arcs
+- [great cleanup](project_great_cleanup.md) · [wave card](project_wave_card.md) · [waves](project_waves.md) · [attachments](project_attachments.md)
+- [viewer is opsin](project_viewer_is_opsin.md) · [pigeon fetch fanout](project_pigeon_fetch_fanout.md) · [links](project_links.md) · [languages](project_languages.md) — 16
+- [update flow](project_update_flow.md) · [unattended reboot](project_unattended_reboot.md) · [bridge](project_bridge.md) · [chain replication](project_chain_replication.md)
+- [per-device lanes](per-device-lanes.md) · [fleet braid plane](project_fleet_braid_plane.md) · [reserve delivery](project_reserve_delivery.md) · [history recovery](project_history_recovery.md)
+- [token private identity](project_token_private_identity.md) · [settings typed values](project_settings_typed_values.md) · [xchacha migration](project_xchacha_migration.md)
+- [lockout enforcement](project_lockout_enforcement.md) · [UI thread snapshot+CAS](ui-thread-snapshot-cas.md) · [lane rotation wedge heal](lane-rotation-wedge-heal.md)
+- [connection-flow ladder](connection-flow-revision.md) · [window geometry](project_window_geometry_shipped.md) · [wave fishtank cellular](project_wave_fishtank_cellular.md)
+- [fgtw migration](project_fgtw_migration_state.md) · [fgtw stays std](project_fgtw_nostd_deferred.md) · [manifestus/custodes split](project_manifestus_custodes_split.md)
+- [colour pipeline doctrine](project_colour_pipeline.md) — wide gamut, tag the surface, γ2 never sRGB OETF · [epoch arc closed](project_fleet_epoch_arc_closed.md) — fa3a9c0
 
-## Closed incidents (conviction hooks)
-- Fixed (hooks): [address ports](project_address_ports.md) · [hotplug abort](project_hotplug_abort.md) · [pigeon fetch reach](project_pigeon_fetch_reach.md) · [early-stop blindness](project_history_early_stop_blindness.md)
-- Fixed (hooks): [fluor busy loop](project_fluor_busy_loop.md) · [macOS resize cursor](project_macos_resize_cursor.md) · [party colour](project_party_colour_perceptual.md)
+## Closed incidents
+- [address ports](project_address_ports.md) · [hotplug abort](project_hotplug_abort.md) · [pigeon fetch reach](project_pigeon_fetch_reach.md) · [early-stop blindness](project_history_early_stop_blindness.md)
+- [fluor busy loop](project_fluor_busy_loop.md) · [macOS resize cursor](project_macos_resize_cursor.md) · [party colour](project_party_colour_perceptual.md)
 - Perf: [ANR-at-launch](project_android_hang_nag.md) · [idle-CPU](project_idle_tick_cost.md) · [render lag](project_render_storm_lag.md)
 - Vault: [seal failures](project_vault_seal_failures.md) · [plow refusal](project_manifestus_plow_reloc_refusal.md) · [tombstone](project_manifestus_tombstone_bug.md)
 - CLUTCH/braid: [desync class](project_chain_advance_desync.md) · [offer deadlock](project_clutch_offer_deadlock.md) · [UI-thread hitch](project_clutch_ui_thread_hitch.md)
-- [project_traversal_relay_gap.md](project_traversal_relay_gap.md) — 2026-09-17: punch pulse for relay-only friends, amber ring; RELAY MEDIA unbuilt
-- Transport/presence: [no-ring class](project_call_no_ring_incident.md) · [sibling presence flap](project_sibling_presence_flap.md) · [ping reflection](relay-asymmetry-ping-reflection.md)
-- Android/device: [session capsule](project_android_session_capsule.md) · [crash handler](project_crash_handler_sigchain.md) · [colour floor](project_android_color_pipeline_floor.md)
-
-- More closed: [token asymmetry](project_clutch_token_asymmetry.md) · [shadow conversations](split-contacts-incident.md) · [notes-row wedge](self-pair-sibling-row.md) · [self-msg vanish](project_self_message_vanish.md) · [put latency](project_vault_op_latency.md)
-- More closed: [relay pipe](project_nat_traversal_relay_gap.md) · [roster clobber](project_wiped_device_roster_clobber.md) · [FGTW key desync](project_fgtw_key_desync.md) · [glow](project_contacts_glow_damage.md) · [two-machine git](project_two_machine_git_divergence.md)
+- [traversal relay gap](project_traversal_relay_gap.md) — RELAY MEDIA unbuilt · [no-ring class](project_call_no_ring_incident.md) · [sibling presence flap](project_sibling_presence_flap.md) · [ping reflection](relay-asymmetry-ping-reflection.md)
+- Android: [session capsule](project_android_session_capsule.md) · [crash handler](project_crash_handler_sigchain.md) · [colour floor](project_android_color_pipeline_floor.md)
+- [token asymmetry](project_clutch_token_asymmetry.md) · [shadow conversations](split-contacts-incident.md) · [notes-row wedge](self-pair-sibling-row.md) · [self-msg vanish](project_self_message_vanish.md) · [put latency](project_vault_op_latency.md)
+- [relay pipe](project_nat_traversal_relay_gap.md) · [roster clobber](project_wiped_device_roster_clobber.md) · [FGTW key desync](project_fgtw_key_desync.md) · [glow](project_contacts_glow_damage.md) · [two-machine git](project_two_machine_git_divergence.md)
 
 ## References
-- [reference_log_pull.md](reference_log_pull.md) — photonlog --pull --session / --handle <LEFT map bytes>; pull to a file first
-- [project_desktop_trails_spirix.md](project_desktop_trails_spirix.md) — desktop path deps trailed remotes; ff siblings
-- [MacBook trails remote](macbook-trails-remote.md) — MacBook clones trail rewritten history: reset to origin, ff ALL sibling deps
-- [photon not fmt-clean](photon-not-fmt-clean.md) — bare cargo fmt churns ~40 files; style commits separate
-- [reference_vsf_primary_section.md](reference_vsf_primary_section.md) — readers MUST use VsfHeader::primary_section
-- [reference_ihi_primitives.md](reference_ihi_primitives.md) — ihi: lossy OWF vs memory-hard PoW
-- [reference_claude_unguard.md](reference_claude_unguard.md) — ~/.local/bin/claude-code-unguard force-opens the Edit read guard
-- [reference_aarch64_cross_libs.md](reference_aarch64_cross_libs.md) — aarch64-linux cross-build: vendor .so into cross-libs + x11.pc
-- [reference_windows_arm64_toolchain.md](reference_windows_arm64_toolchain.md) — aarch64-pc-windows-gnullvm via llvm-mingw at /mnt/Harbor/Code/llvm-mingw
-- [reference_mingw_features_shim.md](reference_mingw_features_shim.md) — x86_64-windows: pqcrypto-mlkem needs a features.h shim
-- [reference_site_cv_pdfs.md](reference_site_cv_pdfs.md) — holdmyoscilloscope.com wrangler pages; CV PDFs via make-cv-pdfs.sh
-- [reference_backups.md](reference_backups.md) — MEGA mirror + private github keys repo (push manually, --no-verify)
-- [reference_keyring_signing.md](reference_keyring_signing.md) — Android signing password at Code/keys/TOKEN.p12.pass
+- [log pull](reference_log_pull.md) — photonlog --pull; pull to a file first · [desktop trails spirix](project_desktop_trails_spirix.md) · [MacBook trails remote](macbook-trails-remote.md)
+- [not fmt-clean](photon-not-fmt-clean.md) · [VSF primary section](reference_vsf_primary_section.md) · [ihi primitives](reference_ihi_primitives.md) · [claude unguard](reference_claude_unguard.md)
+- [aarch64 cross libs](reference_aarch64_cross_libs.md) · [Windows arm64 toolchain](reference_windows_arm64_toolchain.md) · [mingw features shim](reference_mingw_features_shim.md)
+- [site CV PDFs](reference_site_cv_pdfs.md) · [backups](reference_backups.md) · [keyring signing](reference_keyring_signing.md) — Android signing password in Code/keys
