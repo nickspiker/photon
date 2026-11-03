@@ -632,6 +632,7 @@ impl PhotonApp {
                 conv: conv_id,
                 asked: Some(recipient_pubkey),
                 at: std::time::Instant::now(),
+                last_heard: std::time::Instant::now(),
                 asked_online,
                 tries: tries.saturating_add(1), // WHY/PROOF: a u8 of fetch rounds for a blob no device answers — it outlives 255, and saturating keeps the candidate rotation from wrapping back to rank 0's first try
                 fruitless,
@@ -670,13 +671,23 @@ impl PhotonApp {
     pub(super) fn fetch_pong_from(&mut self, dev: &[u8; 32]) {
         let heard = self.attach_heard.get(dev).copied();
         for (hash, f) in self.attach_fetch_inflight.iter_mut() {
-            if f.asked != Some(*dev) || f.ended || f.progressed || heard.is_some_and(|h| h > f.at) {
+            if f.asked != Some(*dev) || f.ended {
+                continue;
+            }
+            // The device streamed something since the last pong (this blob or another queued ahead of it): still answering, the count starts over. A STREAMING DEVICE IS NEVER ABANDONED, but a device that has gone silent is not streaming, however much it sent before (2026-11-03: a manifest served from a device still receiving its own chunks, then nothing, held an ask "waiting on it" for good).
+            if let Some(h) = heard.filter(|h| *h > f.last_heard) {
+                f.last_heard = h;
+                f.pongs_since = 0;
                 continue;
             }
             f.pongs_since += 1;
             if f.pongs_since >= 2 {
                 f.ended = true;
-                crate::logf!("attach: device {} is up but its answer for {}… never came — asking the next", crate::fp(dev), hex::encode(&hash[..4]));
+                if f.progressed {
+                    crate::logf!("attach: device {} is up but its stream of {}… stopped — asking again for the rest", crate::fp(dev), hex::encode(&hash[..4]));
+                } else {
+                    crate::logf!("attach: device {} is up but its answer for {}… never came — asking the next", crate::fp(dev), hex::encode(&hash[..4]));
+                }
             }
         }
     }
@@ -732,7 +743,7 @@ impl PhotonApp {
             return;
         }
         let asked_online = self.device_online(&from) != Some(false);
-        self.attach_fetch_inflight.insert(hash, FetchAsk { conv, asked: Some(from), at: std::time::Instant::now(), asked_online, tries: 1, fruitless: 0, progressed: false, ended: false, pongs_since: 0 });
+        self.attach_fetch_inflight.insert(hash, FetchAsk { conv, asked: Some(from), at: std::time::Instant::now(), last_heard: std::time::Instant::now(), asked_online, tries: 1, fruitless: 0, progressed: false, ended: false, pongs_since: 0 });
     }
 
     /// THE FLEET HOLDS EVERYTHING (Nick 2026-10-07: "if I have five devices, all five should get copies of waves, pigeons, beams, photons, all of it… be sane"). One pass per edge (`replicate_dirty`: rows arrived, presence answers landed, the network went unmetered): every live file row in every conversation whose bytes this device is KNOWN not to hold — pigeons, wave recordings, wave envelopes, previews' originals — is armed ONCE per session in the fetch map, and the retry tick asks one device at a time (friend's devices and our siblings, easiest first) until it lands. An armed fetch is asked on the next tick; a friend's live attachment row is already recorded as asked of the device pushing it (fetch_expect_push), so nobody else is asked while that push runs. A row whose presence is not known yet queues its probe here and is picked up on the edge its answer raises. Sane: a metered network arms nothing (Android reports it; desktops are never metered here).
@@ -781,7 +792,7 @@ impl PhotonApp {
                 }
                 if crate::storage::blob_present_known(&h) == Some(false) {
                     self.attach_auto_fetched.insert(h);
-                    self.attach_fetch_inflight.insert(h, FetchAsk { conv: cid, asked: None, at: now, asked_online: false, tries: 0, fruitless: 0, progressed: false, ended: false, pongs_since: 0 });
+                    self.attach_fetch_inflight.insert(h, FetchAsk { conv: cid, asked: None, at: now, last_heard: now, asked_online: false, tries: 0, fruitless: 0, progressed: false, ended: false, pongs_since: 0 });
                     armed += 1;
                 }
             }
@@ -971,6 +982,8 @@ impl PhotonApp {
             // A piece of a blob we asked for landed: the ask brought something, so it does not count toward letting go (attach_fetch_retry_tick).
             if let Some(f) = self.attach_fetch_inflight.get_mut(&r.content_hash) {
                 f.progressed = true;
+                // A piece landed: the pong count toward "its answer stopped" starts over.
+                f.pongs_since = 0;
             }
             // A manifest landed: seed the progress bar and repaint; nothing is installed yet.
             if let Some((held, total)) = r.manifest {
@@ -1116,7 +1129,7 @@ mod fetch_tests {
     use super::super::FetchAsk;
 
     fn ask(asked: bool, fruitless: u8, progressed: bool) -> FetchAsk {
-        FetchAsk { conv: crate::types::FriendshipId::from_bytes([7; 32]), asked: asked.then_some([9; 32]), at: std::time::Instant::now(), asked_online: true, tries: 3, fruitless, progressed, ended: false, pongs_since: 0 }
+        FetchAsk { conv: crate::types::FriendshipId::from_bytes([7; 32]), asked: asked.then_some([9; 32]), at: std::time::Instant::now(), last_heard: std::time::Instant::now(), asked_online: true, tries: 3, fruitless, progressed, ended: false, pongs_since: 0 }
     }
 
     /// The let-go count: an ask that brought none of the blob adds one, an ask that brought any of it starts over, and an armed fetch nobody has asked yet adds nothing.

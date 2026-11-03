@@ -57,6 +57,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [Linux TPM plate](project_linux_tpm_plate.md) — 2026-11-02 plate + HMAC key half BUILT and VERIFIED on the AMD fTPM, logged only, nothing derives; in-app line verified after reboot; Windows TBS next
 - [Handle rename](project_handle_rename.md) — in the spec, scoped 2026-11-03: succession + slot move, four seams, two constraints to respect before any successor record ships
 - [Security audit](project_security_audit.md) — batch 1 FIXED 2026-11-02; design items await Nick; Mediums next
+- [Attach manifest stall](project_attach_manifest_stall.md) — 2026-11-03 FIXED: manifest-then-silence from a sibling still receiving the blob held a fetch forever; pongs now end a stalled stream and re-ask
 - [Group pigeon stuck fetch](project_group_pigeon_stuck_fetch.md) — FIXED · [Self atom on demand](project_self_atom_on_demand.md) — FIXED
 - [Wave replay + beam video](project_wave_replay.md) — BUILT unverified · [Beam settings + g2t](project_beam_settings.md) — BUILT, field test pending
 - [Emma bond era split](project_emma_bond_era_split.md) — FIXED (docs/lanes.md) · [Emma–Brittany group fork](project_emma_brittany_group_fork.md) — FIXED in code

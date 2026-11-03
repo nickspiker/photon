@@ -790,6 +790,8 @@ struct FetchAsk {
     asked: Option<[u8; 32]>,
     /// When the ask went out (or the sweep armed it): frames heard from the asked device after this count as its progress (an ORDER, never a deadline).
     at: std::time::Instant,
+    /// The last blob frame heard from the asked device as of its last pong: a pong with nothing heard since the previous one counts toward the ask ending, whether or not the ask had progressed before (2026-11-03: a manifest served from a device still receiving its own chunks, then silence, stood "waiting on it" for good).
+    last_heard: std::time::Instant,
     /// The asked device read online when asked, so its offline verdict is an edge for this ask; a fallback ask at an offline device has no such edge.
     asked_online: bool,
     /// Asks so far: the candidate rotation's index and the wrapper/raw alternation's parity.
