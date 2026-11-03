@@ -101,6 +101,11 @@ impl PendingProbes {
     }
 
     /// Drop probes older than [`PROBE_TIMEOUT`]; returns how many expired (a candidate that never answered).
+    /// Whether a probe with this provenance is still outstanding: an ack that matches none is nobody's answer.
+    pub fn contains(&self, provenance: &[u8; 32]) -> bool {
+        self.inner.get(provenance).is_some()
+    }
+
     pub fn expire(&mut self, now: Instant) -> usize {
         let before = self.inner.len();
         self.inner

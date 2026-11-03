@@ -9,6 +9,11 @@ pub struct PeerStore {
     peers: Vec<PeerRecord>,
 }
 
+/// How many devices one identity may hold in the store: a fleet of sixteen is far past any real one, and a sender inventing devices under a handle stops here.
+const MAX_DEVICES_PER_HANDLE: usize = 1 << 4;
+/// How many records the store holds in all.
+const MAX_PEERS: usize = 1 << 12;
+
 
 /// A peer record is fresh while our local view of it (`local_seen`) is inside the expiry window.
 /// WHY: `local_seen` is floored to our clock from ABOVE at ingest, but the peer's signed stamp beneath it can be anything from below, including i64::MIN.
@@ -158,6 +163,10 @@ impl PeerStore {
         if !peer.verify() {
             return false;
         }
+        // The same address sanity as add_peer: a record naming an address nobody can be reached at is noise, however well it is signed (security audit NET-06).
+        if crate::network::traverse::gather::is_bogus_addr(&peer.ip) {
+            return false;
+        }
         // Where we DO hold the identity's chain, a device it doesn't fold as a member is refused — the binding the record itself cannot carry.
         if let Some(fleet) = known_fleet {
             if !fleet.iter().any(|m| m == peer.device_pubkey.as_bytes()) {
@@ -165,6 +174,27 @@ impl PeerStore {
             }
         }
         let peer = floor_to_now(peer); // gossip is the other door — the same floor as add_peer
+        // THE STORE IS BOUNDED (security audit NET-06): a self-signed record costs its author nothing, so a sender could grow this sorted list without end. A handle keeps its newest MAX_DEVICES_PER_HANDLE devices, the store its newest MAX_PEERS records; the oldest-seen gives way, and a record older than what it would evict is simply not taken.
+        let held = self.peers.iter().filter(|p| p.handle_proof == peer.handle_proof).count();
+        let new_device = !self.peers.iter().any(|p| p.handle_proof == peer.handle_proof && p.device_pubkey.as_bytes() == peer.device_pubkey.as_bytes());
+        if new_device && held >= MAX_DEVICES_PER_HANDLE {
+            let Some(oldest) = self.peers.iter().enumerate().filter(|(_, p)| p.handle_proof == peer.handle_proof).min_by_key(|(_, p)| p.local_seen).map(|(i, _)| i) else {
+                return false;
+            };
+            if self.peers[oldest].local_seen >= peer.local_seen {
+                return false;
+            }
+            self.peers.remove(oldest);
+        }
+        if new_device && self.peers.len() >= MAX_PEERS {
+            let Some(oldest) = self.peers.iter().enumerate().min_by_key(|(_, p)| p.local_seen).map(|(i, _)| i) else {
+                return false;
+            };
+            if self.peers[oldest].local_seen >= peer.local_seen {
+                return false;
+            }
+            self.peers.remove(oldest);
+        }
         let pos = self.find_position(&peer.handle_proof);
 
         let mut i = pos;

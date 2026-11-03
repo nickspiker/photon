@@ -1337,6 +1337,8 @@ async fn run_checker(
     let pending_probes: Arc<Mutex<crate::network::traverse::punch::PendingProbes>> = Arc::new(
         Mutex::new(crate::network::traverse::punch::PendingProbes::new()),
     );
+    // THE ASKS WE HAVE OUT (security audit NET-06, NET-07): the provenance hashes of the phonebook requests and reflects this device sent and has not yet heard answered. An answer is taken only when it echoes one of these, so a recorded answer replayed later, or an answer to a question nobody asked, is noise. Bounded at OUTSTANDING_ASKS; the oldest gives way.
+    let outstanding_asks: Arc<Mutex<Vec<[u8; 32]>>> = Arc::new(Mutex::new(Vec::new()));
 
     // Track consecutive failed pings per contact (hysteresis - don't flip offline on 1 lost packet)
     let failed_pings: Arc<Mutex<Vec<([u8; 32], u8)>>> = Arc::new(Mutex::new(Vec::new()));
@@ -1348,6 +1350,7 @@ async fn run_checker(
     let socket_recv = socket.clone();
     let pending_recv = pending.clone();
     let pending_probes_recv = pending_probes.clone();
+    let outstanding_asks_recv = outstanding_asks.clone();
     let our_pubkey_recv = our_pubkey.clone();
     let keypair_recv = keypair.clone();
     let status_tx_recv = status_tx.clone();
@@ -3382,7 +3385,7 @@ async fn run_checker(
                                         StatusUpdate::Online {
                                             peer_pubkey: sender_pubkey.clone(),
                                             is_online: true,
-                                            peer_addr: Some(src_addr),
+                                            peer_addr: None, // not adopted from an unsolicited frame (security audit NET-04): the reflected probe's ack validates the path instead
                                             sync_records: vec![],
                                             display_name: None,
                                             avatar_pin: None,
@@ -3821,7 +3824,7 @@ async fn run_checker(
                                         StatusUpdate::Online {
                                             peer_pubkey: sender_pubkey.clone(),
                                             is_online: true,
-                                            peer_addr: Some(src_addr),
+                                            peer_addr: None, // not adopted from an unsolicited frame (security audit NET-04): the reflected probe's ack validates the path instead
                                             sync_records: vec![],
                                             display_name: None,
                                             avatar_pin: None,
@@ -3893,7 +3896,7 @@ async fn run_checker(
                                         StatusUpdate::Online {
                                             peer_pubkey: sender_pubkey.clone(),
                                             is_online: true,
-                                            peer_addr: Some(src_addr),
+                                            peer_addr: None, // not adopted from an unsolicited frame (security audit NET-04): the reflected probe's ack validates the path instead
                                             sync_records: vec![],
                                             display_name: None,
                                             avatar_pin: None,
@@ -4036,13 +4039,19 @@ async fn run_checker(
                                     ) {
                                         continue;
                                     }
+                                    // ONLY AN ANSWER TO OUR OWN REFLECT COUNTS (security audit NET-07): an unsolicited one from a throwaway key used to cast a vote, and two of them adopted an address of the sender's choosing.
+                                    if !take_ask(&outstanding_asks_recv, &provenance_hash) {
+                                        continue;
+                                    }
                                     if crate::network::traverse::take_reflexive_reset() {
                                         reflexive.clear();
                                         crate::log("TRAVERSE: reflexive forgotten — the interface changed, relearning from the next pong");
                                     }
+                                    // The voter is the network origin the answer came from, not the key it was signed with: keys are free, source addresses are not.
+                                    let voter: [u8; 32] = *blake3::hash(src_addr.ip().to_string().as_bytes()).as_bytes();
                                     if let Some(addr) = reflexive.record(
                                         udp::canon_socketaddr(observed_addr),
-                                        *responder_pubkey.as_bytes(),
+                                        voter,
                                         false,
                                     ) {
                                         crate::logf!("TRAVERSE: reflexive learned = {}", addr);
@@ -4149,6 +4158,10 @@ async fn run_checker(
                                     ) {
                                         continue;
                                     }
+                                    // ONLY AN ACK TO A PROBE STILL OUTSTANDING (security audit NET-07): the observed address used to be adopted as trusted before the ack was matched to anything, so a contact's captured ack replayed later re-pointed our own address.
+                                    if !pending_probes_recv.lock().unwrap().contains(&provenance_hash) {
+                                        continue;
+                                    }
                                     if crate::network::traverse::take_reflexive_reset() {
                                         reflexive.clear();
                                         crate::log("TRAVERSE: reflexive forgotten — the interface changed, relearning from the next pong");
@@ -4237,10 +4250,19 @@ async fn run_checker(
                                 FgtwMessage::PhonebookResponse {
                                     timestamp: _,
                                     responder_pubkey,
-                                    provenance_hash: _,
-                                    signature: _,
+                                    provenance_hash,
+                                    signature,
                                     peers,
                                 } => {
+                                    // THE ANSWER IS THE RESPONDER'S, AND TO OUR QUESTION (security audit NET-06): its signature over the echoed provenance was never checked, and a response that answered nothing we asked was merged all the same. A push (one record, the sender's own) is not an answer and stands on its record's own signature.
+                                    let solicited = take_ask(&outstanding_asks_recv, &provenance_hash);
+                                    let own_push = peers.len() == 1 && peers[0].device_pubkey.as_bytes() == responder_pubkey.as_bytes();
+                                    if !verify_provenance_signature(&provenance_hash, &responder_pubkey, &signature) {
+                                        continue;
+                                    }
+                                    if !solicited && !own_push {
+                                        continue;
+                                    }
                                     // A friend answered our phonebook request. Gate on contact (only merge gossip from a friend); each record is self-signed, and `merge_peer` rejects anything that doesn't verify, so a lying responder can't inject forged rows — it can only fail to help. The app harvests the shared store on its next stalled-contact tick.
                                     let is_contact = {
                                         let list = contacts_recv.lock().unwrap();
@@ -4398,6 +4420,7 @@ async fn run_checker(
                 if needs_reflect.load(std::sync::atomic::Ordering::Relaxed)
                     && !crate::network::traverse::gather::is_bogus_addr(&request.peer_addr)
                 {
+                    note_ask(&outstanding_asks, provenance_hash);
                     let reflect = FgtwMessage::Reflect {
                         timestamp,
                         sender_pubkey: our_pubkey.clone(),
@@ -4513,6 +4536,7 @@ async fn run_checker(
         while let Ok(addr) = phonebook_req_rx.try_recv() {
             let ts = eagle_time_now();
             let prov = compute_provenance_hash(&our_pubkey, ts);
+            note_ask(&outstanding_asks, prov);
             let sig = keypair.sign(&prov);
             let mut sig_bytes = [0u8; 64];
             sig_bytes.copy_from_slice(&sig.to_bytes());
@@ -5244,6 +5268,33 @@ fn relayed_group_frame(data: &[u8], src_addr: SocketAddr, known: &[DevicePubkey]
     }
     crate::logf!("RELAY: frame {} of {} handed on by {}", timestamp, hex::encode(&conversation_token[..4]), hex::encode(&relayer[..4]));
     Some(StatusUpdate::ChatMessage { conversation_token, lane, prev_msg_hp, ciphertext, timestamp, sender_addr: src_addr, era, sender_pubkey, raw: inner, relayed_by: Some(relayer) })
+}
+
+/// How many of our own asks are remembered while unanswered.
+const OUTSTANDING_ASKS: usize = 1 << 6;
+
+/// Remember an ask this device just sent, by the provenance hash its answer must echo.
+fn note_ask(asks: &Mutex<Vec<[u8; 32]>>, provenance: [u8; 32]) {
+    if let Ok(mut a) = asks.lock() {
+        if a.len() >= OUTSTANDING_ASKS {
+            a.remove(0);
+        }
+        a.push(provenance);
+    }
+}
+
+/// Whether `provenance` echoes an ask this device sent; the ask is spent by the first answer taken for it.
+fn take_ask(asks: &Mutex<Vec<[u8; 32]>>, provenance: &[u8; 32]) -> bool {
+    match asks.lock() {
+        Ok(mut a) => match a.iter().position(|p| p == provenance) {
+            Some(i) => {
+                a.remove(i);
+                true
+            }
+            None => false,
+        },
+        Err(_) => false,
+    }
 }
 
 fn verify_provenance_signature(
