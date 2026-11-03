@@ -29,5 +29,7 @@ NET-04..07 RECEIVER HALF BUILT 2026-11-03 (no wire change): outstanding-ask bind
 Next: then the Mediums (LIB-02..16, NET-08..11, FGTW-02/03, SPX-01/02, UPW-008..019), then Lows; `cargo audit` pass and blind.rs wording never done.
 Attachment names ruling restated by Nick 2026-11-03: overwrite inside Downloads is WANTED (Btrfs, no "(1)" suffix ever); the bug was only the missing boundary (`..` traversal, direction overrides).
 
+DECIDED 2026-11-03 (Nick): UPW-010 keep `panic = "abort"` and overflow-checks off, NO sandboxed decoder helper ("Yeah, no sandboxed helper. I'm with you"); worth doing anyway = dev.sh builds abort too, the dead catch_unwind in messaging.rs goes or gets a real fix, a poison mark around a row's first decode so a row that killed the app is skipped next launch. CSTV-02/LIB-10 vault half = stretch the vault seed thru the memory-hard proof locally ("straightforward"); identity seed waits for succession. UPW-007 installer verifies with openssl + the shim hash in the manifest ("surefine"). NET-11 ON THE ROADMAP (docs/updates.md "Roadmap: the release key"): cold storage now, a second never-used cold public key in clients at the next flag day as the one-shot kill switch, no scheduled rotation. UPW-027 (remote shell default) asked 2026-11-03, see the next entry.
+
 **Why:** Nick asked to "go thru" the audit together (2026-11-02).
 **How to apply:** check this list before re-fixing; keep auditor IDs in code comments so a finding can be traced.
