@@ -1,6 +1,6 @@
 ---
 name: project_fleet_over_mesh
-description: "BUILT 2026-10-26: the membership chain, the bind request and the fan-out travel device to device (fleet_req/fleet_resp, bind_req, fanout_resp); every device holds its fleet's chain; fgtw.org is a mirror asked last. Next: attest degrades to the held chain"
+description: "BUILT 2026-10-26: the membership chain, the bind request and the fan-out travel device to device (fleet_req/fleet_resp, bind_req, fanout_resp); every device holds its fleet's chain; fgtw.org is a mirror asked last. Next: attest degrades to the held chain" — BUILT 2026-11-02: hold_vault_chain before the verdict, ensure_member falls back to the held fold when the seed is unreachable, the announce waits; untested offline
 metadata:
   type: project
 ---

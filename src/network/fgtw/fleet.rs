@@ -176,7 +176,51 @@ pub fn ensure_member(
     identity_seed: &[u8; 32],
 ) -> Result<(), String> {
     let (plate, kind) = our_plate();
-    fgtw::client::ensure_member(&PhotonTransport, &signer_for(device_key), handle_proof, identity_seed, plate, kind)
+    match fgtw::client::ensure_member(&PhotonTransport, &signer_for(device_key), handle_proof, identity_seed, plate, kind) {
+        Ok(()) => Ok(()),
+        // THE SEED IS A MIRROR (Nick 2026-11-02: a phone in a mine with a vault full of working addresses must not be gated on the web): membership is decided by the chain this device holds, folded here like anywhere else. Only a device the held chain does not list is sent to a sibling; only a device holding no chain at all needs the seed, and that is the first attest of a fresh identity.
+        Err(e) if seed_unreachable(&e) => {
+            let me = device_key.public.to_bytes();
+            match held_chain(handle_proof).map(|c| c.fold().map(|m| m.contains(&me))) {
+                Some(Ok(true)) => {
+                    crate::logf!("FLEET: seed unreachable ({}) — this device folds as a member of the held chain, attesting from it", e);
+                    Ok(())
+                }
+                Some(Ok(false)) => Err("this device is not in the fleet — enroll it from an existing device first".into()),
+                Some(Err(f)) => Err(format!("{e}; the held chain does not fold ({f:?})")),
+                None => Err(e),
+            }
+        }
+        Err(e) => Err(e),
+    }
+}
+
+/// Whether `e`, from the seed client, says the seed could not be reached or did not answer, as opposed to a verdict it gave.
+pub fn seed_unreachable(e: &str) -> bool {
+    e.contains("No connection to FGTW") || e.contains("didn't answer in time") || e.starts_with("Couldn't ") || e.contains("FGTW transport")
+}
+
+/// Whether `me` folds as a current member of the chain this device holds for `handle_proof`.
+pub fn held_member(handle_proof: &[u8; 32], me: &[u8; 32]) -> bool {
+    held_chain(handle_proof).and_then(|c| c.fold().ok()).is_some_and(|m| m.contains(me))
+}
+
+/// Bring the chain the vault keeps for this identity (`fleet_chain`, stored by every fold) into the held set, so a verdict asked before any network answer has the device's own copy to fold. Off the UI thread: it opens the session vault.
+/// Nothing to do when a chain is already held, or the vault holds none (a first attest).
+pub fn hold_vault_chain(identity_seed: &[u8; 32], vault_seed: &[u8; 32], handle_proof: &[u8; 32], device_secret: &[u8; 32]) {
+    if held_chain(handle_proof).is_some() {
+        return;
+    }
+    let Ok(vault) = crate::storage::open_session_vault(*identity_seed, *vault_seed, *device_secret) else {
+        return;
+    };
+    let addr = crate::storage::vault_key("fleet_chain", vault_seed);
+    if let Ok(Some(bytes)) = vault.read_addr(&addr) {
+        match adopt_chain_bytes(handle_proof, &bytes) {
+            Ok((blob, members, _, _)) => crate::logf!("FLEET: the vault's chain is held before the attest asks anyone — {} op(s), {} member(s)", blob.ops.len(), members.len()),
+            Err(e) => crate::logf!("FLEET: the vault's chain copy was refused — {}", e),
+        }
+    }
 }
 
 /// The current device-pubkey member set (empty if no fleet yet).

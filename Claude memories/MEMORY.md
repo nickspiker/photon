@@ -36,7 +36,7 @@ Hooks are reminders; read the topic file before acting on one.
 ## Active / open
 - [Android dark in background](project_android_headless_dark.md) — fix built, verify pending
 - [Backfill dings](project_backfill_dings.md) · [Redox dropped](project_redox_dropped.md) · [Bindreq peer-to-peer](project_bindreq_peer_to_peer.md) — BUILT 2026-10-26
-- [Fleet over the mesh](project_fleet_over_mesh.md) — BUILT 2026-10-26; attest degrades to held chain next; field test pending
+- [Fleet over the mesh](project_fleet_over_mesh.md) — BUILT 2026-10-26; attest from the held chain BUILT 2026-11-02 (seed = mirror); offline field test pending
 - [Beams](project_beams.md) — H.264 BUILT; [standing queue](project_beam_standing_queue.md) FIXED
 - [PT path pace](project_pt_shared_congestion.md) — 2026-10-29 one delay window per path; field test pending
 - [Census eats copy B](project_census_eats_copy_b.md) — RESOLVED 2026-11-01 (~/.local/lib/photon)

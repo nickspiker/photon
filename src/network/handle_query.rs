@@ -488,6 +488,8 @@ impl HandleQuery {
                         continue;
                     }
                     // THE ATTEST VERDICT is fgtw's one pure function (fgtw::attest), so Photon and ferros's bare-metal client decide identically from the same evidence. Photon hands it the seed's answer alone for now — no held or peer chains — which is exactly the decision this probe made by hand before.
+                    // THE VAULT'S CHAIN FIRST (2026-11-02): what this device holds is folded before anyone asks the seed, so a seed that cannot be reached is a mirror that is down, not a gate on the attest.
+                    crate::network::fgtw::fleet::hold_vault_chain(&identity_seed, &session.vault_seed, &handle_proof, keypair.secret.as_bytes());
                     let fetched = crate::network::fgtw::fleet::fetch(&handle_proof);
                     let me = keypair.public.to_bytes();
                     let seed = match &fetched {
@@ -544,6 +546,8 @@ impl HandleQuery {
                         unreachable!("Probe is intercepted before roots resolution")
                     }
                 };
+                // The vault's chain into the held set before the seed is asked (a resume after a reboot has not loaded it yet): membership can then be proven with no network at all.
+                crate::network::fgtw::fleet::hold_vault_chain(&identity_seed, &vault_seed, &handle_proof, keypair.secret.as_bytes());
                 crate::log("Network: Querying handle...");
 
                 // Get current port for FGTW query (always PHOTON_PORT now)

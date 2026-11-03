@@ -52,7 +52,7 @@ So the chain now travels like the address records do:
 - **The join over the mesh** (docs/pairing-v2.md): the joiner builds its binding request once and sends it two ways with one stamp — to the seed's registry when it answers, and straight to every sponsor device whose beacon it hears on the LAN (`bind_req`).
   The sponsor's matcher screens it exactly like a registry row; the bind lands in the held chain and is pushed to the newcomer and the siblings; the grow is sealed locally and pushed likewise (`fanout_resp`), the seed mirrored when it answers.
   A seed that cannot be reached no longer fails an add.
-Still on the seed: the attest's announce (the phonebook write — this phase's next step is the attest degrading to the held chain when the seed is down), the device→owner index and first-come genesis (no peer equivalent; they only ever bound users of the seed), relay/pipe, doorbell, inbox, avatars.
+The attest degrades to the held chain (2026-11-02): the vault's chain is folded before the seed is asked, membership stands on it when the seed is unreachable, and the announce (the phonebook write) waits for a later cycle when the seed answers; the device then talks to the addresses its vault holds. Only a fresh identity's first attest still needs the seed, since the first-come genesis has no peer equivalent. Still on the seed: that genesis and the device→owner and plate→owner indexes (they only ever bound users of the seed), relay/pipe, doorbell, inbox, avatars.
 
 ### Phase B — Reduce server dependence
 fgtw.org is hardcoded in 4 files (`bootstrap.rs:6`, `blob.rs:5`, `relay.rs:9`, `avatar.rs:932`) + seed pubkeys (`bootstrap.rs:16-25`).

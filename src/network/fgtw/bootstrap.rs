@@ -95,6 +95,13 @@ pub async fn load_bootstrap_peers(
             observed_addr,
             identity_count,
         },
+        // The seed could not be reached, and this device folds as a member of the chain it holds: the attest stands on the vault and the announce follows on a later cycle, when the seed answers. Nothing is lost by waiting; a seed that is down is a mirror that is down (Nick 2026-11-02).
+        Err(e) if crate::network::fgtw::fleet::seed_unreachable(&e)
+            && crate::network::fgtw::fleet::held_member(&handle_proof, &device_key.public.to_bytes()) =>
+        {
+            crate::logf!("FGTW: seed unreachable ({}) — attested from the held chain; the announce waits for the seed", e);
+            BootstrapResult { peers: vec![], error: None, observed_addr: None, identity_count: 0 }
+        }
         Err(e) => BootstrapResult {
             peers: vec![],
             error: Some(e),
