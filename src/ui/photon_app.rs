@@ -2074,7 +2074,7 @@ pub struct PhotonApp {
     search_status: Option<(String, u32)>,
     /// Device keypair injected externally (Android: from `NetworkContext` via `set_device_keypair` before `init`). When `Some`, `init` uses it directly; when `None`, `init` derives a fresh keypair from `get_machine_fingerprint` (desktop path). Android MUST set this before `init` runs — leaving it `None` on Android would silently downgrade to a zeroed placeholder keypair, which would be a critical key-derivation failure.
     device_keypair: Option<crate::network::fgtw::Keypair>,
-    /// ANDROID ROOT CONVERSION PIN, delete not before 2027-02-01: the one-shot latch for `root_conversion_tick`.
+    /// ANDROID ROOT CONVERSION PIN, MIGRATION-EXPIRES: 2027-02-01: the one-shot latch for `root_conversion_tick`.
     #[cfg(target_os = "android")]
     root_conversion_started: bool,
     /// This device's full signing bundle — Ed25519 plus the Falcon and SPHINCS+ keys derived from the same machine fingerprint — when that fingerprint was available to Rust at init. `None` on Android, where the fingerprint lives Java-side and only the Ed25519 keypair is injected; such a device signs single-egg and cannot lift the fleet floor until the fingerprint reaches the native side.

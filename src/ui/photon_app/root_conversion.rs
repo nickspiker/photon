@@ -1,4 +1,4 @@
-//! ANDROID ROOT CONVERSION PIN, delete not before 2027-02-01 (Nick 2026-11-02: thirty versions after v138).
+//! ANDROID ROOT CONVERSION PIN, MIGRATION-EXPIRES: 2027-02-01 (Nick 2026-11-02: thirty versions after v138).
 //! A phone whose device vault was founded under the `ANDROID_ID` root moves onto the Widevine root (tohu/docs/oracle-hardening.md) once its session is live.
 //! The old device key sponsors the new key into the fleet (the add is idempotent), the vault is re-homed entry by entry at the same addresses under the new secret, the new key countersigns the old key's departure, the old vault's files go, and the process exits so the next start selects the Widevine root and runs as the new device.
 //! Nothing here reads a root itself: the selection at service start (jni_android.rs `select_android_root`) read both and left what is owed in [`note_owed`].

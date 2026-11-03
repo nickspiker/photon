@@ -1664,7 +1664,7 @@ fn derive_device_keypair(fingerprint: &[u8]) -> Keypair {
 }
 
 /// Pick the Android device root once per process and return its oracle bytes.
-/// Widevine ‖ signing certificate is the root. ANDROID ROOT CONVERSION PIN, delete not before 2027-02-01 (Nick 2026-11-02: thirty versions after v138): a vault founded under the ANDROID_ID root keeps that root until the conversion moves it, so an existing phone never wakes up as a new device.
+/// Widevine ‖ signing certificate is the root. ANDROID ROOT CONVERSION PIN, MIGRATION-EXPIRES: 2027-02-01 (Nick 2026-11-02: thirty versions after v138): a vault founded under the ANDROID_ID root keeps that root until the conversion moves it, so an existing phone never wakes up as a new device.
 /// The choice is by which device vault is on disk: new root's vault present, or no vault at all, selects Widevine; only the old root's vault present selects the legacy root and logs that a conversion is owed.
 /// Logs carry BLAKE3 prefixes only, never a root: the raw values are hardware identifiers and the log leaves the phone.
 #[cfg(target_os = "android")]

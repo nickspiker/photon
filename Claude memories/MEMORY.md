@@ -30,7 +30,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [fgtw deploys freely](feedback_fgtw_deploy_freely.md) · [terminal clipboard](feedback_terminal_clipboard.md) — spaces around = · [script timestamps](feedback_script_timestamps.md)
 - [no redundant disk ops](feedback_no_redundant_disk_ops.md) — reflink · [legacy first](feedback_legacy_first.md) · [persist findings early](persist-findings-early.md)
 - [epoch is fixed](feedback_epoch_fixed.md) — HARD: never move it · [no compat text hatches](feedback_no_compat_text_hatches.md) — retired readers die same day
-- [pins are dated](feedback_pins_are_dated.md) — HARD: "delete not before YYYY-MM-DD", never a version count; live pins end 2027-02-01
+- [pins are dated](feedback_pins_are_dated.md) — HARD: `MIGRATION-EXPIRES: YYYY-MM-DD` in code, the build gate refuses past-due; never a version count; live pins end 2027-02-01
 - [re-clutch, never store](re-clutch-never-store.md) · [discard, not shred](feedback_discard_not_shred.md) — HARD: delete = mark for discard
 - [device root never salted](feedback_device_root_never_salted.md) — HARD: one stable machine-ID root; DMV plates until PIPE; vendor-issued ok, vendor-in-the-loop no
 
