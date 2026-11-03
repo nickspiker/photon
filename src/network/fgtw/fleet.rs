@@ -176,7 +176,7 @@ pub fn ensure_member(
     identity_seed: &[u8; 32],
 ) -> Result<(), String> {
     let (plate, kind) = our_plate();
-    match fgtw::client::ensure_member(&PhotonTransport, &signer_for(device_key), handle_proof, identity_seed, plate, kind) {
+    match fgtw::client::ensure_member_plated(&PhotonTransport, &signer_for(device_key), handle_proof, identity_seed, plate, kind) {
         Ok(()) => Ok(()),
         // THE SEED IS A MIRROR (Nick 2026-11-02: a phone in a mine with a vault full of working addresses must not be gated on the web): membership is decided by the chain this device holds, folded here like anywhere else. Only a device the held chain does not list is sent to a sibling; only a device holding no chain at all needs the seed, and that is the first attest of a fresh identity.
         Err(e) if seed_unreachable(&e) => {
@@ -256,7 +256,7 @@ pub fn current_members_with_ts(handle_proof: &[u8; 32]) -> Result<(Vec<[u8; 32]>
 /// Publish this device's key bundle to the chain — the op that lifts the fleet's scheme floor once every member has done it. Idempotent when the chain already holds at least this bundle.
 pub fn declare_device(signer: &impl FleetSigner, handle_proof: &[u8; 32]) -> Result<(), String> {
     let (plate, kind) = our_plate();
-    fgtw::client::declare_device(&PhotonTransport, signer, handle_proof, plate, kind)
+    fgtw::client::declare_device_plated(&PhotonTransport, signer, handle_proof, plate, kind)
 }
 
 /// Whatever this device can sign with: the full three-scheme bundle when the fingerprint was in Rust's hands to derive it from, else the bare Ed25519 keypair. One type for every fleet-write site, so a site never has to know which it holds — the fold decides what a bare keypair can and cannot do.
@@ -577,7 +577,7 @@ pub fn bindreq_put(
     nfc_secret: &[u8; 32],
 ) -> Result<i64, String> {
     let (plate, kind) = our_plate();
-    fgtw::client::bindreq_put(
+    fgtw::client::bindreq_put_plated(
         &PhotonTransport,
         device_key,
         identity_seed,
