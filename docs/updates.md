@@ -126,3 +126,16 @@ Still to build:
 - **Poll cadence / trigger.** Startup only, a periodic check, or push (an FGTW event when a release lands, riding the existing WebSocket hub)? Push is cheapest on battery and fastest to roll out, but startup-plus-periodic is simplest to build first. The manual "Check for updates" button exists regardless.
 - **Rollback.** If a new version crashes on launch, do we keep the previous binary (the Windows `.old`, a Unix `.prev`) and auto-revert after N failed starts? Worth it for a self-updating app; scope for v1 TBD.
 - **Idle definition.** Exactly which states count as "safe to swap" — Ready-and-untouched-for-a-bit, or a broader rule.
+
+## Roadmap: the release key (security audit NET-11 and UPW-007, decided 2026-11-03)
+
+Every client trusts exactly one compiled-in release public key, and the matching private key is one file that has lived in a cloud-synced folder with the default file mode, found by the signing tools thru a ladder of paths.
+A copy of that file signs a manifest and a binary that every client installs with full trust on its next check, and nothing in the client can retire the key; the only recourse is a reinstall from the website for every user.
+Two things fix that, and neither is scheduled rotation (no expiry, no key-change messages, no ceremony in normal operation):
+
+- **Cold storage, now.** The key leaves the synced folder for one fixed location, mode 0600, and the signing tools accept only that location (the path ladder goes); between releases it is not on a machine that is online.
+- **A second cold key, at the next flag day.** Clients carry a second public key that is never used; a release signed by it is accepted and makes clients stop trusting the first.
+  A stolen first key cannot forge that handover, because it cannot sign for a key it does not hold; the door is installed before the fire and walked thru at most once.
+
+The first install closes its own gap in the same pass: the installer verifies the downloaded binary's appended signature itself (the public key inlined in the installer text, checked with openssl) before the binary ever runs, instead of asking the binary to vouch for itself, and the launcher shim's hash is listed in the signed manifest so the installer checks it too.
+The Windows script already embeds the binary's hash and is the shape to match.
