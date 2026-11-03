@@ -4417,7 +4417,7 @@ impl PhotonApp {
         self.device_keypair = Some(keypair.clone());
         self.signing_bundle = signing_bundle;
         // The TPM plate (tohu/docs/oracle-hardening.md): logged beside the machine-id root, nothing derives from it yet. Off the UI thread, since the chip takes up to a second to derive the endorsement key; a BLAKE3 prefix only.
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
         std::thread::spawn(|| match tohu::device::tpm_plate() {
             Ok(plate) => {
                 // The key half beside it: the chip's HMAC over a fixed label, the candidate root; a prefix only, and still nothing derives from it.
