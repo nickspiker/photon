@@ -681,6 +681,10 @@ pub enum Msg<'a> {
     FleetSigFloor(&'a str, usize, usize),
     /// A device card's signing line: the schemes the chain knows this device signs with.
     DeviceSigns(&'a str),
+    /// Fleet page: what the device says its hardware is (the plate kind's name) and the security level that states, 0 to 4.
+    DeviceLevel(&'a str, u8),
+    /// Fleet page: the device never said what its hardware is (an older build).
+    DeviceLevelUnstated,
     /// Chain lock-out badge on a device card.
     ChainLocked,
     ThisDevice,

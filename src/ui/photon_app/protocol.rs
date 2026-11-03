@@ -920,7 +920,7 @@ impl PhotonApp {
 
         // Scheme facts off our own chain (spawn_scheme_refresh): latest wins.
         if let Some(facts) = self.fleet_schemes_rx.as_ref().and_then(|rx| rx.try_iter().last()) {
-            let changed = self.fleet_schemes.as_ref().map_or(true, |c| c.floor != facts.floor || c.declared != facts.declared || c.locked != facts.locked);
+            let changed = self.fleet_schemes.as_ref().map_or(true, |c| c.floor != facts.floor || c.declared != facts.declared || c.locked != facts.locked || c.kinds != facts.kinds);
             if changed {
                 crate::logf!(
                     "FLEET: schemes — floor {}, {}/{} declared the basket, {} chain-locked",

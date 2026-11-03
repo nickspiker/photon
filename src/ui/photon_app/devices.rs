@@ -2127,7 +2127,13 @@ impl PhotonApp {
             let Ok((members, floor)) = chain.fold_full() else { return };
             let declared = members.iter().map(|m| (*m, chain.declared_mask(m))).collect();
             let locked = chain.locked_out().unwrap_or_default();
-            let facts = super::FleetSchemes { floor, declared, locked, members: members.len() };
+            // Each member's stated hardware kind; unstated members are left out and show as such.
+            let kinds = members
+                .iter()
+                .map(|m| (*m, chain.declared_plate_kind(m)))
+                .filter(|(_, k)| *k != fgtw::fleet::plate::UNSTATED)
+                .collect();
+            let facts = super::FleetSchemes { floor, declared, locked, members: members.len(), kinds };
             if tx.send(facts).is_ok() {
                 if let Some(w) = wake.as_ref() {
                     super::wake_ui(w);

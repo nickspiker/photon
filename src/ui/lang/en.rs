@@ -510,6 +510,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FleetTapToCopy => "Tap a name to copy its key.".into(),
         Msg::FleetSigFloor(floor, n, total) => format!("Signatures: fleet floor {floor} — {n} of {total} devices declared the full basket").into(),
         Msg::DeviceSigns(s) => format!("signs with {s}").into(),
+        Msg::DeviceLevel(hw, lvl) => format!("hardware: {hw} \u{2014} security level {lvl} of 4, as the device states it").into(),
+        Msg::DeviceLevelUnstated => "hardware: not stated (older build)".into(),
         Msg::ChainLocked => "locked out on the chain".into(),
         Msg::ThisDevice => "this device".into(),
         Msg::RetiredStillYours => "retired \u{2014} still yours".into(),

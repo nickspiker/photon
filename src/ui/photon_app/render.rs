@@ -5760,6 +5760,15 @@ impl PhotonApp {
                                 let colour = if *mask == fgtw::fleet::scheme::MASK_ALL { *theme::CONTACT_NAME_COLOUR } else { *theme::LABEL_COLOUR };
                                 flow.line(&mut canvas, ctx.text, &tr(Msg::DeviceSigns(&words)), hspan2 * 0.7, colour, 400);
                             }
+                            // HARDWARE line — what the device says its root and plate are, and the level that states (fgtw::fleet::plate::level). A statement, said so in the words; a proven level waits for PIPE.
+                            match fs.kinds.get(pk).copied() {
+                                Some(kind) => {
+                                    let (hw, lvl) = (super::plate_kind_words(kind), fgtw::fleet::plate::level(kind).unwrap_or(0));
+                                    let colour = if lvl >= 3 { *theme::CONTACT_NAME_COLOUR } else { *theme::LABEL_COLOUR };
+                                    flow.line(&mut canvas, ctx.text, &tr(Msg::DeviceLevel(hw, lvl)), hspan2 * 0.7, colour, 400);
+                                }
+                                None => flow.line(&mut canvas, ctx.text, &tr(Msg::DeviceLevelUnstated), hspan2 * 0.7, *theme::LABEL_COLOUR, 400),
+                            }
                             if fs.locked.contains(pk) {
                                 flow.line(&mut canvas, ctx.text, &tr(Msg::ChainLocked), hspan2 * 0.7, *theme::LABEL_COLOUR, 600);
                             }

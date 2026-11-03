@@ -175,7 +175,8 @@ pub fn ensure_member(
     handle_proof: &[u8; 32],
     identity_seed: &[u8; 32],
 ) -> Result<(), String> {
-    fgtw::client::ensure_member(&PhotonTransport, &signer_for(device_key), handle_proof, identity_seed, tohu::device::plate())
+    let (plate, kind) = our_plate();
+    fgtw::client::ensure_member(&PhotonTransport, &signer_for(device_key), handle_proof, identity_seed, plate, kind)
 }
 
 /// The current device-pubkey member set (empty if no fleet yet).
@@ -210,7 +211,8 @@ pub fn current_members_with_ts(handle_proof: &[u8; 32]) -> Result<(Vec<[u8; 32]>
 
 /// Publish this device's key bundle to the chain — the op that lifts the fleet's scheme floor once every member has done it. Idempotent when the chain already holds at least this bundle.
 pub fn declare_device(signer: &impl FleetSigner, handle_proof: &[u8; 32]) -> Result<(), String> {
-    fgtw::client::declare_device(&PhotonTransport, signer, handle_proof, tohu::device::plate())
+    let (plate, kind) = our_plate();
+    fgtw::client::declare_device(&PhotonTransport, signer, handle_proof, plate, kind)
 }
 
 /// Whatever this device can sign with: the full three-scheme bundle when the fingerprint was in Rust's hands to derive it from, else the bare Ed25519 keypair. One type for every fleet-write site, so a site never has to know which it holds — the fold decides what a bare keypair can and cannot do.
@@ -282,9 +284,24 @@ impl FleetSigner for DeviceSigner {
 // ── The join over the mesh (docs/pairing-v2.md; Nick 2026-10-26). The binding request is BUILT here, once, and goes two ways with the same stamp: to the seed's registry when it answers (`bindreq_post`), and straight to every sponsor device heard on the LAN as a `bind_req` frame (protocol.rs). The fan-out likewise: a grow is sealed here, handed to the newcomer and the siblings as a `fanout_resp` frame, and mirrored to the seed when it answers. ──
 
 /// This device's binding request for fleet `handle_proof`: "I consent to join", signed by the device key with one egg per scheme it holds (its bundle rides along), co-signed by `Ed25519(identity_seed)` (the registry's handle-knowledge gate), stamped now. The same bytes the seed's `bindreq_put` would mint — built here so the LAN copy and the registry copy are ONE request with one `t` (the Add's `consent_t`, and the BLE beacon's stamp).
+/// This hardware's plate and what it names, in the chain's vocabulary (tohu/docs/oracle-hardening.md): what every genesis, declare and binding request states about the device. Reads the chip on Linux, so not for the UI thread.
+pub fn our_plate() -> (Option<[u8; 32]>, u8) {
+    use fgtw::fleet::plate;
+    use tohu::device::PlateSource;
+    let (plate, source) = tohu::device::plate_with_source();
+    let kind = match source {
+        PlateSource::File => plate::FILE,
+        PlateSource::Firmware => plate::FIRMWARE,
+        PlateSource::Widevine => plate::WIDEVINE,
+        PlateSource::Tpm => plate::TPM_EK,
+    };
+    (plate, kind)
+}
+
 pub fn make_bind_request(device_key: &impl FleetSigner, identity_seed: &[u8; 32], handle_proof: &[u8; 32], nfc_secret: &[u8; 32]) -> BindRequest {
-    // The plate of this hardware rides the request under both signatures, so the sponsor's Add names it as the joiner's own word (tohu/docs/oracle-hardening.md).
-    fgtw::protocol::bind_request_plated(device_key, identity_seed, handle_proof, vsf::eagle_time_oscillations(), nfc_secret, tohu::device::plate())
+    // The plate of this hardware and its kind ride the request under both signatures, so the sponsor's Add names them as the joiner's own word (tohu/docs/oracle-hardening.md).
+    let (plate, kind) = our_plate();
+    fgtw::protocol::bind_request_plated(device_key, identity_seed, handle_proof, vsf::eagle_time_oscillations(), nfc_secret, plate, kind)
 }
 
 /// Post an already-built binding request to the seed's registry (the `bindreq_put` body, field for field). `Err("device_owned…")` is the seed's one-owner verdict and stays a verdict; any other error is the seed being unreachable — the LAN copy carries the request regardless.
@@ -300,6 +317,9 @@ pub fn bindreq_post(req: &BindRequest, handle_proof: &[u8; 32]) -> Result<(), St
     }
     if let Some(p) = &req.plate {
         section.add_field("pl", vsf::VsfType::hb(p.to_vec()));
+    }
+    if req.plate_kind != fgtw::fleet::plate::UNSTATED {
+        section.add_field("pk", vsf::VsfType::u(req.plate_kind as usize, false));
     }
     section.add_field("nh", vsf::VsfType::hb(req.nfc_hash.to_vec()));
     let body = vsf::VsfBuilder::new()
@@ -414,7 +434,7 @@ pub fn bind_device_held(
             return Ok(blob); // already in — idempotent
         }
         // The joiner's bundle and plate ride its own signed request onto the Add.
-        blob.add_with(member_key, req.device_pubkey, vsf::eagle_time_oscillations(), req.t, req.device_sig.clone(), req.bundle.clone(), req.plate);
+        blob.add_with(member_key, req.device_pubkey, vsf::eagle_time_oscillations(), req.t, req.device_sig.clone(), req.bundle.clone(), req.plate, req.plate_kind);
         match publish(&blob) {
             Ok(()) => return Ok(blob),
             Err(e) if e.contains("stale") => continue,
@@ -512,13 +532,15 @@ pub fn bindreq_put(
     handle_proof: &[u8; 32],
     nfc_secret: &[u8; 32],
 ) -> Result<i64, String> {
+    let (plate, kind) = our_plate();
     fgtw::client::bindreq_put(
         &PhotonTransport,
         device_key,
         identity_seed,
         handle_proof,
         nfc_secret,
-        tohu::device::plate(),
+        plate,
+        kind,
     )
 }
 

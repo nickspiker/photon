@@ -166,6 +166,19 @@ fn posture_colour(filled: usize) -> u32 {
 ///
 /// This is the single seam multi-device, vouching and PIPE plug into: they change what this returns and nothing else.
 #[allow(dead_code)]
+/// The Fleet page's name for what a device says its hardware is (fgtw::fleet::plate constants). Hardware names, not translated: they are the names of the things.
+fn plate_kind_words(kind: u8) -> &'static str {
+    use fgtw::fleet::plate;
+    match kind {
+        plate::FILE => "machine id file",
+        plate::FIRMWARE => "firmware id",
+        plate::WIDEVINE => "Widevine + signing key",
+        plate::TPM_EK => "TPM",
+        plate::PIPE => "PIPE",
+        _ => "unknown",
+    }
+}
+
 fn identity_posture() -> (usize, usize) {
     let security = 1; // readable root on every platform today
     #[cfg(target_os = "macos")]
@@ -1671,6 +1684,8 @@ pub struct FleetSchemes {
     pub declared: crate::linear_map::LinearMap<[u8; 32], fgtw::fleet::scheme::Mask>,
     pub locked: Vec<[u8; 32]>,
     pub members: usize,
+    /// What each member says its hardware is (fgtw::fleet::plate constants); absent = unstated (an older build). The level shown is derived from it and is the device's own statement.
+    pub kinds: crate::linear_map::LinearMap<[u8; 32], u8>,
 }
 
 impl FleetSchemes {

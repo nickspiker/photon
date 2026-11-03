@@ -4443,6 +4443,7 @@ mod pong_seal_tests {
             t: 123_456,
             device_sig: vec![Egg { scheme: fgtw::fleet::scheme::ED25519, sig: vec![9u8; 64] }],
             plate: None,
+            plate_kind: fgtw::fleet::plate::UNSTATED,
             bundle: None,
             identity_sig: vec![8u8; 64],
             nfc_hash: [7u8; 32],
