@@ -30,6 +30,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [fgtw deploys freely](feedback_fgtw_deploy_freely.md) · [terminal clipboard](feedback_terminal_clipboard.md) — spaces around = · [script timestamps](feedback_script_timestamps.md)
 - [no redundant disk ops](feedback_no_redundant_disk_ops.md) — reflink · [legacy first](feedback_legacy_first.md) · [persist findings early](persist-findings-early.md)
 - [epoch is fixed](feedback_epoch_fixed.md) — HARD: never move it · [no compat text hatches](feedback_no_compat_text_hatches.md) — retired readers die same day
+- [pins are dated](feedback_pins_are_dated.md) — HARD: "delete not before YYYY-MM-DD", never a version count; live pins end 2027-02-01
 - [re-clutch, never store](re-clutch-never-store.md) · [discard, not shred](feedback_discard_not_shred.md) — HARD: delete = mark for discard
 - [device root never salted](feedback_device_root_never_salted.md) — HARD: one stable machine-ID root; DMV plates until PIPE; vendor-issued ok, vendor-in-the-loop no
 
@@ -49,14 +50,14 @@ Hooks are reminders; read the topic file before acting on one.
 - [Notification tap](project_notification_tap_unwired.md) — BUILT · [Strip selection](project_strip_selection_model.md) — manual only
 - Render: [ready first paint](project_ready_first_paint.md) · [hit wipe inside damage](project_hit_wipe_damage.md)
 - [Member relay](project_member_relay.md) · [Sibling group pages](project_sibling_group_pages.md) — FIXED · [Sticky catching up](project_sticky_catching_up.md) — FIXED v132
-- [Old-self import removal](project_old_self_import_removal.md) — DELETE at v145
+- [Old-self import removal](project_old_self_import_removal.md) — DELETE not before 2027-02-01
 - [Group waves](project_group_waves.md) — BUILT; field test pending · [Group media at any size](project_group_media_scale.md) — 1a+1b+roll BUILT; 2a next
 - [Address sets](project_address_sets.md) — stages 1-3 BUILT; Windows + reflexive split open
 - [Group avatars](project_group_avatars.md) — BUILT 2026-11-02; field test pending
-- [Android Widevine plate](project_android_widevine_plate.md) — 2026-11-02 KEY root = Widevine ‖ cert ‖ ANDROID_ID, PLATE = BLAKE3(Widevine ‖ cert) survives a wipe; conversion VERIFIED on the Pixel; PLATE PUBLISHED in the chain (v3 ops) + seed one-plate-one-identity gate BUILT, field test pending; pin until v168
+- [Android Widevine plate](project_android_widevine_plate.md) — 2026-11-02 KEY root = Widevine ‖ cert ‖ ANDROID_ID, PLATE = BLAKE3(Widevine ‖ cert) survives a wipe; conversion VERIFIED on the Pixel; PLATE PUBLISHED in the chain (v3 ops) + seed one-plate-one-identity gate BUILT, field test pending; pin until 2027-02-01
 - [Linux TPM plate](project_linux_tpm_plate.md) — 2026-11-02 plate + HMAC key half BUILT and VERIFIED on the AMD fTPM, logged only, nothing derives; in-app line verified after reboot; Windows TBS next
 - [Handle rename](project_handle_rename.md) — in the spec, scoped 2026-11-03: succession + slot move, four seams, two constraints to respect before any successor record ships
-- [Security audit](project_security_audit.md) — batch 1 + LIB-01 + VSF-05..12 + NET-04/06/07 receiver half FIXED by 2026-11-03 (v139); PROVENANCE PIN until v169; NET-04/05 wire half = next flag day; Mediums next
+- [Security audit](project_security_audit.md) — batch 1 + LIB-01 + VSF-05..12 + NET-04/06/07 receiver half FIXED by 2026-11-03 (v139); PROVENANCE PIN until 2027-02-01; NET-04/05 wire half = next flag day; Mediums next
 - [Attach manifest stall](project_attach_manifest_stall.md) — 2026-11-03 FIXED: manifest-then-silence from a sibling still receiving the blob held a fetch forever; pongs now end a stalled stream and re-ask
 - [Group pigeon stuck fetch](project_group_pigeon_stuck_fetch.md) — FIXED · [Self atom on demand](project_self_atom_on_demand.md) — FIXED
 - [Wave replay + beam video](project_wave_replay.md) — BUILT unverified · [Beam settings + g2t](project_beam_settings.md) — BUILT, field test pending

@@ -208,7 +208,7 @@ pub fn set_device_flag(key: &str, on: bool) {
 /// Desktop only: on Android `photon_config_dir` is the app-private files ROOT, which the OS and the JNI layer also write into — sweeping unknown names there would eat platform files; the sandbox already isolates it.
 fn census_sweep(device_secret: &[u8; 32]) {
     // Android: the files root belongs to the OS too, but the `photon/` subdirectory under each ring dir holds nothing but vault rings, so the census runs there (Nick 2026-11-02: wipe old fragments by default).
-    // Kept: this root's ring, and the legacy ANDROID_ID root's ring while the ANDROID ROOT CONVERSION PIN stands (delete at v168), because a move interrupted before the old ring went is finished from it at the next start.
+    // Kept: this root's ring, and the legacy ANDROID_ID root's ring while the ANDROID ROOT CONVERSION PIN stands (delete not before 2027-02-01), because a move interrupted before the old ring went is finished from it at the next start.
     #[cfg(target_os = "android")]
     {
         let mut keep: Vec<String> = Vec::new();

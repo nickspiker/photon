@@ -54,7 +54,7 @@ impl PhotonApp {
         // Group pictures: ours made, held ones read (group_avatar.rs); then one look on the edge a roster change, a landing or a presence answer raised.
         timed_drain!("group_faces", self.drain_group_faces());
         self.group_faces_tick();
-        // ANDROID ROOT CONVERSION PIN, delete at v168: one look per process for a move the root selection left owed.
+        // ANDROID ROOT CONVERSION PIN, delete not before 2027-02-01: one look per process for a move the root selection left owed.
         #[cfg(target_os = "android")]
         self.root_conversion_tick();
         timed_drain!("img_decoded", self.drain_img_decoded());
