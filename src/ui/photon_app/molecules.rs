@@ -1008,6 +1008,27 @@ impl PhotonApp {
         sent
     }
 
+    /// THE NEXT EDGE (field 2026-11-04): a contact came online, so every group this device offered them and has not seen them join or decline is offered again. An offer rides the wire once and friend history pages carry no control rows, so an invitee offline at that moment never received it; a re-offer replaces the parked snapshot on their side, so one they did receive costs nothing.
+    /// Joined invitees are standing in the roster and skipped; a decline already removed the invitee from `offered`.
+    pub(super) fn reoffer_pending_bonds(&mut self, ci: usize) {
+        let Some(invitee) = self.contacts.get(ci).filter(|c| !c.is_sibling).map(|c| c.handle_hash) else {
+            return;
+        };
+        let due: Vec<MoleculeId> = self
+            .molecule_locals
+            .iter()
+            .filter(|(gid, l)| {
+                l.offered.iter().any(|(p, _)| *p == invitee)
+                    && self.molecule_rosters.iter().any(|(g, r)| g == gid && !r.is_standing(&invitee))
+            })
+            .map(|(gid, _)| *gid)
+            .collect();
+        for gid in due {
+            crate::logf!("MOLECULE: {} is back — offering {} again", crate::fp(&self.contacts[ci].handle_proof), hex::encode(&gid.0[..4]));
+            self.send_bond_offer(gid, ci);
+        }
+    }
+
     /// NOT NOW — the invitee's decline, which is an UNDO (Nick 2026-10-24: "if they decline … undo the invite and remove it from my end so it's like I never sent it").
     /// The parked offer and its card go from this device now; the sponsor's device, on our Decline, forgets the invite and deletes its offer row for everyone, and that delete clears the card from our other devices too.
     pub(super) fn decline_offer(&mut self, gid: MoleculeId) -> bool {

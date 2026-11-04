@@ -439,6 +439,8 @@ impl PhotonApp {
         let mut knock_after: Vec<crate::types::ContactId> = Vec::new();
         // Contacts whose knock reached us while we still waited on them — confirmed after the drain (consent_confirmed takes &mut self, and the drain holds the checker).
         let mut knock_consent: Vec<crate::types::ContactId> = Vec::new();
+        // Contacts that came online this drain: every molecule offer this device sent them and never saw answered goes again after the drain (an offer rides the wire once and friend history pages carry no control rows, so an invitee who was offline at the moment never got it — Jeff and the other invitees, 2026-11-04).
+        let mut reoffer_after: Vec<crate::types::ContactId> = Vec::new();
         // Pong-seal reseed request(s) this drain — one walk after the loop no matter how many unkeyed devices reported (the per-drain edge that replaced the 10s clock).
         let mut seal_reseed_requested = false;
         // Fold-freshness tripwire (the Jon incident): friend hps whose pong claimed a NEWER chain tip than our stored fold — refetch after the drain (the contacts loop holds &mut self.contacts, so the &mut-self spawn defers, the knock_after idiom). The claim rides along so the pursuit map records what we acted on.
@@ -1017,6 +1019,9 @@ impl PhotonApp {
                             // Every return of a contact who has not added us back is a fresh chance for our knock: the one sent this session may have hit a closed pipe (2026-10-29: the MacBook's knock reached Josh's app mid-restart and was never sent again).
                             if came_online && !contact.consent_mutual && !contact.is_sibling {
                                 contact.knocked_session = false;
+                            }
+                            if came_online && !contact.is_sibling {
+                                reoffer_after.push(contact.id);
                             }
                             if is_online && !contact.fleet_folded_once && !contact.is_sibling && !fold_unanswered.contains(&contact.handle_proof) {
                                 fold_unanswered.push(contact.handle_proof);
@@ -5792,6 +5797,11 @@ impl PhotonApp {
         // BRAID MIGRATION — REMOVED (field 2026-09-28): it armed a heavy weave whenever the FRIEND's devices all showed v2, but the friend claims v2 only when OURS all do, so with any older or refused device of ours the weave could never reach v2 and re-armed on every restart; its churn tripped the ceremony breaker and stranded Emma's chains. v2 now arrives with any natural ceremony (both offers claim it once both fleets are ready). A migration trigger comes back only when it can see BOTH fleets are v2.
 
         // Consent knocks collected on pong edges (after releasing the checker borrow), plus the roster ride for any Mutual flip this drain confirmed — siblings learn the flip so whichever device is in hand completes the handshake.
+        for id in reoffer_after {
+            if let Some(ci) = self.contacts.iter().position(|c| c.id == id) {
+                self.reoffer_pending_bonds(ci);
+            }
+        }
         for id in knock_consent {
             if let Some(ci) = self.contacts.iter().position(|c| c.id == id) {
                 self.consent_confirmed(ci, "their knock");
