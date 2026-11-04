@@ -8,9 +8,17 @@ use super::Keypair;
 
 use crate::network::http::SEED_HTTPS as FGTW_URL;
 
+/// The most a relayed frame may be, in bytes (security audit NET-09): the ~548 KB CLUTCH offer is the largest thing the relay carries whole, so 1 MiB holds it with room; the pipe socket and the envelope peel both refuse past it.
+pub const RELAY_FRAME_LIMIT: usize = 1 << 20;
+
 /// Peel a relay envelope received over the pipe: the whole signed `relay` VSF the SENDER built (`build_signed_vsf("relay", {recipient, payload})`, signed with their device key), which the worker now forwards intact instead of the unwrapped inner. Verifies the sender's whole-file signature, then returns `(sender_device_key, inner_payload)`. `None` on any structural/parse/verify failure — a malformed or unsigned frame off the pipe is dropped, never injected. This is the DOMAIN SEPARATOR for the pipe: a message is known-relayed because it arrived wrapped in this authenticated envelope, not because of a sentinel address. The inner payload is byte-identical to a direct message, so no inner parser changes.
 pub fn peel_relay_envelope(bytes: &[u8]) -> Option<([u8; 32], Vec<u8>)> {
     use vsf::file_format::VsfHeader;
+
+    // WHY/PROOF (security audit NET-09): any registered device may post an envelope for any pipe, and the pipe used to take a message of tungstenite's 64 MiB default — a frame past the largest thing the relay carries is refused before its signature is hashed.
+    if bytes.len() > RELAY_FRAME_LIMIT {
+        return None;
+    }
 
     // Verify the sender's whole-file signature with `verify_file_signature`, NOT `read_verified`.
     // `read_verified` additionally enforces `is_original` (the header `hp` must equal the content hash), but build_signed_vsf uses `signed_only(ke)` + `sign_file`, and the same waiver every CLUTCH/chat parser takes applies here: the signature covers the ENTIRE file (authorship + integrity are proven), only the content-hp self-attestation is not asserted. Using read_verified rejected every real envelope — the "not a valid signed relay envelope" drop that black-holed the whole pipe data plane.
@@ -252,6 +260,24 @@ mod peel_tests {
     use super::*;
 
     /// A `send_via_relay` envelope must round-trip thru `peel_relay_envelope`. This guards the TOC-name trap specifically: the section name lives in the header near-form, so a bare body parse sees `name == ""` and any `== "relay"` check fails — which silently black-holed the whole pipe data plane until caught in a log.
+    /// NET-09: an envelope past the relay frame limit is refused before its signature is hashed, however well it is signed.
+    #[test]
+    fn peel_refuses_a_frame_past_the_limit() {
+        let kp = crate::network::fgtw::Keypair::from_seed(&[4u8; 32]);
+        let inner = vec![1u8; RELAY_FRAME_LIMIT];
+        let envelope = build_signed_vsf(
+            &kp,
+            "relay",
+            vec![
+                ("recipient".to_string(), VsfType::kx([7u8; 32].to_vec())),
+                ("payload".to_string(), VsfType::v(b'r', inner)),
+            ],
+        )
+        .expect("build envelope");
+        assert!(envelope.len() > RELAY_FRAME_LIMIT);
+        assert!(peel_relay_envelope(&envelope).is_none());
+    }
+
     #[test]
     fn peel_roundtrip() {
         let kp = crate::network::fgtw::Keypair::from_seed(&[3u8; 32]);

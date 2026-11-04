@@ -17,7 +17,7 @@ use crate::network::pt::{
 use crate::types::DevicePubkey;
 use crate::platform::net::StdUdpSocket as UdpSocket;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, sync_channel, Receiver, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -187,6 +187,55 @@ fn is_sibling_device(pk: &[u8; 32]) -> bool {
         .lock()
         .map(|s| s.iter().any(|d| d == pk))
         .unwrap_or(false)
+}
+
+/// The frames a signer we do not know may send (security audit NET-09): each is the opening move of a relationship the UI thread decides on, so the key cannot be known yet — the CLUTCH proof (the reconciled-sibling race documented at the ladder), a friend knock, the fleet chain ask and answer, the join's binding request and fan-out.
+const STRANGER_SECTIONS: [&str; 6] = ["clutch_complete", "friend_knock", "fleet_req", "fleet_resp", "bind_req", "fanout_resp"];
+
+/// NET-09: `Some(section)` when `bytes` is a VSF frame signed by a key that is no contact, sibling, group member or ourselves AND whose primary section is not one a stranger may send; `None` admits it to the parse ladder.
+/// A frame with no readable signer is admitted as before: every parser refuses it itself, and nothing a stranger gains from an unsigned frame is worth a second grammar here.
+/// The section name is read off a VERIFIED header (`read_verified`: provenance hash and signature, once) — a stranger's frame that does not verify is refused outright, and one that does costs one rung's work instead of every rung's.
+fn stranger_refusal(bytes: &[u8], contacts: &ContactPubkeys, our: &[u8; 32]) -> Option<String> {
+    let Ok(signer) = vsf::verification::extract_signer_pubkey(bytes) else {
+        return None;
+    };
+    if signer == *our || is_sibling_device(&signer) || molecule_member_device(&signer) {
+        return None;
+    }
+    if contacts.lock().unwrap().iter().any(|p| p.as_bytes() == &signer) {
+        return None;
+    }
+    let Ok((header, _)) = vsf::verification::read_verified(bytes, None) else {
+        return Some("unverified".to_string());
+    };
+    let section = header.fields.first().map(|f| f.name.clone()).unwrap_or_default();
+    if STRANGER_SECTIONS.contains(&section.as_str()) {
+        return None;
+    }
+    Some(section)
+}
+
+/// NET-09: how many frames the stranger gate has refused, logged at every power of two so a flood costs a few lines.
+static STRANGER_DROPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn stranger_drop_log(section: &str, len: usize, src: SocketAddr) {
+    let n = STRANGER_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if n.is_power_of_two() {
+        crate::logf!("Status: stranger frame #{} refused before parse — '{}' ({}B) from {}", n, section, len, src);
+    }
+}
+
+/// NET-10: how many datagrams no parser claimed, logged at every power of two.
+static UNPARSED_DATAGRAMS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// One bounded line for a datagram no parser claimed: its length and first 32 bytes, at every power of two of the count.
+fn unparsed_datagram_log(err: &dyn std::fmt::Display, bytes: &[u8], src: SocketAddr) {
+    let n = UNPARSED_DATAGRAMS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    if n.is_power_of_two() {
+        // WHY/PROOF: a datagram shorter than 32 bytes shows whole — the head is the smaller of its length and 32.
+        let head = &bytes[..bytes.len().min(32)];
+        crate::logf!("Status: unparsed datagram #{} from {}: {} ({}B, head {})", n, src, err, bytes.len(), hex::encode(head));
+    }
 }
 
 fn avatar_pin() -> Option<[u8; 64]> {
@@ -857,7 +906,7 @@ impl StatusChecker {
         let (complete_proof_tx, complete_proof_rx) = channel::<ClutchCompleteRequest>();
         let (lan_broadcast_tx, lan_broadcast_rx) = channel::<LanBroadcastRequest>();
         let (clear_pt_tx, clear_pt_rx) = channel::<ClearPtSendsRequest>();
-        let (status_tx, status_rx) = channel::<StatusUpdate>();
+        let (status_tx, status_rx) = sync_channel::<StatusUpdate>(STATUS_QUEUE_LIMIT);
         let (phonebook_req_tx, phonebook_req_rx) = channel::<SocketAddr>();
 
         let our_pubkey = DevicePubkey::from_bytes(keypair.public.to_bytes());
@@ -958,7 +1007,7 @@ impl StatusChecker {
         let (complete_proof_tx, complete_proof_rx) = channel::<ClutchCompleteRequest>();
         let (lan_broadcast_tx, lan_broadcast_rx) = channel::<LanBroadcastRequest>();
         let (clear_pt_tx, clear_pt_rx) = channel::<ClearPtSendsRequest>();
-        let (status_tx, status_rx) = channel::<StatusUpdate>();
+        let (status_tx, status_rx) = sync_channel::<StatusUpdate>(STATUS_QUEUE_LIMIT);
         let (phonebook_req_tx, phonebook_req_rx) = channel::<SocketAddr>();
 
         let our_pubkey = DevicePubkey::from_bytes(keypair.public.to_bytes());
@@ -1208,12 +1257,28 @@ async fn relay_reply(
 
 // The old relay dispatch (split_concatenated_vsf + dispatch_relayed_clutch) is GONE. The pipe injects each relayed frame directly into the receiver's select! as a whole datagram tagged RELAY_ADDR, so the real dispatch parses it — CLUTCH, ping/pong, chat, acks all — with no bespoke relay parser. There is nothing to split either: a WebSocket frame IS one message (no concatenation, unlike the old fetch response).
 
+/// The most StatusUpdates the UI may have waiting (security audit NET-09): the queue used to be unbounded, so a sender the UI could not keep pace with grew it without limit; past this the newest is dropped and counted, never queued.
+const STATUS_QUEUE_LIMIT: usize = 1 << 14;
+
+/// NET-09: how many StatusUpdates the full queue has dropped, logged at every power of two.
+static STATUS_DROPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn send_status_update(
-    status_tx: &Sender<StatusUpdate>,
+    status_tx: &SyncSender<StatusUpdate>,
     update: StatusUpdate,
     #[allow(unused_variables)] event_proxy: &OptionalEventProxy,
 ) {
-    crate::log_err!(status_tx.send(update), "Status: status update to the UI");
+    // try_send, never send: the receive loop must not block on a UI that is not draining, and a full queue is a fact to log, not to wait on.
+    match status_tx.try_send(update) {
+        Ok(()) => {}
+        Err(TrySendError::Full(_)) => {
+            let n = STATUS_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+            if n.is_power_of_two() {
+                crate::logf!("Status: UI queue full at {} updates — dropped #{} (the UI is not draining, or someone is flooding us)", STATUS_QUEUE_LIMIT, n);
+            }
+        }
+        Err(TrySendError::Disconnected(_)) => crate::log("Status: status update to the UI: receiver gone"),
+    }
     #[cfg(not(target_os = "android"))]
     if let Some(proxy) = event_proxy {
         if let Err(e) = proxy.send(PhotonEvent::NetworkUpdate) {
@@ -1246,7 +1311,7 @@ async fn run_checker(
     complete_proof_rx: Receiver<ClutchCompleteRequest>,
     lan_broadcast_rx: Receiver<LanBroadcastRequest>,
     clear_pt_rx: Receiver<ClearPtSendsRequest>,
-    status_tx: Sender<StatusUpdate>,
+    status_tx: SyncSender<StatusUpdate>,
     contacts: ContactPubkeys,
     sync_records_provider: SyncRecordsProvider,
     pong_seal_keys: PongSealKeys,
@@ -1775,8 +1840,12 @@ async fn run_checker(
                 "PIPE: relay pipe task started (dev {}...)",
                 &our_dev_hex[..8]
             );
+            // The socket itself refuses a message past the relay frame limit (security audit NET-09): tungstenite's default is 64 MiB a message, and any registered device may post an envelope for any pipe.
+            let ws_config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
+                .max_message_size(Some(crate::network::fgtw::relay::RELAY_FRAME_LIMIT))
+                .max_frame_size(Some(crate::network::fgtw::relay::RELAY_FRAME_LIMIT));
             loop {
-                match tokio_tungstenite::connect_async(&url).await {
+                match tokio_tungstenite::connect_async_with_config(&url, Some(ws_config), false).await {
                     Ok((ws_stream, _)) => {
                         crate::log("PIPE: connected — relay is a live socket now");
                         crate::network::wfd::set_relay_reachable(true);
@@ -2507,6 +2576,14 @@ async fn run_checker(
                         && msg_bytes[3] == b'<'
                     {
                         use crate::network::fgtw::protocol::parse_clutch_complete_vsf_without_recipient_check;
+
+                        // THE STRANGER GATE (security audit NET-09): a signer we do not know — no contact, no sibling, no group member — may only speak the few frames a stranger has business sending: the CLUTCH proof (a freshly reconciled sibling's key is not yet in the allowlist, see below), a friend knock, and the fleet join and chain asks, whose admission the UI thread decides.
+                        // Everything else from an unknown key is dropped here on a header read (the signer key and the TOC section name are cheap to pull) before any rung of the ladder hashes and verifies the frame, so a stranger cannot spend our receive loop on signatures that verify under a key they made, nor fill the UI queue with the updates those rungs would emit.
+                        // The PT path has carried the same gate since the ~500 KB offer; this is the UDP and relay half of it.
+                        if let Some(section) = stranger_refusal(msg_bytes, &contacts_recv, &our_device_pk) {
+                            stranger_drop_log(&section, msg_bytes.len(), src_addr);
+                            continue;
+                        }
 
                         // ClutchComplete (the proof) is ~300 bytes and its parser verifies the whole-file signature internally, so parse it UNCONDITIONALLY — no contact-allowlist pre-gate.
                         // The old gate keyed on `contacts_recv`, which is a race for a freshly-reconciled SIBLING device: its key isn't in the allowlist the instant its proof arrives, so the proof fell thru to FgtwMessage::from_vsf_bytes — which does NOT handle clutch_* and emitted "Parse error: got 'clutch_complete'", dropping the proof.
@@ -4353,18 +4430,8 @@ async fn run_checker(
                             }
                         }
                         Err(e) => {
-                            // Log full packet hex for debugging
-                            let preview: String = msg_bytes
-                                .iter()
-                                .map(|b| format!("{:02x}", b))
-                                .collect::<Vec<_>>()
-                                .join(" ");
-                            crate::logf!(
-                                "Status: Parse error: {} (len={}, hex: {})",
-                                e,
-                                msg_bytes.len(),
-                                preview
-                            );
+                            // A datagram no parser claims, named in ONE bounded line (security audit NET-10): the old whole-packet hex dump cost three bytes of log and a String per byte received, synchronously on this loop — 85 maximum-size garbage datagrams rolled the entire 16 MiB log and took the forensics with it.
+                            unparsed_datagram_log(&e, msg_bytes, src_addr);
                         }
                     }
                 }
@@ -5346,7 +5413,7 @@ async fn handle_pt_vsf_packet(
     src_addr: SocketAddr,
     pt: &Arc<Mutex<PTManager>>,
     socket: &Arc<crate::network::udp::UdpSocket>,
-    _status_tx: &Sender<StatusUpdate>,
+    _status_tx: &SyncSender<StatusUpdate>,
     _event_proxy: &OptionalEventProxy,
     contacts: &ContactPubkeys,
 ) -> Option<bool> {
