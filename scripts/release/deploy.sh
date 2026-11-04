@@ -507,6 +507,17 @@ PHASE_T0=$SECONDS
 # Pages needs its own credential — the R2 token this deploy exports for the puts cannot touch it (see wrangler-auth.sh). Say exactly what to create when there is none, rather than letting wrangler's "Authentication error [code: 10000]" stand as the whole explanation.
 if wrangler_pages_available; then
     (wrangler_pages_auth && cd /mnt/Chiton/MEGA/holdmyoscilloscope && ./deploy.sh) || echo "WARNING: website deploy failed (non-fatal — the release is live; re-deploy the site when convenient)."
+    # passless.org/photon (Nick 2026-11-04): its download button streams R2 thru the site's function at /photon/dl/<v>/<name>, so the page names this release's folder exactly as the holdmyoscilloscope page does.
+    # Until this step existed the button named the bare root file, which stopped being written when releases moved into v<n>/ on 2026-10-22, and a "clean install from the website" got an October build.
+    PASSLESS_DIR="/mnt/Chiton/MEGA/passless"
+    if [ -f "$PASSLESS_DIR/photon/index.html" ]; then
+        sed_i -E "s#(passless\.org/photon/dl/)(v[0-9]+/)?(photon-messenger-[a-z0-9_-]+-release(\.exe|\.apk)?)\"#\1v$SHIP_VERSION/\3\"#g" "$PASSLESS_DIR/photon/index.html"
+        if grep -q "passless.org/photon/dl/v$SHIP_VERSION/" "$PASSLESS_DIR/photon/index.html"; then
+            (wrangler_pages_auth && cd "$PASSLESS_DIR" && bash ./deploy.sh) || echo "WARNING: passless.org deploy failed (non-fatal — the release is live; re-deploy that site when convenient)."
+        else
+            echo "WARNING: passless.org's Photon page names no download to point at v$SHIP_VERSION — the page changed; its links were left as they are."
+        fi
+    fi
 else
     echo "WARNING: website NOT deployed — no credential can reach Cloudflare Pages (the R2 token cannot, and the browser login is absent or expired)."
     echo "         Fix once: mint a token at https://dash.cloudflare.com/profile/api-tokens with 'Cloudflare Pages: Edit' and save its value as ONE line in ${TOKEN_KEYS_DIR:-/mnt/Harbor/Code/keys}/cloudflare-pages-token"

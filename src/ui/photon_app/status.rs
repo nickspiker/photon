@@ -439,6 +439,8 @@ impl PhotonApp {
         let mut knock_after: Vec<crate::types::ContactId> = Vec::new();
         // Contacts whose knock reached us while we still waited on them — confirmed after the drain (consent_confirmed takes &mut self, and the drain holds the checker).
         let mut knock_consent: Vec<crate::types::ContactId> = Vec::new();
+        // Friends we hold complete who knocked this drain (their side lost the friendship): knocked back after the drain.
+        let mut knock_back_after: Vec<usize> = Vec::new();
         // Contacts that came online this drain: every molecule offer this device sent them and never saw answered goes again after the drain (an offer rides the wire once and friend history pages carry no control rows, so an invitee who was offline at the moment never got it — Jeff and the other invitees, 2026-11-04).
         let mut reoffer_after: Vec<crate::types::ContactId> = Vec::new();
         // Pong-seal reseed request(s) this drain — one walk after the loop no matter how many unkeyed devices reported (the per-drain edge that replaced the 10s clock).
@@ -4214,6 +4216,14 @@ impl PhotonApp {
                             crate::fp(&self.contacts[ci].handle_proof)
                         );
                     }
+                    // A knock from a friend we hold COMPLETE: only a side that lost its friendship knocks (a reinstall, a wipe), and it waits on an add we cannot type — knock back after the drain (field 2026-11-04, Jeff).
+                    if self.contacts[ci].consent_mutual && self.contacts[ci].clutch_state == ClutchState::Complete && !knock_back_after.contains(&ci) {
+                        crate::logf!(
+                            "CONSENT: {} knocked though we hold the friendship complete — their side lost it; knocking back so they can offer the re-key",
+                            crate::fp(&self.contacts[ci].handle_proof)
+                        );
+                        knock_back_after.push(ci);
+                    }
                     // The roster entry is stamped newer before the save, so the push carries the consent past every sibling's LWW merge — the ceremony owner learns it even when this knock reached only us.
                     if !self.contacts[ci].consent_mutual {
                         self.contacts[ci].roster_updated = vsf::eagle_time_oscillations();
@@ -5797,6 +5807,9 @@ impl PhotonApp {
         // BRAID MIGRATION — REMOVED (field 2026-09-28): it armed a heavy weave whenever the FRIEND's devices all showed v2, but the friend claims v2 only when OURS all do, so with any older or refused device of ours the weave could never reach v2 and re-armed on every restart; its churn tripped the ceremony breaker and stranded Emma's chains. v2 now arrives with any natural ceremony (both offers claim it once both fleets are ready). A migration trigger comes back only when it can see BOTH fleets are v2.
 
         // Consent knocks collected on pong edges (after releasing the checker borrow), plus the roster ride for any Mutual flip this drain confirmed — siblings learn the flip so whichever device is in hand completes the handshake.
+        for ci in knock_back_after {
+            self.send_friend_knock_back(ci);
+        }
         for id in reoffer_after {
             if let Some(ci) = self.contacts.iter().position(|c| c.id == id) {
                 self.reoffer_pending_bonds(ci);

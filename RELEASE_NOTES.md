@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **A friend who reinstalled can reconnect with you on their own.** When a friend whose app lost everything adds you again, your device now answers their request instead of ignoring it, because it still remembered the friendship; before, they waited forever on "waiting for you to add" while you were told they were already in your contacts.
 
 ## v141
 - **A phone that moved to its new hardware key keeps a way back to its fleet key.** The move now hands the new key its own sealed copy of the fleet key, and a device that holds the key but finds no copy sealed to itself writes one at its next start; without that, wiping or reinstalling such a phone lost its contacts, picture and name for good.

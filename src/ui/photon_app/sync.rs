@@ -631,11 +631,21 @@ impl PhotonApp {
 
     /// Send the consent KNOCK at a contact we added (2026-08-25): the few-hundred-byte signed intent frame that replaced the 548KB offer as the opening move — no key material travels until the add is reciprocated. Direct + relay like every small ceremony frame; loss is covered by the once-per-session re-knock on presence edges and, ultimately, by the peer's own add (the later adder initiates).
     pub(super) fn send_friend_knock(&mut self, ci: usize) {
+        self.send_friend_knock_gated(ci, false);
+    }
+
+    /// THE KNOCK-BACK (field 2026-11-04, Jeff's reinstall): a knock from a contact we already hold with mutual consent means their side lost everything and is waiting on our add, which we can never type because the contact is still ours ("Already in your contacts").
+    /// Our knock back is that add: it gives their side the mutuality it waits on, their ceremony offers, and ours takes the offer as a re-key from a peer that lost its chains. Once per session per contact, like any knock.
+    pub(super) fn send_friend_knock_back(&mut self, ci: usize) {
+        self.send_friend_knock_gated(ci, true);
+    }
+
+    fn send_friend_knock_gated(&mut self, ci: usize, back: bool) {
         let (token, primary, alt, recipient, relay) = {
             let Some(contact) = self.contacts.get(ci) else {
                 return;
             };
-            if contact.consent_mutual || contact.is_sibling || contact.knocked_session {
+            if (contact.consent_mutual && !back) || contact.is_sibling || contact.knocked_session {
                 return;
             }
             let Some(us) = self
