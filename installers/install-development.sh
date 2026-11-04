@@ -50,7 +50,11 @@ echo ""
 
 # Download binary (flat naming with -development suffix)
 DOWNLOAD_URL="https://brobdingnagian.holdmyoscilloscope.com/photon/photon-messenger-$PLATFORM-development"
-TMP_BINARY="/tmp/photon-messenger-$$"
+# A private working directory for the download (security audit UPW-011): mktemp makes a fresh 0700 directory nobody else could have planted, so a pre-planted symlink or a swap between the download, the checks and the install is not possible.
+TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/photon-install.XXXXXXXX") || { echo "Error: could not make a private temp directory"; exit 1; }
+chmod 700 "$TMP_DIR"
+trap 'rm -rf "$TMP_DIR"' EXIT
+TMP_BINARY="$TMP_DIR/photon-messenger"
 
 echo "Downloading Photon Messenger (dev)..."
 if command -v curl >/dev/null 2>&1; then
@@ -110,7 +114,7 @@ if [ "$OS" = "Darwin" ]; then
 
     # Download icon and convert to icns (macOS has iconutil built-in)
     ICON_URL="https://brobdingnagian.holdmyoscilloscope.com/photon/icon-1024.png"
-    TMP_ICON="/tmp/photon-icon-$$"
+    TMP_ICON="$TMP_DIR/photon-icon"
     mkdir -p "$TMP_ICON.iconset"
 
     if curl -sSfL "$ICON_URL" -o "$TMP_ICON.png" 2>/dev/null; then
