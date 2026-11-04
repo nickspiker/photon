@@ -1,6 +1,7 @@
 //! Second-launch handoff — the control channel a fresh `photon-messenger` invocation uses to tell the RESIDENT instance "show yourself" instead of dying with an "already running" error.
 //! One verb, one direction: `show\n`. No state crosses; the resident side reacts by surfacing its window (`PhotonEvent::ShowWindow` → `EventResponse::ShowWindow`). Anything richer belongs in the app protocol, not here.
 //! Transport per platform: a Unix domain socket at the dir-keyed runtime path (`storage::runtime_artifact`; created ONLY after the flock single-instance guard is won, so a stale path can be unlinked safely), and on Windows the single-instance TcpListener itself doubles as the channel (it already exists, it's already dir-keyed, and any same-user process that could connect could equally just launch the app — "show the window" needs no authentication).
+//! OPEN (security audit UPW-018, Windows half): the loopback port is reachable by every local user of the machine, not only ours, so a `yield` from another account can make a headless lifeline exit; a per-run secret needs a same-user place to share it (a new runtime artifact = an owner decision, Rule -1) or a peer-session check thru the TCP table, so it waits on Nick.
 
 use std::io::{Read, Write};
 
@@ -79,6 +80,10 @@ pub fn spawn_accept_thread(
             ControlListener::Unix(l) => {
                 for stream in l.incoming() {
                     let Ok(mut s) = stream else { continue };
+                    // The same read deadline the TCP branch has (security audit UPW-018): a local connector that opens the socket and sends nothing would otherwise park this accept thread forever, and the second-launch show/yield handoff with it.
+                    if !crate::log_err!(s.set_read_timeout(Some(std::time::Duration::from_millis(500))), "CONTROL: read deadline set") {
+                        continue;
+                    }
                     let mut buf = [0u8; 16];
                     let n = s.read(&mut buf).unwrap_or(0);
                     handle(&buf[..n]);
