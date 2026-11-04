@@ -3,7 +3,7 @@
 use super::*;
 
 /// The send cap (typed attachments Phase 1): the picker still hands the bytes over whole, so RAM at pick time is the bound — 256 MB, up from the 25 MB one-frame limit the chunked wire no longer needs.
-pub(super) const MAX_ATTACH: usize = 256 * 1024 * 1024;
+pub(super) const MAX_ATTACH: usize = crate::storage::MAX_ATTACH;
 
 impl FetchAsk {
     /// Asks in a row that brought none of the blob, counting the last one once it has gone quiet: an ask that brought some of it starts the count again, and an armed fetch never asked counts nothing.

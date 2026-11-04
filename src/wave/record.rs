@@ -779,6 +779,10 @@ pub fn open_render_profile(bytes: &[u8]) -> Option<RenderProfile> {
         return None;
     }
     let n = u32::from_le_bytes(block[8..12].try_into().ok()?) as usize;
+    // WHY/PROOF (security audit UPW-016): `n` is a u32 the blob supplies — a peer's kept wave or a damaged vault value — and every slot costs 3 bytes, so a count the block cannot hold would reserve up to 4 G entries twice over before the loop could refuse it.
+    if n > (block.len() - 12) / 3 {
+        return None;
+    }
     let mut cur = 12usize;
     let mut slots = Vec::with_capacity(n);
     for _ in 0..n {
@@ -1050,6 +1054,26 @@ fn read_pkt<'a>(bytes: &'a [u8], cur: &mut usize) -> Option<&'a [u8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// UPW-016: a kept blob whose render profile claims more slots than its block holds is refused before anything is reserved.
+    #[test]
+    fn render_profile_count_is_bounded_by_the_block() {
+        // nchan 0 → the envelope is empty and the profile region starts right after the 30-byte head.
+        let mut bytes = CONTAINER_MAGIC.to_vec();
+        bytes.extend_from_slice(&[0u8; 22]);
+        let mut region = RENDER_PROFILE_MAGIC.to_vec();
+        region.extend_from_slice(&u32::MAX.to_le_bytes());
+        let block_len = region.len() as u32;
+        region.extend_from_slice(&block_len.to_le_bytes());
+        bytes.extend_from_slice(&(region.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&region);
+        assert!(open_render_profile(&bytes).is_none());
+        // The same block claiming zero slots opens as an empty profile.
+        let at = bytes.len() - region.len() + 8;
+        bytes[at..at + 4].copy_from_slice(&0u32.to_le_bytes());
+        let p = open_render_profile(&bytes).expect("an empty profile opens");
+        assert!(p.slots.is_empty() && p.packets.is_empty());
+    }
 
     #[test]
     fn transcode_round_trips_to_stereo() {

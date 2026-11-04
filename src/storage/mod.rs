@@ -433,6 +433,9 @@ pub fn blob_store_many(identity_seed: &[u8; 32], items: Vec<([u8; 32], Vec<u8>)>
 // CHUNKED BLOBS (typed attachments Phase 1, 2026-09-10): anything past BLOB_CHUNK_SIZE is stored as content-addressed CHUNKS (each a vault value at its own chunk-hash address — the same keyed address scheme) plus a MANIFEST at a separate keyed address under the whole-file hash. The wire carries the manifest then chunks, a fetch resumes from whatever chunks are held, and Save streams the chunks to the file with a running hash — the whole file is never rebuilt in RAM on the receiving side.
 pub const BLOB_CHUNK_SIZE: usize = 256 * 1024;
 
+/// The largest original an attachment or a pigeon may be, in bytes: 256 MiB, the one limit every entry (picker, drop, pigeon announce) checks against before bytes are read or reserved.
+pub const MAX_ATTACH: usize = 1 << 28;
+
 /// A chunked blob's table of contents: total size, chunk size, and the blake3 of every chunk in order (the last one shorter).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BlobManifest {

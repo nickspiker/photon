@@ -66,6 +66,10 @@ fn spool_path(dir: &std::path::Path, hash: &[u8; 32]) -> PathBuf {
 impl PigeonReceiver {
     /// Open (or resume) the spool for a pigeon — from its announcement row OR from the first self-describing chunk, whichever arrives first. Idempotent: a pigeon already in flight keeps its spool, and only gains a name it did not have. Returns (held, total, resumed) — `resumed` = the spool came off disk holding slots already, so the caller asks for the rest.
     pub fn open(&mut self, dir: &std::path::Path, hash: [u8; 32], name: String, size: u64, chunk_size: u32, wire_key: [u8; 32], from_device: [u8; 32]) -> std::io::Result<(u32, u32, bool)> {
+        // WHY/PROOF (security audit UPW-016): `size` is the announcing device's claim — the spool is set_len to it on disk and the finalize once reserved it in RAM, so a claim near 2^64 fills the disk or aborts the process; the attachment limit is the one size every original already obeys.
+        if size > crate::storage::MAX_ATTACH as u64 {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, "pigeon larger than the attachment limit"));
+        }
         if let Some(inf) = self.inflight.get_mut(&hash) {
             if inf.desc.name.is_empty() && !name.is_empty() {
                 inf.desc.name = name;
@@ -208,7 +212,8 @@ impl PigeonReceiver {
 /// The decrypt-walk + whole-file hash + landing + shed for one detached pigeon, safe on any thread (it owns the spool handle). Err returns the pigeon for a chunk that would not open (resumable); a hash mismatch or a store failure sheds the spool and returns Ok(None) — a spool that completed to the wrong bytes is poison, not a resumable state.
 pub fn finalize_inflight(inf: Inflight, seed: &[u8; 32], dir: &std::path::Path) -> Result<Option<Landed>, Inflight> {
     let hash = inf.desc.hash;
-    let mut whole = Vec::with_capacity(inf.desc.size as usize);
+    // Grown chunk by chunk, never reserved from the announced size (security audit UPW-016): the chunks come off our own spool, so what lands is bounded by what was written.
+    let mut whole = Vec::new();
     for i in 0..inf.layout.lens.len() {
         let Ok(sealed) = spool::read_slot(&inf.file, &inf.layout, i) else {
             return Err(inf);
@@ -253,6 +258,17 @@ impl PigeonReceiver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// UPW-016: an announcement claiming more than the attachment limit is refused before a spool is created or a byte reserved.
+    #[test]
+    fn oversize_announce_is_refused_before_the_spool() {
+        let dir = scratch("oversize");
+        clear_dir(&dir);
+        let mut rx = PigeonReceiver::default();
+        let r = rx.open(&dir, [0x11; 32], "big.bin".into(), crate::storage::MAX_ATTACH as u64 + 1, crate::storage::BLOB_CHUNK_SIZE as u32, [0x22; 32], [0x33; 32]);
+        assert!(r.is_err());
+        assert!(!dir.exists(), "no spool dir for a refused announce");
+    }
 
     fn scratch(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!("photon-pigeonrecv-{}-{}", std::process::id(), name))
