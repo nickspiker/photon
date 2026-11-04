@@ -165,7 +165,9 @@ impl MessageBody {
             });
         }
         let count = vsf::parse(bytes, &mut ptr).ok()?.as_u64()?;
-        let mut spans = Vec::with_capacity(count as usize);
+        // Never reserved from the wire count (security audit UPW-017): `count` is an untrusted u64 and a capacity near 2^64 aborts the process before the loop could refuse the body.
+        // The Vec grows one span at a time, and a count the bytes cannot back fails at the first missing element.
+        let mut spans = Vec::new();
         for _ in 0..count {
             let kind = vsf::parse(bytes, &mut ptr).ok()?.as_u64()?;
             match kind {
@@ -217,6 +219,17 @@ fn parse_hash(bytes: &[u8], ptr: &mut usize) -> Option<[u8; 32]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// UPW-017: a body whose runs section claims more spans than any bytes could hold must fail cleanly, never reserve the claimed capacity.
+    #[test]
+    fn decode_never_reserves_the_wire_count() {
+        let mut bytes = VsfType::x("hello".to_string()).flatten();
+        bytes.extend(VsfType::u(usize::MAX, false).flatten());
+        assert!(MessageBody::decode(&bytes).is_none());
+        // A count the bytes do back still decodes.
+        let body = MessageBody { spans: vec![Span::Text("a".into()), Span::link("https://passless.org/", "p").unwrap()] };
+        assert_eq!(MessageBody::decode(&body.encode()), Some(body.normalized()));
+    }
 
     #[test]
     fn href_allowlist() {
