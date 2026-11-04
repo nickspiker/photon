@@ -11,6 +11,32 @@ pub const PREVIEW_MAX_EDGE: usize = 512;
 pub const FULL_VIEW_MAX_EDGE: usize = 4096;
 /// Long edge of the LINEAR buffer the viewer keeps — twelve bytes a pixel, so a phone keeps 2048 (50 MB) and a desktop 4096. opsin's view folds its display copy to this; the raw sensor counts stay whole for the histogram.
 pub const LINEAR_VIEW_MAX_EDGE: usize = if cfg!(target_os = "android") { 2048 } else { 4096 };
+/// The most pixels a source image may declare before it is decoded (security audit UPW-008): 64 MP covers every phone and full-frame camera; a few KB of JPEG XL or PNG can declare a canvas that decodes to gigabytes.
+pub const MAX_SOURCE_PIXELS: u64 = 1 << 26;
+/// The most jxl-oxide may allocate for one decode, in bytes; the tracker refuses past it instead of the process aborting.
+const JXL_ALLOC_LIMIT: usize = 1 << 30;
+/// The most pixels the box pre-pass ahead of the linear fold may hold: within it the pass goes to twice the target for a softer fold, past it straight to the target (at the 4096 view edge the 2× pass was an 8192² RGB plus its 800 MB linear copy).
+const PRE_FOLD_MAX_PIXELS: usize = 1 << 23;
+
+/// Refuse a declared size past [`MAX_SOURCE_PIXELS`] before any decode, saying so in the log.
+fn source_fits(w: u64, h: u64) -> bool {
+    // WHY/PROOF: the dimensions are the file's own header, read before the decode — a JXL or PNG a few KB long can declare 65536², and the decoders allocate what the header declares.
+    if w * h > MAX_SOURCE_PIXELS {
+        crate::logf!("attach: {}×{} source refused — past the {} MP decode limit", w, h, MAX_SOURCE_PIXELS >> 20);
+        return false;
+    }
+    true
+}
+
+/// The box pre-pass dims for a `tw`×`th` target: twice the target when that intermediate fits [`PRE_FOLD_MAX_PIXELS`], else the target itself.
+fn pre_fold_dims(tw: usize, th: usize) -> (usize, usize) {
+    // WHY/PROOF: the 2× intermediate is `tw * th * 4` pixels, RGB8 plus a 12-byte-per-pixel linear copy — at the 4096 edge that is a gigabyte, which is enough to be killed on a phone.
+    if tw * th * 4 <= PRE_FOLD_MAX_PIXELS {
+        (tw * 2, th * 2)
+    } else {
+        (tw, th)
+    }
+}
 
 /// The viewer's path for what opsin has no decoder for (PNG, GIF, BMP — anything its sniff calls Unknown): the image crate's decode, sRGB assumed, linearised into VSF RGB and folded to `max_edge`, handed back as LINEAR PLANAR u16 (white = 65535) for `opsin::convert::ingest_linear_vsf_rgb`, so opsin's view shows it thru the same pipe as everything else.
 pub fn legacy_linear_planar(bytes: &[u8], name: &str, kind: AttachKind, max_edge: usize) -> Option<(usize, usize, Vec<u16>)> {
@@ -204,6 +230,11 @@ fn decode_legacy(bytes: &[u8], max_edge: usize) -> Option<Folded> {
     let orientation = decoder
         .orientation()
         .unwrap_or(image::metadata::Orientation::NoTransforms);
+    // The header's size is checked before the decode allocates for it (security audit UPW-008).
+    let (dw, dh) = decoder.dimensions();
+    if !source_fits(dw as u64, dh as u64) {
+        return None;
+    }
     let mut img = image::DynamicImage::from_decoder(decoder).ok()?;
     img.apply_orientation(orientation);
     let (sw, sh) = (img.width() as usize, img.height() as usize);
@@ -211,8 +242,9 @@ fn decode_legacy(bytes: &[u8], max_edge: usize) -> Option<Folded> {
         return None;
     }
     let (tw, th) = fit_dims(sw, sh, max_edge);
-    // A fast box pass to ≤2× the target first (a 50 MP decode must not be walked per output pixel), then the linear fold.
-    let pre = if sw > tw * 2 || sh > th * 2 { img.thumbnail((tw * 2) as u32, (th * 2) as u32).to_rgb8() } else { img.to_rgb8() };
+    // A fast box pass ahead of the linear fold (a 50 MP decode must not be walked per output pixel): to twice the target while that intermediate stays within the pre-fold budget, else to the target itself.
+    let (pw, ph) = pre_fold_dims(tw, th);
+    let pre = if sw > pw || sh > ph { img.thumbnail(pw as u32, ph as u32).to_rgb8() } else { img.to_rgb8() };
     let (pw, ph) = (pre.width() as usize, pre.height() as usize);
     let lin = srgb8_to_linear_vsf(pre.as_raw(), pw, ph);
     let px = fold_linear(&lin, pw, ph, tw, th);
@@ -222,7 +254,14 @@ fn decode_legacy(bytes: &[u8], max_edge: usize) -> Option<Folded> {
 /// JPEG XL: decoded in its TAGGED space (primaries + transfer from the header; an ICC-profiled file falls back to the sRGB assumption), linearized, matrixed to VSF RGB, folded.
 fn decode_jxl(bytes: &[u8], max_edge: usize) -> Option<Folded> {
     use jxl_oxide::color::{ColourEncoding, Primaries, TransferFunction};
-    let image = jxl_oxide::JxlImage::builder().read(std::io::Cursor::new(bytes)).ok()?;
+    // A decode budget the library enforces (security audit UPW-008): without a tracker jxl-oxide allocates whatever the header declares.
+    let image = jxl_oxide::JxlImage::builder()
+        .alloc_tracker(jxl_oxide::AllocTracker::with_limit(JXL_ALLOC_LIMIT))
+        .read(std::io::Cursor::new(bytes))
+        .ok()?;
+    if !source_fits(image.width() as u64, image.height() as u64) {
+        return None;
+    }
     let (to_vsf, tf): ([f32; 9], TransferFunction) = match &image.image_header().metadata.colour_encoding {
         ColourEncoding::Enum(enc) => {
             let m = match enc.primaries {
@@ -503,6 +542,35 @@ fn display_pixels_at<P: Depth>(g2: &[f32]) -> Vec<P> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// UPW-008: a declared canvas past the decode limit is refused before any decode, and the pre-fold intermediate never leaves its budget.
+    #[test]
+    fn source_and_pre_fold_budgets() {
+        assert!(source_fits(1 << 13, 1 << 13));
+        assert!(!source_fits((1 << 13) + 1, 1 << 13));
+        assert_eq!(pre_fold_dims(512, 512), (1024, 1024));
+        assert_eq!(pre_fold_dims(4096, 4096), (4096, 4096));
+        assert_eq!(pre_fold_dims(4096, 2048), (4096, 2048));
+        // A hand-made 24-bit BMP: 2×2 decodes, the same header declaring 65536×65536 is refused without a decode.
+        let bmp = |w: u32, h: u32, px: &[u8]| -> Vec<u8> {
+            let mut b = b"BM".to_vec();
+            b.extend_from_slice(&(54 + px.len() as u32).to_le_bytes());
+            b.extend_from_slice(&0u32.to_le_bytes());
+            b.extend_from_slice(&54u32.to_le_bytes());
+            b.extend_from_slice(&40u32.to_le_bytes());
+            b.extend_from_slice(&(w as i32).to_le_bytes());
+            b.extend_from_slice(&(h as i32).to_le_bytes());
+            b.extend_from_slice(&1u16.to_le_bytes());
+            b.extend_from_slice(&24u16.to_le_bytes());
+            b.extend_from_slice(&[0u8; 24]);
+            b.extend_from_slice(px);
+            b
+        };
+        let small = bmp(2, 2, &[255, 0, 0, 0, 255, 0, 0, 0, 0, 0, 255, 0, 0, 0, 0, 0]);
+        let f = decode_legacy(&small, 512).expect("a 2×2 BMP decodes");
+        assert_eq!((f.src_w, f.src_h), (2, 2));
+        assert!(decode_legacy(&bmp(1 << 16, 1 << 16, &[0u8; 16]), 512).is_none());
+    }
 
     /// A decode's floats go to the screen alike at both depths, read back at 8 bits: the 8-bit tier's own bytes, and the 16-bit straight from the floats at most one step darker and three brighter (the 8-bit path truncates three times — ×256, the γ2 byte after the matrix, then the g2t bucket — each a step down at worst).
     /// Where the matrix carries a saturated colour past white in a channel, the 8-bit path clips it at white (a γ2 byte stops at 255) and the 16-bit keeps the light above it, which the `g2t` code has room for.
