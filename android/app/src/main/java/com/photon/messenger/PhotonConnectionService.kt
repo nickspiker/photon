@@ -54,6 +54,10 @@ class PhotonConnectionService : Service() {
         const val EXTRA_WAVE_ACTION = "com.photon.WAVE_ACTION"
         /** The conversation (64 hex chars) a message notification's tap opens. */
         const val EXTRA_OPEN_CONVERSATION = "com.photon.OPEN_CONVERSATION"
+        /** The extra every PendingIntent this app builds for its own Activity carries, and the value it must hold (security audit UPW-009). */
+        const val EXTRA_RUN_NONCE = "com.photon.RUN_NONCE"
+        /** Minted once per process (UUID v4 from SecureRandom): PhotonActivity is exported (it is the launcher), so any installed app can start it with the extras above, and only an intent minted by THIS process knows the nonce. It dies with the process, so a notification posted by an earlier run opens the app and nothing more. */
+        val RUN_NONCE: String = java.util.UUID.randomUUID().toString()
         const val ACTION_DECLINE_WAVE = "com.photon.DECLINE_WAVE"
         private const val TAG = "PhotonService"
         private const val POLL_INTERVAL_MS = 1000L // 1 second network polling
@@ -710,7 +714,7 @@ class PhotonConnectionService : Service() {
         }
 
         // The tap opens THIS notification's conversation: the id rides the intent, and FLAG_UPDATE_CURRENT keeps the one banner pointing at its newest sender (a cached intent with stale extras opened the wrong one, or none).
-        val tapIntent = Intent(this, PhotonActivity::class.java)
+        val tapIntent = Intent(this, PhotonActivity::class.java).putExtra(EXTRA_RUN_NONCE, RUN_NONCE)
         if (conversation.isNotEmpty()) {
             tapIntent.putExtra(EXTRA_OPEN_CONVERSATION, conversation)
         }
@@ -778,13 +782,15 @@ class PhotonConnectionService : Service() {
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
         // The full-screen surface: flagged so PhotonActivity shows over the keyguard and turns the screen on (without those the FSI launched BEHIND the lock — vibration and ring with a dark screen, field 2026-09-08).
+        // FLAG_UPDATE_CURRENT on both Activity intents: the system keeps a PendingIntent by its request code and base intent, extras aside, so without it a ring after a process restart would carry the previous run's nonce and the Activity would ignore it.
         val fullScreen = PendingIntent.getActivity(
             this,
             1,
             Intent(this, PhotonActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra(EXTRA_RUN_NONCE, RUN_NONCE)
                 .putExtra(EXTRA_INCOMING_WAVE, true),
-            PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         // Answer is an ACTIVITY intent: a notification action may start an Activity where a Service may not, so the tap both answers (the Activity forwards the verdict here) and lands on the wave screen.
         val answer = PendingIntent.getActivity(
@@ -792,9 +798,10 @@ class PhotonConnectionService : Service() {
             2,
             Intent(this, PhotonActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+                .putExtra(EXTRA_RUN_NONCE, RUN_NONCE)
                 .putExtra(EXTRA_INCOMING_WAVE, true)
                 .putExtra(EXTRA_WAVE_ACTION, "answer"),
-            PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         val decline = PendingIntent.getService(
             this,

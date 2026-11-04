@@ -1051,6 +1051,13 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     /** The wave surface's two intent extras (see PhotonConnectionService.postWaveNotification): INCOMING_WAVE = show over the keyguard + light the screen; WAVE_ACTION=answer = the notification's Answer, forwarded to the Service (or parked until it binds). */
     private fun applyWaveIntent(intent: Intent?) {
         if (intent == null) return
+        // Only this process's own PendingIntents carry the run nonce (security audit UPW-009): this Activity is exported, so a launch intent from any other app is a plain launch and its extras are ignored — else a co-installed app could auto-answer a ringing wave, force the screen on over the lock, or steer the UI to a conversation.
+        if (intent.getStringExtra(PhotonConnectionService.EXTRA_RUN_NONCE) != PhotonConnectionService.RUN_NONCE) {
+            if (intent.hasExtra(PhotonConnectionService.EXTRA_OPEN_CONVERSATION) || intent.hasExtra(PhotonConnectionService.EXTRA_INCOMING_WAVE) || intent.hasExtra(PhotonConnectionService.EXTRA_WAVE_ACTION)) {
+                PhotonLog.w(TAG, "intent extras without this run's nonce ignored")
+            }
+            return
+        }
         // A message notification's tap: hand its conversation to Rust once (the tick opens it, even on a cold launch where the app is not up yet).
         intent.getStringExtra(PhotonConnectionService.EXTRA_OPEN_CONVERSATION)?.let { conv ->
             intent.removeExtra(PhotonConnectionService.EXTRA_OPEN_CONVERSATION)
