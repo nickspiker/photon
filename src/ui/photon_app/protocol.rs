@@ -935,7 +935,7 @@ impl PhotonApp {
         }
 
         // Contact-fleet refresh results: fold-and-honour a friend's current device set, and ARM the fold-respecting trust rule. OUR OWN hp routes to sibling reconcile FIRST and never into any contact's fleet_members — the self-contact and every sibling contact carry our hp, and folding our own fleet into one of them would make it swallow sibling pongs/paths via first-match `knows_device` routing.
-        let member_updates: Vec<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool)> = self
+        let member_updates: Vec<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool, bool)> = self
             .contact_members_rx
             .as_ref()
             .map(|rx| rx.try_iter().collect())
@@ -947,7 +947,7 @@ impl PhotonApp {
             let mut changed = false;
             let mut to_persist: Vec<usize> = Vec::new();
             let mut successor_checks: Vec<([u8; 32], [u8; 32])> = Vec::new();
-            for (hp, mut members, tip_ts, genesis, existed) in member_updates {
+            for (hp, mut members, tip_ts, genesis, existed, adopt) in member_updates {
                 // The all-zero key is the wire's "no key", never a device (Nick's MacBook 2026-10-20: a phantom sibling 00000000 took pings, history pushes and an offline verdict every 90 s, rotating the active device away from a live desktop).
                 let before = members.len();
                 members.retain(|d| *d != [0u8; 32]);
@@ -1048,10 +1048,10 @@ impl PhotonApp {
                     c.identity_ended = false;
                     changed = true;
                 }
-                // Monotonic freshness gate FIRST, before any mutation: never adopt a fold whose tip is older than the last one we adopted (an R2 eventual-consistency read serving a stale pre-removal set must not overwrite a fresh post-removal one). A first fold (fleet_members_ts == 0) always passes since real eagle times are positive.
-                if c.fleet_folded_once && tip_ts < c.fleet_members_ts {
+                // Adoption gate FIRST, before any mutation: a fold lands only when its chain EXTENDS the one this device holds (or the held-chain rule picked it on a fork), never because its tip stamp is newer (security audit FGTW-03: one member stamping the tip far ahead made every later honest op read as stale, including the Remove of that member). An R2 read serving a stale pre-removal chain is a prefix of the held one and does not land. A first fold always lands.
+                if c.fleet_folded_once && !adopt {
                     crate::logf!(
-                        "FLEET: ignoring stale fold for {} (tip {} < adopted {})",
+                        "FLEET: ignoring a fold for {} that does not extend the chain we hold (tip {}, adopted {})",
                         crate::fp(&hp),
                         tip_ts,
                         c.fleet_members_ts

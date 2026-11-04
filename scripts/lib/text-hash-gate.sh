@@ -47,7 +47,11 @@ chirp/src/lib.rs 1
     local fail=0 f n rel allowed
     while IFS=: read -r f n; do
         [ -z "$f" ] && continue
-        rel="${f#"$parent"/}"
+        # photon's own tree keys as `photon/…` whatever its directory is called (a worktree beside the siblings is `photon-audit`), the siblings by their directory name.
+        case "$f" in
+            "$root"/*) rel="photon/${f#"$root"/}" ;;
+            *) rel="${f#"$parent"/}" ;;
+        esac
         allowed=$(printf '%s\n' "$baseline" | awk -v r="$rel" '$1 == r { print $2 }')
         [ -z "$allowed" ] && allowed=0
         if [ "$n" -gt "$allowed" ]; then

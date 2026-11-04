@@ -16,6 +16,17 @@ source scripts/lib/release-git.sh
 source scripts/lib/preflight.sh
 SEAM_STRICT=1 preflight_gates
 
+# The commit of every sibling path-dep crate, read HERE, the moment the strict seam gate has proved each one pushed and clean and before the snapshot freezes them (security audit UPW-012): a sibling that moves during the build must not change what the tag records. The tag message and the notes footer are written from these below.
+SIBLING_LINES=""
+SIBLING_SHORT=""
+for sib in $(grep -oE 'path = "\.\./[a-z0-9_-]+"' Cargo.toml | sed -E 's|path = "\.\./([a-z0-9_-]+)"|\1|' | sort -u); do
+    [ -d "../$sib/.git" ] || continue
+    git -C "../$sib" remote | grep -q . || continue
+    h="$(git -C "../$sib" rev-parse HEAD)"
+    SIBLING_LINES="${SIBLING_LINES}sibling $sib $h"$'\n'
+    SIBLING_SHORT="${SIBLING_SHORT} · $sib ${h:0:8}"
+done
+
 # Divergent-CMake-cache guard across the whole platform matrix (see cmake-scrub.sh): a vendored dep's cache configured under an older toolchain vintage re-configures mid-build with the install prefix reset to /usr/local (field 2026-08-31). Existence-check every triple here; the Android-specific NDK match runs again inside android-env.sh.
 source scripts/lib/cmake-scrub.sh
 for t in target/release target/debug target/*-*/release target/*-*/debug; do
@@ -318,16 +329,7 @@ if [ "$(grep -c '^SHA256_[a-z0-9_]*="[0-9a-f]\{64\}"$' /tmp/install-release.sh)"
     exit 1
 fi
 
-# WHAT THIS RELEASE WAS BUILT FROM (security audit UPW-012): the commit of every sibling path-dep crate, read now that the seam gate has proved each one pushed. The lines go into the tag's message (the record `build.sh --version N` rebuilds from), and a short form into the release notes under this version.
-SIBLING_LINES=""
-SIBLING_SHORT=""
-for sib in $(grep -oE 'path = "\.\./[a-z0-9_-]+"' Cargo.toml | sed -E 's|path = "\.\./([a-z0-9_-]+)"|\1|' | sort -u); do
-    [ -d "../$sib/.git" ] || continue
-    git -C "../$sib" remote | grep -q . || continue
-    h="$(git -C "../$sib" rev-parse HEAD)"
-    SIBLING_LINES="${SIBLING_LINES}sibling $sib $h"$'\n'
-    SIBLING_SHORT="${SIBLING_SHORT} · $sib ${h:0:8}"
-done
+# WHAT THIS RELEASE WAS BUILT FROM (security audit UPW-012): the sibling commits were read at the seam gate, before the snapshot froze them (SIBLING_LINES above). The lines go into the tag's message (the record `build.sh --version N` rebuilds from), and a short form into the release notes under this version.
 BUILT_FROM_LINE="Built from photon ${TIP_COMMIT:0:8}${SIBLING_SHORT}"
 export BUILT_FROM_LINE
 # The line sits at the end of this version's section, plain (not a bullet), so the app's what's-new reader skips it and the page shows it as a footer.

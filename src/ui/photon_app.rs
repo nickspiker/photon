@@ -2141,10 +2141,10 @@ pub struct PhotonApp {
     fleet_evt_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Off-thread contact-fleet refresh results: (contact handle_proof, current member pubkeys folded from their chain, chain-tip eagle time). Drained in tick into the matching contact's `fleet_members`, gated on the tip being fresher than the last adopted one, then `reseed_contact_pubkeys`. Lets a friend's NEW device be honoured — and a REMOVED device revoked — without waiting for our next launch.
     contact_members_rx:
-        Option<std::sync::mpsc::Receiver<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool)>>,
-    /// Sender half of the contact-fleet-refresh channel, kept alive so successive refreshes reuse one channel (the receiver is drained in tick).
+        Option<std::sync::mpsc::Receiver<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool, bool)>>,
+    /// Sender half of the contact-fleet-refresh channel, kept alive so successive refreshes reuse one channel (the receiver is drained in tick). The tuple: handle proof, members, tip stamp (display and the tripwire only), genesis, existed, and whether the read ADOPTS against the held chain (FGTW-03).
     contact_members_tx:
-        Option<std::sync::mpsc::Sender<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool)>>,
+        Option<std::sync::mpsc::Sender<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool, bool)>>,
     /// Off-thread identity-succession results: `(contact handle_proof, Some(new_genesis) | None)`. A `Some` means `SuccessorRecord::verify_for_pin` passed against the contact's pinned genesis — the drain migrates the pin to `new_genesis` and clears `identity_superseded`, so the re-founded chain re-folds. A `None` just clears the in-flight guard (no record yet, or it failed verification — the pin stays, the contact stays a stranger). See docs/identity-succession.md.
     successor_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Option<[u8; 32]>)>>,
     successor_tx: Option<std::sync::mpsc::Sender<([u8; 32], Option<[u8; 32]>)>>,

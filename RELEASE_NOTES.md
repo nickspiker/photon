@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **More hardening from the security review, across the board.** A friend's device list is now adopted because its chain grew, never because a stamp on it says it is newer; an app on a phone can no longer make Photon answer a wave or jump to a conversation by sending it an intent; the network listener checks a stranger's frame once, cheaply, before doing any heavier work on it, and no longer writes every bad packet into the log; the router discovery talks only to the real gateway; file reads, update downloads, picture decodes and recording parsers all check sizes before they allocate; the vault refuses to be opened by two programs at once; and the pairing-word, image-metadata, RAW, time-service and number-formatting libraries refuse malformed input instead of looping, panicking or over-allocating.
 
 ## v140
 - **Your other devices can no longer run commands on this one until you say so.** The bridge shell now has a switch on each computer's own Settings → Security page, off until you turn it on there; a command sent to a computer with the switch off is answered with a note saying so instead of running.

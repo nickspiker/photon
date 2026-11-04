@@ -76,7 +76,7 @@ impl FleetSealer for PhotonSealer {
 static HELD_CHAINS: std::sync::Mutex<Vec<([u8; 32], MembershipBlob)>> = std::sync::Mutex::new(Vec::new());
 
 /// Should `new` replace `old` as the held copy of one fleet's chain? Both must have folded already.
-fn prefer(new: &MembershipBlob, old: &MembershipBlob) -> bool {
+pub(crate) fn prefer(new: &MembershipBlob, old: &MembershipBlob) -> bool {
     if new.extends(old) {
         return new.ops.len() > old.ops.len();
     }
@@ -251,6 +251,21 @@ pub fn current_members_full(
 
 pub fn current_members_with_ts(handle_proof: &[u8; 32]) -> Result<(Vec<[u8; 32]>, i64), String> {
     fgtw::client::current_members_with_ts(&PhotonTransport, handle_proof)
+}
+
+/// The contact-refresh read that ADOPTS BY CHAIN EXTENSION (security audit FGTW-03): the seed's chain folded and judged against the chain this device holds for `handle_proof`, so a member who stamps the tip far in the future can no longer make every later honest op read as stale.
+/// `adopt` is the verdict the fold drain gates on: the read lands when it extends (or equals, or first-founds) the held chain, and on a fork when the held-chain rule `prefer` picks it; a lagging prefix or a different genesis never lands here (the drain's genesis pin has its own say).
+/// A read that lands is held, so the next read is judged against it.
+pub fn current_fleet_adopting(handle_proof: &[u8; 32]) -> Result<Option<(fgtw::client::FleetRead, bool)>, String> {
+    let held = held_chain(handle_proof);
+    let Some(read) = fgtw::client::current_fleet_adopting(&PhotonTransport, handle_proof, held.as_ref())? else {
+        return Ok(None);
+    };
+    let adopt = read.verdict.lands() || (matches!(read.verdict, fgtw::fleet::Adoption::Fork) && held.as_ref().is_some_and(|h| prefer(&read.chain, h)));
+    if adopt {
+        hold_chain(&read.chain);
+    }
+    Ok(Some((read, adopt)))
 }
 
 /// Publish this device's key bundle to the chain — the op that lifts the fleet's scheme floor once every member has done it. Idempotent when the chain already holds at least this bundle.

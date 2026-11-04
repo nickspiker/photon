@@ -10,6 +10,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [no reload mid-ceremony](feedback_reload_mid_ceremony.md) — HARD: never dev.sh/deploy mid-CLUTCH or mid-WAVE; check the log
 - [commit trailer](commit-trailer-built-with.md) — "Built with Claude <model>"; never Co-Authored-By
 - [Nick publishes](nick-publishes.md) — Nick initiates; when asked, deploy.sh + RELEASE_NOTES.md
+- [deploy detached](feedback_deploy_detached.md) — HARD: deploy.sh via setsid nohup + log watch, never a tool-backgrounded command (10 min cap)
 - [push after landing](push-after-landing.md) — memories live in 'Claude memories/'; commit+push with photon
 - [no private handles](no-private-handles.md) — handles never in any repo; petnames · [doctrine](project_humanitys_code.md) · [never on disk](feedback_never_store_handles.md)
 - [photon + deps only](feedback_scope_photon_and_deps.md) — HARD: never edit another project

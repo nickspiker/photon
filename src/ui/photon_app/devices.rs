@@ -527,12 +527,12 @@ impl PhotonApp {
         let mask = kp.bundle().map(|b| b.mask()).unwrap_or(fgtw::fleet::scheme::MASK_BASE);
         let sig = fgtw::pq::eggs_to_bytes(&kp.eggs(&msg, mask));
         // Approval words: three voca words from a fresh nonce, shown on THIS screen until completion; only their blake3 rides the request. The approver types what this screen shows — live contact with the departing device, the mirror of add's ceremony.
-        let base = voca::FULL.alphabet.len() as u64;
+        let base = voca::FULL.alphabet().len() as u64;
         let nonce = rand::random::<u64>() % base.pow(3);
         let mut words = voca::encode(num_bigint::BigUint::from(nonce));
         // Left-pad to exactly three words (a small nonce encodes short) — the fgtw pair idiom, capitalized zero-word.
         while fgtw::pair::pair_word_tokens(&words) < 3 {
-            let w0 = std::str::from_utf8(voca::FULL.alphabet[0]).expect("voca words are ASCII");
+            let w0 = std::str::from_utf8(voca::FULL.alphabet()[0]).expect("voca words are ASCII");
             let mut z = String::new();
             let mut cs = w0.chars();
             if let Some(c) = cs.next() {
@@ -983,10 +983,17 @@ impl PhotonApp {
         let wake = self.event_proxy.clone();
         std::thread::spawn(move || {
             for hp in handle_proofs {
-                match crate::network::fgtw::fleet::current_members_full(&hp) {
-                    Ok((members, tip_ts, genesis, existed)) => {
-                        if tx.send((hp, members, tip_ts, genesis, existed)).is_err() {
+                // Adoption by chain extension (FGTW-03): the read carries whether it lands against the chain we hold, and the drain gates on that, never on the tip's stamp.
+                match crate::network::fgtw::fleet::current_fleet_adopting(&hp) {
+                    Ok(Some((read, adopt))) => {
+                        if tx.send((hp, read.members, read.tip, read.genesis, true, adopt)).is_err() {
                             return; // app dropped the receiver
+                        }
+                    }
+                    Ok(None) => {
+                        // No chain under this slot: the drain reads `existed = false` as the identity having ended (docs/lifecycle.md D3).
+                        if tx.send((hp, Vec::new(), 0, [0u8; 32], false, false)).is_err() {
+                            return;
                         }
                     }
                     Err(e) => {
@@ -996,7 +1003,7 @@ impl PhotonApp {
                             e
                         );
                         // ERROR IS AN EDGE TOO (edges-not-timers, Nick 2026-09-08): tip_ts = -1 is the fetch-failed sentinel — the drain uses it ONLY to clear the tripwire's pursuit entry so the next stale-claim pong may re-fire (paced by ping cadence, no wall clock). existed = true so it can never read as a vanished chain; eagle times are positive, so -1 collides with nothing.
-                        if tx.send((hp, Vec::new(), -1, [0u8; 32], true)).is_err() {
+                        if tx.send((hp, Vec::new(), -1, [0u8; 32], true, false)).is_err() {
                             return;
                         }
                     }
@@ -1009,9 +1016,9 @@ impl PhotonApp {
     }
 
     /// The channel the fold drain reads (protocol.rs member_updates), created on first use — shared by the seed-fetch thread and the peer-chain adoption.
-    pub(super) fn contact_members_sender(&mut self) -> std::sync::mpsc::Sender<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool)> {
+    pub(super) fn contact_members_sender(&mut self) -> std::sync::mpsc::Sender<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool, bool)> {
         if self.contact_members_tx.is_none() {
-            let (tx, rx) = std::sync::mpsc::channel::<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool)>();
+            let (tx, rx) = std::sync::mpsc::channel::<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool, bool)>();
             self.contact_members_rx = Some(rx);
             self.contact_members_tx = Some(tx);
         }
@@ -1088,7 +1095,9 @@ impl PhotonApp {
                 if ours {
                     self.fleet_chain_store();
                 }
-                crate::log_err!(self.contact_members_sender().send((hp, members, tip, genesis, true)), "the chain's members to the contact-members drain");
+                // The chain was held by adopt_chain_bytes if the held-chain rule preferred it; it lands in the drain exactly when it is the one we now hold (FGTW-03: adoption by extension, never by tip time).
+                let adopt = crate::network::fgtw::fleet::held_chain(&hp).is_some_and(|h| h.head() == blob.head());
+                crate::log_err!(self.contact_members_sender().send((hp, members, tip, genesis, true, adopt)), "the chain's members to the contact-members drain");
                 true
             }
             Err(e) => {
