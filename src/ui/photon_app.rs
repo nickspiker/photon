@@ -2113,6 +2113,8 @@ pub struct PhotonApp {
     lan_heard_addr: Vec<([u8; 32], std::net::SocketAddr)>,
     /// Contacts whose membership chain we asked their own devices for (`fleet_req`) and have not heard back on: a second refresh for one of these goes to the seed as well — "fgtw.org only when nobody on the list answers" (Nick 2026-10-26). Cleared by the chain's arrival.
     fleet_asked: Vec<[u8; 32]>,
+    /// Unknown device keys that announced a signed transfer at us (StatusUpdate::StrangerFrame), each acted on once per session: the stale-fold edge that re-asks the seed for the contacts in `fleet_asked`. Bounded at 64, oldest out.
+    stranger_seen: Vec<[u8; 32]>,
     /// AddDevice flow: the tap-to-bind (BLE/list select) path is in flight, so the Bound result shows the "did it turn green?" confirm instead of auto-rotating (that auto path is words-match only, where the typed key IS the confirmation). Reset when the flow ends.
     add_device_bind_ble: bool,
     /// Diagnostics "Submit" flow: result of the off-thread log upload to FGTW (blocking HTTP over up to 16 MiB). `Ok(())` → "Log sent" toast; `Err` → the reason. Drained in tick.
@@ -3259,6 +3261,7 @@ impl PhotonApp {
             lan_heard: Vec::new(),
             lan_heard_addr: Vec::new(),
             fleet_asked: Vec::new(),
+            stranger_seen: Vec::new(),
             add_device_bind_ble: false,
             log_submit_rx: None,
             log_submit_tx: None,

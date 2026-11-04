@@ -404,6 +404,8 @@ pub struct ClearPtSendsRequest {
 pub enum StatusUpdate {
     /// A device we did not ping answered a ping we sent to `pinged` (a fan-out sibling of that friend, signature verified). When no contact's fold knows the responder, the fold of whoever owns `pinged` is provably stale — Emma's new device dropped Nick's MacBook as unknown for 3.5 h while it answered for his desktop (2026-10-21).
     ForeignResponder { responder: DevicePubkey, pinged: DevicePubkey },
+    /// A signed transfer announcement from a device no contact's fold contains, dropped before any parse. It is the one edge a stale fold shows from the deaf side: a contact whose only device changed keys speaks from a key we have never folded, and the mesh ask we sent went to the key that no longer exists (Brittany's phone, 2026-11-04). The UI re-asks the seed for every contact whose mesh ask stands unanswered, once per unknown key.
+    StrangerFrame { sender_pubkey: DevicePubkey },
     /// Online/offline status change
     Online {
         peer_pubkey: DevicePubkey,
@@ -5413,8 +5415,8 @@ async fn handle_pt_vsf_packet(
     src_addr: SocketAddr,
     pt: &Arc<Mutex<PTManager>>,
     socket: &Arc<crate::network::udp::UdpSocket>,
-    _status_tx: &SyncSender<StatusUpdate>,
-    _event_proxy: &OptionalEventProxy,
+    status_tx: &SyncSender<StatusUpdate>,
+    event_proxy: &OptionalEventProxy,
     contacts: &ContactPubkeys,
 ) -> Option<bool> {
     // Try to parse as PT packet (supports both header-only and section formats)
@@ -5517,6 +5519,10 @@ async fn handle_pt_vsf_packet(
                                 .map(|p| hex::encode(&p[..8]))
                                 .unwrap_or_else(|| "none".to_string())
                         );
+                        // A SIGNED announcement from an unknown key is the stale-fold edge (see StatusUpdate::StrangerFrame); an unsigned one is noise and raises nothing.
+                        if let Some(pubkey_bytes) = sender_pubkey.filter(|_| signed) {
+                            send_status_update(status_tx, StatusUpdate::StrangerFrame { sender_pubkey: DevicePubkey::from_bytes(pubkey_bytes) }, event_proxy);
+                        }
                         // Silent drop - don't send ACK, don't accept transfer
                         return Some(true);
                     }

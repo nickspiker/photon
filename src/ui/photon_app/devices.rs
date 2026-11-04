@@ -1132,6 +1132,37 @@ impl PhotonApp {
         }
     }
 
+    /// Hand OUR fleet's chain (as held) to every device of every contact we hold an address for, unsolicited: the contacts' folds of our fleet learn an add or a departure from us, now, rather than from a pong of a device they already know.
+    /// Field 2026-11-04 (Brittany's phone after its root conversion): her fleet's only device changed keys, so every contact's fold still named the old key, every frame from the new one was "sender not in contacts", and the one mesh ask for her chain went to the key that no longer existed; nothing on her side ever told them.
+    /// The receiver adopts a pushed chain by extension against the fold it holds (FGTW-03), signed by the members it already knows, so the sender's own key need not be known to it yet.
+    pub(super) fn fleet_chain_push_to_contacts(&self) {
+        let (Some(hp), Some(kp)) = (self.our_handle_proof(), self.device_keypair.as_ref()) else { return };
+        let Some(chain) = crate::network::fgtw::fleet::held_chain(&hp) else { return };
+        let Ok(bytes) = chain.to_vsf_bytes() else { return };
+        let Ok(frame) = crate::network::fgtw::protocol::build_fleet_resp_vsf(&hp, &bytes, &kp.public.to_bytes(), kp.secret.as_bytes()) else { return };
+        let mut sent = 0usize;
+        for c in self.contacts.iter().filter(|c| !c.is_sibling) {
+            let mut this = 0usize;
+            for ep in c.device_endpoints.iter().filter(|e| !c.refused_devices.contains(&e.pubkey)) {
+                let (addr, alt) = match (ep.lan(), ep.public()) {
+                    (Some(l), p) => (l, p),
+                    (None, Some(p)) => (p, None),
+                    (None, None) => continue,
+                };
+                self.send_frame_direct(frame.clone(), ep.pubkey, addr, alt);
+                this += 1;
+            }
+            if this == 0 {
+                if let (Some(dev), Some((addr, alt))) = (c.device_key(), c.race_addrs()) {
+                    self.send_frame_direct(frame.clone(), dev, addr, alt);
+                    this = 1;
+                }
+            }
+            sent += this;
+        }
+        crate::logf!("FLEET: pushing our chain ({} op(s), {} B) to {} contact device(s)", chain.ops.len(), bytes.len(), sent);
+    }
+
     /// Persist the chain we hold for OUR fleet to the vault (`fleet_chain`), so a device that cannot reach the seed still serves its fleet's chain after a relaunch.
     pub(super) fn fleet_chain_store(&self) {
         let (Some(storage), Some(session)) = (self.storage.as_ref(), self.session.as_ref()) else { return };

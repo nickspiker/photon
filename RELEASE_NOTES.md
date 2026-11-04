@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **A friend whose only device changed its key is recognised again.** A device that moves to a new key, or a fleet that adds one, now hands its updated device list to every friend's devices straight away, and a computer that hears from a key it does not know re-checks the friend's list with the directory; before, the friend's messages and group joins were silently refused as a stranger's until something else happened to refresh the list.
 - **More hardening from the security review, across the board.** A friend's device list is now adopted because its chain grew, never because a stamp on it says it is newer; an app on a phone can no longer make Photon answer a wave or jump to a conversation by sending it an intent; the network listener checks a stranger's frame once, cheaply, before doing any heavier work on it, and no longer writes every bad packet into the log; the router discovery talks only to the real gateway; file reads, update downloads, picture decodes and recording parsers all check sizes before they allocate; the vault refuses to be opened by two programs at once; and the pairing-word, image-metadata, RAW, time-service and number-formatting libraries refuse malformed input instead of looping, panicking or over-allocating.
 
 ## v140

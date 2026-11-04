@@ -370,6 +370,8 @@ impl PhotonApp {
                     // The extended chain goes to the fleet NOW over the mesh — every sibling (so their folds take the newcomer in) and the newcomer itself at the address its LAN beacon came from (its green). The seed's copy, if it took, is the mirror.
                     let newcomer: Vec<([u8; 32], std::net::SocketAddr)> = self.lan_heard_addr.iter().filter(|(k, _)| *k == pk).copied().collect();
                     self.fleet_chain_push(&newcomer);
+                    // And to every contact's devices, so their folds take the newcomer in before it ever speaks to them (field 2026-11-04).
+                    self.fleet_chain_push_to_contacts();
                     self.fleet_chain_store();
                     let name = self
                         .session

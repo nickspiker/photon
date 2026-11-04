@@ -38,6 +38,8 @@ impl PhotonApp {
         let parked = CHAIN_PUSH.lock().ok().and_then(|mut g| g.take());
         if let Some(done) = parked {
             self.fleet_chain_push(&[]);
+            // The contacts too: a key move on a one-device fleet leaves no device they know to pong the new tip at them (field 2026-11-04).
+            self.fleet_chain_push_to_contacts();
             self.fleet_chain_store();
             crate::log_err!(done.send(()), "the chain-push answer to the root conversion worker");
         }

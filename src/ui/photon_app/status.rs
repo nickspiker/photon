@@ -352,6 +352,7 @@ impl PhotonApp {
                 StatusUpdate::BindReqReceived { .. } => "BindReqReceived",
                 StatusUpdate::FanoutReceived { .. } => "FanoutReceived",
                 StatusUpdate::FleetChainReceived { .. } => "FleetChainReceived",
+                StatusUpdate::StrangerFrame { .. } => "StrangerFrame",
                 StatusUpdate::FocusClaimReceived { .. } => "FocusClaimReceived",
                 StatusUpdate::FriendKnockReceived { .. } => "FriendKnockReceived",
                 StatusUpdate::AttentionReceived { .. } => "AttentionReceived",
@@ -474,6 +475,8 @@ impl PhotonApp {
         let mut fetch_unreachable_after: Vec<(Option<std::net::SocketAddr>, Option<[u8; 32]>)> = Vec::new();
         // Friend folds proven stale by a ForeignResponder (an unknown device answered for one of their devices): refreshed after the drain.
         let mut stale_folds_after: Vec<[u8; 32]> = Vec::new();
+        // Unknown keys that announced a signed transfer at us (StrangerFrame): each new one re-asks the seed for every contact whose mesh ask stands unanswered, after the drain.
+        let mut strangers_after: Vec<[u8; 32]> = Vec::new();
         let mut wrong_responders_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
         let mut self_atom_wanted_after = false;
         // Wi-Fi Direct credential provisioning, collected on came-online edges (after releasing the checker borrow): the elected-GO side mints/re-offers the pair's group credential once per session (docs/offgrid.md).
@@ -4324,6 +4327,11 @@ impl PhotonApp {
                         fleet_chains_after.push((handle_proof, chain, sender_pubkey.key));
                     }
                 }
+                StatusUpdate::StrangerFrame { sender_pubkey } => {
+                    if !self.stranger_seen.contains(&sender_pubkey.key) && !strangers_after.contains(&sender_pubkey.key) {
+                        strangers_after.push(sender_pubkey.key);
+                    }
+                }
                 // A joining device's request for OUR fleet: kept (fresh ones only) so the candidate is on the AddDevice screen the moment the human opens it — the request arrives whenever the joiner hears us beacon, not when the screen happens to be up. The human at that screen is still the gate, the words the selector; nothing binds without them.
                 StatusUpdate::BindReqReceived { handle_proof, req, sender_addr, .. } => {
                     if self.our_handle_proof() == Some(handle_proof) {
@@ -5645,6 +5653,18 @@ impl PhotonApp {
             stale_folds_after.sort_unstable();
             stale_folds_after.dedup();
             self.spawn_contact_fleet_refresh(stale_folds_after);
+        }
+        // THE STALE-FOLD EDGE FROM THE DEAF SIDE (field 2026-11-04): an unknown key that announces a signed transfer at us, once per key per session, re-asks the seed for every contact whose mesh ask we never heard back on — the ask went to a key that no longer exists, and nothing else would ever fall to the seed.
+        for stranger in strangers_after {
+            if self.stranger_seen.len() >= 64 {
+                self.stranger_seen.remove(0);
+            }
+            self.stranger_seen.push(stranger);
+            if !self.fleet_asked.is_empty() {
+                crate::logf!("FLEET: a signed frame from unknown device {} — asking the seed for the {} contact(s) whose chain the mesh never sent", crate::fp(&stranger), self.fleet_asked.len());
+                let standing = self.fleet_asked.clone();
+                self.spawn_contact_fleet_refresh(standing);
+            }
         }
 
         for (hash, from) in fetch_none_after {
