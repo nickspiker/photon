@@ -1668,12 +1668,20 @@ fn derive_device_keypair(fingerprint: &[u8]) -> Keypair {
 /// The choice is by which device vault is on disk: new root's vault present, or no vault at all, selects Widevine; only the old root's vault present selects the legacy root and logs that a conversion is owed.
 /// Logs carry BLAKE3 prefixes only, never a root: the raw values are hardware identifiers and the log leaves the phone.
 #[cfg(target_os = "android")]
-fn select_android_root(java_fingerprint: &[u8]) -> Vec<u8> {
+/// `None` when no root can be read that this phone has founded a vault under: a fresh install whose Widevine read failed mints NO identity, since the only root left would be the legacy ANDROID_ID, which every converted fleet has already departed (Jeff's reinstall, 2026-11-04: the phone came up as its departed key and read as a new device). The service retries the init at its next start.
+fn select_android_root(_java_fingerprint: &[u8]) -> Option<Vec<u8>> {
     use tohu::device::AndroidRoot;
     let prefix = |bytes: &[u8]| hex::encode(&blake3::hash(bytes).as_bytes()[..4]);
     let secret_of = |root: &[u8]| *derive_device_keypair(root).secret.as_bytes();
     // The plate (Widevine ID ‖ certificate, no ANDROID_ID) is logged beside the key root: it is what stays the same thru a wipe while the key rotates.
-    let widevine = tohu::device::widevine_root_parts().map(|(id, cert, android_id)| (prefix(&[id.as_slice(), cert.as_slice()].concat()), [id, cert, android_id].concat()));
+    let read_widevine = || tohu::device::widevine_root_parts().map(|(id, cert, android_id)| (prefix(&[id.as_slice(), cert.as_slice()].concat()), [id, cert, android_id].concat()));
+    let mut widevine = read_widevine();
+    // A fresh MediaDrm can refuse its first construction after an install while the CDM settles; a few immediate re-reads cost microseconds and are not a timer.
+    let mut tries = 0u32;
+    while widevine.is_err() && tries < (1 << 2) {
+        tries += 1;
+        widevine = read_widevine();
+    }
     let legacy = tohu::device::android_id();
     let chosen = match (&widevine, &legacy) {
         (Ok((id_prefix, w)), Ok(l)) => {
@@ -1693,25 +1701,30 @@ fn select_android_root(java_fingerprint: &[u8]) -> Vec<u8> {
             }
         }
         (Err(e), Ok(l)) => {
-            error!("device root: Widevine unreadable ({e}); using the legacy root {}", prefix(l));
-            AndroidRoot::LegacyAndroidId
+            // The legacy root is only ever a vault's root, never a fresh identity's: with a vault under it the conversion pin applies and the phone runs on it until Widevine reads; without one, nothing is minted.
+            let old_present = crate::storage::device_vault_present(crate::storage::APP, &secret_of(l));
+            if old_present {
+                error!("device root: Widevine unreadable ({e}); the vault founded under ANDROID_ID {} keeps the legacy root until the next start reads Widevine", prefix(l));
+                AndroidRoot::LegacyAndroidId
+            } else {
+                error!("device root: Widevine unreadable ({e}) and no vault under ANDROID_ID {}; no identity is minted under a root this phone would abandon — the service retries at its next start", prefix(l));
+                return None;
+            }
         }
         (Ok((id_prefix, w)), Err(e)) => {
             warn!("device root: ANDROID_ID unreadable ({e}); Widevine {} (plate {id_prefix})", prefix(w));
             AndroidRoot::Widevine
         }
         (Err(we), Err(le)) => {
-            error!("device root: both unreadable (Widevine: {we}; ANDROID_ID: {le}); falling back to the Java-pushed fingerprint");
-            // tohu's own derivations (the session capsules) then fail on the read, not on a missing selection.
-            tohu::device::android_select_root(AndroidRoot::LegacyAndroidId);
-            return java_fingerprint.to_vec();
+            error!("device root: both unreadable (Widevine: {we}; ANDROID_ID: {le}); no identity is minted — the service retries at its next start");
+            return None;
         }
     };
     tohu::device::android_select_root(chosen);
-    match chosen {
+    Some(match chosen {
         AndroidRoot::Widevine => widevine.expect("checked Ok above").1,
         AndroidRoot::LegacyAndroidId => legacy.expect("checked Ok above"),
-    }
+    })
 }
 
 /// Network context owned by the foreground service. Persists across Activity lifecycle changes; holds the device keypair and peer store. The Activity creates its own HandleQuery on demand via the shared transport.
@@ -1729,7 +1742,8 @@ pub struct NetworkContext {
 
 #[cfg(target_os = "android")]
 impl NetworkContext {
-    pub fn new(fingerprint: &[u8], data_dir: &str, shadow_dir: &str) -> Self {
+    /// `None` when the phone's device root cannot be read (see `select_android_root`): no keypair, no network, and the service tries again at its next start.
+    pub fn new(fingerprint: &[u8], data_dir: &str, shadow_dir: &str) -> Option<Self> {
         // Set global Android data directory for avatar storage
         crate::avatar::set_android_data_dir(data_dir.to_string());
         // Hand the storage layer both ring dirs so the dual-ring vault can place primary on internal and shadow on external — see [storage::flat::set_android_vault_dirs].
@@ -1752,7 +1766,7 @@ impl NetworkContext {
 
         // The device root is the Widevine device ID ‖ our signing certificate, read locally from the TEE: it survives a factory reset, which ANDROID_ID did not (verified on the Pixel 8 Pro 2026-11-02, tohu/docs/oracle-hardening.md).
         // tohu reads both candidates itself via the JavaVM handed to it in JNI_OnLoad. Fall back to the Java-pushed `fingerprint` only if every read errors, so a wrong JNI path logs loudly instead of bricking the app.
-        let oracle = select_android_root(fingerprint);
+        let oracle = select_android_root(fingerprint)?;
         let keypair = derive_device_keypair(&oracle);
         let signing_bundle = crate::network::fgtw::fleet::SigningBundle::derive(&oracle);
         debug_assert_eq!(
@@ -1768,13 +1782,13 @@ impl NetworkContext {
 
         let peer_store = Arc::new(Mutex::new(PeerStore::new()));
 
-        Self {
+        Some(Self {
             keypair,
             signing_bundle,
             peer_store,
             data_dir: data_dir.to_string(),
             shadow_dir: shadow_dir.to_string(),
-        }
+        })
     }
 
     /// Poll for network events (called periodically from service background thread)
@@ -1879,12 +1893,11 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetwor
         },
     );
 
-    let context = Box::new(NetworkContext::new(
-        &fingerprint_bytes,
-        &data_dir_str,
-        &shadow_dir_str,
-    ));
-    Box::into_raw(context) as jlong
+    match NetworkContext::new(&fingerprint_bytes, &data_dir_str, &shadow_dir_str) {
+        Some(context) => Box::into_raw(Box::new(context)) as jlong,
+        // No device root could be read: the service keeps networkPtr at 0 and initialises again at its next start.
+        None => 0,
+    }
 }
 
 #[cfg(target_os = "android")]

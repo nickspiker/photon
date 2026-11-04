@@ -383,7 +383,8 @@ class PhotonConnectionService : Service() {
                     PhotonLog.w(TAG, "FCM token fetch failed (no Play services?)", e)
                 }
             } else {
-                PhotonLog.e(TAG, "Failed to initialize network")
+                // The native side refused to mint an identity (the device root was unreadable, see select_android_root); networkPtr stays 0 and the next service start tries again.
+                PhotonLog.e(TAG, "Failed to initialize network — the device root was not readable; retrying at the next start")
             }
         }
 
