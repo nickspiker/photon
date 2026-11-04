@@ -11,6 +11,8 @@ preflight_gates() {
     vsf_gate || exit 1
     source "$d/migration-gate.sh"
     migration_gate || exit 1
+    source "$d/text-hash-gate.sh"
+    text_hash_gate || exit 1
     source "$d/arch-gate.sh"
     arch_gate || exit 1
     source "$d/artifact-gate.sh"

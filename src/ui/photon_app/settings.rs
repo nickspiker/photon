@@ -520,6 +520,7 @@ impl PhotonApp {
             cb.set_checked(self.wave_hold);
         }
         self.load_ideas_ticker();
+        self.load_bridge_shell();
         // The remembered mic / speaker / camera picks (device-local): the next wave and beam open them.
         self.apply_device_picks();
         // Settings → Beam (per device unless it follows the fleet) into the senders.

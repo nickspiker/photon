@@ -151,6 +151,13 @@ impl PhotonApp {
         let tx = self.img_view_tx.clone();
         queue_job(&self.seal_job_tx, move || {
             let report = |p: f32| frac.store(p.to_bits(), std::sync::atomic::Ordering::Relaxed);
+            // The poison mark (storage::decode_mark): a row whose decode ended the process last time is refused here, not decoded again into the same death.
+            if crate::storage::decode_poisoned(&hash) {
+                crate::logf!("attach: viewer decode of {}… skipped — a previous decode of this row did not finish (poison mark); the row stays as its preview", hex::encode(&hash[..4]));
+                crate::log_err!(tx.send((hash, Err("a previous decode of this picture ended photon; it is not decoded again".to_string()))), "hand a viewer decode to the UI");
+                return;
+            }
+            let marked = crate::storage::decode_mark(&hash);
             let out: Result<opsin::view::Loaded, String> = (|| {
                 let bytes = crate::storage::blob_load(&seed, &hash).ok_or_else(|| "the blob would not open".to_string())?;
                 let keep_decode = !cfg!(target_os = "android");
@@ -174,6 +181,9 @@ impl PhotonApp {
                 let dec = opsin::convert::ingest_linear_vsf_rgb(w, h, planar, "assumed_srgb (image crate)");
                 opsin::view::Loaded::from_decoded(dec, None, &name, bytes.len() as u64, None, keep_decode)
             })();
+            if marked {
+                crate::storage::decode_clear(&hash);
+            }
             report(1.0);
             match &out {
                 Ok(l) => crate::logf!("attach: original decoded for the viewer — {}×{}", l.dims().0, l.dims().1),

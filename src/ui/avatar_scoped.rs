@@ -151,7 +151,7 @@ pub fn fetch_pinned_stamped(kek_secret: &[u8; 32], purpose: &[u8], signers: &[[u
     if !accept(slot_signed, content_signed, signers, newest) {
         return None;
     }
-    let stamp = content_signed?.stamp;
+    let stamp = content_signed.stamp;
     record_seen(purpose, stamp, storage);
     Some((plain, stamp))
 }
@@ -244,12 +244,8 @@ pub fn recover_own(
     crate::ui::avatar::load_cached_avatar_from_seed(identity_seed, storage).map(|(_, p)| p)
 }
 
-/// The reader's verdict on one network fetch (see [`fetch_pinned`]): both parts signed, both by a publisher device, and the content's stamp not older than the newest accepted.
-fn accept(slot: Option<Signed>, content: Option<Signed>, signers: &[[u8; 32]], newest: Option<i64>) -> bool {
-    let (Some(slot), Some(content)) = (slot, content) else {
-        crate::log("SCOPED: refused a bare (unsigned, pre-envelope) avatar from the network");
-        return false;
-    };
+/// The reader's verdict on one network fetch (see [`fetch_pinned`]): both parts signed by a publisher device, and the content's stamp not older than the newest accepted. A bare pre-envelope object never reaches here: fgtw refuses it at the open.
+fn accept(slot: Signed, content: Signed, signers: &[[u8; 32]], newest: Option<i64>) -> bool {
     if !signers.contains(&slot.signer) || !signers.contains(&content.signer) {
         crate::log("SCOPED: refused an avatar signed by a device that is not the publisher's");
         return false;
@@ -347,20 +343,17 @@ pub fn upgrade_in_place(
 mod tests {
     use super::*;
 
-    /// The reader's verdict: a publisher device's signature passes, anyone else's does not, a rollback is refused, and a bare object never passes from the network.
+    /// The reader's verdict: a publisher device's signature passes, anyone else's does not, a rollback is refused. (A bare object never reaches the verdict: fgtw refuses it at the open, pinned by its own tests.)
     #[test]
-    fn readers_pin_the_signer_refuse_rollback_and_refuse_the_bare_form() {
+    fn readers_pin_the_signer_and_refuse_rollback() {
         let publisher = [1u8; 32];
         let friend = [2u8; 32];
-        let by = |signer: [u8; 32], stamp: i64| Some(Signed { signer, stamp });
+        let by = |signer: [u8; 32], stamp: i64| Signed { signer, stamp };
         assert!(accept(by(publisher, 10), by(publisher, 10), &[publisher], None));
         assert!(accept(by(publisher, 10), by(publisher, 10), &[publisher], Some(10)));
         assert!(!accept(by(publisher, 10), by(friend, 10), &[publisher], None), "a reader holding the data key cannot stand in for the publisher");
         assert!(!accept(by(friend, 10), by(publisher, 10), &[publisher], None));
         assert!(!accept(by(publisher, 9), by(publisher, 9), &[publisher], Some(10)), "rollback");
-        assert!(!accept(None, None, &[publisher], None), "bare, even before any signed object");
-        assert!(!accept(by(publisher, 11), None, &[publisher], None), "half bare");
-        assert!(!accept(None, by(publisher, 11), &[publisher], None), "half bare");
         assert!(!accept(by(publisher, 10), by(publisher, 10), &[], None), "no known publisher device, nothing passes");
     }
 

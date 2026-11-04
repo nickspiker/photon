@@ -2745,6 +2745,8 @@ pub struct PhotonApp {
     public_gripes_known: bool,
     /// The ideas ticker (`ideas.ticker`, DEVICE-LOCAL, default OFF — Nick 2026-10-28: "a ticker that you can subscribe to but is off by default"): a new public idea or fix raises a notification here.
     ideas_ticker: bool,
+    /// The bridge shell's host-side switch (`bridge.shell`, DEVICE-LOCAL, default OFF — security audit UPW-027, Nick 2026-11-03): whether a sibling's commands run on THIS device. Set on this device's own Security page, never synced, so a compromised member can never widen what a host offers (docs/bridge.md Law 3, which the shell was the one verb exempt from).
+    bridge_shell: bool,
     /// Ideas-page "Tell me when someone sends an idea" — the ticker switch.
     settings_ideas_ticker_check: Option<fluor::widgets::Checkbox>,
     /// Fleet page inline rename: the device being renamed + its textbox. Some = that card's name band renders the box; Enter commits to the fleet-linked `fleet.name.<pkhex>` setting, Esc cancels.
@@ -2935,6 +2937,7 @@ impl PhotonApp {
         Self {
             start_in_background,
             resident_mode,
+            bridge_shell: false,
             published_bell: None,
             #[cfg(not(target_os = "android"))]
             tray_spawned: false,

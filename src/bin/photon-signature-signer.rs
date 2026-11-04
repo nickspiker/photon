@@ -26,44 +26,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut binary_data = fs::read(binary_path)?;
     println!("  Binary size: {} bytes", binary_data.len());
 
-    // Load private key - check env var first, then try known locations
-    let private_key_path = if let Ok(env_path) = std::env::var("PHOTON_SIGNING_KEY") {
-        let p = PathBuf::from(&env_path);
-        if !p.exists() {
-            eprintln!(
-                "\nERROR: PHOTON_SIGNING_KEY set but file not found: {}",
-                env_path
-            );
+    // The release key: $PHOTON_SIGNING_KEY, else the ONE location photon-keygen writes to. The ladder of synced and home folders this once walked is gone (security audit NET-11): the first file found on a ladder is whichever copy leaked last.
+    let private_key_path = match std::env::var("PHOTON_SIGNING_KEY") {
+        Ok(env_path) => PathBuf::from(env_path),
+        Err(_) => PathBuf::from("/mnt/Harbor/Code/keys/photon-signing-key"),
+    };
+    if !private_key_path.exists() {
+        eprintln!("\nERROR: release signing key not found at {} — set PHOTON_SIGNING_KEY or run photon-keygen.", private_key_path.display());
+        std::process::exit(1);
+    }
+    // A key another user on the host can read is not a secret; refuse to sign with it rather than sign quietly with a key that may already be someone else's too.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = fs::metadata(&private_key_path)?.permissions().mode() & 0o777;
+        if mode & 0o077 != 0 {
+            eprintln!("\nERROR: {} is mode {:o}; the release key must be 0600 (chmod 600 it, and check who had it).", private_key_path.display(), mode);
             std::process::exit(1);
         }
-        p
-    } else {
-        let home = std::env::var("HOME").unwrap_or_default();
-        let key_locations = [
-            "/mnt/Harbor/Code/keys/photon-signing-key".to_string(),
-            "/mnt/Chiton/MEGA/Code/keys/photon-signing-key".to_string(),
-            "/home/nick/MEGA/code/keys/photon-signing-key".to_string(),
-            format!("{}/MEGA/Code/keys/photon-signing-key", home),
-            format!("{}/Code/keys/photon-signing-key", home),
-            format!(
-                "{}/Library/Application Support/photon/photon-signing-key",
-                home
-            ),
-        ];
-
-        match key_locations.iter().map(PathBuf::from).find(|p| p.exists()) {
-            Some(path) => path,
-            None => {
-                eprintln!("\nERROR: Private key not found!");
-                eprintln!("  Searched:");
-                for loc in &key_locations {
-                    eprintln!("    {}", loc);
-                }
-                eprintln!("\nSet PHOTON_SIGNING_KEY=/path/to/key or place key in one of the above locations.");
-                std::process::exit(1);
-            }
-        }
-    };
+    }
 
     let private_key_bytes = fs::read(&private_key_path)?;
     let signing_key = SigningKey::from_bytes(

@@ -115,23 +115,20 @@ fn main() {
     }
     rows.sort_by(|a, b| (&a.platform, &a.arch).cmp(&(&b.platform, &b.arch)));
 
-    // Signing key: $PHOTON_SIGNING_KEY first, then the same known-locations ladder photon-signature-signer walks — the two tools must find the ONE release key identically or a publish half-succeeds (binary signed, manifest not).
-    let key_path = std::env::var("PHOTON_SIGNING_KEY").ok().or_else(|| {
-        let home = std::env::var("HOME").unwrap_or_default();
-        [
-            "/mnt/Harbor/Code/keys/photon-signing-key".to_string(),
-            "/mnt/Chiton/MEGA/Code/keys/photon-signing-key".to_string(),
-            "/home/nick/MEGA/code/keys/photon-signing-key".to_string(),
-            format!("{home}/MEGA/Code/keys/photon-signing-key"),
-            format!("{home}/Code/keys/photon-signing-key"),
-            format!("{home}/Library/Application Support/photon/photon-signing-key"),
-        ]
-        .into_iter()
-        .find(|p| std::path::Path::new(p).exists())
-    });
-    let key_path = key_path.unwrap_or_else(|| {
-        fail("release signing key not found — set PHOTON_SIGNING_KEY or place it in a known location (see photon-signature-signer)")
-    });
+    // Signing key: $PHOTON_SIGNING_KEY, else the ONE location photon-keygen writes to — the same rule photon-signature-signer applies, so the two tools find the one release key identically or a publish half-succeeds (binary signed, manifest not). The ladder of synced and home folders is gone (security audit NET-11).
+    let key_path = std::env::var("PHOTON_SIGNING_KEY").unwrap_or_else(|_| "/mnt/Harbor/Code/keys/photon-signing-key".to_string());
+    if !std::path::Path::new(&key_path).exists() {
+        fail(&format!("release signing key not found at {key_path} — set PHOTON_SIGNING_KEY or run photon-keygen"));
+    }
+    // A key another user on the host can read is not a secret; refuse rather than sign with it.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&key_path).map(|m| m.permissions().mode() & 0o777).unwrap_or_else(|e| fail(&format!("key metadata: {e}")));
+        if mode & 0o077 != 0 {
+            fail(&format!("{key_path} is mode {mode:o}; the release key must be 0600"));
+        }
+    }
     let key_bytes = std::fs::read(&key_path).unwrap_or_else(|e| fail(&format!("key read: {e}")));
     let key: [u8; 32] = match key_bytes.as_slice().try_into() {
         Ok(k) => k,

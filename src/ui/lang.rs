@@ -731,6 +731,11 @@ pub enum Msg<'a> {
     /// KILL (Nick 2026-09-10): one tap drops the identity and ends the process this instant; the vault stays.
     SecurityKill,
     SecurityKillHint,
+    /// The bridge shell's host-side switch (Nick 2026-11-03, security audit UPW-027): default OFF, set on this device only, never synced — a lost phone must not be a shell on every computer you own.
+    SecurityShell { on: bool },
+    SecurityShellHint,
+    /// What the operator sees when a host whose switch is off receives a command.
+    BridgeShellOff,
     SecurityRevoke { armed: bool },
     SecurityRevokeHint,
     /// Why Revoke is dead on a fleet of one — shown IN PLACE of the normal hint, so the greying always carries its reason.

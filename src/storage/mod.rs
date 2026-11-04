@@ -648,6 +648,40 @@ fn blob_present_probe(v: &std::sync::Arc<FlatStorage>, addr: &[u8; 32], content_
     }
 }
 
+/// The decode poison mark (security audit UPW-010, Nick 2026-11-03: abort stays, so a decoder bug on a contact-sent row ends the process): a worker writes this mark into the vault before it hands a row's bytes to an in-process decoder and clears it after, so a row whose decode killed photon last launch is found marked at the next one and skipped instead of killing it again.
+/// Vault-only (Rule -1: no new on-disk location), one byte under a per-row address, written and cleared on the decoding worker, never the UI thread.
+pub fn decode_poison_key(content_hash: &[u8; 32]) -> [u8; 32] {
+    vault_key("decode-poison", content_hash)
+}
+
+/// Mark `content_hash` as being decoded right now; `false` when the vault is not open, in which case the caller decodes unguarded rather than not at all.
+pub fn decode_mark(content_hash: &[u8; 32]) -> bool {
+    let Some(vault) = device_vault_if_open() else {
+        return false;
+    };
+    match vault.write_addr(&decode_poison_key(content_hash), &[1u8]) {
+        Ok(_) => true,
+        Err(e) => {
+            crate::logf!("decode: could not write the poison mark: {}", e);
+            false
+        }
+    }
+}
+
+/// The decode of `content_hash` finished, however it ended: the mark goes.
+pub fn decode_clear(content_hash: &[u8; 32]) {
+    if let Some(vault) = device_vault_if_open() {
+        if let Err(e) = vault.delete_addr(&decode_poison_key(content_hash)) {
+            crate::logf!("decode: could not clear the poison mark: {}", e);
+        }
+    }
+}
+
+/// Did a decode of `content_hash` start and never finish, that is, kill the process? Such a row is skipped, and the skip is logged by the caller so the row can be found and removed.
+pub fn decode_poisoned(content_hash: &[u8; 32]) -> bool {
+    device_vault_if_open().is_some_and(|v| matches!(v.read_addr(&decode_poison_key(content_hash)), Ok(Some(_))))
+}
+
 /// Load an attachment blob from the vault, verified after the vault's own AEAD. A chunked blob is rebuilt from its chunks (RAM-sized callers only — recordings and small files; Save streams thru blob_write_file instead). None = not held locally.
 /// Asked by a wrapper hb it returns the wrapper document; asked by a RAW hash whose content is held wrapped (storage/wrapped.rs) it follows the alias, verifies the wrapper and returns the unwrapped original — so every consumer that loads by a row's raw hash keeps working unchanged.
 pub fn blob_load(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<Vec<u8>> {

@@ -86,6 +86,15 @@ release_advance_main() {
             # RELEASE NOTES roll on main (2026-09-09): the section the release just shipped takes its number and a fresh Upcoming opens above it — the same edit the snapshot build saw, now landed where the next notes get written.
             if [ -n "$ship" ] && [ -f RELEASE_NOTES.md ] && grep -q "^## Upcoming$" RELEASE_NOTES.md; then
                 sed -i "0,/^## Upcoming$/s//## Upcoming\n\n## v${ship}/" RELEASE_NOTES.md
+                # The "Built from …" footer deploy.sh put under this version in the build tree (BUILT_FROM_LINE in its environment) lands on main too, at the end of the section.
+                if [ -n "${BUILT_FROM_LINE:-}" ]; then
+                    awk -v line="$BUILT_FROM_LINE" -v head="## v${ship}" '
+                        $0 == head { inside = 1; print; next }
+                        inside && /^## / { print line; print ""; inside = 0 }
+                        { print }
+                        END { if (inside) { print line } }
+                    ' RELEASE_NOTES.md > RELEASE_NOTES.md.new && mv RELEASE_NOTES.md.new RELEASE_NOTES.md
+                fi
                 git add RELEASE_NOTES.md
             fi
             git add Cargo.toml Cargo.lock

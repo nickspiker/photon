@@ -2,11 +2,16 @@
 
 use super::*;
 
-/// Work item for the off-thread bridge executor: run a command in a sibling's persistent shell, or reset (kill) that sibling's shell so the next command starts fresh.
+/// The device-local setting behind the host's Shell switch (see `set_bridge_shell`).
+const BRIDGE_SHELL_KEY: &str = "bridge.shell";
+
+/// Work item for the off-thread bridge executor: run a command in a sibling's persistent shell, answer a command with the host's refusal (Shell off), or reset (kill) that sibling's shell so the next command starts fresh.
 #[cfg(all(unix, not(target_os = "android")))]
 pub(super) enum BridgeJob {
     /// (contact id, device, command text, the command row's eagle_time — the target streamed output frames reference).
     Run(ContactId, [u8; 32], String, i64),
+    /// (contact id, device, the command row's eagle_time): the host's Shell switch is off, so the row is answered with the refusal and nothing runs.
+    Refuse(ContactId, [u8; 32], i64),
     Reset([u8; 32]),
 }
 
@@ -75,7 +80,7 @@ fn spawn_bridge_worker(
     fg: BridgeFgMap,
     cwds: BridgeCwdMap,
     wake: Option<std::sync::Arc<dyn WakeSender<PhotonEvent>>>,
-) -> std::sync::mpsc::Sender<(ContactId, String, i64)> {
+) -> std::sync::mpsc::Sender<(ContactId, Option<String>, i64)> {
     // Append `chunk` to the command's unsent-delta buffer (creating it on first output), bounding memory by trimming the FRONT with an explicit dropped-byte count. Wake only on the empty→occupied edge so a spewing build can't flood the event loop — the UI drain reads the buffer at its own pace.
     fn push_delta(
         partials: &std::sync::Mutex<crate::linear_map::LinearMap<ContactId, BridgeEmit>>,
@@ -107,13 +112,19 @@ fn spawn_bridge_worker(
         }
         fresh
     }
-    let (tx, rx) = std::sync::mpsc::channel::<(ContactId, String, i64)>();
+    // A command of `None` is one the host's Shell switch refused: the row is answered with the refusal and no shell is ever spawned for it.
+    let (tx, rx) = std::sync::mpsc::channel::<(ContactId, Option<String>, i64)>();
     let spawned = std::thread::Builder::new()
         .name("bridge-shell".to_string())
         .spawn(move || {
             let mut shell: Option<BridgeShell> = None;
             let mut last_cwd = String::new();
             while let Ok((contact, cmd, ts)) = rx.recv() {
+                let Some(cmd) = cmd else {
+                    push_delta(&partials, contact, ts, 1, &tr(Msg::BridgeShellOff), Some(-1), "", "");
+                    bridge_wake(&wake);
+                    continue;
+                };
                 if shell.is_none() {
                     match BridgeShell::spawn() {
                         Ok(s) => {
@@ -416,15 +427,48 @@ impl PhotonApp {
     }
 
     /// HOST role, chat transport: a NEW command arrived as an ordinary chat message in the sibling `ci`'s conversation — dispatch it to the OFF-THREAD bridge executor, which runs it in that sibling's PERSISTENT shell and posts the raw output back for `drain_bridge_output` to reply with (typed RefKind::BridgeOut so it renders but never re-runs). Running the shell inline froze the host's event loop for the command's whole duration, stalling the ACK it owes the operator (field 2026-08-22). ONE shell per sibling, spawned on first command and reused after so `cd`/env/state persist like a real session; the executor thread OWNS the shells so nothing blocks the UI.
+    /// With the host's Shell switch off (the default) the command is never run: the executor answers the row with the refusal text instead, so the operator reads WHY at the terminal rather than waiting on silence.
     #[cfg(all(unix, not(target_os = "android")))]
     pub(super) fn run_bridge_command_chat(&mut self, ci: usize, cmd: &str, cmd_ts: i64) {
         let Some((contact, dev)) = self.contacts.get(ci).and_then(|c| Some((c.id, c.device_key()?))) else {
             return;
         };
         self.ensure_bridge_exec();
+        let job = if self.bridge_shell {
+            BridgeJob::Run(contact, dev, cmd.to_string(), cmd_ts)
+        } else {
+            crate::log("BRIDGE: a command arrived with Shell off on this host — refused, not run");
+            BridgeJob::Refuse(contact, dev, cmd_ts)
+        };
         if let Some(tx) = self.bridge_cmd_tx.as_ref() {
-            crate::log_err!(tx.send(BridgeJob::Run(contact, dev, cmd.to_string(), cmd_ts)), "the bridge command to its executor");
+            crate::log_err!(tx.send(job), "the bridge command to its executor");
         }
+    }
+
+    /// The Shell switch (`bridge.shell`): device-local, default off, flipped from this device's own Security page.
+    pub(super) fn set_bridge_shell(&mut self, on: bool) {
+        self.bridge_shell = on;
+        let now = vsf::eagle_time_oscillations();
+        if self.ensure_fleet_settings() {
+            let fs = self.fleet_settings.as_mut().unwrap();
+            if fs.linked(BRIDGE_SHELL_KEY) {
+                fs.set_link(BRIDGE_SHELL_KEY, false, now);
+            }
+            if fs.set(BRIDGE_SHELL_KEY, vsf::VsfType::u0(on), now) {
+                crate::logf!("SETTINGS: {} = {} (device-local)", BRIDGE_SHELL_KEY, on);
+                self.persist_and_push_settings();
+            }
+        }
+    }
+
+    /// The Shell switch, read at session start: absent = off.
+    pub(super) fn load_bridge_shell(&mut self) {
+        self.bridge_shell = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.device_local(BRIDGE_SHELL_KEY))
+            .and_then(crate::storage::fleet_settings::as_bool)
+            .unwrap_or(false);
     }
 
     /// A BridgeCtl row arrived (the operator pressed Stop): signal the in-flight command's descendant tree — never bash, so the session and its cwd survive the interrupt. A late arrival after completion finds an empty tree and is a natural no-op.
@@ -641,7 +685,7 @@ impl PhotonApp {
             .spawn(move || {
                 let mut workers: crate::linear_map::LinearMap<
                     [u8; 32],
-                    std::sync::mpsc::Sender<(ContactId, String, i64)>,
+                    std::sync::mpsc::Sender<(ContactId, Option<String>, i64)>,
                 > = crate::linear_map::LinearMap::new();
                 while let Ok(job) = cmd_rx.recv() {
                     match job {
@@ -661,8 +705,15 @@ impl PhotonApp {
                                 }
                             }
                         }
-                        BridgeJob::Run(contact, dev, cmd, ts) => {
-                            crate::logf!("BRIDGE: running command from sibling: {}", cmd);
+                        BridgeJob::Run(..) | BridgeJob::Refuse(..) => {
+                            let (contact, dev, cmd, ts) = match job {
+                                BridgeJob::Run(contact, dev, cmd, ts) => {
+                                    crate::logf!("BRIDGE: running command from sibling: {}", cmd);
+                                    (contact, dev, Some(cmd), ts)
+                                }
+                                BridgeJob::Refuse(contact, dev, ts) => (contact, dev, None, ts),
+                                BridgeJob::Reset(_) => unreachable!("matched above"),
+                            };
                             let alive = workers
                                 .get(&dev)
                                 .map(|tx| tx.send((contact, cmd.clone(), ts)).is_ok())

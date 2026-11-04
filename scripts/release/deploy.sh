@@ -306,6 +306,40 @@ if [ "$(grep -c "$REL_URL/photon-messenger-windows" /tmp/install-release.ps1)" -
     echo "ERROR: an installer's download URL did not patch to $REL_URL — the installer templates changed; fix the patterns above."
     exit 1
 fi
+# The unix installer carries the SHA-256 of each signed binary and of the launcher shim (security audit UPW-007): it checks the download itself before the binary runs, so the bucket alone can no longer swap one.
+sha() { sha256sum "$1" | cut -d' ' -f1; }
+sed -i -e "s|^SHA256_linux_x86_64=\"\"|SHA256_linux_x86_64=\"$(sha target/release/photon-messenger)\"|" \
+    -e "s|^SHA256_linux_arm64=\"\"|SHA256_linux_arm64=\"$(sha target/aarch64-unknown-linux-gnu/release/photon-messenger)\"|" \
+    -e "s|^SHA256_macos_x86_64=\"\"|SHA256_macos_x86_64=\"$(sha target/x86_64-apple-darwin/release/photon-messenger)\"|" \
+    -e "s|^SHA256_macos_arm64=\"\"|SHA256_macos_arm64=\"$(sha target/aarch64-apple-darwin/release/photon-messenger)\"|" \
+    -e "s|^SHA256_photon_sh=\"\"|SHA256_photon_sh=\"$(sha installers/photon.sh)\"|" /tmp/install-release.sh
+if [ "$(grep -c '^SHA256_[a-z0-9_]*="[0-9a-f]\{64\}"$' /tmp/install-release.sh)" -ne 5 ]; then
+    echo "ERROR: the unix installer did not take all five SHA-256 values — the installer template changed; fix the patterns above."
+    exit 1
+fi
+
+# WHAT THIS RELEASE WAS BUILT FROM (security audit UPW-012): the commit of every sibling path-dep crate, read now that the seam gate has proved each one pushed. The lines go into the tag's message (the record `build.sh --version N` rebuilds from), and a short form into the release notes under this version.
+SIBLING_LINES=""
+SIBLING_SHORT=""
+for sib in $(grep -oE 'path = "\.\./[a-z0-9_-]+"' Cargo.toml | sed -E 's|path = "\.\./([a-z0-9_-]+)"|\1|' | sort -u); do
+    [ -d "../$sib/.git" ] || continue
+    git -C "../$sib" remote | grep -q . || continue
+    h="$(git -C "../$sib" rev-parse HEAD)"
+    SIBLING_LINES="${SIBLING_LINES}sibling $sib $h"$'\n'
+    SIBLING_SHORT="${SIBLING_SHORT} · $sib ${h:0:8}"
+done
+BUILT_FROM_LINE="Built from photon ${TIP_COMMIT:0:8}${SIBLING_SHORT}"
+export BUILT_FROM_LINE
+# The line sits at the end of this version's section, plain (not a bullet), so the app's what's-new reader skips it and the page shows it as a footer.
+add_built_from_line() {
+    ( cd "$1" && awk -v line="$BUILT_FROM_LINE" -v head="## v${SHIP_VERSION}" '
+        $0 == head { inside = 1; print; next }
+        inside && /^## / { print line; print ""; inside = 0 }
+        { print }
+        END { if (inside) { print line } }
+    ' RELEASE_NOTES.md > RELEASE_NOTES.md.new && mv RELEASE_NOTES.md.new RELEASE_NOTES.md )
+}
+add_built_from_line "${SNAP_DIR:-.}" || { echo "ERROR: could not add the Built-from line to the release notes"; exit 1; }
 
 echo ""
 echo "BUILD PHASE complete — all 8 platforms + signed manifest built. Nothing public yet."
@@ -396,7 +430,10 @@ echo "  Windows SHA256: $WINDOWS_SHA256"
 # R2 is fully live — the release is public. Its provenance is the built commit $COMMIT: the hash build.rs baked into every binary (PHOTON_GIT_COMMIT) and the SHA the signed manifest stamped. Pin it with the IMMUTABLE v<n> tag and push THAT — the commit rides along with its hash intact, even tho main has moved past its parent during the ~1h build. This is NOT a branch push (a plain `git push` of the hour-old bump is rejected non-fast-forward the moment any device touched main during the build — five deploys died exactly here, 2026-08-28). main itself only ever gets the fast-forwarding dev-line bump, further down.
 # Disarm the signal/error rollback traps the instant provenance is on GitHub: the release is now permanent, and every step below (mirror, website, notice, dev-line) is best-effort — a hiccup there must NEVER roll back a shipped release. (The EXIT trap stays armed but is gated by DEPLOY_SHIPPED, and every best-effort step below is `|| echo`-guarded so set -e can't fire in this zone.)
 GH_TAG="v$SHIP_VERSION"
-release_publish_tag "$GH_TAG" "$COMMIT" "release v${SHIP_VERSION} (${FULL_VERSION}, ${DOZENAL_VERSION}) — version injected at build (tag-authority), source tip ${PHOTON_STAMP_COMMIT}"
+release_publish_tag "$GH_TAG" "$COMMIT" "release v${SHIP_VERSION} (${FULL_VERSION}, ${DOZENAL_VERSION}) — version injected at build (tag-authority), source tip ${PHOTON_STAMP_COMMIT}
+
+Built from these sibling commits (build.sh --version ${SHIP_VERSION} rebuilds from them):
+${SIBLING_LINES}"
 trap - ERR INT TERM HUP
 
 # Mirror the identical signed artefacts to a GitHub Release `v<n>` (redundant fallback behind R2).

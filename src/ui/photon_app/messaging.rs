@@ -377,26 +377,20 @@ impl PhotonApp {
                         latest.push((v, st, carried));
                     }
                     for (v, st, rows) in latest {
-                        // catch_unwind: ONE poisoned snapshot must not kill the writer for the whole session — a dead writer silently stranded every subsequent message in RAM (they vanished at relaunch).
-                        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            crate::storage::contacts::save_messages(&v, &st)
-                        }));
-                        let err = match r {
-                            Ok(Ok(_)) => {
+                        // No catch_unwind here: every build is panic = "abort" (Cargo.toml), so a panic in a persist ends the process after the log flush rather than being swallowed, and the guard that once sat here was dead code everywhere but the maintainer's desk (security audit UPW-010).
+                        // A persist that panics is a bug in the vault or the snapshot, to be found in the log, never a snapshot to drop quietly while the writer carries on.
+                        let err = match crate::storage::contacts::save_messages(&v, &st) {
+                            Ok(_) => {
                                 if crate::storage::clear_vault_sick() {
                                     crate::log("STORAGE: recovered — a message persist succeeded after an earlier failure");
                                 }
                                 None
                             }
-                            Ok(Err(e)) => {
+                            Err(e) => {
                                 let m = format!("{e}");
                                 crate::logf!("STORAGE: async message persist failed: {}", m);
                                 crate::storage::flag_vault_sick();
                                 Some(m)
-                            }
-                            Err(_) => {
-                                crate::log("STORAGE: message persist writer caught a PANIC — snapshot dropped, writer survives");
-                                Some("writer panicked".to_string())
                             }
                         };
                         if !rows.is_empty() {

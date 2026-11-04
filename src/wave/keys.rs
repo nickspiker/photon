@@ -14,8 +14,10 @@ use zeroize::Zeroize;
 /// Packets per ratchet step — 100 × 10ms frames = one step every ~2s of talk, cheap enough to be free.
 pub const PACKETS_PER_STEP: u32 = 100;
 
-/// How far ahead of the chain an unverified packet may ask the receiver to look: 2^16 steps is 6.5 million packets, more than a day of media at the fastest rung, so a wave that waited out an outage still opens; past it the walk itself would be the attack (an unauthenticated header buying a million hashes).
-pub const MAX_LOOKAHEAD_STEPS: u32 = 1 << 16;
+/// How far ahead of the chain a packet may ask the receiver to look, in steps: this bound is the longest silence a wave survives, since the sender's chain walks on whether or not anything arrives, and a packet from beyond it is refused for good.
+/// 2^6 steps is about a minute of media at 100 packets per step, longer than a roam, a handoff or a tunnel, and short enough that the walk under an unverified header costs a few dozen hashes, not a million.
+/// It was 2^16 (18 hours) until 2026-11-03: paired with the chain advancing on one opened packet, a single landed forgery under the 4-byte tag could zeroise 18 hours of keys and kill the wave (security audit UPW-019); see [`pending`](StepChain::pending) for the other half of that fix.
+pub const MAX_LOOKAHEAD_STEPS: u32 = 1 << 6;
 
 /// Media stream direction: origin→answer or answer→origin. Wire value = the `dir` header byte.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +99,10 @@ pub fn fill_secret(wave_secret: &[u8; 32]) -> [u8; 32] {
 pub struct StepChain {
     key: [u8; 32],
     step: u32,
+    /// Receive side: a step ahead of the chain at which ONE packet has already opened, waiting for a second before the chain commits to it (packet.rs `open`).
+    /// Cleared by any packet that opens at the current step, so a forger must land two hits at one far step inside a single 10 ms window: 2^-32 for the first, then 2^-32 per attempt in the 10 ms before the next genuine packet clears it.
+    /// The genuine stream pays nothing: its first packet at a new step is delivered under the look-ahead key, its second commits the walk 10 ms later.
+    pending: Option<u32>,
 }
 
 impl StepChain {
@@ -107,11 +113,32 @@ impl StepChain {
         material.extend_from_slice(dir.label().as_bytes());
         let key = blake3::derive_key("PHOTON_WAVE_v1 direction step0", &material);
         material.zeroize();
-        Self { key, step: 0 }
+        Self { key, step: 0, pending: None }
     }
 
     pub fn step(&self) -> u32 {
         self.step
+    }
+
+    /// The far step one opened packet is waiting at, if any (see the field).
+    pub fn pending(&self) -> Option<u32> {
+        self.pending
+    }
+
+    /// A packet opened at `target`, ahead of the chain: the first at that step arms it, the second commits the walk. Returns whether the chain moved.
+    pub fn note_opened_ahead(&mut self, target: u32) -> bool {
+        if self.pending == Some(target) {
+            self.pending = None;
+            self.advance_to(target)
+        } else {
+            self.pending = Some(target);
+            false
+        }
+    }
+
+    /// A packet opened at the current step: whatever far step was armed is forgotten.
+    pub fn note_opened_here(&mut self) {
+        self.pending = None;
     }
 
     /// The current step key (send side seals under this; receive side must be AT the packet's step).

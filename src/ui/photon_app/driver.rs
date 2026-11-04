@@ -1145,6 +1145,11 @@ impl FluorApp<Px> for PhotonApp {
                         }
                         #[cfg(not(target_os = "android"))]
                         std::process::exit(0);
+                    } else if slot == 5 {
+                        // "Shell: on/off" (UPW-027): the host-side switch for the bridge shell, device-local, one tap.
+                        let on = !self.bridge_shell;
+                        self.set_bridge_shell(on);
+                        crate::logf!("SECURITY: bridge shell switch → {}", if on { "on" } else { "off" });
                     } else if slot == 1 {
                         // "Revoke" (the desk case, from the device being revoked): treat THIS device as no-longer-trusted — the fleet key rotates away, the worker refuses it at announce, and it goes dark. It stays a permanent member (refusal, never removal); reinstating is handle-gated from another device, which is also why revoke_this_device refuses when there is no other device.
                         if self.settings_revoke_armed {
@@ -4423,11 +4428,11 @@ impl PhotonApp {
                 // The key half beside it: the chip's HMAC over a fixed label, the candidate root; a prefix only, and still nothing derives from it.
                 match tohu::device::tpm_root() {
                     Ok(root) => crate::logf!("device plate: tpm {}, key root {}", hex::encode(&plate[..4]), hex::encode(&root[..4])),
-                    Err(e) => crate::logf!("device plate: tpm {}, key root unavailable ({e})", hex::encode(&plate[..4])),
+                    Err(e) => crate::logf!("device plate: tpm {}, key root unavailable ({})", hex::encode(&plate[..4]), e),
                 }
             }
             Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => crate::log("device plate: a TPM is present but Photon may not open it (add this user to the tss group); the machine keeps its machine-id posture"),
-            Err(e) => crate::logf!("device plate: none ({e}); the machine keeps its machine-id posture"),
+            Err(e) => crate::logf!("device plate: none ({}); the machine keeps its machine-id posture", e),
         });
         crate::network::fgtw::fleet::install_device_signer(match &self.signing_bundle {
             Some(b) => crate::network::fgtw::fleet::DeviceSigner::Pq(b.clone()),

@@ -10,7 +10,9 @@
 //!
 //! The single magic byte lives in the HIGH half of ASCII, which no other frame on the wire touches: VSF opens 'R' (0x52), PT DATA a lowercase stream id (0x61-0x7A) — every legitimate first byte is ≤ 0x7F. The recv worker checks this one byte FIRST and routes matches raw to the wave engine — no PT ack, no StatusUpdate, no parse ladder — or silently drops them when no wave is active.
 //!
-//! **Truncated tag (Nick's ruling, 2026-08-19): 4 bytes of the RFC 8439 Poly1305 tag** — the SRTP-32 profile. Why that's sound HERE: truncation touches integrity only (confidentiality is XChaCha20's and never changes); forgery is a purely ONLINE per-packet game at 2⁻³² against a key that exists only while the wave lives (teardown zeroizes, so the attack budget is wave-duration × injection rate, and a rate that matters is a visible flood); a landed forgery yields ONE garbled 10ms window, not keys or plaintext. The RustCrypto AEAD API can't verify truncated tags, so the composition is hand-assembled from `chacha20` + `poly1305` per RFC 8439 and PINNED bit-exact against the house `chacha20poly1305` library by the `composition_matches_the_house_aead` KAT.
+//! **Truncated tag (Nick's ruling, 2026-08-19, reaffirmed 2026-11-03): 4 bytes of the RFC 8439 Poly1305 tag** — the SRTP-32 profile. Why that's sound HERE: truncation touches integrity only (confidentiality is XChaCha20's and never changes); forgery is a purely ONLINE per-packet game at 2⁻³² against a key that exists only while the wave lives (teardown zeroizes, so the attack budget is wave-duration × injection rate, and a rate that matters is a visible flood); a landed forgery yields ONE garbled 10ms window, not keys or plaintext. The RustCrypto AEAD API can't verify truncated tags, so the composition is hand-assembled from `chacha20` + `poly1305` per RFC 8439 and PINNED bit-exact against the house `chacha20poly1305` library by the `composition_matches_the_house_aead` KAT.
+//! What that argument missed until the 2026-11-03 audit (UPW-019) was the chain: a forgery that opened at a FAR step walked the receiver's chain there on the spot, zeroising every key between, so one hit under the 4-byte tag with a sequence number 18 hours ahead left every genuine packet behind a dead chain for the rest of the wave. Two receiver-only changes close that without a byte on the wire: the look-ahead bound is a minute, not 18 hours ([`keys::MAX_LOOKAHEAD_STEPS`]), and the chain commits to a far step only on the SECOND packet that opens there ([`keys::StepChain::note_opened_ahead`]), so a forger needs two hits at one step inside the 10 ms before the next genuine packet clears the first.
+//! The magic byte sits outside the tag on purpose and that is fine: media, fill and beam each seal under their own domain-separated chain, so a flipped kind byte lands on a chain whose key differs and fails the tag, which is no more than an on-path attacker's power to drop the packet.
 //!
 //! Nonce = the global sequence number in a 24-byte field (unique per key by construction — a step spans exactly [`keys::PACKETS_PER_STEP`] seqs, and seq never repeats within a wave).
 
@@ -119,7 +121,8 @@ pub fn parse_header(bytes: &[u8]) -> Option<(MediaHeader, &[u8])> {
 }
 
 /// Open a sealed payload with the direction's chain (forward-only: a packet from a destroyed step returns None — silence, never a rewind). The truncated tag is the whole gate: it proves wave membership AND direction, since both live in the key. Constant-time compare, then decrypt.
-/// The chain advances only AFTER the tag holds: the tag is checked under a look-ahead copy of the step's key, so a packet that fails to open — forged, from another wave, from another link of a group wave — never moves the chain.
+/// The chain never moves on a packet that fails to open: the tag is checked under a look-ahead copy of the step's key, so a forgery, another wave's packet or another link of a group wave leaves the chain where it was.
+/// A packet that opens AHEAD of the chain is delivered under that copy but commits the walk only when a second packet opens at the same step (the forgery budget in [`StepChain::note_opened_ahead`]); a packet that opens at the current step clears any such wait.
 pub fn open(chain: &mut StepChain, header: &MediaHeader, sealed: &[u8]) -> Option<Vec<u8>> {
     use zeroize::Zeroize;
     if sealed.len() <= TAG_LEN {
@@ -136,7 +139,11 @@ pub fn open(chain: &mut StepChain, header: &MediaHeader, sealed: &[u8]) -> Optio
     if expected[..TAG_LEN].ct_eq(wire_tag).unwrap_u8() != 1 {
         return None;
     }
-    chain.advance_to(target);
+    if target == chain.step() {
+        chain.note_opened_here();
+    } else {
+        chain.note_opened_ahead(target);
+    }
     let mut pt = ct.to_vec();
     cipher.apply_keystream(&mut pt);
     Some(pt)
@@ -210,8 +217,8 @@ mod tests {
         let (h, sealed) = parse_header(&wire).unwrap();
         assert!(open(&mut rx, &h, sealed).is_none());
         assert_eq!(rx.step(), 0);
-        // The real stream still opens, at step 0 and after its own forward walk.
-        for seq in [1u32, 2 * PACKETS_PER_STEP] {
+        // The real stream still opens, at step 0 and after its own forward walk (the walk commits on the second packet at the new step).
+        for seq in [1u32, 2 * PACKETS_PER_STEP, 2 * PACKETS_PER_STEP + 1] {
             tx.advance_to(StepChain::step_for_seq(seq));
             let wire = seal(&tx, seq, b"genuine").unwrap();
             let (h, sealed) = parse_header(&wire).unwrap();
@@ -225,6 +232,53 @@ mod tests {
         let (h, sealed) = parse_header(&far).unwrap();
         assert!(open(&mut rx, &h, sealed).is_none());
         assert_eq!(rx.step(), 2);
+    }
+
+    /// The chain commits to a far step on the SECOND packet that opens there (UPW-019): one landed forgery buys a forger nothing but its own garbled window, and the genuine stream loses nothing on its own forward walk.
+    #[test]
+    fn the_chain_commits_on_the_second_packet_of_a_far_step() {
+        let s = secret();
+        let mut tx = StepChain::new(&s, Direction::OriginToAnswer);
+        let mut rx = StepChain::new(&s, Direction::OriginToAnswer);
+        let send = |tx: &mut StepChain, seq: u32| {
+            tx.advance_to(StepChain::step_for_seq(seq));
+            seal(tx, seq, b"genuine-genuine").unwrap()
+        };
+        let recv = |rx: &mut StepChain, wire: &[u8]| {
+            let (h, sealed) = parse_header(wire).unwrap();
+            open(rx, &h, sealed)
+        };
+        // A stream that jumps from step 0 to step 3 (two seconds of nothing heard): the first packet is delivered under the look-ahead key without moving the chain, the second commits the walk.
+        let a = send(&mut tx, 3 * PACKETS_PER_STEP);
+        assert!(recv(&mut rx, &a).is_some());
+        assert_eq!((rx.step(), rx.pending()), (0, Some(3)), "one packet ahead arms the step, it does not commit it");
+        let b = send(&mut tx, 3 * PACKETS_PER_STEP + 1);
+        assert!(recv(&mut rx, &b).is_some());
+        assert_eq!((rx.step(), rx.pending()), (3, None), "the second packet at that step walks the chain there");
+        // One "forgery" that opens far ahead (stood in for by a genuine seal from a chain walked ahead on its own): delivered, armed, and then forgotten the moment a packet opens at the current step.
+        let mut rogue = StepChain::new(&s, Direction::OriginToAnswer);
+        rogue.advance_to(40);
+        let forged = seal(&rogue, 40 * PACKETS_PER_STEP, b"forged-forged").unwrap();
+        assert!(recv(&mut rx, &forged).is_some());
+        assert_eq!((rx.step(), rx.pending()), (3, Some(40)));
+        let c = send(&mut tx, 3 * PACKETS_PER_STEP + 2);
+        assert!(recv(&mut rx, &c).is_some());
+        assert_eq!((rx.step(), rx.pending()), (3, None), "a packet at the current step clears the armed step");
+        // The same far packet again arms again rather than committing: the two hits must be consecutive.
+        assert!(recv(&mut rx, &forged).is_some());
+        assert_eq!((rx.step(), rx.pending()), (3, Some(40)));
+        // A reorder across a step boundary costs nothing: 100 before 99 arms step 1, 99 clears it, 101 arms it again, 102 commits it.
+        let mut tx2 = StepChain::new(&s, Direction::AnswerToOrigin);
+        let mut rx2 = StepChain::new(&s, Direction::AnswerToOrigin);
+        let p100 = send(&mut tx2, PACKETS_PER_STEP);
+        let mut tx2b = StepChain::new(&s, Direction::AnswerToOrigin);
+        let p99 = send(&mut tx2b, PACKETS_PER_STEP - 1);
+        let p101 = send(&mut tx2, PACKETS_PER_STEP + 1);
+        let p102 = send(&mut tx2, PACKETS_PER_STEP + 2);
+        for (wire, step, pending) in [(&p100, 0, Some(1)), (&p99, 0, None), (&p101, 0, Some(1)), (&p102, 1, None)] {
+            assert!(recv(&mut rx2, wire).is_some());
+            assert_eq!((rx2.step(), rx2.pending()), (step, pending));
+        }
     }
 
     #[test]

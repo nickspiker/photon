@@ -4534,7 +4534,18 @@ impl PhotonApp {
                                             let tx = self.wave_env_tx.as_ref().unwrap().clone();
                                             let wake = self.event_proxy.clone();
                                             crate::log_err!(std::thread::Builder::new().name("music-env".into()).spawn(move || {
-                                                let res = crate::storage::blob_load(&seed, &ahash).and_then(|b| crate::wave::music::envelopes_from_music(&b));
+                                                // The poison mark (storage::decode_mark): a song whose decode ended the process last launch is not decoded again, since this row is re-rendered at every start (the UPW-004 crash-loop shape).
+                                                let res = if crate::storage::decode_poisoned(&ahash) {
+                                                    crate::logf!("music: envelope decode of {}… skipped — a previous decode of this row did not finish (poison mark)", hex::encode(&ahash[..4]));
+                                                    None
+                                                } else {
+                                                    let marked = crate::storage::decode_mark(&ahash);
+                                                    let res = crate::storage::blob_load(&seed, &ahash).and_then(|b| crate::wave::music::envelopes_from_music(&b));
+                                                    if marked {
+                                                        crate::storage::decode_clear(&ahash);
+                                                    }
+                                                    res
+                                                };
                                                 crate::log_err!(tx.send((ahash, res)), "hand music envelopes to the UI");
                                                 if let Some(wk) = wake.as_ref() {
                                                     wake_ui(wk);
@@ -5961,6 +5972,12 @@ impl PhotonApp {
                             &tr(Msg::SecurityKill),
                             &tr(Msg::SecurityKillHint),
                             4, *theme::PILL_RED, false, true);
+                        // SHELL (security audit UPW-027, Nick 2026-11-03): the bridge shell's host-side switch, off by default, one tap flips it; set here on this device only, never synced (docs/bridge.md Law 3).
+                        #[cfg(all(unix, not(target_os = "android")))]
+                        action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
+                            &tr(Msg::SecurityShell { on: self.bridge_shell }),
+                            &tr(Msg::SecurityShellHint),
+                            5, if self.bridge_shell { *theme::PILL_GREEN } else { *theme::PILL_GREY }, false, true);
                         action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
                             &tr(Msg::SecurityRevoke { armed: self.settings_revoke_armed }),
                             &tr(if fleet_verbs { Msg::SecurityRevokeHint } else { Msg::SecurityRevokeAloneHint }),

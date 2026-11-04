@@ -60,6 +60,43 @@ else
     exit 1
 fi
 
+# The SHA-256 of every signed binary this release ships for these platforms, and of the launcher shim, written into this script by deploy.sh at release time.
+# The installer checks the download against them BEFORE the binary ever runs: until 2026-11-03 the only check was asking the downloaded binary to verify itself, which a swapped binary passes by definition (security audit UPW-007).
+# The trust root is this script as served from the site; a bucket that holds the binaries can no longer swap one on its own.
+SHA256_linux_x86_64=""
+SHA256_linux_arm64=""
+SHA256_macos_x86_64=""
+SHA256_macos_arm64=""
+SHA256_photon_sh=""
+
+sha256_of() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | cut -d' ' -f1
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 "$1" | cut -d' ' -f1
+    else
+        openssl dgst -sha256 "$1" | sed 's/^.*= //'
+    fi
+}
+
+# The hash expected for this platform; an empty one means an unreleased copy of this script, which installs nothing.
+EXPECTED=$(eval "printf '%s' \"\$SHA256_$(printf '%s' "$PLATFORM" | tr '-' '_')\"")
+if [ -z "$EXPECTED" ]; then
+    echo "Error: this copy of the installer carries no hash for $PLATFORM — install from https://holdmyoscilloscope.com/photon"
+    rm -f "$TMP_BINARY"
+    exit 1
+fi
+echo "Checking the download..."
+ACTUAL=$(sha256_of "$TMP_BINARY")
+if [ "$ACTUAL" != "$EXPECTED" ]; then
+    echo "Error: the downloaded binary does not match this release."
+    echo "  expected $EXPECTED"
+    echo "  got      $ACTUAL"
+    rm -f "$TMP_BINARY"
+    exit 1
+fi
+echo "✓ Download matches the release"
+
 # Make it executable
 chmod +x "$TMP_BINARY"
 
@@ -68,7 +105,7 @@ if [ "$OS" = "Darwin" ]; then
     xattr -c "$TMP_BINARY" 2>/dev/null || true
 fi
 
-# Run binary once to self-verify signature (Binary will verify Ed25519 signature on startup and exit if invalid)
+# A second, independent check: the binary's own appended Ed25519 signature, which the running app re-checks at every start.
 
 echo "Verifying signature..."
 if ! "$TMP_BINARY" verify >/dev/null 2>&1; then

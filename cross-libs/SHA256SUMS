@@ -1,0 +1,22 @@
+# SHA-256 of every prebuilt library in this tree, written 2026-11-03 (security audit UPW-012); regenerate with: (cd cross-libs && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS) and check with: (cd cross-libs && sha256sum -c SHA256SUMS)
+f80f26efecee7485faaf95735dbac148767af316d70a2c7bd1da666b71c6ce4f  ./aarch64/include/opus/opus_custom.h
+8918f65309058be1921e59e9ef9cd4081497ce8a487e55cb45c5547046447d9b  ./aarch64/include/opus/opus_defines.h
+0d5e90fe5d2651ce616b238a81b33d393949b99ef9528efdbd653c0097abbbd4  ./aarch64/include/opus/opus.h
+49b727edb7306f94980713bb6c2777fa1fb52de00005cd77c5aff3b935435c22  ./aarch64/include/opus/opus_multistream.h
+a53752449f55b5f60679eab8fda96835102251aeefccf7c54256460d02747216  ./aarch64/include/opus/opus_projection.h
+19cb301ea1eedbcbdbb5049363de061893bf11c20e505a657b69ce6ffa5b11fa  ./aarch64/include/opus/opus_types.h
+d37896fbe544b95d85d6b0a5a4509761934a1835ac1286b53752c9b6a8ca1d8a  ./aarch64/libasound.so.2.0.0
+85a7a0c949257c51180406be0f0d6a841b33eef8e8ec4dd549112186e4eec531  ./aarch64/libcap.so.2.76
+3156fc4d8b006a33033c6b9aa775d75b257b6172dd15267074c87ffcebb7598f  ./aarch64/libdbus-1.so.3.38.3
+e6dc613e0e8ad3b0bfba2af904b3aea5675daf7f1d2246e74c5500a53898f7c5  ./aarch64/libgcc_s.so.1
+d3bbdfb8de33ac6d67ba809267b8f33aaadc23348ccdc38ff915d5460d425b9e  ./aarch64/libopus.so.0.10.1
+db2a366adc6668682844402d1e42d79343f20e0b5b70317b2f89de6a78d63238  ./aarch64/libsystemd.so.0.41.0
+28a8934f637b751e57f4fef16c7836cd8edb471d212b14aa5b7cc36865e9b903  ./aarch64/libX11.so.6.4.0
+80de30d36901c9aa3d4c3fee203ffbd029eb1e1c4d98178bce64914adae9823d  ./aarch64/libXau.so.6.0.0
+851ab7b1b1c2242fcaed8d22090351f5b19c79dcd3cdd6f31ecd3de78352703f  ./aarch64/libxcb.so.1.1.0
+13d0cdbfa1d82559c7c3511f4e6d5564d5dc464f6627b237eb94d80f2a5ed81c  ./aarch64/libXdmcp.so.6.0.0
+277db6a5a5b8c14afb7d18b9fc4223a6a244dc90cde8cd72f761a75f1b964313  ./aarch64/pkgconfig/alsa.pc
+31092caae67b321fa825212ffb8665d117bace54ca88b2b2edcb91a1fcf38e3d  ./aarch64/pkgconfig/dbus-1.pc
+918bd33bad19afe5bbe4f9afd2af6c2bcb398cc216a16e56505b6b719d78df6c  ./aarch64/pkgconfig/opus.pc
+9b9f09847bdd902e87620a50079bece9faf0e6d208ad04031fff971b81b28886  ./aarch64/pkgconfig/x11.pc
+6fd5953c16947bd9dd3914d19d3d5a28b765bd9d1a34d86730fd3e4287805da0  ./gcc-noglibc-shim/features.h
