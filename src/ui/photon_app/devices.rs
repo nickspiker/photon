@@ -1507,6 +1507,26 @@ impl PhotonApp {
                 }
                 return;
             }
+            // A fan-out whose wrap COUNT matches the fold can still hold no wrap for THIS device: the root conversion sponsored the new key into the chain and departed the old one without growing the fan-out (every phone converted on 2026-11-04), so the one wrap there was the dead key's, and a wipe stranded the fleet key with the roster, the backup and the profile behind it (Jeff).
+            // Holding the key and opening no wrap is the edge, counts aside: grow now, under the key in hand, for the fold minus the locked.
+            let held_here = storage
+                .read_addr(&addr)
+                .ok()
+                .flatten()
+                .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
+            if let Some(held) = held_here {
+                if matches!(fleet::recover_fleet_key(&hp, &device_key, &identity_seed), Ok(None)) {
+                    let desired: Vec<[u8; 32]> = fleet::current_members_verified(&hp)
+                        .map(|m| m.into_iter().filter(|m| !locked.contains(m)).collect())
+                        .unwrap_or_default();
+                    if !desired.is_empty() {
+                        match fleet::grow_fleet_wraps(&hp, &device_key, &held, &desired, &identity_seed) {
+                            Ok(revision) => crate::logf!("FANOUT: this device holds the key but the fan-out had no wrap for it — grown to revision {} ({} ira(s) wrapped)", revision, desired.len()),
+                            Err(e) => crate::logf!("FANOUT: this device holds the key but the fan-out has no wrap for it, and the grow failed: {}", e),
+                        }
+                    }
+                }
+            }
             match fleet::recover_or_establish_carrying(
                 &hp,
                 &device_key,

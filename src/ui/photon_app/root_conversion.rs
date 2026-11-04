@@ -94,6 +94,22 @@ fn convert(old: &DeviceSigner, identity_seed: &[u8; 32], hp: &[u8; 32], legacy: 
         return;
     }
     // The siblings hear the add now, from this device while it is still a member and still running: the UI thread pushes the chain on its next tick and answers; the seed mirror alone took the desktop 82 minutes to notice.
+    // The new key needs its own wrap of the fleet key, or a wipe of this phone later strands the key with the roster, the backup and the profile behind it (Jeff, 2026-11-04: reinstalled after converting, no wrap for the new key, nothing to recover with).
+    // Grown now, while the old key still signs; the fan-out is the fleet's own hand-off, so no sponsor's edge ever covers a self-sponsored move.
+    match crate::storage::device_vault().and_then(|v| v.read_addr(&crate::storage::vault_key("fleet_key", identity_seed)).ok().flatten()).and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok()) {
+        Some(held) => {
+            let members = fleet::held_chain(hp).and_then(|c| c.fold().ok()).unwrap_or_default();
+            if members.is_empty() {
+                crate::log("ROOT: the held chain folds to nobody — the fan-out is not grown here; the key sync at the next start grows it");
+            } else {
+                match fleet::grow_fleet_wraps(hp, &old.keypair(), &held, &members, identity_seed) {
+                    Ok(revision) => crate::logf!("ROOT: fan-out grown to revision {} — the new key holds its own wrap of the fleet key", revision),
+                    Err(e) => crate::logf!("ROOT: fan-out grow failed ({e}); the key sync at the next start grows it"),
+                }
+            }
+        }
+        None => crate::log("ROOT: no fleet key in the vault — nothing to wrap for the new key; the key sync at the next start establishes one"),
+    }
     let (pushed_tx, pushed_rx) = std::sync::mpsc::channel();
     if let Ok(mut g) = CHAIN_PUSH.lock() {
         *g = Some(pushed_tx);
