@@ -203,15 +203,32 @@ pub fn fetch_release_notes_blocking() -> Result<String, String> {
         .build()
         .map_err(|e| format!("http client: {e}"))?;
     let url = format!("{}?v={}", RELEASE_NOTES_URL, rand::random::<u64>());
-    client
+    let resp = client
         .get(&url)
         .header(reqwest::header::CACHE_CONTROL, "no-cache")
         .send()
         .map_err(|e| format!("notes fetch: {e}"))?
         .error_for_status()
-        .map_err(|e| format!("notes fetch: {e}"))?
-        .text()
-        .map_err(|e| format!("notes read: {e}"))
+        .map_err(|e| format!("notes fetch: {e}"))?;
+    // The notes are unsigned text from the update host, so the read is bounded (security audit UPW-014): the published file is a few tens of KB.
+    let bytes = read_bounded(resp, NOTES_LIMIT, "notes")?;
+    String::from_utf8(bytes).map_err(|e| format!("notes read: {e}"))
+}
+
+/// The most the release notes may be, in bytes.
+const NOTES_LIMIT: u64 = 1 << 18;
+/// The most an artefact may be when an old manifest carries no size, in bytes; a manifest that states the size is the bound instead.
+const ARTEFACT_CEILING: u64 = 1 << 28;
+
+/// Read a response whole, refusing one past `limit` (security audit UPW-014): the read stops one byte past the limit, so a lying Content-Length or an endless stream costs at most the limit, never the heap.
+fn read_bounded(r: impl std::io::Read, limit: u64, what: &str) -> Result<Vec<u8>, String> {
+    use std::io::Read;
+    let mut bytes = Vec::new();
+    r.take(limit + 1).read_to_end(&mut bytes).map_err(|e| format!("{what} read: {e}"))?;
+    if bytes.len() as u64 > limit {
+        return Err(format!("{what} is past the {limit}-byte limit"));
+    }
+    Ok(bytes)
 }
 
 /// Parse + signature-gate manifest bytes: every section named `manifest.photon.<channel>` is one artefact, fields matched by NAME + TYPE (never position). Public for the manifest tool's merge path + tests.
@@ -397,7 +414,10 @@ fn download_once(
         row.size,
         resp.content_length().unwrap_or(0)
     );
-    let mut bytes: Vec<u8> = Vec::with_capacity(total as usize);
+    // Reserved from the SIGNED manifest only, never from Content-Length (security audit UPW-014): the header is the host's word and used to reserve whatever it claimed.
+    let mut bytes: Vec<u8> = Vec::with_capacity(row.size as usize);
+    // The read is bounded by the signed size, or by the ceiling for a manifest too old to carry one: a stream past that is a wrong artefact however it hashes, so it stops here instead of filling RAM before the hash check.
+    let limit = if row.size > 0 { row.size } else { ARTEFACT_CEILING };
     let mut chunk = vec![0u8; 1 << 16];
     loop {
         let n = resp
@@ -407,6 +427,12 @@ fn download_once(
             break;
         }
         bytes.extend_from_slice(&chunk[..n]);
+        if bytes.len() as u64 > limit {
+            return Err(FetchError::Mismatch(format!(
+                "the download ran past {} bytes, the size the signed manifest states — nothing installed, running version untouched",
+                limit
+            )));
+        }
         progress(bytes.len() as u64, total);
     }
     let got = blake3::hash(&bytes);
@@ -606,4 +632,20 @@ pub fn download_apk_blocking(
     let dest = std::path::Path::new(&dir).join("photon-update.apk");
     download_verified(row, &dest, false, progress, &|| fetch_manifest_blocking(channel).ok().and_then(|r| our_row(&r)))?;
     Ok(dest)
+}
+
+#[cfg(test)]
+mod bounded_read_tests {
+    use super::read_bounded;
+
+    /// UPW-014: a body at the limit comes back whole; one byte past it is refused, and the refusal never buffered more than the limit plus one.
+    #[test]
+    fn read_bounded_refuses_past_the_limit() {
+        let at = vec![7u8; 1 << 10];
+        assert_eq!(read_bounded(std::io::Cursor::new(&at), 1 << 10, "t").unwrap(), at);
+        let past = vec![7u8; (1 << 10) + 1];
+        assert!(read_bounded(std::io::Cursor::new(&past), 1 << 10, "t").is_err());
+        let endless = std::io::repeat(1u8);
+        assert!(read_bounded(endless, 1 << 12, "t").is_err());
+    }
 }
