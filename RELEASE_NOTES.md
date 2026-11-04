@@ -6,10 +6,14 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v140
 - **Your other devices can no longer run commands on this one until you say so.** The bridge shell now has a switch on each computer's own Settings → Security page, off until you turn it on there; a command sent to a computer with the switch off is answered with a note saying so instead of running.
 - **A forged packet can no longer silence a wave.** Someone on the network who guessed one packet's check could make a wave go dead for its whole length; the receiver now waits for a second packet before trusting a jump ahead, and a wave survives up to a minute of silence rather than eighteen hours, which is also what bounds the damage.
 - **The installer checks what it downloaded before running it.** The install script carries the fingerprint of every binary and of the launcher it installs, checked on your machine first; until now it asked the downloaded program to vouch for itself.
 - **Several more fixes from the security review.** A picture's per-reader key slot is sealed with a fresh random nonce each time it is republished; the session a phone or Mac keeps across an app restart is sealed under the device as well as the boot; the time service no longer tells each time server which other servers it asked, and keeps no more than a few answers from any one network or country; a file whose decoding ended Photon is not decoded again on the next launch.
+
+Built from photon 7ab30f7f · chirp b01db995 · fgtw 5025da9d · fluor b7bbb3da · kete c55fed6b · limbus 2dd2f912 · manifestus c4e8532b · nunc f2c0c226 · opsin 890f235c · rarangi be4386cb · spirix 013c8636 · tapuwae a0b377ec · tohu 6ed392da · voca 38639dc2 · vsf c5c1164c
 
 ## v139
 - **Android phones now carry a plate that survives a factory reset.** A phone's name on the network now comes from a value burned into its secure hardware at the factory and read on the phone itself, never from a server, so a wiped phone is still recognised as the same phone when it comes back; its key still changes with a wipe, so you pair a wiped phone again from another device as before. A phone already set up moves itself onto the new key the first time it runs with its identity live, then closes once, and asks for your handle again when you reopen it.
