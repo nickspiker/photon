@@ -2985,9 +2985,11 @@ impl FluorApp<Px> for PhotonApp {
                 // A GROUP's Manage page (group_avatar.rs): a picture dropped anywhere on it becomes the group's picture, unless we have left the group.
                 if let AppState::ConversationPanel(crate::ui::state::ConversationPage::Manage) = self.state {
                     if let Some(gid) = self.active_molecule().map(|gi| self.molecule_rosters[gi].0).filter(|g| !self.molecule_is_left(g)) {
-                        match std::fs::read(path) {
+                        // Sized before it is read (security audit UPW-015), like every drop.
+                        match super::attachments::read_for_send(std::path::Path::new(path), super::attachments::MAX_ATTACH) {
                             Ok(bytes) => self.set_molecule_avatar(gid, bytes),
-                            Err(e) => crate::logf!("group avatar drop: read failed: {}", e),
+                            Err(super::attachments::ReadRefused::Oversize(n)) => crate::logf!("group avatar drop: refused, {} bytes is past the limit", n),
+                            Err(super::attachments::ReadRefused::Other(e)) => crate::logf!("group avatar drop: read failed: {}", e),
                         }
                         ctx.window.request_redraw();
                     }
@@ -2995,7 +2997,11 @@ impl FluorApp<Px> for PhotonApp {
                 }
                 // Desktop avatar update: a file dropped on the window (Ready screen) is read and run thru the same encode→save→load→install→upload pipeline as the Android picker. Ignored off the Ready screen and when no handle is attested yet (set_avatar_from_file no-ops without a handle). Android has no drop path — it uses the picker.
                 if matches!(self.state, AppState::Ready) {
-                    match std::fs::read(path) {
+                    // Sized before it is read (security audit UPW-015): the avatar drop had no cap at all.
+                    match super::attachments::read_for_send(std::path::Path::new(path), super::attachments::MAX_ATTACH).map_err(|e| match e {
+                        super::attachments::ReadRefused::Oversize(n) => format!("refused, {} bytes is past the limit", n),
+                        super::attachments::ReadRefused::Other(e) => e,
+                    }) {
                         Ok(bytes) => {
                             self.set_avatar_from_file(bytes);
                             // Force a FULL repaint, not just a redraw request: on macOS the drop arrives during the drag-session teardown and the incremental present can get swallowed — the avatar then only appeared after the next click. Invalidate everything so the post-drop frame rebuilds + re-presents the whole window.

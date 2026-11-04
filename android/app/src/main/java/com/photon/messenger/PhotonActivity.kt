@@ -420,7 +420,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         uri?.let {
             try {
                 contentResolver.openInputStream(it)?.use { stream ->
-                    val fileBytes = stream.readBytes()
+                    val fileBytes = readBounded(it, stream) ?: return@use
                     if (nativePtr != 0L && fileBytes.isNotEmpty()) {
                         nativeSetAvatarFromFile(nativePtr, fileBytes)
                     }
@@ -429,6 +429,32 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
                 // Silently fail - Rust will log if needed
             }
         }
+    }
+
+    /** The most a picked file may be, in bytes: the 256 MiB attachment limit Rust enforces (storage::MAX_ATTACH). */
+    private val maxPickBytes = 1L shl 28
+
+    /** Read a picked stream, sized FIRST (security audit UPW-015): the provider is asked for the length and the read itself stops one byte past the limit, so a huge pick never fills the JVM heap before Rust can refuse it. Null = past the limit, logged. */
+    private fun readBounded(uri: android.net.Uri, stream: java.io.InputStream): ByteArray? {
+        val declared = try { contentResolver.openAssetFileDescriptor(uri, "r")?.use { it.length } ?: -1L } catch (e: Exception) { -1L }
+        if (declared > maxPickBytes) {
+            PhotonLog.w(TAG, "pick refused before the read: $declared bytes is past the limit")
+            return null
+        }
+        val out = java.io.ByteArrayOutputStream()
+        val buf = ByteArray(1 shl 16)
+        var total = 0L
+        while (true) {
+            val n = stream.read(buf)
+            if (n < 0) break
+            total += n
+            if (total > maxPickBytes) {
+                PhotonLog.w(TAG, "pick refused mid-read: past the limit")
+                return null
+            }
+            out.write(buf, 0, n)
+        }
+        return out.toByteArray()
     }
 
     private fun openImagePicker() {
@@ -449,7 +475,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
                     }
                 }
                 contentResolver.openInputStream(it)?.use { stream ->
-                    val fileBytes = stream.readBytes()
+                    val fileBytes = readBounded(it, stream) ?: return@use
                     if (nativePtr != 0L && fileBytes.isNotEmpty()) {
                         nativeSendAttachment(nativePtr, name, fileBytes)
                     }

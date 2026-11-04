@@ -36,6 +36,33 @@ pub(super) fn view_temp_path(name: &str, hash: &[u8; 32], bytes: &[u8]) -> Optio
 }
 
 
+/// Why a file was not read for sending: past the limit (the byte count the filesystem reported), or any other refusal.
+pub(super) enum ReadRefused {
+    Oversize(u64),
+    Other(String),
+}
+
+/// Read a dropped or picked file for sending, the size checked BEFORE the read (security audit UPW-015): the length comes from the metadata and the read itself stops one byte past `limit`, so a huge file, a FIFO or a device node never fills RAM or holds the UI thread on a stream that does not end.
+pub(super) fn read_for_send(path: &std::path::Path, limit: usize) -> Result<Vec<u8>, ReadRefused> {
+    use std::io::Read;
+    let meta = std::fs::metadata(path).map_err(|e| ReadRefused::Other(format!("metadata: {}", e)))?;
+    if !meta.is_file() {
+        return Err(ReadRefused::Other("not a regular file".to_string()));
+    }
+    // WHY/PROOF: the length is the filesystem's word on a file the user pointed at — read whole first, a file past the limit was already in RAM when the limit refused it.
+    if meta.len() > limit as u64 {
+        return Err(ReadRefused::Oversize(meta.len()));
+    }
+    let mut bytes = Vec::new();
+    // The read is cut one byte past the limit so a file that grew between the metadata and the read is refused whole, never sent half.
+    std::fs::File::open(path)
+        .and_then(|f| f.take(limit as u64 + 1).read_to_end(&mut bytes))
+        .map_err(|e| ReadRefused::Other(format!("read: {}", e)))?;
+    if bytes.len() > limit {
+        return Err(ReadRefused::Oversize(bytes.len() as u64));
+    }
+    Ok(bytes)
+}
 
 pub(super) fn raw_temp_path(kind: crate::types::AttachKind, hash: &[u8; 32], bytes: &[u8]) -> Option<std::path::PathBuf> {
     if kind != crate::types::AttachKind::RawImage {
@@ -74,9 +101,15 @@ impl PhotonApp {
 
     /// Send a dropped/picked file as an attachment (path entry — desktop drop). Reads and forwards to [`Self::send_attachment_from_bytes`].
     pub(super) fn send_attachment_from_path(&mut self, conv: crate::types::ConversationId, path: &str) {
-        let bytes = match std::fs::read(path) {
+        let bytes = match read_for_send(std::path::Path::new(path), MAX_ATTACH) {
             Ok(b) => b,
-            Err(e) => {
+            Err(ReadRefused::Oversize(n)) => {
+                self.ready_toast = Some(tr(Msg::AttachmentLimit).into_owned());
+                self.ready_toast_screen = None;
+                crate::logf!("attach: rejected before the read ({} bytes)", n);
+                return;
+            }
+            Err(ReadRefused::Other(e)) => {
                 crate::logf!("attach: read failed: {}", e);
                 return;
             }
