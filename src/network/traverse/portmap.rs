@@ -103,7 +103,7 @@ fn natpmp(gateway: Ipv4Addr, port: u16, lifetime: Duration) -> Option<Mapping> {
     }
     let ext_port = u16::from_be_bytes([buf[10], buf[11]]);
     let granted = u32::from_be_bytes([buf[12], buf[13], buf[14], buf[15]]);
-    if ext_port == 0 || ext_ip.is_unspecified() || ext_ip.is_private() {
+    if ext_port == 0 || !globally_routable(ext_ip) {
         return None;
     }
     Some(Mapping { external: SocketAddrV4::new(ext_ip, ext_port), lifetime: Duration::from_secs(granted.max(60) as u64), via: "NAT-PMP" })
@@ -135,7 +135,7 @@ fn pcp(gateway: Ipv4Addr, port: u16, lifetime: Duration) -> Option<Mapping> {
     let granted = u32::from_be_bytes([buf[4], buf[5], buf[6], buf[7]]);
     let ext_port = u16::from_be_bytes([buf[42], buf[43]]);
     let ext_ip = Ipv4Addr::new(buf[56], buf[57], buf[58], buf[59]);
-    if ext_port == 0 || ext_ip.is_unspecified() || ext_ip.is_private() || buf[54] != 0xff || buf[55] != 0xff {
+    if ext_port == 0 || !globally_routable(ext_ip) || buf[54] != 0xff || buf[55] != 0xff {
         return None;
     }
     Some(Mapping { external: SocketAddrV4::new(ext_ip, ext_port), lifetime: Duration::from_secs(granted.max(60) as u64), via: "PCP" })
@@ -148,20 +148,92 @@ fn upnp(_gateway: Ipv4Addr, _port: u16, _lifetime: Duration) -> Option<Mapping> 
     None
 }
 
+/// Is `url` a plain-http URL whose host is exactly `gateway`? Every URL UPnP hands us must be (security audit NET-08): the LOCATION of the description and the control URL for the SOAP calls — else a neighbour on the LAN steers our GET and POSTs at any host it likes, loopback and metadata addresses included.
+fn url_host_is(url: &str, gateway: Ipv4Addr) -> bool {
+    let Some(rest) = url.strip_prefix("http://") else {
+        return false;
+    };
+    let authority = rest.split('/').next().unwrap_or("");
+    let host = authority.rsplit_once(':').map_or(authority, |(h, _)| h);
+    host.parse::<Ipv4Addr>().ok() == Some(gateway)
+}
+
+/// Globally routable, or a lie (security audit NET-08): the mapped address becomes our published reflexive seed, so loopback, link-local, CGNAT, multicast, reserved and documentation space are refused along with RFC 1918.
+fn globally_routable(ip: Ipv4Addr) -> bool {
+    let o = ip.octets();
+    !(ip.is_unspecified()
+        || ip.is_private()
+        || ip.is_loopback()
+        || ip.is_link_local()
+        || ip.is_multicast()
+        || ip.is_broadcast()
+        || ip.is_documentation()
+        || o[0] == 0
+        // 100.64.0.0/10, carrier-grade NAT.
+        || (o[0] == 100 && (o[1] & 0xC0) == 64)
+        // 192.0.0.0/24, IETF protocol assignments.
+        || (o[0] == 192 && o[1] == 0 && o[2] == 0)
+        // 198.18.0.0/15, benchmarking.
+        || (o[0] == 198 && (o[1] & 0xFE) == 18)
+        // 240.0.0.0/4, reserved.
+        || o[0] >= 240)
+}
+
+/// The most of a gateway's HTTP reply we read, in bytes: a device description is a few KB and a SOAP answer under one; the rest is cut (security audit NET-08).
+const UPNP_REPLY_LIMIT: u64 = 1 << 16;
+
+/// A gateway reply as text, read to [`UPNP_REPLY_LIMIT`] and no further.
 #[cfg(not(target_os = "ferros"))]
-fn upnp(_gateway: Ipv4Addr, port: u16, lifetime: Duration) -> Option<Mapping> {
+fn upnp_reply_text(resp: reqwest::blocking::Response) -> Option<String> {
+    use std::io::Read;
+    let mut buf = Vec::new();
+    resp.take(UPNP_REPLY_LIMIT).read_to_end(&mut buf).ok()?;
+    Some(String::from_utf8_lossy(&buf).into_owned())
+}
+
+/// The HTTP client for the gateway: a short deadline and NO redirects (security audit NET-08), so a description that answers 302 cannot send the SOAP POSTs elsewhere; the shared client follows redirects by default, which is right for fgtw and wrong here.
+#[cfg(not(target_os = "ferros"))]
+fn upnp_client() -> Option<&'static reqwest::blocking::Client> {
+    static C: std::sync::OnceLock<Option<reqwest::blocking::Client>> = std::sync::OnceLock::new();
+    C.get_or_init(|| {
+        reqwest::blocking::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(Duration::from_secs(3))
+            .build()
+            .ok()
+    })
+    .as_ref()
+}
+
+#[cfg(not(target_os = "ferros"))]
+fn upnp(gateway: Ipv4Addr, port: u16, lifetime: Duration) -> Option<Mapping> {
     let s = UdpSocket::bind("0.0.0.0:0").ok()?;
-    s.set_read_timeout(Some(Duration::from_millis(1500))).ok()?;
     let msearch = "M-SEARCH * HTTP/1.1\r\nHOST: 239.255.255.250:1900\r\nMAN: \"ssdp:discover\"\r\nMX: 1\r\nST: urn:schemas-upnp-org:service:WANIPConnection:1\r\n\r\n";
     s.send_to(msearch.as_bytes(), "239.255.255.250:1900").ok()?;
+    // Only the gateway's own answer counts (security audit NET-08): M-SEARCH is multicast and any host on the LAN may answer first, so replies from elsewhere are skipped until the deadline — each read's timeout is what remains of it.
+    let deadline = std::time::Instant::now() + Duration::from_millis(1500);
     let mut buf = [0u8; 2048];
-    let n = s.recv(&mut buf).ok()?;
-    let reply = String::from_utf8_lossy(&buf[..n]);
+    let reply = loop {
+        let now = std::time::Instant::now();
+        if now >= deadline {
+            return None;
+        }
+        s.set_read_timeout(Some(deadline - now)).ok()?;
+        let (n, src) = s.recv_from(&mut buf).ok()?;
+        if src.ip() != std::net::IpAddr::V4(gateway) {
+            continue;
+        }
+        break String::from_utf8_lossy(&buf[..n]).into_owned();
+    };
     let location = reply
         .lines()
         .find_map(|l| l.get(..9).filter(|h| h.eq_ignore_ascii_case("location:")).map(|_| l[9..].trim().to_string()))?;
-    let http = crate::network::http::blocking_timeout(Duration::from_secs(3));
-    let desc = http.get(&location).send().ok()?.text().ok()?;
+    if !url_host_is(&location, gateway) {
+        crate::log("PORTMAP: UPnP description URL is not on the gateway — refused");
+        return None;
+    }
+    let http = upnp_client()?;
+    let desc = upnp_reply_text(http.get(&location).send().ok()?)?;
     let service_type = if desc.contains("WANIPConnection:2") { "urn:schemas-upnp-org:service:WANIPConnection:2" } else { "urn:schemas-upnp-org:service:WANIPConnection:1" };
     let control = {
         let at = desc.find(service_type)?;
@@ -176,6 +248,10 @@ fn upnp(_gateway: Ipv4Addr, port: u16, lifetime: Duration) -> Option<Mapping> {
         location[..end].to_string()
     };
     let control_url = if control.starts_with("http") { control } else { format!("{base}{control}") };
+    if !url_host_is(&control_url, gateway) {
+        crate::log("PORTMAP: UPnP control URL is not on the gateway — refused");
+        return None;
+    }
     let local = crate::network::udp::get_local_ip()?;
     let secs = lifetime.as_secs();
     let add = format!(
@@ -202,13 +278,12 @@ fn upnp(_gateway: Ipv4Addr, port: u16, lifetime: Duration) -> Option<Mapping> {
         .header("SOAPAction", format!("\"{service_type}#GetExternalIPAddress\""))
         .body(get_ext)
         .send()
-        .ok()?
-        .text()
         .ok()?;
+    let text = upnp_reply_text(text)?;
     let e0 = text.find("<NewExternalIPAddress>")? + "<NewExternalIPAddress>".len();
     let e1 = text[e0..].find("</NewExternalIPAddress>")? + e0;
     let ext_ip: Ipv4Addr = text[e0..e1].trim().parse().ok()?;
-    if ext_ip.is_unspecified() || ext_ip.is_private() {
+    if !globally_routable(ext_ip) {
         return None;
     }
     // IGD leases of 0 mean permanent; we still renew on our cadence so a rebooted router re-learns us.
@@ -249,5 +324,50 @@ pub fn run(port: u16, stop: std::sync::Arc<std::sync::atomic::AtomicBool>) {
                 return;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// NET-08: only a plain-http URL on the gateway itself passes; a redirect target, another LAN host, loopback or a metadata address does not.
+    #[test]
+    fn upnp_urls_must_sit_on_the_gateway() {
+        let gw = Ipv4Addr::new(192, 168, 1, 1);
+        assert!(url_host_is("http://192.168.1.1:5000/rootDesc.xml", gw));
+        assert!(url_host_is("http://192.168.1.1/ctl", gw));
+        assert!(!url_host_is("http://192.168.1.77:5000/rootDesc.xml", gw));
+        assert!(!url_host_is("http://127.0.0.1:8080/", gw));
+        assert!(!url_host_is("http://169.254.169.254/latest/meta-data/", gw));
+        assert!(!url_host_is("https://192.168.1.1/", gw));
+        assert!(!url_host_is("http://router.local/", gw));
+        assert!(!url_host_is("/relative", gw));
+    }
+
+    /// NET-08: an external address a router hands back is published as our reflexive seed, so only globally routable space is accepted.
+    #[test]
+    fn external_address_must_be_globally_routable() {
+        assert!(globally_routable(Ipv4Addr::new(203, 0, 112, 7)));
+        assert!(globally_routable(Ipv4Addr::new(8, 8, 8, 8)));
+        for bad in [
+            Ipv4Addr::UNSPECIFIED,
+            Ipv4Addr::LOCALHOST,
+            Ipv4Addr::new(10, 1, 2, 3),
+            Ipv4Addr::new(172, 16, 0, 9),
+            Ipv4Addr::new(192, 168, 1, 1),
+            Ipv4Addr::new(100, 64, 0, 1),
+            Ipv4Addr::new(100, 127, 255, 254),
+            Ipv4Addr::new(169, 254, 169, 254),
+            Ipv4Addr::new(224, 0, 0, 1),
+            Ipv4Addr::new(240, 0, 0, 1),
+            Ipv4Addr::BROADCAST,
+            Ipv4Addr::new(192, 0, 2, 1),
+            Ipv4Addr::new(198, 18, 0, 1),
+            Ipv4Addr::new(0, 1, 2, 3),
+        ] {
+            assert!(!globally_routable(bad), "{bad} must be refused");
+        }
+        assert!(globally_routable(Ipv4Addr::new(100, 128, 0, 1)));
     }
 }
