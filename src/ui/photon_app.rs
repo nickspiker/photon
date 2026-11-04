@@ -2835,6 +2835,13 @@ pub struct PhotonApp {
     /// Android: a hash-verified APK is staged — the JNI poll hands this path to Kotlin, which fires the system installer (the second click).
     #[cfg(target_os = "android")]
     pub pending_apk_install: Option<String>,
+    /// The staged APK came from the human's own Update press: the screen may install it the moment it is free. An automatic one waits for the service to find no screen (see `take_apk_install`).
+    #[cfg(target_os = "android")]
+    pub pending_apk_manual: bool,
+    /// The human's last Update press, carried from the press to the download it starts.
+    pub update_pressed: bool,
+    /// The held-swap line is logged once per hold, not every frame.
+    update_reexec_held_logged: bool,
     /// One-shot clipboard hand-off to the Android shell (`nativePollClipboardCopy`): the Choreographer frame poll drains it into ClipboardManager. Desktop copies via arboard directly and never touches this.
     pub pending_clipboard_copy: Option<String>,
     /// OFF-GRID add-a-friend (docs/offgrid.md open house): the typed handle + its derived handle_proof, armed by an add submitted while the registry is unreachable. The pt_disc beacon that matches this proof CREATES the contact (device key + address from the beacon) — the registry's job, done by proximity. Cleared on match or on leaving the flow.
@@ -3585,6 +3592,10 @@ impl PhotonApp {
             announced_devices: crate::linear_map::SortedSet::new(),
             #[cfg(target_os = "android")]
             pending_apk_install: None,
+            #[cfg(target_os = "android")]
+            pending_apk_manual: false,
+            update_pressed: false,
+            update_reexec_held_logged: false,
             pending_clipboard_copy: None,
             pending_woods_add: None,
             woods_add_rx: None,

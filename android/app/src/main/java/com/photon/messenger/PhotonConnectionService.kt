@@ -120,6 +120,7 @@ class PhotonConnectionService : Service() {
     private external fun nativeDestroyContext(contextPtr: Long)
     private external fun nativeProtocolBeat(): Long  // the watchdog's heartbeat read
     private external fun nativeServiceTick(contextPtr: Long)  // Headless advance_protocol on the Activity ctx (background delivery)
+    private external fun nativeServicePollApkInstall(contextPtr: Long): String?  // The staged automatic update, while no screen shows and no wave is live (null otherwise)
     private external fun nativeInCallMode(): Boolean  // the Wave page's "Treat waves as phone calls" (waves.in_call, default on)
 
     // Session broadcast — VSF capsule carrying identity_seed + vault_seed + handle_proof.
@@ -555,6 +556,19 @@ class PhotonConnectionService : Service() {
             try {
                 wakeLock.acquire(2_000L)  // safety-net timeout; the tick is milliseconds
                 nativeServiceTick(ptr)
+                // THE SWAP IN A POCKET (Nick 2026-11-04): a staged automatic update installs from here, the moment it is staged, while no screen shows and no wave is live; the native side refuses during a wave (take_apk_install). On the app's own thread, like the tick.
+                if (!PhotonActivity.inForeground) {
+                    nativeServicePollApkInstall(ptr)?.let { apk ->
+                        Thread({
+                            try {
+                                PhotonSelfUpdate.installSession(this, apk)
+                            } catch (e: Exception) {
+                                // No dialog from the background: an install that needs the human waits for their own Update press on the screen.
+                                PhotonLog.e("Update", "background install session failed (${e.message}) — the next Update press on the screen installs it")
+                            }
+                        }, "photon-install").start()
+                    }
+                }
             } catch (e: Exception) {
                 PhotonLog.w(TAG, "requestServiceTick failed", e)
             } finally {

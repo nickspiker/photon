@@ -1099,7 +1099,28 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativePollApkInstall<
     let Some(ctx) = get_context(context_ptr) else {
         return std::ptr::null_mut();
     };
-    match ctx.shell.app().pending_apk_install.take() {
+    // The screen hands over only an update the human pressed for, and never during a wave (PhotonApp::take_apk_install).
+    match ctx.shell.app().take_apk_install(true) {
+        Some(path) => match env.new_string(&path) {
+            Ok(s) => s.into_raw(),
+            Err(_) => std::ptr::null_mut(),
+        },
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// The background service's poll (once a second, only while no screen is in the foreground): the staged automatic update, or null — the swap that happens in a pocket rather than under a hand (Nick 2026-11-04).
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeServicePollApkInstall<'a>(
+    env: JNIEnv<'a>,
+    _class: JClass<'a>,
+    context_ptr: jlong,
+) -> jni::sys::jstring {
+    let Some(ctx) = get_context(context_ptr) else {
+        return std::ptr::null_mut();
+    };
+    match ctx.shell.app().take_apk_install(false) {
         Some(path) => match env.new_string(&path) {
             Ok(s) => s.into_raw(),
             Err(_) => std::ptr::null_mut(),

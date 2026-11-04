@@ -965,45 +965,12 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         // OFF the main thread (2026-09-10): the session write copies and fsyncs the whole APK (~50 MB) — seconds on flash, and the main thread owed the system a focus event meanwhile (ANR "Input dispatching timed out" right after an update prompt). The installer's own UI and result broadcast need nothing from this thread.
         Thread({
             try {
-                installApkSession(path)
+                PhotonSelfUpdate.installSession(this, path)
             } catch (e: Exception) {
                 PhotonLog.e("Update", "session install failed (${e.message}) — falling back to system installer intent")
                 runOnUiThread { installApkIntent(path) }
             }
         }, "photon-install").start()
-    }
-
-    private fun installApkSession(path: String) {
-        val installer = packageManager.packageInstaller
-        val params = android.content.pm.PackageInstaller.SessionParams(
-            android.content.pm.PackageInstaller.SessionParams.MODE_FULL_INSTALL
-        ).apply {
-            setAppPackageName(packageName)
-            if (android.os.Build.VERSION.SDK_INT >= 31) {
-                setRequireUserAction(android.content.pm.PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
-            }
-        }
-        val sessionId = installer.createSession(params)
-        installer.openSession(sessionId).use { session ->
-            java.io.File(path).inputStream().use { input ->
-                session.openWrite("photon-update.apk", 0, -1).use { out ->
-                    input.copyTo(out)
-                    session.fsync(out)
-                }
-            }
-            // MUTABLE on purpose: the installer fills EXTRA_INTENT/EXTRA_STATUS into this PendingIntent.
-            val intent = android.content.Intent(this, PhotonInstallReceiver::class.java).apply {
-                action = "com.photon.messenger.INSTALL_RESULT"
-            }
-            val flags = if (android.os.Build.VERSION.SDK_INT >= 31) {
-                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_MUTABLE
-            } else {
-                android.app.PendingIntent.FLAG_UPDATE_CURRENT
-            }
-            val pi = android.app.PendingIntent.getBroadcast(this, sessionId, intent, flags)
-            PhotonLog.i("Update", "committing install session $sessionId (unattended where permitted)")
-            session.commit(pi.intentSender)
-        }
     }
 
     private fun installApkIntent(path: String) {

@@ -120,6 +120,7 @@ impl PhotonApp {
                 if cfg!(target_os = "android") { ", unmetered, idle — staging the APK for the installer session" } else { "" }
             );
             self.update_release = ChannelCheck::Ready(Some(row));
+            self.update_pressed = false;
             self.spawn_update_apply(crate::network::updates::Channel::Release);
         } else {
             crate::logf!(
@@ -165,6 +166,25 @@ impl PhotonApp {
     }
 
     /// Button click: install the KNOWN row for `channel` (download → verify → swap/stage). No-op if that channel isn't Ready with an installable row, or an apply is already in flight.
+    /// NEVER IN A WAVE (Nick 2026-11-04, after v141 killed a wave between Emma and Brittany five seconds in: "that is the definition of rude"): an update replaces the running process, so it waits while any wave, group wave or key ceremony is live on this device.
+    /// The check-time gate (`on_auto_update_check`) only kept a download from STARTING in a wave; the download takes minutes and the swap came after, so this is asked again at the swap itself, on every platform.
+    pub(super) fn update_swap_blocked(&self) -> bool {
+        self.active_wave.is_some()
+            || self.group_wave.is_some()
+            || self.contacts.iter().any(|c| c.clutch_ceremony_in_progress || c.clutch_keygen_in_progress)
+    }
+
+    /// Android: hand the staged APK to the installer, or keep it parked. `screen` = the caller is the visible screen's frame poll; otherwise it is the background service's poll.
+    /// The screen installs only an update the human pressed for; an automatic one goes from the service while no screen shows, so the swap happens in a pocket, never under a hand. Neither goes while `update_swap_blocked`.
+    #[cfg(target_os = "android")]
+    pub fn take_apk_install(&mut self, screen: bool) -> Option<String> {
+        if self.pending_apk_install.is_none() || self.update_swap_blocked() || (screen && !self.pending_apk_manual) {
+            return None;
+        }
+        crate::logf!("UPDATE: handing the staged APK to the installer from the {}", if screen { "screen (the human pressed Update)" } else { "background service (no screen, no wave)" });
+        self.pending_apk_install.take()
+    }
+
     pub(super) fn spawn_update_apply(&mut self, channel: crate::network::updates::Channel) {
         if self.update_busy {
             return;
@@ -315,6 +335,7 @@ impl PhotonApp {
                     self.update_progress = None;
                     self.update_status = Some(tr(Msg::DownloadedConfirm).into_owned());
                     self.pending_apk_install = Some(path);
+                    self.pending_apk_manual = self.update_pressed;
                 }
                 UpdateEvent::ApplyFailed(e) => {
                     self.update_busy = false;

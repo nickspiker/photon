@@ -1230,8 +1230,10 @@ impl FluorApp<Px> for PhotonApp {
                     use crate::network::updates::Channel;
                     // The two channel buttons install the version they already show (from the page-open auto-check). An "Already on …" button is inert — spawn_update_apply no-ops when the row equals ours.
                     if slot == 1 {
+                        self.update_pressed = true;
                         self.spawn_update_apply(Channel::Release);
                     } else if slot == 2 {
+                        self.update_pressed = true;
                         self.spawn_update_apply(Channel::Dev);
                     }
                 } else if page == SettingsPage::Wave {
@@ -3725,7 +3727,13 @@ impl FluorApp<Px> for PhotonApp {
             self.scene_dirty = true;
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
-        if let Some(exe) = self.update_reexec.take() {
+        // The swap waits out a live wave, group wave or ceremony (update_swap_blocked, Nick 2026-11-04): the new binary is on disk and verified, so the wave's end is the edge that lets it go.
+        if self.update_reexec.is_some() && self.update_swap_blocked() {
+            if !self.update_reexec_held_logged {
+                self.update_reexec_held_logged = true;
+                crate::log("UPDATE: the new binary is ready — holding the swap until the wave or ceremony ends");
+            }
+        } else if let Some(exe) = self.update_reexec.take() {
             crate::log("UPDATE: re-exec into the new binary");
             // The open draft first (2026-10-06): drafts persist on blur/leave/quit and a 60 s deadline, so without this up to a minute of typing died with the image.
             self.flush_draft();

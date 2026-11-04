@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Updates no longer interrupt a wave.** A new version used to download quietly and then install the next time Photon came on screen, which could be five seconds into a call; phones now install it in the background as soon as it arrives, never while a wave or a new connection is under way, and computers hold the switch until the wave ends.
 - **A friend who reinstalled can reconnect with you on their own.** When a friend whose app lost everything adds you again, your device now answers their request instead of ignoring it, because it still remembered the friendship; before, they waited forever on "waiting for you to add" while you were told they were already in your contacts.
 
 ## v141
