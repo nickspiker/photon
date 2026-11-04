@@ -546,7 +546,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- diagnostics ----
         Msg::HardLogs => format!("Kumbukumbu ngumu — kifaa hiki, {}h (andika kila mstari diskini)", fmt_num(24)).into(),
         Msg::LogCleared => "Kumbukumbu zimefutwa".into(),
-        Msg::LogSize(s) => format!("Kumbukumbu: {s}").into(),
         Msg::LogEmpty => "Kumbukumbu ni tupu".into(),
         Msg::LogSent => "Kumbukumbu zimetumwa \u{221a}".into(),
         Msg::SendFailed(e) => format!("Kutuma kumeshindikana: {e}").into(),
@@ -613,7 +612,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LogTitle => "Kumbukumbu".into(),
         Msg::DiagBack => "Rudi".into(),
         Msg::DiagClear => "Futa".into(),
-        Msg::DiagSnapshot => "Picha".into(),
         Msg::DiagSubmit => "Wasilisha".into(),
         Msg::DiagView => "Tazama".into(),
         Msg::OptionalNote => "Dokezo la hiari".into(),

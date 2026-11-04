@@ -539,7 +539,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- diagnostics ----
         Msg::HardLogs => format!("Nhật ký ghi cứng — thiết bị này, {}h (ghi từng dòng xuống đĩa)", fmt_num(24)).into(),
         Msg::LogCleared => "Đã xóa nhật ký".into(),
-        Msg::LogSize(s) => format!("Nhật ký: {s}").into(),
         Msg::LogEmpty => "Nhật ký trống".into(),
         Msg::LogSent => "Đã gửi nhật ký \u{221a}".into(),
         Msg::SendFailed(e) => format!("Gửi thất bại: {e}").into(),
@@ -604,7 +603,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LogTitle => "Nhật ký".into(),
         Msg::DiagBack => "Quay lại".into(),
         Msg::DiagClear => "Xóa".into(),
-        Msg::DiagSnapshot => "Chụp lại".into(),
         Msg::DiagSubmit => "Gửi".into(),
         Msg::DiagView => "Xem".into(),
         Msg::OptionalNote => "Ghi chú tùy chọn".into(),

@@ -6813,7 +6813,6 @@ impl PhotonApp {
                     let submit_disabled = self.log_submit_inflight || self.log_submitted_len == Some(crate::log_size_bytes());
                     flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
                         (&tr(Msg::DiagClear), (btn_base + 0), true, None),
-                        (&tr(Msg::DiagSnapshot), (btn_base + 1), true, None),
                         (&tr(Msg::DiagSubmit), (btn_base + 2), !submit_disabled, None),
                         (&tr(Msg::DiagView), (btn_base + 3), true, None),
                     ], "Open Sans");

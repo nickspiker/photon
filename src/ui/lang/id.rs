@@ -539,7 +539,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- diagnostics ----
         Msg::HardLogs => format!("Log keras — perangkat ini, {}h (tulis setiap baris ke disk)", fmt_num(24)).into(),
         Msg::LogCleared => "Log dibersihkan".into(),
-        Msg::LogSize(s) => format!("Log: {s}").into(),
         Msg::LogEmpty => "Lognya kosong".into(),
         Msg::LogSent => "Log terkirim \u{221a}".into(),
         Msg::SendFailed(e) => format!("Pengiriman gagal: {e}").into(),
@@ -604,7 +603,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LogTitle => "Log".into(),
         Msg::DiagBack => "Kembali".into(),
         Msg::DiagClear => "Bersihkan".into(),
-        Msg::DiagSnapshot => "Cuplikan".into(),
         Msg::DiagSubmit => "Kirim".into(),
         Msg::DiagView => "Lihat".into(),
         Msg::OptionalNote => "Catatan opsional".into(),

@@ -541,7 +541,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- diagnostics ----
         Msg::HardLogs => format!("Hartes Protokoll — dieses Gerät, {}h (jede Zeile auf die Platte schreiben)", fmt_num(24)).into(),
         Msg::LogCleared => "Protokoll geleert".into(),
-        Msg::LogSize(s) => format!("Protokoll: {s}").into(),
         Msg::LogEmpty => "Das Protokoll ist leer".into(),
         Msg::LogSent => "Protokoll gesendet \u{221a}".into(),
         Msg::SendFailed(e) => format!("Senden fehlgeschlagen: {e}").into(),
@@ -606,7 +605,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LogTitle => "Protokoll".into(),
         Msg::DiagBack => "Zurück".into(),
         Msg::DiagClear => "Leeren".into(),
-        Msg::DiagSnapshot => "Momentaufnahme".into(),
         Msg::DiagSubmit => "Senden".into(),
         Msg::DiagView => "Ansehen".into(),
         Msg::OptionalNote => "Notiz, wenn du magst".into(),

@@ -823,7 +823,6 @@ pub enum Msg<'a> {
     HardLogs,
     LogCleared,
     /// Diagnostics: the log file's size, already formatted in the current base (crate::dms_size).
-    LogSize(&'a str),
     LogEmpty,
     LogSent,
     SendFailed(&'a str),
@@ -949,7 +948,6 @@ pub enum Msg<'a> {
     LogTitle,
     DiagBack,
     DiagClear,
-    DiagSnapshot,
     DiagSubmit,
     DiagView,
     /// Ideas page: the explainer.

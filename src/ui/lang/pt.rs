@@ -548,7 +548,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- diagnostics ----
         Msg::HardLogs => format!("Registros duros — este dispositivo, {}h (grava cada linha em disco)", fmt_num(24)).into(),
         Msg::LogCleared => "Registro limpo".into(),
-        Msg::LogSize(s) => format!("Registro: {s}").into(),
         Msg::LogEmpty => "O registro está vazio".into(),
         Msg::LogSent => "Registro enviado \u{221a}".into(),
         Msg::SendFailed(e) => format!("Falha ao enviar: {e}").into(),
@@ -613,7 +612,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LogTitle => "Registro".into(),
         Msg::DiagBack => "Voltar".into(),
         Msg::DiagClear => "Limpar".into(),
-        Msg::DiagSnapshot => "Instantâneo".into(),
         Msg::DiagSubmit => "Enviar".into(),
         Msg::DiagView => "Ver".into(),
         Msg::OptionalNote => "Nota opcional".into(),

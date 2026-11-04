@@ -551,7 +551,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- diagnostics ----
         Msg::HardLogs => format!("Journaux durs — cet appareil, {}h (chaque ligne écrite sur le disque)", fmt_num(24)).into(),
         Msg::LogCleared => "Journal effacé".into(),
-        Msg::LogSize(s) => format!("Journal : {s}").into(),
         Msg::LogEmpty => "Le journal est vide".into(),
         Msg::LogSent => "Journal envoyé \u{221a}".into(),
         Msg::SendFailed(e) => format!("Échec de l\u{2019}envoi : {e}").into(),
@@ -616,7 +615,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LogTitle => "Journal".into(),
         Msg::DiagBack => "Retour".into(),
         Msg::DiagClear => "Effacer".into(),
-        Msg::DiagSnapshot => "Instantané".into(),
         Msg::DiagSubmit => "Envoyer".into(),
         Msg::DiagView => "Voir".into(),
         Msg::OptionalNote => "Note facultative".into(),

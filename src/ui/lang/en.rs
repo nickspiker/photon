@@ -654,7 +654,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- diagnostics ----
         Msg::HardLogs => format!("Hard logs — this device, {}h (write every line to disk)", fmt_num(24)).into(),
         Msg::LogCleared => "Log cleared".into(),
-        Msg::LogSize(s) => format!("Log: {s}").into(),
         Msg::LogEmpty => "Log is empty".into(),
         Msg::LogSent => "Log sent \u{221a}".into(),
         Msg::SendFailed(e) => format!("Send failed: {e}").into(),
@@ -765,7 +764,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LogTitle => "Log".into(),
         Msg::DiagBack => "Back".into(),
         Msg::DiagClear => "Clear".into(),
-        Msg::DiagSnapshot => "Snapshot".into(),
         Msg::DiagSubmit => "Submit".into(),
         Msg::DiagView => "View".into(),
         Msg::IdeasIntro => "Something Photon should do, or something it does wrong? Say it here. Everything sent here is public, with no name, no handle and no device on it, only its own id, and everyone can see what becomes of it. As you type, the ideas already sent that share your words show up below the box, so you can tell whether yours is already in.".into(),

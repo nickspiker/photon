@@ -540,7 +540,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- diagnostics ----
         Msg::HardLogs => format!("Matigas na log — ang device na ito, {}h (isinusulat sa disk ang bawat linya)", fmt_num(24)).into(),
         Msg::LogCleared => "Nabura ang log".into(),
-        Msg::LogSize(s) => format!("Log: {s}").into(),
         Msg::LogEmpty => "Walang laman ang log".into(),
         Msg::LogSent => "Naipadala ang log \u{221a}".into(),
         Msg::SendFailed(e) => format!("Hindi naipadala: {e}").into(),
@@ -605,7 +604,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LogTitle => "Log".into(),
         Msg::DiagBack => "Balik".into(),
         Msg::DiagClear => "Burahin".into(),
-        Msg::DiagSnapshot => "Kuha".into(),
         Msg::DiagSubmit => "Ipadala".into(),
         Msg::DiagView => "Tingnan".into(),
         Msg::OptionalNote => "Opsyonal na tala".into(),

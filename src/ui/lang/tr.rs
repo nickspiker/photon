@@ -543,7 +543,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- diagnostics ----
         Msg::HardLogs => format!("Sert günlükler — bu cihaz, {} saat (her satır diske yazılır)", fmt_num(24)).into(),
         Msg::LogCleared => "Günlük temizlendi".into(),
-        Msg::LogSize(s) => format!("Günlük: {s}").into(),
         Msg::LogEmpty => "Günlük boş".into(),
         Msg::LogSent => "Günlük gönderildi \u{221a}".into(),
         Msg::SendFailed(e) => format!("Gönderim başarısız: {e}").into(),
@@ -609,7 +608,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LogTitle => "Günlük".into(),
         Msg::DiagBack => "Geri".into(),
         Msg::DiagClear => "Temizle".into(),
-        Msg::DiagSnapshot => "Anlık görüntü".into(),
         Msg::DiagSubmit => "Gönder".into(),
         Msg::DiagView => "Gör".into(),
         Msg::OptionalNote => "İsteğe bağlı not".into(),

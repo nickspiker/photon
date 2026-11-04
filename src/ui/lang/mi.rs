@@ -542,7 +542,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- diagnostics ----
         Msg::HardLogs => format!("Rangitaki mārō — tēnei pūrere, {}h (tuhia ia rārangi ki te kōpae)", fmt_num(24)).into(),
         Msg::LogCleared => "Kua ūkuia te rangitaki".into(),
-        Msg::LogSize(s) => format!("Rangitaki: {s}").into(),
         Msg::LogEmpty => "Kāore he rangitaki".into(),
         Msg::LogSent => "Kua tukuna te rangitaki \u{221a}".into(),
         Msg::SendFailed(e) => format!("I rahua te tuku: {e}").into(),
@@ -607,7 +606,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LogTitle => "Rangitaki".into(),
         Msg::DiagBack => "Hoki".into(),
         Msg::DiagClear => "Ūkui".into(),
-        Msg::DiagSnapshot => "Whakaahua".into(),
         Msg::DiagSubmit => "Tuku".into(),
         Msg::DiagView => "Titiro".into(),
         Msg::OptionalNote => "He kupu āpiti (kāore e herea)".into(),

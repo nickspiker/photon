@@ -553,7 +553,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- diagnostics ----
         Msg::HardLogs => format!("Жорсткий журнал — цей пристрій, {}год (кожен рядок пишеться на диск)", fmt_num(24)).into(),
         Msg::LogCleared => "Журнал очищено".into(),
-        Msg::LogSize(s) => format!("Журнал: {s}").into(),
         Msg::LogEmpty => "Журнал порожній".into(),
         Msg::LogSent => "Журнал надіслано \u{221a}".into(),
         Msg::SendFailed(e) => format!("Надіслати не вдалося: {e}").into(),
@@ -619,7 +618,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LogTitle => "Журнал".into(),
         Msg::DiagBack => "Назад".into(),
         Msg::DiagClear => "Очистити".into(),
-        Msg::DiagSnapshot => "Знімок".into(),
         Msg::DiagSubmit => "Надіслати".into(),
         Msg::DiagView => "Дивитися".into(),
         Msg::OptionalNote => "Нотатка (необов'язкова)".into(),

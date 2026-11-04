@@ -572,7 +572,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- diagnostics ----
         Msg::HardLogs => format!("Жёсткий журнал — это устройство, {} ч (каждая строка пишется на диск)", fmt_num(24)).into(),
         Msg::LogCleared => "Журнал очищен".into(),
-        Msg::LogSize(s) => format!("Журнал: {s}").into(),
         Msg::LogEmpty => "Журнал пуст".into(),
         Msg::LogSent => "Журнал отправлен \u{221a}".into(),
         Msg::SendFailed(e) => format!("Отправка не удалась: {e}").into(),
@@ -643,7 +642,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LogTitle => "Журнал".into(),
         Msg::DiagBack => "Назад".into(),
         Msg::DiagClear => "Очистить".into(),
-        Msg::DiagSnapshot => "Снимок".into(),
         Msg::DiagSubmit => "Отправить".into(),
         Msg::DiagView => "Смотреть".into(),
         Msg::OptionalNote => "Необязательная заметка".into(),

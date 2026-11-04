@@ -1296,15 +1296,6 @@ impl FluorApp<Px> for PhotonApp {
                         // "Clear" → wipe the on-device log; the next line reopens a fresh, empty file.
                         crate::clear_log();
                         self.ready_toast = Some(tr(Msg::LogCleared).into_owned());
-                    } else if slot == 1 {
-                        // "Snapshot" → a peek at the current log size (a cheap "there's something to send" confirmation; the durable copy now lives on FGTW after Submit, not a local freeze).
-                        match crate::snapshot_log_bytes() {
-                            Some(b) => {
-                                self.ready_toast =
-                                    Some(tr(Msg::LogSize(&crate::dms_size(b.len() as u64))).into_owned())
-                            }
-                            None => self.ready_toast = Some(tr(Msg::LogEmpty).into_owned()),
-                        }
                     } else if slot == 2 {
                         // "Submit" → upload the log + optional note to FGTW (outbound HTTPS, NAT-immune — works where P2P is failing, no USB pull needed).
                         // Greyed guard — the disabled pill stamps no hit id, but the hit map is a frame stale right after a success, so a fast second tap could still dispatch here. Same predicate as the render.

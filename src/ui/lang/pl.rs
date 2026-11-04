@@ -548,7 +548,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- diagnostics ----
         Msg::HardLogs => format!("Twarde logi — to urządzenie, {}h (każdy wiersz zapisywany na dysk)", fmt_num(24)).into(),
         Msg::LogCleared => "Log wyczyszczony".into(),
-        Msg::LogSize(s) => format!("Log: {s}").into(),
         Msg::LogEmpty => "Log jest pusty".into(),
         Msg::LogSent => "Log wysłany \u{221a}".into(),
         Msg::SendFailed(e) => format!("Wysyłka nie powiodła się: {e}").into(),
@@ -614,7 +613,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LogTitle => "Log".into(),
         Msg::DiagBack => "Wstecz".into(),
         Msg::DiagClear => "Wyczyść".into(),
-        Msg::DiagSnapshot => "Migawka".into(),
         Msg::DiagSubmit => "Wyślij".into(),
         Msg::DiagView => "Podgląd".into(),
         Msg::OptionalNote => "Notatka (opcjonalna)".into(),

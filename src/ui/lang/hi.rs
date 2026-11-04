@@ -549,7 +549,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- diagnostics ----
         Msg::HardLogs => format!("पक्के लॉग — यह डिवाइस, {}घं (हर पंक्ति डिस्क पर लिखी जाती है)", fmt_num(24)).into(),
         Msg::LogCleared => "लॉग साफ़ हो गया".into(),
-        Msg::LogSize(s) => format!("लॉग: {s}").into(),
         Msg::LogEmpty => "लॉग ख़ाली है".into(),
         Msg::LogSent => "लॉग भेज दिया \u{221a}".into(),
         Msg::SendFailed(e) => format!("भेजना नाकाम: {e}").into(),
@@ -615,7 +614,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LogTitle => "लॉग".into(),
         Msg::DiagBack => "वापस".into(),
         Msg::DiagClear => "साफ़ करो".into(),
-        Msg::DiagSnapshot => "स्नैपशॉट".into(),
         Msg::DiagSubmit => "भेजो".into(),
         Msg::DiagView => "देखो".into(),
         Msg::OptionalNote => "चाहो तो एक नोट".into(),
