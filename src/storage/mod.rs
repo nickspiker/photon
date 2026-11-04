@@ -1015,7 +1015,65 @@ pub fn runtime_dir() -> std::path::PathBuf {
             return std::path::PathBuf::from(d).join("photon");
         }
     }
-    std::env::temp_dir().join("photon")
+    #[cfg(unix)]
+    {
+        private_temp_runtime_dir()
+    }
+    // Windows: the OS temp root is already the user's own (its ACL admits nobody else).
+    #[cfg(not(unix))]
+    {
+        std::env::temp_dir().join("photon")
+    }
+}
+
+/// The runtime dir when no XDG_RUNTIME_DIR names one (macOS, a bare SSH session, some containers): a PER-USER directory under the OS temp root, made 0700 and checked to be ours and no symlink (security audit UPW-013).
+/// `/tmp/photon` was one directory for every user of the machine, so another user could pre-create it and read the plaintext attachment temps, or redirect the writes thru a symlink.
+/// The name is fixed per uid so a second launch finds the resident's control socket; a path that fails the check is never used, and the run falls back to a fresh directory only this process knows — which costs the second-launch handoff and nothing else.
+/// Chosen once per process: the fallback name is random, and every artifact of the run must land in the same place.
+#[cfg(unix)]
+fn private_temp_runtime_dir() -> std::path::PathBuf {
+    static CHOSEN: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+    CHOSEN
+        .get_or_init(|| {
+            let uid = unsafe { libc::getuid() };
+            let base = std::env::temp_dir();
+            let mine = base.join(format!("photon-{}", uid));
+            if private_dir_ok(&mine, uid) {
+                return mine;
+            }
+            let fresh = base.join(format!("photon-{}-{}", uid, hex::encode(rand::random::<[u8; 8]>())));
+            crate::logf!("RUNTIME: {} is not a private directory of ours — this run uses {} instead (second-launch handoff disabled)", mine.display(), fresh.display());
+            if !private_dir_ok(&fresh, uid) {
+                crate::logf!("RUNTIME: {} could not be made private either — every runtime artifact of this run will fail", fresh.display());
+            }
+            fresh
+        })
+        .clone()
+}
+
+/// Make `path` a 0700 directory when absent, and accept it only as a real directory (no symlink) owned by `uid` with no group or other bits; one of ours that is open is tightened.
+#[cfg(unix)]
+fn private_dir_ok(path: &std::path::Path, uid: u32) -> bool {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    match std::fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => {
+            crate::logf!("RUNTIME: {} create failed: {}", path.display(), e);
+            return false;
+        }
+    }
+    // symlink_metadata, never metadata: a symlink planted at the name must read as the symlink it is, not as whatever it points at.
+    let Ok(m) = std::fs::symlink_metadata(path) else {
+        return false;
+    };
+    if !m.is_dir() || m.uid() != uid {
+        return false;
+    }
+    if m.mode() & 0o077 != 0 && std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).is_err() {
+        return false;
+    }
+    true
 }
 
 /// A runtime artifact path keyed to the DATA dir it guards: two instances on different data dirs (the PHOTON_DATA_DIR two-party dev setup) must never share a lock or a control socket.
@@ -1326,5 +1384,38 @@ mod tests {
         // And the identity scope round-trips.
         again.write("state/probe", b"x").unwrap();
         assert_eq!(again.read("state/probe").unwrap(), Some(b"x".to_vec()));
+    }
+}
+
+#[cfg(all(test, unix))]
+mod private_dir_tests {
+    use super::private_dir_ok;
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    /// UPW-013: the fallback runtime dir is made 0700, an open one of ours is tightened, and a symlink, a file or another user's directory is refused.
+    #[test]
+    fn private_dir_is_ours_0700_and_never_a_symlink() {
+        let uid = unsafe { libc::getuid() };
+        let base = std::env::temp_dir().join(format!("photon-privdir-{}", std::process::id()));
+        if let Err(e) = std::fs::remove_dir_all(&base) {
+            assert_eq!(e.kind(), std::io::ErrorKind::NotFound);
+        }
+        std::fs::create_dir_all(&base).unwrap();
+        let fresh = base.join("fresh");
+        assert!(private_dir_ok(&fresh, uid));
+        assert_eq!(std::fs::metadata(&fresh).unwrap().mode() & 0o777, 0o700);
+        let open = base.join("open");
+        std::fs::create_dir(&open).unwrap();
+        std::fs::set_permissions(&open, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(private_dir_ok(&open, uid));
+        assert_eq!(std::fs::metadata(&open).unwrap().mode() & 0o777, 0o700);
+        let link = base.join("link");
+        std::os::unix::fs::symlink(&open, &link).unwrap();
+        assert!(!private_dir_ok(&link, uid));
+        assert!(!private_dir_ok(&fresh, uid + 1));
+        let file = base.join("file");
+        std::fs::write(&file, b"x").unwrap();
+        assert!(!private_dir_ok(&file, uid));
+        std::fs::remove_dir_all(&base).unwrap();
     }
 }
