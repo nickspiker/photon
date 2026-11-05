@@ -195,7 +195,8 @@ const STRANGER_SECTIONS: [&str; 6] = ["clutch_complete", "friend_knock", "fleet_
 /// NET-09: `Some(section)` when `bytes` is a VSF frame signed by a key that is no contact, sibling, group member or ourselves AND whose primary section is not one a stranger may send; `None` admits it to the parse ladder.
 /// A frame with no readable signer is admitted as before: every parser refuses it itself, and nothing a stranger gains from an unsigned frame is worth a second grammar here.
 /// The section name is read off a VERIFIED header (`read_verified`: provenance hash and signature, once) — a stranger's frame that does not verify is refused outright, and one that does costs one rung's work instead of every rung's.
-fn stranger_refusal(bytes: &[u8], contacts: &ContactPubkeys, our: &[u8; 32]) -> Option<String> {
+/// The refusal carries the signer it names, so the UI can tell a stranger from a contact whose fleet moved under a fold we never refreshed (StatusUpdate::StrangerFrame).
+fn stranger_refusal(bytes: &[u8], contacts: &ContactPubkeys, our: &[u8; 32]) -> Option<(String, [u8; 32])> {
     let Ok(signer) = vsf::verification::extract_signer_pubkey(bytes) else {
         return None;
     };
@@ -206,13 +207,13 @@ fn stranger_refusal(bytes: &[u8], contacts: &ContactPubkeys, our: &[u8; 32]) -> 
         return None;
     }
     let Ok((header, _)) = vsf::verification::read_verified(bytes, None) else {
-        return Some("unverified".to_string());
+        return Some(("unverified".to_string(), signer));
     };
     let section = header.fields.first().map(|f| f.name.clone()).unwrap_or_default();
     if STRANGER_SECTIONS.contains(&section.as_str()) {
         return None;
     }
-    Some(section)
+    Some((section, signer))
 }
 
 /// NET-09: how many frames the stranger gate has refused, logged at every power of two so a flood costs a few lines.
@@ -2582,8 +2583,10 @@ async fn run_checker(
                         // THE STRANGER GATE (security audit NET-09): a signer we do not know — no contact, no sibling, no group member — may only speak the few frames a stranger has business sending: the CLUTCH proof (a freshly reconciled sibling's key is not yet in the allowlist, see below), a friend knock, and the fleet join and chain asks, whose admission the UI thread decides.
                         // Everything else from an unknown key is dropped here on a header read (the signer key and the TOC section name are cheap to pull) before any rung of the ladder hashes and verifies the frame, so a stranger cannot spend our receive loop on signatures that verify under a key they made, nor fill the UI queue with the updates those rungs would emit.
                         // The PT path has carried the same gate since the ~500 KB offer; this is the UDP and relay half of it.
-                        if let Some(section) = stranger_refusal(msg_bytes, &contacts_recv, &our_device_pk) {
+                        if let Some((section, signer)) = stranger_refusal(msg_bytes, &contacts_recv, &our_device_pk) {
                             stranger_drop_log(&section, msg_bytes.len(), src_addr);
+                            // The stale-fold edge (field 2026-11-05, Daniel): a contact whose phone moved keys speaks from a key our fold has never seen, and every frame of theirs dies here, the ceremony offer included; the UI re-reads that contact's fleet, once per key per session.
+                            send_status_update(&status_tx_recv, StatusUpdate::StrangerFrame { sender_pubkey: DevicePubkey::from_bytes(signer) }, &event_proxy_recv);
                             continue;
                         }
 

@@ -775,6 +775,9 @@ pub fn recover_fleet_key(
 /// That old key is still derivable here (ANDROID_ID survives a reinstall), so it does what the root conversion does, minus the vault: sponsors the new key into the chain, wraps the fleet key for it, and departs.
 /// Only when the legacy key IS a member and the current key is not; anything else is a real JoinOurs and goes to the human. Returns whether the phone is now a member under its current key.
 // MIGRATION-EXPIRES: 2027-02-01 — the ANDROID_ID key as proof of ownership for a vault-less phone, kept while phones that never converted are still in the field; delete with the ANDROID ROOT CONVERSION PIN.
+/// The self-sponsor moved this phone's key on the attest worker, which cannot reach the UI: the UI's tick takes this once its session and contacts are in, and pushes the chain to the siblings and every contact's devices, so friends learn the new key from this phone rather than by luck (Daniel, 2026-11-05: Nick's desktop never re-read his fleet, and refused his ceremony offer as a stranger's for an hour).
+pub static CHAIN_PUSH_OWED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 #[cfg(target_os = "android")]
 pub fn self_sponsor_from_legacy_root(handle_proof: &[u8; 32], identity_seed: &[u8; 32], chain: &MembershipBlob, current: &Keypair) -> bool {
     let Ok(legacy_root) = tohu::device::android_id() else {
@@ -818,6 +821,7 @@ pub fn self_sponsor_from_legacy_root(handle_proof: &[u8; 32], identity_seed: &[u
         Ok(()) => crate::logf!("ROOT: legacy key {} left the fleet", crate::fp(&old_pub)),
         Err(e) => crate::logf!("ROOT: the legacy key's departure did not publish ({}); the cleanup at a later start retries", e),
     }
+    CHAIN_PUSH_OWED.store(true, std::sync::atomic::Ordering::Release);
     true
 }
 

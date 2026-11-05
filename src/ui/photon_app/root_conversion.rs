@@ -43,6 +43,13 @@ impl PhotonApp {
             self.fleet_chain_store();
             crate::log_err!(done.send(()), "the chain-push answer to the root conversion worker");
         }
+        // The self-sponsor's push (fleet::CHAIN_PUSH_OWED), taken once the session and the restored contacts are in, so it reaches someone.
+        if self.session.is_some() && self.contacts.iter().any(|c| !c.is_sibling) && fleet::CHAIN_PUSH_OWED.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            crate::log("ROOT: the self-sponsored key move goes to the siblings and every contact's devices");
+            self.fleet_chain_push(&[]);
+            self.fleet_chain_push_to_contacts();
+            self.fleet_chain_store();
+        }
         if self.root_conversion_started {
             return;
         }

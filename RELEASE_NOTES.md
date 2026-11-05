@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **A friend whose phone changed keys is recognised again on its own.** When a friend's phone moves to a new key and your device does not know it yet, your device now re-reads that friend's list of devices the first time it hears from the new key, instead of refusing everything from it; a phone that moves its own key also tells its friends straight away.
 
 ## v143
 - **Phones update soon after a release, in your pocket.** A release notice now wakes Photon to check, download and install the update right away in the background, instead of waiting until you next pick the phone up.

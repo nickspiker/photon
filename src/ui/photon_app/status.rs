@@ -5681,6 +5681,17 @@ impl PhotonApp {
                 self.stranger_seen.remove(0);
             }
             self.stranger_seen.push(stranger);
+            // The contact whose phonebook entries already name this key (an address record is signed by the device, so a stranger cannot plant one): its fold is the stale one, so its fleet is read again, from its own devices first and the seed after (field 2026-11-05, Daniel: phonebook adopted his new key at 21:35, the fold never followed, and the stranger gate refused his ceremony offer for an hour).
+            let owners: Vec<[u8; 32]> = self
+                .contacts
+                .iter()
+                .filter(|c| !c.is_sibling && c.device_endpoints.iter().any(|e| e.pubkey == stranger))
+                .map(|c| c.handle_proof)
+                .collect();
+            if !owners.is_empty() {
+                crate::logf!("FLEET: a signed frame from device {}, which the phonebook names for {} contact(s) whose fold does not — re-reading their fleet", crate::fp(&stranger), owners.len());
+                self.spawn_contact_fleet_refresh(owners);
+            }
             if !self.fleet_asked.is_empty() {
                 crate::logf!("FLEET: a signed frame from unknown device {} — asking the seed for the {} contact(s) whose chain the mesh never sent", crate::fp(&stranger), self.fleet_asked.len());
                 let standing = self.fleet_asked.clone();
