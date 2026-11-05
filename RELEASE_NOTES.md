@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Phones update soon after a release, in your pocket.** A release notice now wakes Photon to check, download and install the update right away in the background, instead of waiting until you next pick the phone up.
 - **A call outranks everything else your device sends.** While you are in a wave or a beam, catching up on history and sending files slow to a trickle on every connection, so they can no longer crowd out your voice on a slow line; chat messages still go straight through, and everything resumes at full speed when the call ends.
 - **A reinstalled phone that never moved to its hardware key gets its identity back.** If a phone still on its old key was reinstalled, signing in said someone else already had the name, when that someone was the phone itself; the phone now recognises its own old key, moves the identity onto its new key, and signs in.
 - **A phone tells you when it could not update itself.** If your phone's app scanner blocks Photon's automatic update, you now get a notification that opens the update so you can install it yourself in two taps, instead of quietly staying on an old version that stops reaching your friends.

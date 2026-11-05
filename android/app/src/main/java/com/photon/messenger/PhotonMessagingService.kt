@@ -62,6 +62,9 @@ class PhotonMessagingService : FirebaseMessagingService() {
                 // Release notice off the `updates` topic — a deploy shipped. Flag the manifest poll due; the check runs on the next UI tick (a dozed phone learns on next open — updates aren't message-urgent, so no wakelock ceremony here). Advisory only: what installs is still gated by the manifest signature + stamp window.
                 PhotonLog.d(TAG, "Release notice — flagging update check")
                 nativeUpdateNoticeReceived()
+                // ACT ON IT NOW (Nick 2026-11-05: an update sat for three or four hours after its notice, then landed the moment the phone was picked up for a wave): wake the app the way a doorbell does, so the check, the download and the background install run in the pocket rather than on the next pick-up.
+                // The install itself still waits out any wave and any screen (take_apk_install), so waking early can only move it away from the human, never onto them.
+                PhotonConnectionService.live?.wakeFromDoorbell()
             }
             "peer_update" -> {
                 PhotonLog.d(TAG, "Peer update received from FGTW")
