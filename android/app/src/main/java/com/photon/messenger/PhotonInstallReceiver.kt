@@ -22,7 +22,14 @@ class PhotonInstallReceiver : BroadcastReceiver() {
                 PhotonLog.i("Update", "self-update installed")
                 PhotonUpdateReceiver.bringBack(context)
             }
-            else -> PhotonLog.e("Update", "install failed: status=$status ${intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: ""}")
+            else -> {
+                val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: ""
+                PhotonLog.e("Update", "install failed: status=$status $message")
+                // A scanner refusal (Play Protect: STATUS_FAILURE_BLOCKED, or the session aborted with INSTALL_FAILED_VERIFICATION_FAILURE) is the one failure the human can fix in a minute, so it is the one they are told about.
+                if (status == PackageInstaller.STATUS_FAILURE_BLOCKED || message.contains("VERIFICATION", ignoreCase = true)) {
+                    PhotonSelfUpdate.notifyBlocked(context, if (message.isNotEmpty()) message else "status $status")
+                }
+            }
         }
     }
 }

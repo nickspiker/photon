@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **A phone tells you when it could not update itself.** If your phone's app scanner blocks Photon's automatic update, you now get a notification that opens the update so you can install it yourself in two taps, instead of quietly staying on an old version that stops reaching your friends.
 - **A group invitation follows a reconnected friend.** When a friend who reinstalled reconnects with you, any group you had invited them to is offered again straight away, instead of waiting for them to go offline and come back.
 
 ## v142
