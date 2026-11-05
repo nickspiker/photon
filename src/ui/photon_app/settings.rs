@@ -656,7 +656,7 @@ impl PhotonApp {
             changed |= fs.set(k, v, now);
         }
         if changed {
-            crate::logf!("SETTINGS: display.window = ({x},{y}) {w}x{h} (device-local)");
+            crate::logf!("SETTINGS: display.window = ({},{}) {}x{} (device-local)", x, y, w, h);
             self.persist_and_push_settings();
         }
     }
@@ -707,7 +707,7 @@ impl PhotonApp {
         let key = format!("fleet.name.{}", hex::encode(pk));
         let fs = self.fleet_settings.as_mut().unwrap();
         if fs.set(&key, vsf::VsfType::x(name.clone()), now) {
-            crate::logf!("SETTINGS: {key} = \"{name}\" (machine name, fleet-linked)");
+            crate::logf!("SETTINGS: {} = \"{}\" (machine name, fleet-linked)", key, name);
             self.persist_and_push_settings();
         }
     }

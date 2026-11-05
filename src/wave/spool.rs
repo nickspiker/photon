@@ -93,7 +93,7 @@ pub fn recover_orphans() -> Vec<(SpoolTicket, [u8; 32], i64, [u8; 8])> {
             }
             _ => {
                 if crate::log_err!(std::fs::remove_file(e.path()), "WAVE: removing the stray spool file {name}") {
-                    crate::logf!("WAVE: stray spool file removed ({name})");
+                    crate::logf!("WAVE: stray spool file removed ({})", name);
                 }
             }
         }

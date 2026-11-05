@@ -771,6 +771,56 @@ pub fn recover_fleet_key(
     fgtw::client::recover_fleet_key(&PhotonTransport, handle_proof, device_key, identity_seed)
 }
 
+/// THE PHONE SPONSORS ITSELF (field 2026-11-05, Daniel): an Android phone whose fleet member is still its legacy ANDROID_ID key, whose vault is gone (a reinstall), comes up on its Widevine key, which the fleet has never seen, and attest says "someone already answers to this name" — its own old key.
+/// That old key is still derivable here (ANDROID_ID survives a reinstall), so it does what the root conversion does, minus the vault: sponsors the new key into the chain, wraps the fleet key for it, and departs.
+/// Only when the legacy key IS a member and the current key is not; anything else is a real JoinOurs and goes to the human. Returns whether the phone is now a member under its current key.
+// MIGRATION-EXPIRES: 2027-02-01 — the ANDROID_ID key as proof of ownership for a vault-less phone, kept while phones that never converted are still in the field; delete with the ANDROID ROOT CONVERSION PIN.
+#[cfg(target_os = "android")]
+pub fn self_sponsor_from_legacy_root(handle_proof: &[u8; 32], identity_seed: &[u8; 32], chain: &MembershipBlob, current: &Keypair) -> bool {
+    let Ok(legacy_root) = tohu::device::android_id() else {
+        return false;
+    };
+    let old = DeviceSigner::Pq(SigningBundle::derive(&legacy_root));
+    let old_pub = old.keypair().public.to_bytes();
+    let me = current.public.to_bytes();
+    if old_pub == me {
+        return false;
+    }
+    let Ok(members) = chain.fold() else {
+        return false;
+    };
+    if !members.contains(&old_pub) || members.contains(&me) {
+        return false;
+    }
+    crate::logf!("ROOT: the fleet's member here is this phone's legacy key {} and its vault is gone — the old key sponsors the current key {}", crate::fp(&old_pub), crate::fp(&me));
+    hold_chain(chain);
+    let new = signer_for(current);
+    let req = make_bind_request(&new, identity_seed, handle_proof, &[0u8; 32]);
+    if let Err(e) = bind_device_held(&old, handle_proof, &req) {
+        crate::logf!("ROOT: the old key's add of the current key failed ({}); the human is asked as before", e);
+        return false;
+    }
+    // The fleet key: the old key opens its own wrap and grows the fan-out for the current key, so the roster and the backup open here too. A fleet with no fan-out yet has nothing to wrap; the key sync establishes one.
+    match recover_fleet_key(handle_proof, old.keypair(), identity_seed) {
+        Ok(Some(k)) => {
+            let now: Vec<[u8; 32]> = held_chain(handle_proof).and_then(|c| c.fold().ok()).unwrap_or_default();
+            match fgtw::client::grow_fleet_wraps(&PhotonTransport, handle_proof, &old, &k, &now, identity_seed) {
+                Ok(revision) => crate::logf!("ROOT: fan-out grown to revision {} for the current key", revision),
+                Err(e) => crate::logf!("ROOT: fan-out grow failed ({}); the key sync at the next start retries", e),
+            }
+        }
+        Ok(None) => crate::log("ROOT: the old key holds no wrap of the fleet key either — nothing to hand on"),
+        Err(e) => crate::logf!("ROOT: fleet key recovery for the old key failed ({})", e),
+    }
+    let t = vsf::eagle_time_oscillations();
+    let consent = fgtw::protocol::depart_consent(&old, handle_proof, t);
+    match depart_device_consented(&new, handle_proof, &old_pub, t, &consent) {
+        Ok(()) => crate::logf!("ROOT: legacy key {} left the fleet", crate::fp(&old_pub)),
+        Err(e) => crate::logf!("ROOT: the legacy key's departure did not publish ({}); the cleanup at a later start retries", e),
+    }
+    true
+}
+
 /// Recover the current fleet key, or ESTABLISH — always CARRYING the fleet's state across a key boundary (docs/fleet-key.md cutover). The cases:
 /// - Readable fan-out with our wrap → the key (plain recovery).
 /// - Readable fan-out, no wrap for us → None (fresh bind: the sponsor's grow releases the key — the two-phase gate).

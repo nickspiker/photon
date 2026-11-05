@@ -497,7 +497,8 @@ impl HandleQuery {
                         Ok(Some(blob)) => fgtw::attest::SeedAnswer::Chain(blob),
                         Err(_) => fgtw::attest::SeedAnswer::Unreachable,
                     };
-                    let outcome = match fgtw::attest::attest_verdict(&handle_proof, &me, None, &[], seed) {
+                    #[allow(unused_mut)]
+                    let mut outcome = match fgtw::attest::attest_verdict(&handle_proof, &me, None, &[], seed) {
                         fgtw::attest::AttestVerdict::Fresh => ProbeOutcome::Fresh,
                         fgtw::attest::AttestVerdict::Member => ProbeOutcome::Member,
                         // The chain sits at the slot we queried → ours to attest/join (actual enrolment still needs a sponsor).
@@ -518,6 +519,15 @@ impl HandleQuery {
                             continue;
                         }
                     };
+                    // A reinstalled phone whose fleet member is its own legacy key: the old key sponsors this one, and the attest proceeds as a member (fleet.rs self_sponsor_from_legacy_root).
+                    #[cfg(target_os = "android")]
+                    if outcome == ProbeOutcome::JoinOurs {
+                        if let Ok(Some(blob)) = &fetched {
+                            if crate::network::fgtw::fleet::self_sponsor_from_legacy_root(&handle_proof, &identity_seed, blob, &keypair) {
+                                outcome = ProbeOutcome::Member;
+                            }
+                        }
+                    }
                     crate::logf!("Network: probe → {}", format!("{:?}", outcome));
                     crate::log_err!(tx.send(QueryResult::Probe { outcome, session }), "attest: probe result to the UI");
                     continue;

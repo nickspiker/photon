@@ -68,7 +68,7 @@ impl PhotonApp {
                 Owed::Cleanup { legacy, widevine } => cleanup(&ours, &identity_seed, &hp, &legacy, &widevine),
             });
         if let Err(e) = spawned {
-            crate::logf!("ROOT: the conversion worker could not start ({e}); it is retried at the next start");
+            crate::logf!("ROOT: the conversion worker could not start ({}); it is retried at the next start", e);
         }
     }
 }
@@ -90,7 +90,7 @@ fn convert(old: &DeviceSigner, identity_seed: &[u8; 32], hp: &[u8; 32], legacy: 
     // 1. The old key sponsors the new key into the fleet; a crash after this and before the vault is carried lands back here, where the add is idempotent.
     let req = fleet::make_bind_request(&new, identity_seed, hp, &[0u8; 32]);
     if let Err(e) = fleet::bind_device_held(old, hp, &req) {
-        crate::logf!("ROOT: the fleet add of the new device failed ({e}); nothing moved, retried at the next start");
+        crate::logf!("ROOT: the fleet add of the new device failed ({}); nothing moved, retried at the next start", e);
         return;
     }
     // The siblings hear the add now, from this device while it is still a member and still running: the UI thread pushes the chain on its next tick and answers; the seed mirror alone took the desktop 82 minutes to notice.
@@ -104,7 +104,7 @@ fn convert(old: &DeviceSigner, identity_seed: &[u8; 32], hp: &[u8; 32], legacy: 
             } else {
                 match fleet::grow_fleet_wraps(hp, &old.keypair(), &held, &members, identity_seed) {
                     Ok(revision) => crate::logf!("ROOT: fan-out grown to revision {} — the new key holds its own wrap of the fleet key", revision),
-                    Err(e) => crate::logf!("ROOT: fan-out grow failed ({e}); the key sync at the next start grows it"),
+                    Err(e) => crate::logf!("ROOT: fan-out grow failed ({}); the key sync at the next start grows it", e),
                 }
             }
         }
@@ -133,7 +133,7 @@ fn convert(old: &DeviceSigner, identity_seed: &[u8; 32], hp: &[u8; 32], legacy: 
         Ok(n) => crate::logf!("ROOT: vault carried: {} device-scope + {} identity-scope entries, {} left unopened", n.device, n.identity, n.unopened),
         Err(e) => {
             // A half-written vault under the new root would be selected first at the next start, so it goes now and the next start lands back here.
-            crate::logf!("ROOT: the vault re-home failed ({e}); the new vault is discarded and the move is retried at the next start");
+            crate::logf!("ROOT: the vault re-home failed ({}); the new vault is discarded and the move is retried at the next start", e);
             crate::log_err!(kete::discard_device_vault(crate::storage::APP, &new_secret), "discarding the half-carried vault");
             return;
         }
@@ -160,7 +160,7 @@ fn cleanup(ours: &DeviceSigner, identity_seed: &[u8; 32], hp: &[u8; 32], legacy:
     // The add is idempotent, so a conversion interrupted before the new device was in the fleet is completed here by the legacy key, still readable until the pin goes.
     let req = fleet::make_bind_request(ours, identity_seed, hp, &[0u8; 32]);
     if let Err(e) = fleet::bind_device_held(&old, hp, &req) {
-        crate::logf!("ROOT: the fleet add of this device failed ({e}); retried at the next start");
+        crate::logf!("ROOT: the fleet add of this device failed ({}); retried at the next start", e);
         return;
     }
     depart_old(&old, ours, hp);
@@ -173,6 +173,6 @@ fn depart_old(old: &DeviceSigner, new: &DeviceSigner, hp: &[u8; 32]) {
     let consent = fgtw::protocol::depart_consent(old, hp, t);
     match fleet::depart_device_consented(new, hp, &pubkey_of(old), t, &consent) {
         Ok(()) => crate::logf!("ROOT: device {} left the fleet", crate::fp(&pubkey_of(old))),
-        Err(e) => crate::logf!("ROOT: the old device's departure did not publish ({e}); retried at the next start"),
+        Err(e) => crate::logf!("ROOT: the old device's departure did not publish ({}); retried at the next start", e),
     }
 }
