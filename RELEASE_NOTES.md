@@ -6,8 +6,12 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v142
 - **Updates no longer interrupt a wave.** A new version used to download quietly and then install the next time Photon came on screen, which could be five seconds into a call; phones now install it in the background as soon as it arrives, never while a wave or a new connection is under way, and computers hold the switch until the wave ends.
 - **A friend who reinstalled can reconnect with you on their own.** When a friend whose app lost everything adds you again, your device now answers their request instead of ignoring it, because it still remembered the friendship; before, they waited forever on "waiting for you to add" while you were told they were already in your contacts.
+
+Built from photon 19b71063 · chirp b01db995 · fgtw 47f96b4b · fluor f7d49260 · kete c8890619 · limbus fb38f5fc · manifestus d641cc69 · nunc f2c0c226 · opsin da179929 · rarangi be4386cb · spirix b12187fb · tapuwae a0b377ec · tohu 711cac0a · voca 04dcf2df · vsf c5c1164c
 
 ## v141
 - **A phone that moved to its new hardware key keeps a way back to its fleet key.** The move now hands the new key its own sealed copy of the fleet key, and a device that holds the key but finds no copy sealed to itself writes one at its next start; without that, wiping or reinstalling such a phone lost its contacts, picture and name for good.
