@@ -6,11 +6,15 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v143
 - **Phones update soon after a release, in your pocket.** A release notice now wakes Photon to check, download and install the update right away in the background, instead of waiting until you next pick the phone up.
 - **A call outranks everything else your device sends.** While you are in a wave or a beam, catching up on history and sending files slow to a trickle on every connection, so they can no longer crowd out your voice on a slow line; chat messages still go straight through, and everything resumes at full speed when the call ends.
 - **A reinstalled phone that never moved to its hardware key gets its identity back.** If a phone still on its old key was reinstalled, signing in said someone else already had the name, when that someone was the phone itself; the phone now recognises its own old key, moves the identity onto its new key, and signs in.
 - **A phone tells you when it could not update itself.** If your phone's app scanner blocks Photon's automatic update, you now get a notification that opens the update so you can install it yourself in two taps, instead of quietly staying on an old version that stops reaching your friends.
 - **A group invitation follows a reconnected friend.** When a friend who reinstalled reconnects with you, any group you had invited them to is offered again straight away, instead of waiting for them to go offline and come back.
+
+Built from photon b8d53344 · chirp b01db995 · fgtw 47f96b4b · fluor f7d49260 · kete c8890619 · limbus fb38f5fc · manifestus d641cc69 · nunc f2c0c226 · opsin da179929 · rarangi be4386cb · spirix b12187fb · tapuwae 35b7e600 · tohu 711cac0a · voca 04dcf2df · vsf c5c1164c
 
 ## v142
 - **Updates no longer interrupt a wave.** A new version used to download quietly and then install the next time Photon came on screen, which could be five seconds into a call; phones now install it in the background as soon as it arrives, never while a wave or a new connection is under way, and computers hold the switch until the wave ends.
