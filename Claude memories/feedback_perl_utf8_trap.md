@@ -11,3 +11,5 @@ Also: `\x2014` (no braces) is `\x20` + "14" — it printed " 14" in log strings 
 
 **Why:** photon source and comments are full of ×, —, ≤, →; one careless substitution silently corrupts a whole file and still compiles.
 **How to apply:** for non-ASCII replacements use the Edit tool, or `perl -CSD -Mutf8` with the literal character; after any perl/sed rewrite, grep the diff for `Ã|â€|Â` before committing.
+
+SECOND STRIKE 2026-11-05: the same trap on src/lib.rs (the source map, ~210 lines double-encoded) from a \x{2192} in a replacement string; caught only because the inserted line printed mojibake in a later grep. Restored with git checkout and redone with the Edit tool. RULE NOW: for any edit that inserts non-ASCII, use the Edit tool, or perl -CSD; after any perl -pi run, byte-check: LC_ALL=C grep -c -P '\xc3\xa2\xc2\x80' FILE must be 0 (plain grep -P in a UTF-8 locale cannot see it).
