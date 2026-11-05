@@ -709,6 +709,8 @@ pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_b
     let thread = std::thread::Builder::new()
         .name("beam-send".into())
         .spawn(move || {
+            // THE RANK: a beam is live on this device for exactly as long as this thread runs, and bulk transfers give way for that long (network::rank).
+            let _rank = crate::network::rank::realtime_begin();
             let mut frame_no = first_frame;
             let mut cam_frames = 0u64;
             let mut rate_acc = 0u32;

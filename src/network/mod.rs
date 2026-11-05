@@ -12,6 +12,7 @@ pub mod pairing_nfc;
 #[cfg(not(any(target_os = "android", target_os = "ferros")))]
 pub mod peer_updates;
 pub mod pt;
+pub mod rank;
 pub mod pigeon;
 
 pub mod status;

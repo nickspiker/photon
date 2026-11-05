@@ -227,20 +227,40 @@ impl PTManager {
             .sum()
     }
 
+    /// Bulk DATA outstanding on one path (transfers larger than an interactive row, see network::rank).
+    fn path_bulk_in_flight(&self, addr: SocketAddr) -> usize {
+        self.outbound
+            .iter()
+            .filter(|t| t.state == TransferState::Transferring && same_addr(t.peer_addr, addr) && crate::network::rank::is_bulk(t.send_buffer.total_size()))
+            .map(|t| t.flight.count())
+            .sum()
+    }
+
     /// Send new DATA on one path while its pace admits it, oldest transfer first so the earliest chunk finishes first.
+    /// THE RANK (network::rank): interactive transfers (chat rows) go first and take the whole window; bulk may hold only its allowance, the whole window normally and a sixteenth of it while a wave or beam is live on this device.
     /// A path left with nothing in flight has nothing left to send, so it has gone idle and its pace closes.
     fn pump(&mut self, addr: SocketAddr) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         loop {
             let in_flight = self.path_in_flight(addr);
-            if !Self::pace_of(&mut self.paces, addr).admits(in_flight) {
+            let pace = Self::pace_of(&mut self.paces, addr);
+            if !pace.admits(in_flight) {
                 break;
             }
-            let next = self
+            let bulk_open = in_flight == 0 || (self.path_bulk_in_flight(addr) as f32) < crate::network::rank::bulk_allowance(Self::pace_of(&mut self.paces, addr).window());
+            // Interactive first, so a chat row never waits behind a file; bulk only while its allowance holds.
+            let mut next = self
                 .outbound
                 .iter_mut()
-                .filter(|t| t.state == TransferState::Transferring && same_addr(t.peer_addr, addr))
+                .filter(|t| t.state == TransferState::Transferring && same_addr(t.peer_addr, addr) && !crate::network::rank::is_bulk(t.send_buffer.total_size()))
                 .find_map(|t| t.next_packet());
+            if next.is_none() && bulk_open {
+                next = self
+                    .outbound
+                    .iter_mut()
+                    .filter(|t| t.state == TransferState::Transferring && same_addr(t.peer_addr, addr))
+                    .find_map(|t| t.next_packet());
+            }
             let Some(data) = next else {
                 break;
             };

@@ -1714,6 +1714,10 @@ impl PhotonApp {
         {
             return;
         }
+        // The same quiescence for every realtime stream this device runs: a group wave's links and a beam ride no active_wave (network::rank, 2026-11-05).
+        if crate::network::rank::realtime_live() {
+            return;
+        }
 
         let now_osc = vsf::eagle_time_oscillations();
 
