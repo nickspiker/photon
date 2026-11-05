@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **A group invitation follows a reconnected friend.** When a friend who reinstalled reconnects with you, any group you had invited them to is offered again straight away, instead of waiting for them to go offline and come back.
 
 ## v142
 - **Updates no longer interrupt a wave.** A new version used to download quietly and then install the next time Photon came on screen, which could be five seconds into a call; phones now install it in the background as soon as it arrives, never while a wave or a new connection is under way, and computers hold the switch until the wave ends.

@@ -3072,6 +3072,12 @@ impl PhotonApp {
                     // If this proof took the contact to Complete, fire the one hidden chain-weave probe — deferred past the outer `checker` borrow like the other helpers.
                     if let Some(idx) = newly_complete_idx {
                         chain_probe_indices.push(idx);
+                        // A friendship that just completed (a first weave, or a re-key with a friend who lost theirs) is the other edge an outstanding invitation waits on: the offer sent before it was sealed under a bond the friend could not open (Jeff, 2026-11-04: re-keyed, still online all along, so the online edge never fired).
+                        if let Some(id) = self.contacts.get(idx).filter(|c| !c.is_sibling).map(|c| c.id.clone()) {
+                            if !reoffer_after.contains(&id) {
+                                reoffer_after.push(id);
+                            }
+                        }
                     }
                 }
 
