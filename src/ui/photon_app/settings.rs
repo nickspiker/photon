@@ -109,8 +109,8 @@ impl PhotonApp {
         // A DEV build takes a newer RELEASE too (Nick 2026-10-14): the only automatic hop is forward onto release, never onto a newer dev (that channel is not polled). patch == 0 IS the release-build predicate: the version scheme guarantees a dev build never wears .0.
         let release_build = ours.2 == 0;
         // Android (Nick 2026-10-06, "that auto update would be very nice"): the APK is downloaded and staged here and handed to the PackageInstaller SESSION (PhotonActivity.installApk) — silent on Android 12+ once photon is its own installer of record (the first self-update is the one confirm tap that makes it so), the system confirm dialog otherwise. The install kills the process, so never mid-ceremony (a lost completion = era split, the 2026-09-10 lesson) or mid-wave, and never on a metered network; a deferred update is re-evaluated at a short cadence instead of the 6–8 h one.
-        let android_busy = cfg!(target_os = "android")
-            && (self.active_wave.is_some() || self.contacts.iter().any(|c| c.clutch_ceremony_in_progress || c.clutch_keygen_in_progress));
+        // The same hold as the swap: a live wave or a CLUTCH job still computing, never a stale per-contact flag.
+        let android_busy = cfg!(target_os = "android") && self.update_swap_blocked();
         let android_metered = cfg!(target_os = "android") && crate::network::wfd::net_metered();
         if cfg!(not(target_os = "android")) || !(android_busy || android_metered) {
             crate::logf!(
@@ -169,9 +169,23 @@ impl PhotonApp {
     /// NEVER IN A WAVE (Nick 2026-11-04, after v141 killed a wave between Emma and Brittany five seconds in: "that is the definition of rude"): an update replaces the running process, so it waits while any wave, group wave or key ceremony is live on this device.
     /// The check-time gate (`on_auto_update_check`) only kept a download from STARTING in a wave; the download takes minutes and the swap came after, so this is asked again at the swap itself, on every platform.
     pub(super) fn update_swap_blocked(&self) -> bool {
-        self.active_wave.is_some()
-            || self.group_wave.is_some()
-            || self.contacts.iter().any(|c| c.clutch_ceremony_in_progress || c.clutch_keygen_in_progress)
+        self.update_swap_blocker().is_some()
+    }
+
+    /// What holds an update swap right now, named for the log: a live wave, a live group wave, or CLUTCH computations not yet taken by this thread.
+    /// The jobs, not the per-contact in-progress flags: those also mean "queued" and "waiting on the friend", and one that went stale held every device on a dev build for hours (2026-11-06).
+    /// A job always ends and its result is saved on the drain that takes it, so waiting for it protects the completion (a lost one splits the era, 2026-09-10) without letting a stalled friend hold the update forever.
+    pub(super) fn update_swap_blocker(&self) -> Option<String> {
+        if self.active_wave.is_some() {
+            return Some("a wave".into());
+        }
+        if self.group_wave.is_some() {
+            return Some("a group wave".into());
+        }
+        if self.clutch_jobs_in_flight.get() > 0 {
+            return Some(format!("{} key ceremony job(s) still computing", self.clutch_jobs_in_flight.get()));
+        }
+        None
     }
 
     /// Android: hand the staged APK to the installer, or keep it parked. `screen` = the caller is the visible screen's frame poll; otherwise it is the background service's poll.

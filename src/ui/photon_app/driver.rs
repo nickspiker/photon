@@ -3728,10 +3728,10 @@ impl FluorApp<Px> for PhotonApp {
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
         // The swap waits out a live wave, group wave or ceremony (update_swap_blocked, Nick 2026-11-04): the new binary is on disk and verified, so the wave's end is the edge that lets it go.
-        if self.update_reexec.is_some() && self.update_swap_blocked() {
+        if let Some(blocker) = self.update_reexec.as_ref().and_then(|_| self.update_swap_blocker()) {
             if !self.update_reexec_held_logged {
                 self.update_reexec_held_logged = true;
-                crate::log("UPDATE: the new binary is ready — holding the swap until the wave or ceremony ends");
+                crate::logf!("UPDATE: the new binary is ready — holding the swap for {}", blocker);
             }
         } else if let Some(exe) = self.update_reexec.take() {
             crate::log("UPDATE: re-exec into the new binary");
@@ -4469,6 +4469,8 @@ impl PhotonApp {
             let (dtx, drx) = std::sync::mpsc::channel();
             self.clutch_kem_decap_tx = dtx;
             self.clutch_kem_decap_rx = drx;
+            // A job still running sends into the replaced channel and is never drained, so the count starts over with the channels.
+            self.clutch_jobs_in_flight.set(0);
             let (atx, arx) = std::sync::mpsc::channel();
             self.avatar_dl_tx = atx;
             self.avatar_dl_rx = arx;

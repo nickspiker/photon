@@ -1773,6 +1773,9 @@ pub struct PhotonApp {
     /// KEM-decap job channel — the fourth CLUTCH job stage (2026-08-15): opening a peer's KEM response is 8 PQ decapsulations and ran inline in three drain arms, the last non-UI work on the UI thread.
     clutch_kem_decap_tx: std::sync::mpsc::Sender<crate::network::ClutchKemDecapResult>,
     clutch_kem_decap_rx: std::sync::mpsc::Receiver<crate::network::ClutchKemDecapResult>,
+    /// CLUTCH jobs spawned whose result the UI thread has not taken yet: keygen, KEM encapsulation, KEM decapsulation and the ceremony completion, each counted from its spawn to its drain.
+    /// The one thing an update swap waits for (`update_swap_blocked`): a computation that always ends, where the per-contact in-progress flags also mean queued and can stand for hours (2026-11-06: one stale flag held every device on a dev build).
+    clutch_jobs_in_flight: std::cell::Cell<usize>,
     /// Peer-avatar background downloads (fetched from FGTW by handle, off the UI thread). The result carries the decoded VSF-RGB pixels (or None if the peer has no avatar / fetch failed); the drain in `check_status_updates` colour-converts and installs them on the matching contact.
     avatar_dl_tx: std::sync::mpsc::Sender<crate::ui::avatar::AvatarDownloadResult>,
     avatar_dl_rx: std::sync::mpsc::Receiver<crate::ui::avatar::AvatarDownloadResult>,
@@ -3039,6 +3042,7 @@ impl PhotonApp {
                 tx
             },
             clutch_kem_decap_rx: std::sync::mpsc::channel().1,
+            clutch_jobs_in_flight: std::cell::Cell::new(0),
             avatar_dl_tx: {
                 let (tx, _) = std::sync::mpsc::channel();
                 tx

@@ -15,6 +15,7 @@ impl PhotonApp {
         let progress = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
         let worker_progress = progress.clone();
         let tx = self.clutch_keygen_tx.clone();
+        self.clutch_jobs_in_flight.set(self.clutch_jobs_in_flight.get() + 1);
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
 
@@ -57,6 +58,7 @@ impl PhotonApp {
         use crate::crypto::clutch::ClutchKemResponsePayload;
 
         let tx = self.clutch_kem_encap_tx.clone();
+        self.clutch_jobs_in_flight.set(self.clutch_jobs_in_flight.get() + 1);
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
 
@@ -108,6 +110,7 @@ impl PhotonApp {
         use crate::network::ClutchKemDecapResult;
 
         let tx = self.clutch_kem_decap_tx.clone();
+        self.clutch_jobs_in_flight.set(self.clutch_jobs_in_flight.get() + 1);
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
 
@@ -158,6 +161,7 @@ impl PhotonApp {
         let mut ceremony_completions: Vec<usize> = Vec::new();
 
         while let Ok(result) = self.clutch_kem_decap_rx.try_recv() {
+            self.clutch_jobs_in_flight.set(self.clutch_jobs_in_flight.get() - 1); // its spawn counted it (spawn_clutch_*)
             let Some(idx) = self.contacts.iter().position(|c| c.id == result.contact_id) else {
                 crate::log("CLUTCH: decap result for a contact that no longer exists — dropped");
                 continue;
@@ -312,6 +316,7 @@ impl PhotonApp {
         use crate::crypto::clutch::clutch_complete_full;
 
         let tx = self.clutch_ceremony_tx.clone();
+        self.clutch_jobs_in_flight.set(self.clutch_jobs_in_flight.get() + 1);
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
 
@@ -426,6 +431,7 @@ impl PhotonApp {
 
         let mut claimed_ownership = false;
         while let Ok(result) = self.clutch_keygen_rx.try_recv() {
+            self.clutch_jobs_in_flight.set(self.clutch_jobs_in_flight.get() - 1); // its spawn counted it (spawn_clutch_*)
             let result_id_hex = hex::encode(&result.contact_id.as_bytes()[..4]);
             crate::logf!(
                 "CLUTCH: Processing keygen result for contact_id {}...",
@@ -820,6 +826,7 @@ impl PhotonApp {
             .as_bytes();
 
         while let Ok(result) = self.clutch_kem_encap_rx.try_recv() {
+            self.clutch_jobs_in_flight.set(self.clutch_jobs_in_flight.get() - 1); // its spawn counted it (spawn_clutch_*)
             let result_id_hex = hex::encode(&result.contact_id.as_bytes()[..4]);
             crate::logf!(
                 "CLUTCH: Processing KEM encap result for contact_id {}...",
@@ -963,6 +970,7 @@ impl PhotonApp {
             .as_bytes();
 
         while let Ok(result) = self.clutch_ceremony_rx.try_recv() {
+            self.clutch_jobs_in_flight.set(self.clutch_jobs_in_flight.get() - 1); // its spawn counted it (spawn_clutch_*)
             let result_id_hex = hex::encode(&result.contact_id.as_bytes()[..4]);
             crate::logf!(
                 "CLUTCH: Processing ceremony result for contact_id {}...",

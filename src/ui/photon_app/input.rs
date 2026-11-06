@@ -1097,10 +1097,18 @@ impl PhotonApp {
         self.add_in_flight = false;
         self.joiner_selected = false;
         // Drain every worker-result channel: an in-flight result of the OLD identity (a keygen completing, a decrypted row, a durable verdict) must not land in the NEW session.
-        while self.clutch_keygen_rx.try_recv().is_ok() {}
-        while self.clutch_kem_encap_rx.try_recv().is_ok() {}
-        while self.clutch_ceremony_rx.try_recv().is_ok() {}
-        while self.clutch_kem_decap_rx.try_recv().is_ok() {}
+        while self.clutch_keygen_rx.try_recv().is_ok() {
+            self.clutch_jobs_in_flight.set(self.clutch_jobs_in_flight.get() - 1);
+        }
+        while self.clutch_kem_encap_rx.try_recv().is_ok() {
+            self.clutch_jobs_in_flight.set(self.clutch_jobs_in_flight.get() - 1);
+        }
+        while self.clutch_ceremony_rx.try_recv().is_ok() {
+            self.clutch_jobs_in_flight.set(self.clutch_jobs_in_flight.get() - 1);
+        }
+        while self.clutch_kem_decap_rx.try_recv().is_ok() {
+            self.clutch_jobs_in_flight.set(self.clutch_jobs_in_flight.get() - 1);
+        }
         while self.avatar_dl_rx.try_recv().is_ok() {}
         while self.attach_installed_rx.try_recv().is_ok() {}
         while self.hist_opened_rx.try_recv().is_ok() {}
