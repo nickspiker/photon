@@ -29,9 +29,12 @@ fn main() {
             "unknown location".to_string()
         };
 
+        // The thread names the subsystem: shipped builds are stripped, so a panic raised inside std (a drain or copy_within handed a bad range) reports core's file and nothing else (MacBook 2026-11-06).
+        let thread = std::thread::current().name().unwrap_or("unnamed").to_string();
+
         // SIDECAR FIRST, lock-free: a panic raised inside the log sink self-deadlocks the calls below (non-reentrant mutexes) and the evidence dies with the process.
-        photon_messenger::write_crash_sidecar(&format!("PANIC at {}: {}", location, msg));
-        photon_messenger::logf!("PANIC at {}: {}", location, msg);
+        photon_messenger::write_crash_sidecar(&format!("PANIC on thread {} at {}: {}", thread, location, msg));
+        photon_messenger::logf!("PANIC on thread {} at {}: {}", thread, location, msg);
         // An X connection failure (winit's x11 code, or an x11rb Connection error in the message): say what each socket to the X server looks like now, so the log names who closed it.
         #[cfg(target_os = "linux")]
         if location.contains("/x11/") || msg.contains("Connection(") {
