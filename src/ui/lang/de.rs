@@ -521,7 +521,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- updates ----
         Msg::UpdatesTitle => "Updates".into(),
         Msg::WhatsNew(v) => format!("Neu in {v}").into(),
-        Msg::UpcomingChanges => "Kommt in der nächsten Ausgabe".into(),
         Msg::DevChannelHint => "Wenn du Funktionen im Beta-Stadium testen willst, ist der hier für dich.".into(),
         Msg::PhotonVersion(v) => format!("Photon {v}").into(),
         Msg::AutoUpdateInstall => "Updates automatisch installieren".into(),

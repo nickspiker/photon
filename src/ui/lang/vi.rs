@@ -519,7 +519,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- updates ----
         Msg::UpdatesTitle => "Cập nhật".into(),
         Msg::WhatsNew(v) => format!("Có gì mới trong {v}").into(),
-        Msg::UpcomingChanges => "Sắp có ở bản kế tiếp".into(),
         Msg::DevChannelHint => "Nếu bạn muốn thử nghiệm tính năng mới thì kênh này dành cho bạn!".into(),
         Msg::PhotonVersion(v) => format!("Photon {v}").into(),
         Msg::AutoUpdateInstall => "Tự động cài bản cập nhật".into(),

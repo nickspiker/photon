@@ -799,8 +799,6 @@ pub enum Msg<'a> {
     UpdatesTitle,
     /// "What's new in {version}" — the release-notes heading on the Updates page.
     WhatsNew(&'a str),
-    /// Heading for the not-yet-shipped changes a dev build carries.
-    UpcomingChanges,
     /// Under the dev pill on the Updates page.
     DevChannelHint,
     PhotonVersion(&'a str),

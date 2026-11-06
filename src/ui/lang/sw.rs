@@ -526,7 +526,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- updates ----
         Msg::UpdatesTitle => "Masasisho".into(),
         Msg::WhatsNew(v) => format!("Kipya katika {v}").into(),
-        Msg::UpcomingChanges => "Yanayokuja katika toleo lijalo".into(),
         Msg::DevChannelHint => "Kama unataka kujaribu vipengele vya beta, hiki ni chako!".into(),
         Msg::PhotonVersion(v) => format!("Photon {v}").into(),
         Msg::AutoUpdateInstall => "Sakinisha masasisho kiotomatiki".into(),

@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Deleting text no longer closes Photon.** Clicking into the message box and then pressing Backspace a couple of times could make Photon quit on the spot, most often right after clearing a draft and switching conversations; the text boxes now keep their selection inside the text, and typing right after a click no longer selects the letter you just typed.
+- **A friend you can only reach through the relay shows as online.** Your messages reached such a friend and their replies came back, yet their dot stayed grey, because your device kept trusting a direct route that a different device on the same address was answering for them; a route now belongs to the device that actually answered, so their presence checks go through the relay too and they show online while they are.
 - **A friend whose phone changed keys is recognised again on its own.** When a friend's phone moves to a new key and your device does not know it yet, your device now re-reads that friend's list of devices the first time it hears from the new key, instead of refusing everything from it; a phone that moves its own key also tells its friends straight away.
 
 ## v143

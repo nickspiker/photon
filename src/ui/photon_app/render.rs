@@ -6342,16 +6342,7 @@ impl PhotonApp {
                     }
                     flow.gap(hspan2 * 0.3);
                     flow.prose(&mut canvas, ctx.text, &tr(Msg::DevChannelHint), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
-                    if dev_patch() > 0 {
-                        let upcoming = crate::ui::release_notes::section("Upcoming");
-                        if !upcoming.is_empty() {
-                            flow.gap(hspan2 * 0.3);
-                            flow.line(&mut canvas, ctx.text, &tr(Msg::UpcomingChanges), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
-                            for item in &upcoming {
-                                flow.prose(&mut canvas, ctx.text, &format!("• {item}"), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
-                            }
-                        }
-                    }
+                    // Notes belong to releases only (Nick 2026-11-06): a dev build shows none of its own.
                     flow.gap(hspan2 * 0.6);
                     if let Some(cb) = self.settings_autoupdate_check.as_mut() {
                         let label = cb.label().to_string();

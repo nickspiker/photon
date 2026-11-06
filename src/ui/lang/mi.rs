@@ -522,7 +522,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- updates ----
         Msg::UpdatesTitle => "Whakahōu".into(),
         Msg::WhatsNew(v) => format!("He aha te hou i {v}").into(),
-        Msg::UpcomingChanges => "Kei te haere mai i te putanga e whai ake nei".into(),
         Msg::DevChannelHint => "Mēnā e hiahia ana koe ki te whakamātau i ngā āhuatanga hou, mōu tēnei!".into(),
         Msg::PhotonVersion(v) => format!("Photon {v}").into(),
         Msg::AutoUpdateInstall => "Tāutaina aunoatia ngā whakahōutanga".into(),

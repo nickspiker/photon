@@ -1,4 +1,4 @@
-//! Release notes, compiled in (RELEASE_NOTES.md at the repo root). Shipped versions are named by their minor number alone — v87 — and the file's top section is always `## Upcoming`, which a deploy renames to the version it ships as. The app shows the section for the version it runs; a dev build also shows Upcoming, since that is what it is.
+//! Release notes, compiled in (RELEASE_NOTES.md at the repo root). Shipped versions are named by their minor number alone — v87 — and the file's top section is always `## Upcoming`, which a deploy renames to the version it ships as. The app shows the section for the version it runs; a dev build shows none (Nick 2026-11-06: notes are for releases).
 
 const NOTES: &str = include_str!("../../RELEASE_NOTES.md");
 
