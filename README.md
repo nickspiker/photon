@@ -97,34 +97,38 @@ Photon is a peer-to-peer messenger. Your identity is a handle you own, derived f
 - ✅ Cross-platform GUI (Windows, Linux, macOS, Android) on fluor, a direct-pixel renderer — no GPU pipeline
 - ✅ Text input, selection, editing; every font bundled; sixteen languages, switched in-app
 - ✅ Handle attestation with memory-hard proof-of-work (~1s computation)
-- ✅ Peer discovery via FGTW DHT (handle → IP lookup), LAN discovery, NAT hole punching, port mapping, relay as the last resort
+- ✅ Peer discovery thru the FGTW phonebook (handle → device addresses), LAN discovery, NAT hole punching, port mapping, the fgtw.org relay as the last resort
 - ✅ P2P status detection (online/offline via UDP ping/pong); presence broadcast off by default
-- ✅ Deterministic device identity (keys derived from hardware, stored nowhere)
+- ✅ Deterministic device identity (keys derived from hardware, stored nowhere); on Android a Widevine plate that survives a factory wipe; the Fleet page shows each device's security level
 - ✅ CLUTCH key exchange (8-algorithm parallel ceremony across four mathematical families, quantum-resistant by construction)
 - ✅ Rolling-chain encryption (forward-secret, tamper-evident), re-keyed per era
 - ✅ Encrypted P2P messaging over the chain, verified device-to-device; history backfills from a friend's fleet after a wipe
+- ✅ One conversation model at any size: a conversation with only you in it (an atom), a pair, or a group (a molecule) — invitations, members you never friended, group pictures, and the group's history from the moment you joined (docs/conversations.md, docs/molecules.md)
 - ✅ Multi-device fleet: add a device (near-tap or pairing phrase), remove/revoke, and rejoin after a wipe via the surviving device secret
 - ✅ Fleet sync: contacts, settings, conversations and files converge across your devices under the fleet key; compose on any device
-- ✅ Avatar upload/download to FGTW storage with rate limiting; contact storage (local encrypted + cloud backup to FGTW)
-- ✅ Waves: end-to-end encrypted voice, direct peer to peer, single-digit-millisecond round trips on a LAN, lossless PCM on a clean path and an Opus ladder elsewhere; lost windows filled from the other side's recording; every wave kept as a per-party archive with a waveform card, exportable as WAV or VSF
+- ✅ Avatars (AV1 in VSF), sealed so only friends can open them; contact storage (local encrypted + cloud backup to FGTW)
+- ✅ Waves: end-to-end encrypted voice, direct peer to peer, single-digit-millisecond round trips on a LAN, lossless PCM on a clean path and an Opus ladder elsewhere; lost windows filled from the other side's recording; every wave kept as a per-party archive with a waveform card, replayable on its own screen, exportable as WAV or VSF
+- ✅ Group waves at any size: join late, leave and come back; the third person and everyone after joins muted (docs/group-waves.md)
+- ✅ Beams (video): H.264 over the wave's own encrypted path, HDR where the screen allows it, per-camera settings on the Beam page; saving a beam's video beside its audio is opt-in (docs/beams.md)
+- ✅ Traffic rank: while a wave or beam is live, chat rows go first and bulk transfers are squeezed to a sixteenth of every path's window
 - ✅ Files: any type, byte-exact, chunked and resumable, content-addressed and deduplicated; pictures, code and PDFs previewed in the row; images colour-managed thru opsin; every device of the fleet fetches a copy, one source at a time, on Wi-Fi only for phones
-- ✅ The bridge: work one of your devices from another — a persistent shell with streamed output and Stop, and files dropped straight into the host's working directory, repaired and resumed across a restart — passless, because being in your fleet is the credential (docs/bridge.md)
-- ✅ Self-update: signed release manifests, verified before exec; desktop hot-swaps and re-execs, Android installs automatically on Wi-Fi; release notes shown in the app
-- ✅ Notifications on every platform, cleared fleet-wide once read anywhere; a doorbell to reach a friend whose devices are asleep
+- ✅ The bridge: work one of your devices from another — a persistent shell with streamed output and Stop, and files dropped straight into the host's working directory, repaired and resumed across a restart — passless, because being in your fleet is the credential; each host switches its shell on by hand, off by default (docs/bridge.md)
+- ✅ Self-update: signed release manifests, verified before exec; the desktop hot-swaps and re-execs, Android installs from its background service when the release posts; an update never lands in the middle of a wave; release notes shown in the app
+- ✅ Notifications on every platform, opening their conversation when tapped and cleared fleet-wide once read anywhere; a doorbell to reach a friend whose devices are asleep
 - ✅ Dozenal by default, hexadecimal for coders, arabic if you insist — every number on screen thru one base switch, magnitudes on a doubling scale (docs/dozenal.md)
+- ✅ Ideas and bug reports from inside the app (Settings → Ideas), public to everyone (docs/ideas.md)
 - ✅ Signed binary distribution with self-verification; Linux, Windows, macOS (Intel + ARM) and Android built from one deploy
 
 ### What Doesn't Work Yet
 - ⚠️ Custodian recovery (all-devices-lost): threshold reconstruction is designed and partially built — **not yet a backstop you can rely on.** Keep more than one device.
-- ⚠️ Molecules (group conversations): the first phase is built — an atom (a conversation with you alone) binds a second person in — joining by replay and the live strand pull are not (docs/molecules.md)
+- ⚠️ Group invitations are held by the person who sent them; an invitation that outlives its sender's devices is designed, not built
 - ⚠️ NFC invite cards (designed; near-tap and typing are the paths today)
 - ⚠️ The wider TOKEN surface — billing you alone authorize, portable reputation, physics-anchored time — is specified in the patent and not yet in Photon
-- ⚠️ Waves have no relay carriage: two phones that cannot reach each other directly (both behind carrier NAT) signal fine but carry no audio yet
-- ⚠️ Video (beams) is on the way; the button is a stub
+- ⚠️ Waves and beams have no relay carriage: two phones that cannot reach each other directly (both behind carrier NAT) signal fine but carry no audio or video yet
 - ⚠️ Off-grid Wi-Fi Direct (Android to Android, no infrastructure) is built and not yet field-proven (docs/offgrid.md)
 - ⚠️ Retention: every device keeps everything; per-device horizons and eviction are designed, not built (docs/retention.md)
 - ⚠️ The bridge hosts only on Linux and macOS, sends files one way only (into the host), and has no screen, sensor or interactive-terminal support yet — designed in docs/bridge.md
-- ⚠️ Tapping a notification opens nothing yet, on any platform
+- ⚠️ TPM plates on the desktop: read and logged on Linux, nothing derives from them yet
 
 ### Platform Support
 
@@ -137,14 +141,15 @@ Photon is a peer-to-peer messenger. Your identity is a handle you own, derived f
 | macOS Apple Silicon | ✅ Working | fluor direct-pixel renderer |
 | Android | ✅ Working | ARM64, tested on device; automatic updates |
 | iOS | ❌ Blocked | See "Why No iOS?" below |
-| ferros | ✅ Future | waiting on ferros components |
+| ferros | ⚠️ Builds | runs as a ferros process; the identity is the OS's |
 
 ---
 
 ## Installation
 
 The one-line installer downloads a pre-built, cryptographically signed binary and creates shortcuts.
-These commands mirror the ones on [holdmyoscilloscope.com/photon](https://holdmyoscilloscope.com/photon) exactly.
+These commands mirror the ones on [holdmyoscilloscope.com/photon](https://holdmyoscilloscope.com/photon) exactly; [passless.org/photon](https://passless.org/photon) serves the same release.
+The release installers check the download's SHA-256 against the release before running it.
 If that site is ever down, use the **GitHub fallback** commands further down — they pull the identical signed binaries straight from this repo's Releases, so this page is a complete standalone install source.
 
 ### Release (Recommended)
@@ -160,6 +165,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://brobdingnagian.holdmyoscillos
 ```
 
 **Android:** [Download APK](https://github.com/nickspiker/photon/releases/latest/download/photon-messenger-android-release.apk) — enable "Install unknown apps" in Settings if prompted.
+If Google Play Protect blocks an automatic update, Photon posts a notification; tap it to install the downloaded update by hand.
 
 ### Development
 
@@ -368,38 +374,25 @@ Alice advances to state₁
 
 **How the chain works:**
 
-Each participant has a 256-link chain (8KB) derived from CLUTCH shared secrets. The chain uses rolling rotation to achieve BLAKE3 avalanche optimization:
+Each participant has a 512-link chain (16KB): 256 active links derived from the CLUTCH shared secrets, and 256 links of history that fill as the chain advances. The current key is the newest link, at the right-hand end:
 
 ```rust
-/// 256-link chain (8KB) - one per participant
+/// 512-link chain (16KB) - one per participant (src/crypto/chain.rs)
 pub struct Chain {
-    links: [[u8; 32]; 256],
+    links: [[u8; 32]; 512], // [0..256) history, [256..512) active, [511] = current key
 }
 
 impl Chain {
-    /// Current encryption key is always link[0]
-    pub fn current_key(&self) -> &[u8; 32] {
-        &self.links[0]
-    }
-
-    /// Advance chain after ACK: rotate all links, derive new link[0]
-    pub fn advance(&mut self, plaintext_hash: &[u8; 32]) {
-        let old_top = self.links[0];
-        // Rotate all links down (forces full 8KB thru BLAKE3)
-        for i in (1..256).rev() {
-            self.links[i] = self.links[i - 1];
-        }
-        // New link[0] = BLAKE3(old_top || plaintext_hash || full_chain)
-        let mut hasher = blake3::Hasher::new();
-        hasher.update(&old_top);
-        hasher.update(plaintext_hash);
-        hasher.update(self.links.as_flattened()); // Full 8KB avalanche
-        self.links[0] = *hasher.finalize().as_bytes();
+    /// Advance after ACK: shift every link left (the oldest history drops off), derive the new key at [511]
+    pub fn advance(&mut self, eagle_time: &EagleTime, our_plaintext: &[u8], their_plaintexts: &[&[u8]]) {
+        self.links.copy_within(1..512, 0);
+        // spaghettify (ihi) over the time, this message, the peer messages it braids in, and the whole chain
+        self.links[511] = derive_fresh_link(eagle_time, our_plaintext, their_plaintexts, &self.links);
     }
 }
 ```
 
-**Why 256 links?** Fits in L1 cache (8KB), provides reasonable recovery window, and the rotation forces full avalanche on every advance. Each participant only advances their own chain—no race conditions in N-party conversations.
+**The braid.** Each step weaves in the other participants' prior messages, so the chains cross-depend rather than ratcheting one way each (docs/braid.md). **Why this size?** 16KB sits in L1 cache, the history window gives a recovery span, and every advance runs the whole chain thru the derivation. Each participant only advances their own chain—no race conditions in N-party conversations.
 
 Breaking one message doesn't reveal others (forward secrecy via BLAKE3 preimage resistance). Modifying message `i` changes all subsequent states—tampering is cryptographically detectable.
 
@@ -412,7 +405,7 @@ encryption_key = BLAKE3_KDF(chain_state, "photon.chain.xchacha.v1")
 encrypted_message = XChaCha20::apply_keystream(key, xnonce_24, plaintext)  // braid Layer 2
 sealed_at_rest    = XChaCha20Poly1305::encrypt(key, xnonce_24, plaintext)  // vault / blobs / etc.
 ```
-Rolling-chain provides immutability and ordering; XChaCha20-Poly1305 provides standard cryptographic security. The 192-bit (24-byte) nonce — migrated from ChaCha20's 96-bit nonce in 2026-08 — removes the birthday bound on random nonces entirely; readers still accept the legacy 12-byte-nonce format during the migration window.
+Rolling-chain provides immutability and ordering; XChaCha20-Poly1305 provides standard cryptographic security. The 192-bit (24-byte) nonce — migrated from ChaCha20's 96-bit nonce in 2026-08 — removes the birthday bound on random nonces entirely; the legacy 12-byte-nonce readers are gone.
 
 **Latency characteristics:**
 
@@ -449,7 +442,7 @@ For regional connections (Seattle–LA), video frames arrive **before the next f
 
 Traditional login asks you to prove identity and then accepts a *password* — which proves only knowledge of a secret, not who you are, and not even that you're human. Reset flows are worse: whoever reaches your email or phone can take the account. Photon replaces the whole model with the one humans have always used — **the key is yours, and trusted people vouch for you** — so there's no company, no support line, and no "click to reset."
 
-**How your handle becomes an identity.** Your handle is hashed to a routing address (the handle itself never travels the network — that's why any Unicode works). Claiming an unclaimed handle costs a ~1-second memory-hard proof-of-work: trivial to do once, expensive to do in bulk, which prices out namespace-squatting without any authority deciding who's allowed a name. First to finish claiming owns it. See [choosing your handle](#1-choose-your-handle-with-care) above and [AUTH.md](AUTH.md) for the full specification.
+**How your handle becomes an identity.** Your handle is hashed to a routing address (the handle itself never travels the network — that's why any Unicode works). Claiming an unclaimed handle costs a ~1-second memory-hard proof-of-work: trivial to do once, expensive to do in bulk, which prices out namespace-squatting without any authority deciding who's allowed a name. First to finish claiming owns it. See [choosing your handle](#1-choose-your-handle-with-care) above and [docs/lifecycle.md](docs/lifecycle.md) for the identity's whole life.
 
 **Existence now, standing later.** Claiming a handle makes you *real* on the network immediately — that's permissionless and always will be. But being a *trusted, weighted* identity is a separate thing that's **earned, not granted**, and it comes later. Every handle starts at zero standing and accrues reputation only thru attested interactions with others who already carry standing — a structure the design calls the **Fractal Gradient Trust Web**. A vouch phase is on the roadmap for that: existing identities vouching for others, reputation flowing along real relationships. It can't come first, because there has to *be* a web of genuine relationships to vouch within — and that's exactly what messaging is bootstrapping right now. So today: message people, build the web. The standing layer grows on top of it.
 
@@ -464,16 +457,16 @@ Traditional login asks you to prove identity and then accepts a *password* — w
 
 ### Network Architecture
 
-**Peer discovery:** FGTW (Fractal Gradient Trust Web)—custom Kademlia DHT with 32-byte node IDs, 256 k-buckets, and VSF-serialized protocol messages. Handle lookups: `handle → hashed handle → Kademlia routing → peer records`. Bootstrap via `fgtw.org/peers.vsf` (Cloudflare Workers endpoint providing seed routing table population).
+**Peer discovery:** FGTW (Fractal Gradient Trust Web). Today the phonebook is served by `fgtw.org`, a Cloudflare Worker: a handle proof looks up the signed fleet chain and the device addresses behind it, and a WebSocket from the seed pushes peer updates. Devices on one LAN find each other directly. Retiring the server in favour of the peers themselves, gossip first and a full DHT later, is designed in [docs/peers-are-fgtw.md](docs/peers-are-fgtw.md).
 
-**Transport:** UDP for P2P status and messaging, HTTPS (rustls) for bootstrap fetches. WebSocket support planned for NAT traversal.
+**Transport:** everything on the wire is a complete VSF file. Small frames ride UDP; anything larger goes thru PT, Photon Transport ([docs/PT.md](docs/PT.md)): reliable lettered streams over UDP with ACKs, retransmits and per-path pacing, falling back to TCP. Paths are found by NAT hole punching and port mapping, each device publishing its v4 and v6 addresses apart ([docs/addresses.md](docs/addresses.md)); the `fgtw.org` relay carries frames between two devices that cannot reach each other at all. While a wave or beam is live, the rank puts its media first, then control frames and chat rows, and squeezes bulk transfers.
 
-**Message routing (planned):**
-- Direct UDP when both peers online
-- Store-and-forward via trusted contacts when recipient offline
-- No central relay servers
+**Message routing:**
+- Direct UDP or PT when both peers are online
+- A doorbell to wake a friend whose devices are asleep ([docs/reachability-doorbell.md](docs/reachability-doorbell.md))
+- After a wipe or on a new device, history backfills from your own fleet and from your friends' devices
 
-**Storage model:** Messages persist as long as you want them to, distributed across devices you control and friends who've agreed to store encrypted backups. The bootstrap endpoint (`fgtw.org`) only provides initial peer discovery—after that, the DHT is self-sustaining. No central servers store or process messages.
+**Storage model:** Messages persist as long as you want them to, on the devices you control; your fleet holds every copy, and a friend's fleet holds the conversations you share with them. `fgtw.org` holds the phonebook, sealed backups and avatars it cannot open, never a message. The relay of last resort sees only sealed frames between device keys.
 
 ---
 
@@ -481,46 +474,21 @@ Traditional login asks you to prove identity and then accepts a *password* — w
 
 ### Module Structure
 
+[src/lib.rs](src/lib.rs) opens with the full, maintained map of the source tree. The top level:
+
 ```
 src/
-├── main.rs              - Winit event loop, window management
-├── lib.rs               - Module exports, debug utilities
-├── self_verify.rs       - Ed25519 binary signature verification
-├── crypto/
-│   ├── chain.rs         - 256-link rolling chains (8KB per participant)
-│   ├── clutch.rs        - 8-algorithm parallel key ceremony
-│   ├── handle_proof.rs  - Memory-hard handle attestation (~1s)
-│   ├── keys.rs          - Identity key management (TODO)
-│   └── shards.rs        - Social recovery key sharding (TODO)
-├── network/
-│   ├── fgtw/
-│   │   ├── identity.rs  - Deterministic key derivation
-│   │   ├── protocol.rs  - VSF-encoded FGTW + CLUTCH messages
-│   │   ├── node.rs      - Kademlia DHT routing
-│   │   ├── peer_store.rs - Peer caching
-│   │   └── bootstrap.rs - Initial peer discovery
-│   ├── pt/              - PT (Photon Transfer) large message transport
-│   ├── handle_query.rs  - Handle attestation and lookup
-│   ├── status.rs        - P2P ping/pong, CLUTCH ceremony orchestration
-│   ├── udp.rs           - UDP socket utilities
-│   └── tcp.rs           - TCP fallback for large payloads
-├── ui/
-│   ├── app.rs           - Application state machine
-│   ├── avatar.rs        - Avatar encoding/upload/download
-│   ├── text_rasterizing.rs - Font rendering (cosmic-text)
-│   ├── renderer_*.rs    - Platform-specific rendering
-│   ├── keyboard.rs      - Input handling
-│   ├── text_editing.rs  - Text input state
-│   └── theme.rs         - Color palette
-├── types/
-│   ├── contact.rs       - Contact info, CLUTCH state, trust levels
-│   ├── friendship.rs    - FriendshipId, CeremonyId, FriendshipChains
-│   ├── message.rs       - Message structure, status, expiration
-│   └── shard.rs         - Key shard structures
-└── storage/
-    ├── contacts.rs      - Local encrypted contact storage
-    ├── friendship.rs    - Per-friendship chain persistence
-    └── cloud.rs         - FGTW cloud backup (contacts sync)
+├── main.rs        - Process entry, window and event loop
+├── lib.rs         - Module exports and the source map
+├── crypto/        - The braid (chain.rs), CLUTCH, eras, handle proofs, binary self-verification
+├── network/       - Status and ceremonies (status.rs), PT, NAT traversal, the FGTW client and fleet chain,
+│                    the rank, doorbell, updates, history pages, Wi-Fi Direct
+├── wave/          - Waves and beams: engines, media keys, recording and replay, H.264, the beam session
+├── storage/       - The vault's entries: contacts, friendships, molecules, fleet settings, spools
+├── types/         - Contacts, conversations, molecules, rows and their typed controls
+├── ui/            - The app (photon_app/), layouts, avatars, fonts, sixteen languages, renderers
+├── platform/      - Per-OS glue: Android JNI, audio, cameras, notifications, the tray
+└── bin/           - photon-keygen, photonlog and other tools
 ```
 
 ### Implementation Status
@@ -528,7 +496,7 @@ src/
 | Component | Status | Notes |
 |-----------|--------|-------|
 | UI Framework | ✅ Complete | fluor: direct pixel access, damage-band repaints, scroll as a memmove |
-| Text Rendering | ✅ Complete | cosmic-text shaping, bundled fonts, selection, editing |
+| Text Rendering | ✅ Complete | fluor text shaping, bundled fonts, selection, editing |
 | Device Identity | ✅ Complete | Deterministic keys from hardware (never stored) |
 | Crypto Types | ✅ Complete | Identity, seed, shard, message structures |
 | CLUTCH Key Exchange | ✅ Working | 8-algorithm ceremony, deterministic ceremony_id, re-keyed per era |
@@ -545,53 +513,59 @@ src/
 | Waves (voice) | ✅ Working | Direct, forward-error-corrected, recorded per party |
 | Files | ✅ Working | Chunked, resumable, previewed, replicated fleet-wide |
 | Bridge | ✅ Working | Unix hosts; remote shell + file drops over PT |
-| Molecules (groups) | ⚠️ Partial | Phase 1 built; join-by-replay scoped |
+| Molecules (groups) | ✅ Working | One conversation model at any size; invitations, never-friended members, group pictures |
+| Group waves | ✅ Working | Any size, join late, one stream per person |
+| Beams (video) | ✅ Working | H.264, HDR where the screen allows, opt-in saved video |
 | Social Recovery | ⚠️ Partial | Custodian recovery designed, not yet a reliable backstop |
-| Beams (video) | ❌ Stub | Button only |
 
 ### Technology Stack
 
 **Core:**
-- `winit` - Cross-platform windowing
-- `wgpu` - GPU rendering (Vulkan on Linux, Metal on macOS)
-- `cosmic-text` - Font rendering and text layout
+- `fluor` - Direct-pixel renderer and text, drawn on the CPU into the window’s buffer; on macOS `wgpu` (Metal) only presents the finished frame
+- `winit` + `softbuffer` - Windowing and the pixel buffer on the desktop (GDI on Windows)
 - `arboard` - Clipboard access
+
+**Media:**
+- `rav1e` / `rav1d` - AV1, the only image encoding (avatars, group pictures)
+- `opus` - Wave audio (vendored libopus); `raptorq` - fountain-coded loss repair
+- `openh264` - Beam video on the desktop; the phones encode in MediaCodec
+- `cpal` - Desktop audio
 
 **Crypto:**
 - `blake3` - Cryptographic hashing (chain state, KDF)
 - `chacha20poly1305` - XChaCha20-Poly1305 AEAD (192-bit nonce); `chacha20` - XChaCha20 stream (braid Layer 2)
-- `x25519-dalek` - Elliptic curve Diffie-Hellman
+- `x25519-dalek`, `ed25519-dalek` - Elliptic curve key agreement and signatures; CLUTCH adds six more KEMs, device envelopes add Falcon
 - `zeroize` - Secure memory wiping
 
 **Network:**
 - `tokio` - Async runtime
-- `tokio-tungstenite` - WebSocket (planned for NAT traversal)
-- `reqwest` - HTTP client with rustls (bootstrap fetches)
+- `tokio-tungstenite` - The WebSocket from the seed that pushes peer updates
+- `reqwest` - HTTP client with rustls (phonebook and blob fetches)
 
 **Storage:**
 - `vsf` - Versatile Storage Format (self-describing binary with embedded schemas, versioning, and per-record cryptographic signatures)
-- `bincode` - Binary serialization
+- `kete` - The encrypted device vault every entry lives in
 
 ---
 
 ## File Format: VSF (Versatile Storage Format)
 
-Messages and identity data use VSF—a self-describing binary format with cryptographic integrity. Implementation is functional but needs updates for messaging.
+Everything Photon stores or sends is VSF—a self-describing binary format with cryptographic integrity. Every frame on the wire and every entry in the vault is a complete VSF file: magic header, version, Eagle Time creation stamp and a provenance hash over the whole document.
 
 **VSF provides:**
-- Type-length-value encoding
+- Type-length-value encoding, every value carrying its own type marker
 - Embedded schemas with version information
 - Forward compatibility
 - Per-record cryptographic signatures
-- Optional compression
+- Huffman-compressed Unicode text, Eagle Time, integers of any width
 
-See `tools/` directory for VSF utilities (format inspection, validation).
+The format and its tools (`vsfinfo` to inspect any VSF file, `vsflog` for Photon's sealed logs) live in [github.com/nickspiker/vsf](https://github.com/nickspiker/vsf).
 
 ---
 
 ## Distribution Philosophy
 
-We do not distribute via Google Play Store, Apple App Store, or Microsoft Store. These platforms create barriers incompatible with our security model and decentralized architecture. Ready-to-run signed binaries are provided in `bin/`.
+We do not distribute via Google Play Store, Apple App Store, or Microsoft Store. These platforms create barriers incompatible with our security model and decentralized architecture. Ready-to-run signed binaries are on [holdmyoscilloscope.com/photon](https://holdmyoscilloscope.com/photon), [passless.org/photon](https://passless.org/photon) and this repo's [Releases](https://github.com/nickspiker/photon/releases).
 
 **Reasons for direct distribution:**
 
@@ -601,7 +575,7 @@ We do not distribute via Google Play Store, Apple App Store, or Microsoft Store.
 
 2. **Corporate intermediaries**: Distribution thru stores requires trusting corporations to maintain access to software.
 
-3. **Sideloading restrictions**: iOS requires annual re-signing ($99/year developer account), free accounts must reinstall every 7 days. Android allows direct APK installation but shows discouragement warnings.
+3. **Sideloading restrictions**: iOS requires annual re-signing ($99/year developer account), free accounts must reinstall every 7 days. Android allows direct APK installation but shows discouragement warnings, and Google Play Protect can block an update outright.
 
 We provide cryptographically signed binaries with published checksums. Users verify signatures, verify source, and run directly.
 
@@ -637,8 +611,8 @@ The EU's Digital Markets Act may force sideloading in Europe by 2026, but likely
 |----------|--------|----------|--------|--------|
 | Architecture | Centralized | Centralized | Federated | P2P |
 | Authentication count | Multiple | Multiple | Multiple | **1** |
-| Social recovery | No | No | No | **Yes** |
-| Metadata privacy | Partial | No | Partial | **Yes** |
+| Social recovery | No | No | No | **In progress** |
+| Metadata privacy | Partial | No | Partial | **Mostly** |
 | Self-sovereign data | No | No | Partial | **Yes** |
 | Message immutability | No | No | No | **Yes** |
 | Phone number required | Yes | Yes | No | No |
@@ -648,7 +622,7 @@ The EU's Digital Markets Act may force sideloading in Europe by 2026, but likely
 
 - **Centralized** (Signal, WhatsApp): Single company runs servers. Can be subpoenaed, shut down, or pressured by governments.
 - **Federated** (Matrix): Multiple servers run by different operators. Better than centralized but still relies on homeservers—messages flow thru infrastructure users don't control.
-- **P2P** (Photon): No message servers. Peers connect directly. DHT bootstrap only provides initial peer discovery—after that, the network is self-sustaining.
+- **P2P** (Photon): No message servers. Peers connect directly. The phonebook at fgtw.org tells a device where your devices are; it never carries a message, and retiring it into the peers themselves is designed.
 
 **Signal/WhatsApp:**
 - Centralized servers (legal vulnerability)
@@ -666,9 +640,9 @@ The EU's Digital Markets Act may force sideloading in Europe by 2026, but likely
 **Photon:**
 - True P2P (no message servers)
 - Single authentication event (A = 1)
-- Social recovery (threshold reconstruction)
+- Social recovery (threshold reconstruction, in progress)
 - Message immutability (tampering detectable)
-- Metadata privacy (traffic appears as HTTPS)
+- Metadata stays between devices: the phonebook sees lookups, the last-resort relay sees sealed frames between device keys, nothing sees a message
 
 ---
 
@@ -682,7 +656,7 @@ The EU's Digital Markets Act may force sideloading in Europe by 2026, but likely
 3. Tamper evidence (modifying message breaks all subsequent hashes)
 4. Message immutability (deletion/editing cryptographically detectable)
 
-**Guaranteed by attestation system:**
+**Designed for the TOKEN attestation layer (not in Photon yet):**
 
 0. Human identity verification (automated systems can't pass two attestations)
 1. Rate limiting (1 attestation request per hour per device)
@@ -694,7 +668,7 @@ The EU's Digital Markets Act may force sideloading in Europe by 2026, but likely
 - Physical device theft (if device unlocked)
 - Threshold collusion (k or more trusted contacts)
 - Screenshots or physical photography of screen
-- Quantum computers breaking X25519 (future threat—would require protocol upgrade)
+- Quantum attack, only in part: CLUTCH's keys hold while any one of its post-quantum KEMs does, and device envelopes carry Falcon beside Ed25519; anything agreed or signed by a curve alone would fall
 
 ---
 
@@ -715,7 +689,7 @@ See [AGENT.md](AGENT.md) for complete code generation rules.
 
 Contributions are welcome. Before writing code, read:
 
-- [AGENT.md](AGENT.md) — the code rules, for people and coding agents alike: house formats only (VSF, AV1, Opus, BLAKE3, XChaCha20-Poly1305), no bounds check or clamp without a proof it is needed, Eagle Time only, no structured data smuggled through strings, C¹-smooth UI math. Changes that break them get sent back.
+- [AGENT.md](AGENT.md) — the code rules, for people and coding agents alike: house formats only (VSF, AV1, Opus, H.264 for beams, BLAKE3, XChaCha20-Poly1305), no bounds check or clamp without a proof it is needed, Eagle Time only, no structured data smuggled through strings, C¹-smooth UI math. Changes that break them get sent back.
 - [docs/](docs/) — one design document per subsystem. Good starting points: [conversations.md](docs/conversations.md) (one conversation model at any size), [braid.md](docs/braid.md) (the rolling-chain encryption), [clutch.md](docs/clutch.md) (the key ceremony), [waves.md](docs/waves.md) (voice) and [lexicon.md](docs/lexicon.md) (what Photon's words mean).
 - [src/lib.rs](src/lib.rs) — opens with a map of the whole source tree.
 
@@ -729,7 +703,7 @@ Ideas and bug reports go thru **Settings → Ideas** inside Photon. Every one is
 
 Photon is the first implementation of **TOKEN**—a universal digital identity system where authentication happens once (A = 1). Planned TOKEN applications:
 
-- `ferros` - Kill-switch ready OS
+- `ferros` - Kill-switch ready OS; Photon already builds for it as a ferros process, with the identity held by the OS
 - Additional applications TBD
 
 Once authenticated with TOKEN, all applications use that single identity. Install TOKEN on new device → everything appears automatically (apps, settings, messages, contacts, files). No passwords, no setup wizards, no per-app logins.
@@ -740,17 +714,17 @@ Photon demonstrates the social attestation and recovery model works before apply
 
 ## Terminology
 
-- **handle** — your identity: any Unicode string, a shared secret given to contacts out-of-band. `handle_seed = BLAKE3(NFC(handle))` stays on the device; `handle_proof` (the handle-layer *ihi*) is the public lookup key.
+- **handle** — your identity: any Unicode string, given to contacts out-of-band. `identity_seed = BLAKE3(x(handle))`, the hash of the handle's VSF `x` encoding (NFC is applied inside the encoder, the only transform anywhere), stays on the device; `handle_proof`, the memory-hard proof over that hash (*ihi*), is the public lookup key.
 - ***ira*** — the device's permanent identity. Photon derives keys from it thru `tohu`; under PIPE it is silicon-rooted.
 - **CLUTCH** — the key-generation ceremony that establishes a relationship.
 - **CHAIN** — rolling per-message encryption over an established session.
-- **RUA** — the handle-addressed async dead-drop for offline peers and first contact.
 
 ### The units (wave-particle duality, taken literally)
 
 - **photon** — a message: discrete, quantized, arrives whole. *"Shoot me a photon."* The unit is the noun and the verb takes care of itself: "photon me when you land."
 - **wave** — voice: continuous, real-time. *"Wave me."* An inbound one is someone *waving*; a declined one is a wave that passes. The gesture and the physics mean the same thing, and neither of them is a phone call (docs/lexicon.md retires that word: a call is a circuit somebody else holds open, and a digital one is recorded by whoever carries it — a wave has no carrier and keeps its own recording, in the open).
-- **beam** — video: a directed, continuous stream of light you can see by. *"Beam me."* Designed, not built.
+- **beam** — video: a directed, continuous stream of light you can see by. *"Beam me."*
+- **atom** and **molecule** — a conversation with only you in it, and one with others bound in. A pair and a group are the same model at different sizes.
 - **detected** — a read receipt, consent-gated: a photon is not an observation until the detector fires, and the sender learns nothing until the receiver's detector does. Delivery states: *in flight*, *arrived*, *detected*.
 
 Texts are particles, voice is waves. Photon: particles and waves.
@@ -773,8 +747,8 @@ See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE)
 
 ---
 
-**Project Status:** 🟡 Early Development (GUI functional, P2P status working, messaging pending)
+**Project Status:** 🟡 Early, on mainnet (messaging, groups, waves, beams and the fleet working; custodian recovery in progress)
 
-**Platform Support:** Linux x86_64 ✅ | Linux ARM64 ✅ | Windows ✅ | macOS ✅ | Android ✅ | iOS ❌
+**Platform Support:** Linux x86_64 ✅ | Linux ARM64 ✅ | Windows ✅ | macOS ✅ | Android ✅ | ferros ⚠️ | iOS ❌
 
-**Last Updated:** 2026-03-11
+**Last Updated:** 2026-11-05 (v143)
