@@ -6,8 +6,12 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v145
 - **Updates no longer get stuck on "Restarting".** A downloaded update waited for every key exchange with your friends to finish, and one that had stalled could hold it for hours, so devices sat on an old version; an update now waits only for a wave, a beam or the few seconds a key exchange spends computing, and phones no longer put off the download for the same reason.
 - **Pressing Update updates.** The Update button now switches to the new version straight away, even during a wave, and if the update is already downloaded it uses that copy instead of fetching it again.
+
+Built from photon 5efc4dda · chirp b01db995 · fgtw 38010268 · fluor a321b6f9 · kete 0f566864 · limbus 30ab5cc3 · manifestus 0822a954 · nunc f2c0c226 · opsin c20d6ad6 · rarangi be4386cb · spirix b12187fb · tapuwae 5c462e1d · tohu e5838375 · voca 04dcf2df · vsf 56905743
 
 ## v144
 - **Deleting text no longer closes Photon.** Clicking into the message box and then pressing Backspace a couple of times could make Photon quit on the spot, most often right after clearing a draft and switching conversations; the text boxes now keep their selection inside the text, and typing right after a click no longer selects the letter you just typed.
