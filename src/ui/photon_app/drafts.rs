@@ -15,6 +15,31 @@ const DRAFT_WRITE_AFTER: std::time::Duration = std::time::Duration::from_secs(60
 pub(super) type ComposeSeen = (u64, usize, Option<i64>, Option<i64>, Option<i64>);
 
 impl PhotonApp {
+    /// Tripwire for the compose-box crash (MacBook and Leviathan 2026-11-06: Backspace drained a selection past the end of the text, right after deleting a draft and switching conversations).
+    /// Logs the first step at which the caret or the selection anchor stands past the text, naming the step; silent while the box is sound.
+    pub(super) fn compose_tripwire(&self, at: &str) {
+        // Latched: one line per broken stretch, at the step that broke it, not one per tick after.
+        static BROKEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        let Some(tb) = self.message_textbox.as_ref() else { return };
+        let n = tb.chars.len();
+        let broken = tb.cursor > n || tb.selection_anchor.is_some_and(|a| a > n);
+        if !broken {
+            BROKEN.store(false, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+        if !BROKEN.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            crate::logf!(
+                "COMPOSE TRIPWIRE at {}: {} char(s), caret {}, anchor {}, replace pending {}, restore pending {}",
+                at,
+                n,
+                tb.cursor,
+                format!("{:?}", tb.selection_anchor),
+                self.draft_replace_pending,
+                self.draft_restore_pending
+            );
+        }
+    }
+
     fn compose_seen(&self) -> Option<ComposeSeen> {
         let tb = self.message_textbox.as_ref()?;
         let links = tb.spans().iter().filter(|s| s.dest.is_some()).count();
@@ -233,6 +258,7 @@ impl PhotonApp {
         // Putting the draft back needs the text renderer, which the tick holds.
         self.draft_restore_pending = next.is_some();
         self.draft_seen = None;
+        self.compose_tripwire("conversation switch");
     }
 
     /// Forget every draft without writing — the device wipe (a wipe must never re-persist what it just deleted).
@@ -257,6 +283,7 @@ impl PhotonApp {
 
     /// Per tick: load the vault's drafts once, put the open conversation's draft back, notice edits, and write on the deadline. Returns whether the compose bar changed.
     pub(super) fn drafts_tick(&mut self, now: Instant, text: &mut fluor::text::TextRenderer) -> bool {
+        self.compose_tripwire("tick start (an edit since the last tick)");
         if !self.drafts_loaded && !self.drafts_loading {
             if let Some(storage) = self.storage.as_ref().cloned() {
                 self.drafts_loading = true;
@@ -317,6 +344,7 @@ impl PhotonApp {
             // The phone's keyboard holds its own copy of the field: restart it so it does not re-materialise the replaced text.
             self.pending_input_reset = true;
             crate::log("DRAFTS: the compose bar took a newer draft from another device");
+            self.compose_tripwire("a newer draft from another device replaced the bar");
             changed = true;
         }
         if self.draft_restore_pending && self.drafts_loaded && self.message_textbox.is_some() {
@@ -335,6 +363,7 @@ impl PhotonApp {
                     changed = true;
                 }
             }
+            self.compose_tripwire("the open conversation's draft was put back");
             self.draft_seen = self.compose_seen();
         } else if !self.draft_restore_pending {
             let seen = self.compose_seen();
