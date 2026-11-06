@@ -16,7 +16,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [no private handles](no-private-handles.md) — handles never in any repo; petnames · [doctrine](project_humanitys_code.md) · [never on disk](feedback_never_store_handles.md)
 - [photon + deps only](feedback_scope_photon_and_deps.md) — HARD: never edit another project
 - [stage own files](feedback_stage_only_own_files.md) — HARD: explicit paths; never git add -u/-A
-- [commit = all modified](feedback_commit_all.md) · [source map](feedback_source_map.md) — keep src/lib.rs map current
+- [commit + push, always](feedback_commit_all.md) · [source map](feedback_source_map.md) — keep src/lib.rs map current
 - [no Python](feedback_no_python.md) — HARD; tools are Rust · [launcher is photon](feedback_launcher_named_photon.md)
 - [no wrapped comments](feedback_no_comment_wraps.md) — one sentence per line; comment-gate.sh
 - [edges, not timers](edges-not-timers.md) · [no time-based UI](feedback_no_time_based_ui.md)
