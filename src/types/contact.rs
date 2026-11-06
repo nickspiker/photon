@@ -1083,7 +1083,8 @@ impl Contact {
             }
         }
         // Never forward to a device the friend's fleet reported stolen: it may be in the fold still (refusal is not removal) but our frames must not reach a thief's hands.
-        out.retain(|d| !self.refused_devices.contains(d));
+        // Nor to one their fold revoked: the first-met key stays pinned in `public_identity` after its device leaves, and every send kept a relay copy for it (Daniel 2026-11-06: each chat dropped at the closed pipe of his converted phone's old key).
+        out.retain(|d| self.knows_device(d));
         out
     }
 

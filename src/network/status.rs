@@ -4273,6 +4273,16 @@ async fn run_checker(
                                             src_addr,
                                             target
                                         );
+                                        // The path reaches the device that SIGNED the ack, not the one the probe was aimed at.
+                                        // Crediting `peer` let another contact's device at the same address (a shared 192.168.1.2 on two home LANs, a sibling behind one NAT) hold a friend's path "validated" forever: the relay leg stayed off, every ping went to the wrong device, and the friend sat offline while chat and ACKs flowed over the relay all day (Daniel 2026-11-06).
+                                        if responder_pubkey != peer {
+                                            crate::logf!(
+                                                "TRAVERSE: the probe at {} was for device {} but device {} answered it — the path is credited to the answerer",
+                                                target,
+                                                crate::fp(peer.as_bytes()),
+                                                crate::fp(responder_pubkey.as_bytes())
+                                            );
+                                        }
                                         // A signed ack to OUR OWN probe is the device answering directly — liveness as strong as a pong, so it clears the miss count too.
                                         // Mom 2026-10-23: her validated path acked every cycle while no direct pong ever came back, so three missed pings marked her offline, the offline verdict dropped the path, and the next cycle restarted at relay — amber again.
                                         {
@@ -4282,7 +4292,7 @@ async fn run_checker(
                                         send_status_update(
                                             &status_tx_recv,
                                             StatusUpdate::PathValidated {
-                                                peer_pubkey: peer,
+                                                peer_pubkey: responder_pubkey,
                                                 remote: target,
                                             },
                                             &event_proxy_recv,

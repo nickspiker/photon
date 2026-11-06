@@ -367,6 +367,22 @@ impl PhotonApp {
             let mut relay_ping =
                 relay_unless_direct_trusted(&contact, crate::network::udp::get_local_ip());
             relay_ping.retain(|d| !locked.contains(d));
+            // An offline friend whose held direct path keeps the relay leg off can never come back on presence alone (Daniel 2026-11-06: delivered over the relay all day, painted offline, zero relay pings).
+            // Name the path so the log says which address is holding it.
+            if !contact.is_online && relay_ping.is_empty() && !contact.is_sibling {
+                if let Some((vpath, at)) = contact.validated_path {
+                    crate::logf!(
+                        "PRESENCE: {} is offline but a held direct path {} (refreshed {}s ago, lan {}) keeps its pings off the relay; lan {} public {} booked to {}",
+                        crate::fp(&contact.handle_proof),
+                        vpath,
+                        at.elapsed().as_secs(),
+                        contact.validated_path_lan,
+                        format!("{:?}", lan_addr),
+                        format!("{:?}", contact.ip),
+                        crate::fp(dev_for(vpath).as_bytes())
+                    );
+                }
+            }
             // The punch-validated path is the one address PROVEN reachable — when it matches neither stored record (a reflexive-learned mapping can differ from both the registry ip and the LAN row), ping it too, or presence sits TIMEOUT on two dead addresses while the keepalive acks flow.
             if let Some((vpath, _)) = contact.validated_path {
                 if Some(vpath) != lan_addr && Some(vpath) != contact.ip {
