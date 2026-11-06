@@ -42,15 +42,15 @@ fn main() {
             photon_messenger::write_crash_sidecar(&report);
             photon_messenger::logf!("{}", report);
         }
-        // A panic is THE flush edge: the process is about to die and in-process RAM (the soft-mode batch) dies with it.
-        photon_messenger::flush_log_buffer();
-
-        // Also print backtrace if available
-        let backtrace = std::backtrace::Backtrace::capture();
+        // The backtrace, always: `capture` honours RUST_BACKTRACE, which no launched app has, so every field panic arrived without one.
+        // A stripped build prints unnamed frames; a build that keeps its symbols names the function that panicked.
+        let backtrace = std::backtrace::Backtrace::force_capture();
         if backtrace.status() == std::backtrace::BacktraceStatus::Captured {
             photon_messenger::write_crash_sidecar(&format!("Backtrace:\n{}", backtrace));
             photon_messenger::logf!("Backtrace:\n{}", backtrace);
         }
+        // A panic is THE flush edge: the process is about to die and in-process RAM (the soft-mode batch) dies with it. It runs last, so the backtrace rides it too.
+        photon_messenger::flush_log_buffer();
     }));
 
     // Last run's crash, if any, folded into this run's log so it rides the next submission.
