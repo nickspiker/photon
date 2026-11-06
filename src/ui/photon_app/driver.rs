@@ -1229,7 +1229,20 @@ impl FluorApp<Px> for PhotonApp {
                 } else if page == SettingsPage::Updates {
                     use crate::network::updates::Channel;
                     // The two channel buttons install the version they already show (from the page-open auto-check). An "Already on …" button is inert — spawn_update_apply no-ops when the row equals ours.
-                    if slot == 1 {
+                    // A press is the human's decision (Nick 2026-11-06: "manual update should just ... update"): it swaps now, past every hold, and an update already downloaded and waiting is swapped in rather than fetched again.
+                    #[cfg(target_os = "android")]
+                    let staged = self.pending_apk_install.is_some();
+                    #[cfg(not(target_os = "android"))]
+                    let staged = self.update_reexec.is_some();
+                    if staged && (slot == 1 || slot == 2) {
+                        self.update_pressed = true;
+                        #[cfg(target_os = "android")]
+                        {
+                            self.pending_apk_manual = true;
+                        }
+                        self.update_reexec_held_logged = false;
+                        crate::log("UPDATE: pressed with an update already downloaded — swapping now");
+                    } else if slot == 1 {
                         self.update_pressed = true;
                         self.spawn_update_apply(Channel::Release);
                     } else if slot == 2 {
@@ -3728,7 +3741,7 @@ impl FluorApp<Px> for PhotonApp {
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
         // The swap waits out a live wave, group wave or ceremony (update_swap_blocked, Nick 2026-11-04): the new binary is on disk and verified, so the wave's end is the edge that lets it go.
-        if let Some(blocker) = self.update_reexec.as_ref().and_then(|_| self.update_swap_blocker()) {
+        if let Some(blocker) = self.update_reexec.as_ref().filter(|_| !self.update_pressed).and_then(|_| self.update_swap_blocker()) {
             if !self.update_reexec_held_logged {
                 self.update_reexec_held_logged = true;
                 crate::logf!("UPDATE: the new binary is ready — holding the swap for {}", blocker);

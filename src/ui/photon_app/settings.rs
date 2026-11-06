@@ -189,10 +189,11 @@ impl PhotonApp {
     }
 
     /// Android: hand the staged APK to the installer, or keep it parked. `screen` = the caller is the visible screen's frame poll; otherwise it is the background service's poll.
-    /// The screen installs only an update the human pressed for; an automatic one goes from the service while no screen shows, so the swap happens in a pocket, never under a hand. Neither goes while `update_swap_blocked`.
+    /// The screen installs only an update the human pressed for; an automatic one goes from the service while no screen shows, so the swap happens in a pocket, never under a hand. The automatic one also waits out `update_swap_blocked`; a pressed one goes at once.
     #[cfg(target_os = "android")]
     pub fn take_apk_install(&mut self, screen: bool) -> Option<String> {
-        if self.pending_apk_install.is_none() || self.update_swap_blocked() || (screen && !self.pending_apk_manual) {
+        // A press installs now, past the hold (Nick 2026-11-06: "manual update should just ... update"); only an automatic one waits for a free moment and no screen.
+        if self.pending_apk_install.is_none() || (!self.pending_apk_manual && (self.update_swap_blocked() || screen)) {
             return None;
         }
         crate::logf!("UPDATE: handing the staged APK to the installer from the {}", if screen { "screen (the human pressed Update)" } else { "background service (no screen, no wave)" });
