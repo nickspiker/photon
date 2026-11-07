@@ -850,7 +850,7 @@ impl PhotonApp {
             if scroll_hint.is_some() { self.scroll_frames_hinted += 1 } else { self.scroll_frames_full += 1 }
         }
         let mut paint_bg = |canvas: &mut Canvas, bg_clip: Option<fluor::paint::Clip>| {
-            // LOGO first (an under() layer — first-drawn claims its pixels; the noise then composes beneath). The wave does NOT draw here: pre-noise it lands on α=0 pixels the noise fully replaces — the old both-blocks double-draw burned a full wave AND a full 3-raster logo per bg pass for nothing (Nick 2026-09-02).
+            // LOGO first (an under() layer — first-drawn claims its pixels; the noise then composes beneath). The wave goes in after the logo and the text, before the noise.
             if on_launch {
                 paint_photon_logo(canvas, text, logo_rect);
             }
@@ -883,6 +883,14 @@ impl PhotonApp {
                     None,
                 );
             }
+            // WAVE before the noise: a light layer of its own under() the logo and the text, with the noise going in behind it (front to back, owner 2026-11-07; it used to add its light onto the finished noise and the logo).
+            if on_launch {
+                chromatic_wave(canvas, spectrum_rect, phase, period_scale);
+            }
+            // The About slab: CLIPPED crop-not-shrink variants — the pattern/wordmark stay anchored to the full logical band (top goes negative as the card scrolls) and only pane-visible rows paint. Shrinking the rects instead RESCALED both (the "wave scales when scrolling" + vanished-wordmark field bugs; the shrunken-rect span math also underflowed).
+            if let Some((sx0, sx1, wave_top, wave_h, _, _, clip_y0, clip_y1)) = about_slab_bands {
+                chromatic_wave_clipped(canvas, sx0, sx1, wave_top, wave_h, clip_y0, clip_y1, about_wave_phase, 1.0);
+            }
             paint::background_noise_split(
                 canvas,
                 shimmer,
@@ -893,14 +901,6 @@ impl PhotonApp {
                 bg_clip,
                 bg_base,
             );
-            // WAVE after the noise — an RMW quadrature-add that reads the now-opaque noise as its base. One call, post-noise, is the whole spectrum band.
-            if on_launch {
-                chromatic_wave(canvas, spectrum_rect, phase, period_scale);
-            }
-            // The About slab: CLIPPED crop-not-shrink variants — the pattern/wordmark stay anchored to the full logical band (top goes negative as the card scrolls) and only pane-visible rows paint. Shrinking the rects instead RESCALED both (the "wave scales when scrolling" + vanished-wordmark field bugs; the shrunken-rect span math also underflowed).
-            if let Some((sx0, sx1, wave_top, wave_h, _, _, clip_y0, clip_y1)) = about_slab_bands {
-                chromatic_wave_clipped(canvas, sx0, sx1, wave_top, wave_h, clip_y0, clip_y1, about_wave_phase, 1.0);
-            }
         };
         match scroll_hint {
             Some((rect, dy, band)) => chrome.scroll_bg(rect, dy, band, ctx.damage, |canvas| paint_bg(canvas, Some(fluor::paint::Clip::new(band.x0, band.y0, band.x1, band.y1)))),

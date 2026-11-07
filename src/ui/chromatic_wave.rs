@@ -1,13 +1,13 @@
-//! Chromatic wave: a sine-modulated visible-spectrum colour bar that paints over the existing background via legacy `sqrt(c*scale + c_bg²)` per-channel blend. Direct port of `compositing.rs::draw_spectrum` (compositing.rs:5092-5168), preserving the legacy quadrature-add interaction with the bg below.
+//! Chromatic wave: a sine-modulated visible-spectrum colour bar, a light layer of its own composed front to back thru fluor's `under`. Port of `compositing.rs::draw_spectrum` (compositing.rs:5092-5168), whose quadrature add put the wave's light ONTO the finished background.
 //!
-//! The wave reads the bg pixel's visible RGB (assumed opaque from a prior `paint::background_noise` pass), quadrature-adds the wave's per-channel intensity, writes back to α + darkness storage with α preserved. Render order is bg-first (noise → wave → logo) — the wave depends on the noise already being in the buffer to read.
+//! Front to back (owner, 2026-11-07): the wave goes in after what sits in front of it (the logo) and before what sits behind it (the noise), and reads nothing behind it. Each pixel is the wave's light at an α of its own (premultiplied, light = α − darkness), so over black it sheds exactly the light the old add put there, and the noise behind shows thru its faint tails and is covered by its bright core.
 //!
 //! Colour at each x sweeps the 350-750 nm band of the visible spectrum (sampled via [`super::lms2006so::LMS2006SO`] and converted to RGB via the LMS → REC2020 magic 9 coefficients inlined below). The y modulation is a sine whose **frequency** ramps up toward the blue end (logarithmic) and whose **amplitude** rises toward blue too; `period_scale` multiplies the base `waves_per_region` so the same shape stretches/compresses globally.
 
 use super::lms2006so::LMS2006SO;
 use fluor::canvas::PixelRect;
 use fluor::canvas::Canvas;
-use fluor::pixel::Pixel;
+use fluor::pixel::{BlendMode, Pixel};
 use std::f32::consts::TAU;
 
 /// Paint a chromatic wave covering `rect` of `canvas`. `phase` is the wave's horizontal phase shift in radians (advance over time to animate); `period_scale` multiplies the base waves-per-region (`1.` = legacy density, `>1.` = more waves, `<1.` = fewer waves).
@@ -62,7 +62,7 @@ pub fn chromatic_wave_clipped<P: Pixel>(
     const LAMBDA_START: usize = 350 - START_NM;
     const LAMBDA_END: usize = 750 - START_NM;
 
-    // α + darkness: each stored channel is ONE − the visible code (the bg is opaque); α is preserved thru the blend.
+    // α + darkness: a channel's darkness is ONE − its visible code.
     let one = P::ONE;
 
     let logo_height_f = logo_height as f32;
@@ -112,38 +112,36 @@ pub fn chromatic_wave_clipped<P: Pixel>(
             let g = -0.266362510245695 * l + 1.40494573257753 * m + -0.175554801656117 * s;
             let b = 0.00389152987374033 * l + -0.0205676800313948 * m + 0.945832607950864 * s;
 
-            let idx = row_base + px;
-            let existing = canvas.pixels[idx];
-            // Extract the visible codes from α + darkness storage. Alpha stays unchanged. On Android the storage channels are in B, G, R order (RGBA_8888 read as little-endian u32), so the field at the top is dark_B and the one at the bottom is dark_R — swap when extracting so the per-pixel math below stays in canonical R/G/B positions regardless of platform.
-            let alpha = existing.alpha();
-            let [hi, mid, lo] = existing.channels().map(|d| one - d);
-            #[cfg(target_os = "android")]
-            let (r_bg, b_bg) = (lo, hi);
-            #[cfg(not(target_os = "android"))]
-            let (r_bg, b_bg) = (hi, lo);
-            let g_bg = mid;
-
-            // The quadrature add is a LIGHT add: on the old γ2 buffer `sqrt(c · scale + c_bg²)` added c · scale / 255² of light to the background's. The buffer is `g2t` now, so decode the background's light, add the same light, stop at diffuse white (where γ2 255 used to clip — past it is a 9.7× glow on HDR), and take VSF's bucket. Negative or NaN light adds nothing.
-            // 8 bits: fluor's tables, as always. A wider depth: VSF's own codec at that depth (decode at the bucket bottom, encode by its settled truncation), light capped at diffuse white the same way.
-            let add = |c: f32, bg: u32| -> u32 {
+            // The wave's light in each channel, as the g2t code that light has over black: the same light the old add put on a black background, capped at diffuse white the same way (where γ2 255 used to clip — past it is a 9.7× glow on HDR). Negative or NaN light (the matrix's negative lobes) is no light.
+            // 8 bits: fluor's tables, as always. A wider depth: VSF's own codec at that depth (encode by its settled truncation), light capped at diffuse white the same way.
+            let code = |c: f32| -> u32 {
                 if P::DEPTH == 8 {
-                    let light = fluor::theme::G2T_LIGHT_Q16[bg as usize] as f32 + (c * scale).max(0.0) * (65536.0 / 65025.0);
-                    fluor::theme::g2t_code(light.min(65536.0) as u32).min(194).max(bg)
+                    fluor::theme::g2t_code(((c * scale).max(0.0) * (65536.0 / 65025.0)).min(65536.0) as u32)
                 } else {
-                    let light = vsf::colour::convert::linearize_gamma2tanh_bits_f32(bg, P::DEPTH) + (c * scale).max(0.0) * (1. / 65025.0);
-                    vsf::colour::convert::delinearize_gamma2tanh_bits_f32(light.min(1.), P::DEPTH).max(bg)
+                    vsf::colour::convert::delinearize_gamma2tanh_bits_f32(((c * scale).max(0.0) * (1. / 65025.0)).min(1.), P::DEPTH)
                 }
             };
-            let r_new = add(r, r_bg);
-            let g_new = add(g, g_bg);
-            let b_new = add(b, b_bg);
+            let lit = [code(r), code(g), code(b)];
 
-            // Pack R/G/B back into platform channel order — mirror image of the extract above.
+            // The wave is a light layer of its own, composed UNDER whatever already sits in front of it (the logo; the noise goes in after, behind it).
+            // Its α is the union of the three channels' light as opacities, ONE − ∏(ONE − code): C∞ in every code, and at least each channel's code, so every channel's light fits under it (premultiplied, light = α − darkness).
+            // Each product is floored, which only shrinks the clear part, so α ≥ every code holds exactly in the integers too; u64 because two 16-bit complements multiply to just under 2³².
+            let one64 = one as u64;
+            let [kr, kg, kb] = lit.map(|v| (one - v) as u64);
+            let alpha = one - (kr * kg / one64 * kb / one64) as u32;
+            // WHY: α is the divisor that turns the premultiplied light into the straight darkness `under` takes as its bottom.
+            // PROOF: α = 0 exactly when every channel's code is 0, where the layer is empty, and an empty bottom under anything leaves it unchanged, so skipping is the same pixel without the division by zero.
+            if alpha == 0 {
+                continue;
+            }
+            // Straight darkness: the visible code over α, complemented. code ≤ α (above), so code × ONE / α ≤ ONE and the darkness lands in 0..=ONE.
+            let dark = lit.map(|v| one - (v as u64 * one64 / alpha as u64) as u32);
+            // fluor's channels are in storage order: on Android RGBA_8888 read as little-endian u32 puts dark_B at the top and dark_R at the bottom, so swap into it.
             #[cfg(target_os = "android")]
-            let visible_new = [b_new, g_new, r_new];
-            #[cfg(not(target_os = "android"))]
-            let visible_new = [r_new, g_new, b_new];
-            canvas.pixels[idx] = P::from_channels(alpha, visible_new.map(|v| one - v));
+            let dark = [dark[2], dark[1], dark[0]];
+
+            let idx = row_base + px;
+            canvas.pixels[idx] = canvas.pixels[idx].under(P::from_channels(alpha, dark), BlendMode::Normal);
         }
     }
 }
@@ -151,25 +149,28 @@ pub fn chromatic_wave_clipped<P: Pixel>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use fluor::pixel::{Argb8, G2t16};
+    use fluor::pixel::{Argb8, Blend, G2t16};
 
-    /// The wave over the same opaque background at both depths, read back at 8 bits: the light added agrees to within the 8-bit buckets it lands in (the 16-bit path decodes and encodes thru vsf's own codec, fluor's 8-bit tables round to Q16 first), the background's α untouched, and nothing darker than it was.
+    /// The wave at both depths into an empty buffer, then opaque black under it, read back at 8 bits: the light agrees within 3 codes (the 8-bit `under` floors by up to a code at each of its two steps, black under an empty pixel alone reading one code light, and the dim buckets near black differ between vsf's 16-bit codec and fluor's Q16 tables), every pixel ends opaque, and the wave lights something.
     #[test]
-    fn the_wave_adds_the_same_light_at_both_depths() {
+    fn the_wave_sheds_the_same_light_at_both_depths() {
         let (w, h) = (96usize, 48usize);
-        let bg8: Vec<Argb8> = (0..w * h).map(|i| fluor::theme::dark(0x00_10_20_30 + ((i as u32 * 7) & 0x0F))).collect();
-        let mut p8 = bg8.clone();
-        let mut p16: Vec<G2t16> = bg8.iter().map(|&c| G2t16::from_g2t8(c)).collect();
+        let mut p8 = vec![Argb8::EMPTY; w * h];
+        let mut p16 = vec![G2t16::EMPTY; w * h];
         let mut dmg = fluor::canvas::Damage::new();
         let rect = PixelRect::new(0, 0, w, h);
         chromatic_wave(&mut Canvas::new(&mut p8, w, h, &mut dmg), rect, 0.5, 1.);
         chromatic_wave(&mut Canvas::new(&mut p16, w, h, &mut dmg), rect, 0.5, 1.);
+        let black8 = Argb8::from_channels(Argb8::ONE, [Argb8::ONE; 3]);
+        let black16 = G2t16::from_channels(G2t16::ONE, [G2t16::ONE; 3]);
         let mut lit = 0;
         for i in 0..w * h {
-            assert_eq!(p16[i].alpha(), G2t16::ONE);
-            for ((a, b), base) in p8[i].channels().into_iter().zip(p16[i].channels()).zip(bg8[i].channels()) {
-                assert!(((b >> 8) as i32 - a as i32).abs() <= 1, "pixel {i}: {:08x} against {:016x}", p8[i], p16[i]);
-                lit += (a < base) as u32;
+            let (a, b) = (p8[i].under(black8, BlendMode::Normal), p16[i].under(black16, BlendMode::Normal));
+            assert_eq!(a.alpha(), Argb8::ONE);
+            assert_eq!(b.alpha(), G2t16::ONE);
+            for (da, db) in a.channels().into_iter().zip(b.channels()) {
+                assert!(((db >> 8) as i32 - da as i32).abs() <= 3, "pixel {i}: {a:08x} against {b:016x}");
+                lit += (da < Argb8::ONE) as u32;
             }
         }
         assert!(lit > 0, "the wave lights something");
