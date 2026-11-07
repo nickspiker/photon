@@ -104,11 +104,8 @@ pub fn paint_photon_logo_clipped<P: Pixel>(
         FONT,
     );
 
-    // Highlight scratch — three rasterizations into one buffer:
-    //   1. "Photon" at LOGO_HIGHLIGHT_GRAY (the rim source).
-    //   2. "Photon" at black offset 1px right → carves the right edge of each glyph.
-    //   3. "Photon" at black offset 1px down → carves the bottom edge.
-    // The carves leave the highlight as a thin top-left rim; the subsequent sharp horizontal blur fades it right-to-left.
+    // Highlight scratch: "Photon" at LOGO_HIGHLIGHT_GRAY (the rim source), less the carve: the same glyphs 1 px right and 1 px down, drawn as coverage into a mask of their own, take their share off the rim (rim × (1 − carve)), leaving a thin top-left rim; the sharp horizontal blur then fades it right-to-left.
+    // The carve is a mask the rim is multiplied by, not a layer: it used to be black glyphs drawn over the grey in the same buffer, which only worked while the legacy text path painted over what was there (owner, 2026-11-07: under only).
     let mut scratch_highlight = vec![0_u8; scratch_size];
     text.draw_text_center_legacy(
         &mut scratch_highlight,
@@ -123,32 +120,25 @@ pub fn paint_photon_logo_clipped<P: Pixel>(
         0,
         FONT,
     );
-    text.draw_text_center_legacy(
-        &mut scratch_highlight,
-        buf_w as u32,
-        virtual_height as u32,
-        "Photon",
-        text_x + 1.,
-        text_y - start as f32,
-        text_size,
-        WEIGHT,
-        vec![0],
-        0,
-        FONT,
-    );
-    text.draw_text_center_legacy(
-        &mut scratch_highlight,
-        buf_w as u32,
-        virtual_height as u32,
-        "Photon",
-        text_x,
-        text_y - start as f32 + 1.,
-        text_size,
-        WEIGHT,
-        vec![0],
-        0,
-        FONT,
-    );
+    let mut scratch_carve = vec![0_u8; scratch_size];
+    for (dx, dy) in [(1., 0.), (0., 1.)] {
+        text.draw_text_center_legacy(
+            &mut scratch_carve,
+            buf_w as u32,
+            virtual_height as u32,
+            "Photon",
+            text_x + dx,
+            text_y - start as f32 + dy,
+            text_size,
+            WEIGHT,
+            vec![0xFF],
+            0,
+            FONT,
+        );
+    }
+    for (h, &k) in scratch_highlight.iter_mut().zip(&scratch_carve) {
+        *h = ((*h as u32 * (255 - k as u32) + 127) / 255) as u8;
+    }
     blur_horizontal_sharp(&mut scratch_highlight);
 
     // Composite via under() — fluor is TOPMOST-FIRST (first-drawn = frontmost). Each layer is a proper α+darkness layer (white for glow/highlight, black for body), so the logo needs nothing opaque beneath it — it can be drawn first/topmost and the noise composes under it. (Was painter's-order bottom-to-top RMW that read the background and required the noise painted first; coupling gone.)
