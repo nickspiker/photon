@@ -476,11 +476,11 @@ impl FoldPartition {
 }
 
 /// Judge every record of `snapshot` against its SUBJECT's fold: the founder for the genesis, the member for its member and leave records, the voucher for a vouch, the owner for a bundle, the setter for a title.
-/// `signer_in_fold(party, device)` answers `Some(true)` / `Some(false)` from a fold we hold, `None` when we hold none for that party yet.
+/// `signer_in_fold(party, device, osc)` answers `Some(true)` / `Some(false)` from a fold we hold, `None` when we hold none for that party yet; `osc` is the record's own signed moment, for a caller that may judge a departed device by the fleet it signed in.
 /// Checking a signature only against the device a record itself names let any member forge another's leave or vouch, or plant a bundle under someone else's party and receive every later era.
 /// A record dated past our known time is refused whole: merges are newest-wins on a stamp inside the signature, so it would outrank every later edit forever.
 /// `held_genesis` is the genesis the roster already holds, which the founder self-vouch rule needs when the snapshot's own genesis is not verified.
-pub fn partition_by_fold(snapshot: Roster, held_genesis: Option<&GenesisRecord>, signer_in_fold: impl Fn(&PartyId, &[u8; 32]) -> Option<bool>, from_the_future: impl Fn(i64) -> bool) -> FoldPartition {
+pub fn partition_by_fold(snapshot: Roster, held_genesis: Option<&GenesisRecord>, signer_in_fold: impl Fn(&PartyId, &[u8; 32], i64) -> Option<bool>, from_the_future: impl Fn(i64) -> bool) -> FoldPartition {
     enum Verdict {
         Take,
         Park,
@@ -492,7 +492,7 @@ pub fn partition_by_fold(snapshot: Roster, held_genesis: Option<&GenesisRecord>,
         } else if !verify_record(bytes, sig, device) {
             Verdict::Refuse("fails its signature")
         } else {
-            match signer_in_fold(party, device) {
+            match signer_in_fold(party, device, osc) {
                 Some(true) => Verdict::Take,
                 Some(false) => Verdict::Refuse("signed by a device outside its subject's fold"),
                 None => Verdict::Park,
@@ -1000,7 +1000,7 @@ mod tests {
     fn records_verify_against_their_subjects_fold_not_their_own_claim() {
         let (r, founder, x, f_seed, x_seed) = fold_fixture();
         let attacker_seed = [0x0Au8; 32];
-        let folds = |p: &PartyId, d: &[u8; 32]| -> Option<bool> {
+        let folds = |p: &PartyId, d: &[u8; 32], _at: i64| -> Option<bool> {
             if *p == founder {
                 Some(*d == device_pubkey(&f_seed))
             } else if *p == x {
@@ -1035,7 +1035,7 @@ mod tests {
     fn records_wait_on_an_unheld_fold_and_verify_when_it_lands() {
         let (r, founder, x, f_seed, x_seed) = fold_fixture();
         // We hold X's fold (a friend) but not the founder's: the genesis, the founder's records and its vouches all wait.
-        let only_x = |p: &PartyId, d: &[u8; 32]| (*p == x).then(|| *d == device_pubkey(&x_seed));
+        let only_x = |p: &PartyId, d: &[u8; 32], _at: i64| (*p == x).then(|| *d == device_pubkey(&x_seed));
         let part = partition_by_fold(r.clone(), None, only_x, |_| false);
         assert!(part.refused.is_empty());
         assert!(part.verified.genesis.is_none(), "the founder's genesis waits on the founder's fold");
@@ -1044,7 +1044,7 @@ mod tests {
         held.merge_all(part.verified);
         assert!(held.standing().is_empty(), "nobody stands on records that have not verified");
         // The founder's fold lands: the parked records are judged again and the roster stands whole.
-        let both = |p: &PartyId, d: &[u8; 32]| -> Option<bool> { Some(if *p == founder { *d == device_pubkey(&f_seed) } else { *d == device_pubkey(&x_seed) }) };
+        let both = |p: &PartyId, d: &[u8; 32], _at: i64| -> Option<bool> { Some(if *p == founder { *d == device_pubkey(&f_seed) } else { *d == device_pubkey(&x_seed) }) };
         let again = partition_by_fold(part.parked, held.genesis.as_ref(), both, |_| false);
         assert!(again.refused.is_empty() && again.parked_count() == 0);
         held.merge_all(again.verified);
@@ -1096,7 +1096,7 @@ mod tests {
         assert!(!forged.self_certifies());
         let mut snapshot = Roster::default();
         snapshot.merge_genesis(forged);
-        let part = partition_by_fold(snapshot, None, |_, _| Some(true), |_| false);
+        let part = partition_by_fold(snapshot, None, |_, _, _| Some(true), |_| false);
         assert!(part.verified.genesis.is_none() && part.refused.iter().any(|w| w.starts_with("genesis")), "{:?}", part.refused);
         // One party alone: your own conversation.
         let solo = GenesisRecord::derived(&[a]);
@@ -1109,7 +1109,7 @@ mod tests {
     #[test]
     fn a_genesis_signed_outside_the_founders_fold_is_refused() {
         let (r, founder, _, _, _) = fold_fixture();
-        let not_the_founder = |p: &PartyId, _: &[u8; 32]| (*p == founder).then_some(false);
+        let not_the_founder = |p: &PartyId, _: &[u8; 32], _at: i64| (*p == founder).then_some(false);
         let part = partition_by_fold(r, None, not_the_founder, |_| false);
         assert!(part.verified.genesis.is_none());
         assert!(part.refused.iter().any(|w| w.starts_with("genesis")), "{:?}", part.refused);

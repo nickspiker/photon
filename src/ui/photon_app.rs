@@ -1888,7 +1888,7 @@ pub struct PhotonApp {
     /// Group-scoped trust source (§2): never-friended members' folded devices, consulted only for frames carrying that group's token. Runtime, re-folded at boot (step 5 wires the fold).
     molecule_peers: Vec<crate::types::molecule::MoleculePeer>,
     /// Roster records waiting on a fold we do not hold yet (verify-or-withhold, docs/conversations.md Phase 0): re-merged on every fold landing. RAM only — the folds are fetched the moment a record parks, and the records ride every later snapshot.
-    molecule_parked: Vec<(crate::types::molecule::MoleculeId, crate::types::molecule::Roster)>,
+    molecule_parked: Vec<(crate::types::molecule::MoleculeId, crate::types::molecule::Roster, bool)>,
     /// (chains registry size, contact count) at the last bond check — `ensure_bonds` runs on the edge either moves.
     bonds_checked: (usize, usize),
     /// Conversation eras we delivered over a bond and await the ACK of: (bond chains id, the Deliver row's eagle time, the conversation) — the first ACK is the minter's cutover edge (docs/conversations.md §0).

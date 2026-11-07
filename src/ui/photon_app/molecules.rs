@@ -217,7 +217,7 @@ impl PhotonApp {
         // Fold every never-friended member now, while the offer waits for its Join, so the snapshot verifies whole the moment it is merged.
         self.fetch_member_folds(&snapshot);
         if let Some(pos) = self.molecule_rosters.iter().position(|(id, _)| *id == gid) {
-            let mut changed = self.merge_snapshot_into(pos, snapshot);
+            let mut changed = self.merge_snapshot_into(pos, snapshot, false);
             changed |= self.sync_molecule_conversation(&gid);
             if changed {
                 self.persist_molecule(&gid);
@@ -357,7 +357,7 @@ impl PhotonApp {
                 // The offer's snapshot enters thru the fold-checked merge like any records: what verifies now is held, what waits on a fold is parked.
                 self.molecule_rosters.push((gid, Roster::default()));
                 let pos = self.molecule_rosters.len() - 1;
-                self.merge_snapshot_into(pos, offer.snapshot.clone());
+                self.merge_snapshot_into(pos, offer.snapshot.clone(), false);
                 self.sync_molecule_conversation(&gid);
             }
             self.persist_molecule(&gid);
@@ -651,11 +651,11 @@ impl PhotonApp {
                 self.molecule_rosters.len() - 1
             }
         };
-        self.merge_snapshot_into(pos, offer.snapshot.clone());
+        self.merge_snapshot_into(pos, offer.snapshot.clone(), false);
         // The sponsor's current roster rides the answer: everyone who joined since the invitation, fold-checked like any records.
         if let Some(Ok((bid, current))) = wire.as_ref().and_then(|g| g.blob.as_ref()).map(|b| crate::storage::molecule::roster_from_vsf_bytes(b)) {
             if bid == gid {
-                self.merge_snapshot_into(pos, current);
+                self.merge_snapshot_into(pos, current, false);
             }
         }
         self.sync_molecule_conversation(&gid);
@@ -742,7 +742,9 @@ impl PhotonApp {
             return;
         };
         let standing_before = self.molecule_rosters[pos].1.standing();
-        let merged = self.merge_snapshot_into(pos, snapshot);
+        // A records row from one of our own devices is our fleet replicating what it already held.
+        let own_fleet = ci.and_then(|i| self.contacts.get(i)).is_some_and(|c| c.is_sibling);
+        let merged = self.merge_snapshot_into(pos, snapshot, own_fleet);
         if merged || self.sync_molecule_conversation(&gid) {
             crate::logf!("MOLECULE: {} roster advanced by records from {}", hex::encode(&gid.0[..4]), sender);
             self.after_roster_advanced(gid, pos, &standing_before);
@@ -859,13 +861,29 @@ impl PhotonApp {
         self.molecule_peers.iter().find(|p| p.party == *party && !p.devices.is_empty()).map(|p| p.knows_device(device))
     }
 
+    /// The verdict for a record signed at `osc`, when the records came from `own_fleet` (one of our devices replicating what it already held).
+    /// A device that has since left its fleet honestly (a phone that moved to a new key, a device that departed) is judged by the fleet it signed in: our own device verified the record while that device was a member (Nick 2026-11-06, a reinstalled phone refusing its group's genesis, signed by the phone's own retired key).
+    /// Records from anyone else still need a current member, and a locked device vouches for nothing at any date: its record's date is its own word, so a stolen key could backdate.
+    /// `None` while the party's chain is not held here: the records park, and the chain's landing judges them again.
+    fn record_signer_verdict_at(&self, party: &[u8; 32], device: &[u8; 32], osc: i64, own_fleet: bool) -> Option<bool> {
+        let now = self.record_signer_verdict(party, device);
+        if now != Some(false) || !own_fleet {
+            return now;
+        }
+        let us = self.session.as_ref().filter(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed) == *party).map(|s| s.handle_proof);
+        let hp = us
+            .or_else(|| self.contacts.iter().find(|c| !c.is_sibling && c.handle_hash == *party).map(|c| c.handle_proof))
+            .or_else(|| self.molecule_peers.iter().find(|p| p.party == *party).map(|p| p.handle_proof))?;
+        crate::network::fgtw::fleet::held_chain(&hp).map(|chain| chain.was_member_at(device, osc))
+    }
+
     /// The party a never-friended handle proof belongs to, as any roster we hold, park, or have been offered names it — so its fold lands as a MoleculePeer and the records waiting on it can verify.
     pub(super) fn molecule_party_for_proof(&self, hp: &[u8; 32]) -> Option<[u8; 32]> {
         let named = |r: &Roster| r.members.values().find(|m| m.handle_proof == *hp).map(|m| m.party);
         self.molecule_rosters
             .iter()
             .find_map(|(_, r)| r.members.values().find(|m| m.handle_proof == *hp && r.is_standing(&m.party)).map(|m| m.party))
-            .or_else(|| self.molecule_parked.iter().find_map(|(_, r)| named(r)))
+            .or_else(|| self.molecule_parked.iter().find_map(|(_, r, _)| named(r)))
             .or_else(|| self.bond_offers.iter().find_map(|o| named(&o.snapshot)))
     }
 
@@ -888,10 +906,11 @@ impl PhotonApp {
     /// Merge a snapshot's records into a held roster under verify-or-withhold (docs/conversations.md Phase 0): `partition_by_fold` judges every record against its subject's fold.
     /// What verifies merges; what waits on a fold we do not hold is parked, its fold is fetched, and the fold's landing re-merges it; what is signed outside a known fold is refused.
     /// Precedence is entirely the roster merge's newest-wins law.
-    pub(super) fn merge_snapshot_into(&mut self, pos: usize, snapshot: Roster) -> bool {
+    /// `own_fleet`: the records came from one of our own devices replicating what it already held (see `record_signer_verdict_at`).
+    pub(super) fn merge_snapshot_into(&mut self, pos: usize, snapshot: Roster, own_fleet: bool) -> bool {
         let gid = self.molecule_rosters[pos].0;
         let held_genesis = self.molecule_rosters[pos].1.genesis.clone();
-        let part = crate::types::molecule::partition_by_fold(snapshot, held_genesis.as_ref(), |p, d| self.record_signer_verdict(p, d), crate::network::time_base::from_the_future);
+        let part = crate::types::molecule::partition_by_fold(snapshot, held_genesis.as_ref(), |p, d, osc| self.record_signer_verdict_at(p, d, osc, own_fleet), crate::network::time_base::from_the_future);
         for why in &part.refused {
             crate::logf!("MOLECULE: {} — {} — refused", hex::encode(&gid.0[..4]), why);
         }
@@ -901,11 +920,11 @@ impl PhotonApp {
             verified.genesis = None; // never re-merge a genesis we hold (merge_genesis refuses anyway; this keeps `changed` honest)
         }
         let changed = self.molecule_rosters[pos].1.merge_all(verified);
-        self.molecule_parked.retain(|(g, _)| *g != gid);
+        self.molecule_parked.retain(|(g, _, _)| *g != gid);
         if waiting > 0 {
             crate::logf!("MOLECULE: {} — {} record(s) wait on folds we do not hold yet; fetching them", hex::encode(&gid.0[..4]), waiting);
             self.fetch_member_folds(&part.parked);
-            self.molecule_parked.push((gid, part.parked));
+            self.molecule_parked.push((gid, part.parked, own_fleet));
         }
         changed
     }
@@ -913,12 +932,12 @@ impl PhotonApp {
     /// A fold landed: every parked record gets its verdict again, and whatever now verifies joins its roster exactly as a records row would.
     pub(super) fn remerge_parked_records(&mut self) {
         let parked = std::mem::take(&mut self.molecule_parked);
-        for (gid, records) in parked {
+        for (gid, records, own_fleet) in parked {
             let Some(pos) = self.molecule_rosters.iter().position(|(id, _)| *id == gid) else {
                 continue; // the group is gone (left, or never held): its parked records go with it
             };
             let standing_before = self.molecule_rosters[pos].1.standing();
-            if self.merge_snapshot_into(pos, records) {
+            if self.merge_snapshot_into(pos, records, own_fleet) {
                 crate::logf!("MOLECULE: {} roster advanced by records a fold just verified", hex::encode(&gid.0[..4]));
                 self.after_roster_advanced(gid, pos, &standing_before);
             }
@@ -1767,7 +1786,7 @@ impl PhotonApp {
                 self.molecule_rosters.len() - 1
             }
         };
-        let mut changed = self.merge_snapshot_into(pos, snapshot);
+        let mut changed = self.merge_snapshot_into(pos, snapshot, true);
         changed |= self.sync_molecule_conversation(&gid);
         self.fleet_holds_molecule(gid);
         if changed {
