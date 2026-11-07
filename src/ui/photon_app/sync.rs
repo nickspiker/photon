@@ -275,6 +275,8 @@ impl PhotonApp {
         let mut due: Vec<usize> = Vec::new();
         // Our fleet's locked set, read once: a locked device is never asked for presence, never named on a relay leg.
         let locked = self.locked_devices();
+        // The people of the open conversation: theirs are the paths a NAT keepalive is for (contact_ping_due's keep_warm).
+        let open_people: Vec<usize> = self.active_conversation.map(|id| self.people_of(id)).unwrap_or_default();
         for (i, contact) in self.contacts.iter().enumerate() {
             // A LOCKED-OUT sibling is never pinged: its verdicts are refused at the door, so presence_probed never latched and the unprobed-sibling fast path re-fired every sweep (Nick's ghost 1be949c1: 437 relay pings in one night, 2026-10-20).
             if contact.locked_out || contact.device_key().is_some_and(|k| locked.contains(&k)) {
@@ -284,7 +286,8 @@ impl PhotonApp {
             let has_remote = self
                 .our_party_id(contact)
                 .is_some_and(|us| contact.remote_count(&us) > 0);
-            if has_remote && contact_ping_due(contact, now) {
+            let keep_warm = contact.is_sibling || open_people.contains(&i);
+            if has_remote && contact_ping_due(contact, now, keep_warm) {
                 due.push(i);
             }
         }

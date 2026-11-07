@@ -4796,7 +4796,8 @@ const PING_BASE: std::time::Duration = std::time::Duration::from_secs(60);
 /// Backoff is PER CONTACT and doubles with each quiet round — 1, 2, 4 … up to ~an hour — so the friend you have not spoken to since March costs a request an hour, not one every twenty seconds. Anything that means "this contact matters right now" resets it to the floor: they spoke, we opened their conversation, we sent to them.
 ///
 /// The one exception is a contact holding a VALIDATED direct path AND recent traffic: that path exists only because something keeps its NAT mapping warm, so letting it taper would drop us to the relay mid-conversation. A path with no recent traffic is allowed to lapse — holding every path open forever was the old global clamp, and it is what made the taper cosmetic.
-fn contact_ping_due(c: &crate::types::Contact, now: std::time::Instant) -> bool {
+/// `keep_warm`: this contact's path is worth a NAT keepalive (Nick 2026-11-07): a person in the open conversation, where a message is about to go, or one of our own devices. Everyone else tapers; their path is proven again when it is next used.
+fn contact_ping_due(c: &crate::types::Contact, now: std::time::Instant, keep_warm: bool) -> bool {
     let Some(last) = c.last_pinged else {
         return true; // never pinged — always reach a contact at least once
     };
@@ -4807,7 +4808,8 @@ fn contact_ping_due(c: &crate::types::Contact, now: std::time::Instant) -> bool 
     let recent_traffic = c
         .last_heard
         .is_some_and(|t| now.duration_since(t) < std::time::Duration::from_secs(120));
-    if c.validated_path.is_some() && recent_traffic {
+    // `recent_traffic` is the keepalive's own echo (pongs and punch answers stamp `last_heard`), so ungated it kept every path warm forever once it formed — 4,838 probe answers in six idle hours.
+    if keep_warm && c.validated_path.is_some() && recent_traffic {
         return now.duration_since(last) >= VALIDATED_PATH_KEEPALIVE;
     }
     let interval = PING_BASE * (1u32 << c.ping_backoff.min(PING_BACKOFF_MAX));

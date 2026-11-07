@@ -986,12 +986,11 @@ impl PhotonApp {
             crate::logf!("BOND: cannot send — no bond with {} yet (it splits once their conversation holds a woven era)", self.contacts.get(ci).map(|c| crate::fp(&c.handle_proof)).unwrap_or_default());
             return false;
         };
-        let (_, route, _) = match self.route_for_contact(ci) {
-            Ok(v) => v,
-            Err(why) => {
-                crate::logf!("BOND: cannot send — {}", why);
-                return false;
-            }
+        // The bond's route is the contact's own: `route_for_contact` is the CONVERSATION's door and refuses a friend whose conversation chain id is unset — which every friend's ceremony leaves it, since a friend's ceremony yields the bond (ceremony.rs).
+        // So every control row on such a bond died here: the chain probe retried six times a minute for hours ("BOND: cannot send — no friendship chain", 2,254 times on the desktop, 2026-11-07), and an invitation or a join to that friend would have died the same way.
+        let Some(route) = self.contacts.get(ci).and_then(Self::route_to_contact) else {
+            crate::logf!("BOND: cannot send — no address or relay route to {}", self.contacts.get(ci).map(|c| crate::fp(&c.handle_proof)).unwrap_or_default());
+            return false;
         };
         self.transmit_core(bfid, bfid, vec![route], true, "", eagle_time, None, None, era_kem, molecule, Some(control))
     }

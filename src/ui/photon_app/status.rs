@@ -1001,8 +1001,8 @@ impl PhotonApp {
                             // Reachability clock: only the POSITIVE report counts (a TIMEOUT arrives thru this same arm with is_online=false — silence is exactly what the clock measures).
                             if is_online {
                                 contact.last_heard = Some(std::time::Instant::now());
-                                // They spoke: this contact matters right now, so collapse its presence backoff to the floor.
-                                contact.ping_backoff = 0;
+                                // A pong is not speech: resetting the backoff here made every answer schedule the next ping a minute out, so a friend who answers was polled every minute forever (Nick 2026-11-07, "no timer unless proof").
+                                // Real traffic still collapses it (a row landing, a gap, opening the conversation), and the backoff otherwise doubles to its hour.
                             }
                             let identity_online = is_online || contact.any_device_online();
                             // True only on the offline→online EDGE, not every online ping/chat. Retransmit-of-pending (below) keys off this — without the edge gate it re-fired on every received chat (now that a chat marks the sender online), resending all pending messages in a storm.
@@ -3533,7 +3533,7 @@ impl PhotonApp {
                                     .iter()
                                     .find(|(_, c)| c.conversation_token == conversation_token);
                                 match by_token {
-                                    None => "no chain for token".to_string(),
+                                    None => format!("no chain for token {} (asked by device {})", hex::encode(&conversation_token[..4]), crate::fp(&sender_pubkey.key)),
                                     Some((_, c)) if c.history_key().is_none() => {
                                         "chain has no history key".to_string()
                                     }
