@@ -1285,6 +1285,7 @@ static NETWORK_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeNetworkChanged(_env: JNIEnv<'_>, _class: JClass<'_>) {
     NETWORK_CHANGED.store(true, std::sync::atomic::Ordering::Release);
+    crate::network::wfd::wake_connectivity_check();
 }
 
 pub fn take_network_changed() -> bool {

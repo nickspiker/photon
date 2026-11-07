@@ -85,6 +85,26 @@ pub fn set_locked_relay_targets(locked: Vec<[u8; 32]>) {
     *LOCKED_RELAY_TARGETS.lock().unwrap() = locked;
 }
 
+/// Devices the relay last answered "recipient's pipe is closed" for: it has no mailbox, so every later frame to them is discarded the same way.
+/// A send to one is answered here without the round trip, until the device is heard from again ([`note_alive`]: a frame off its pipe, a pong, its address push) — an edge, never a timer (Nick 2026-11-07: 571 of 1,638 relay posts in six hours went to closed pipes).
+static PIPE_CLOSED: std::sync::Mutex<Vec<[u8; 32]>> = std::sync::Mutex::new(Vec::new());
+
+/// The device was just heard from: its pipe may be open again, so the next relay send to it is tried for real.
+pub fn note_alive(device: &[u8; 32]) {
+    PIPE_CLOSED.lock().unwrap().retain(|d| d != device);
+}
+
+fn pipe_known_closed(recipient: &[u8; 32]) -> bool {
+    PIPE_CLOSED.lock().unwrap().iter().any(|d| d == recipient)
+}
+
+fn note_closed(recipient: &[u8; 32]) {
+    let mut closed = PIPE_CLOSED.lock().unwrap();
+    if !closed.contains(recipient) {
+        closed.push(*recipient);
+    }
+}
+
 fn relay_target_locked(recipient: &[u8; 32]) -> bool {
     LOCKED_RELAY_TARGETS
         .lock()
@@ -111,6 +131,10 @@ pub async fn send_via_relay(
     }
     if relay_target_locked(recipient_pubkey) {
         return Err("relay: recipient is locked out".to_string());
+    }
+    // The same answer the relay would give, without asking it again: the verdict stands until the device is heard from.
+    if pipe_known_closed(recipient_pubkey) {
+        return Err("relay: recipient offline (frame discarded)".to_string());
     }
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -161,6 +185,7 @@ pub async fn send_via_relay(
         message_bytes.len()
     );
     if !reached {
+        note_closed(recipient_pubkey);
         return Err("relay: recipient offline (frame discarded)".to_string());
     }
     Ok(())
@@ -201,6 +226,9 @@ pub fn send_via_relay_sync(
     }
     if relay_target_locked(recipient_pubkey) {
         return Err("relay: recipient is locked out".to_string());
+    }
+    if pipe_known_closed(recipient_pubkey) {
+        return Err("relay: recipient offline (frame discarded)".to_string());
     }
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
@@ -250,6 +278,7 @@ pub fn send_via_relay_sync(
         message_bytes.len()
     );
     if !reached {
+        note_closed(recipient_pubkey);
         return Err("relay: recipient offline (frame discarded)".to_string());
     }
     Ok(())

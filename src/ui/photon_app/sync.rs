@@ -451,9 +451,8 @@ impl PhotonApp {
         if pinged > 0 {
             crate::logf!("Status: pinged {} contact(s)", pinged);
         }
-        // LAN discovery beacon — fires on ANY presence surface, conversations INCLUDED (regression fix, Nick 2026-09-02: gating it to full sweeps starved LAN self-message latency to ~10s — the beacon is self-ANNOUNCEMENT, not a per-contact ping; it's the ONE multicast that keeps a sibling's current LAN address fresh, and a self-message rides those sibling addresses. Without it PT sprays stale endpoints and burns its retransmit ladder. One multicast to the subnet is cheap and it's what makes same-room delivery instant).
+        // The LAN broadcast no longer rides the sweep: it goes on its edges (session start, a network change) and as answers to devices first heard (see advance_protocol and the LanPeerDiscovered arm).
         if let (Some(session), Some(hq)) = (self.session.as_ref(), self.handle_query.as_ref()) {
-            checker.send_lan_broadcast(session.handle_proof, hq.port());
             // Live Wi-Fi Direct group, we're the CLIENT: also unicast the beacon at the GO each cadence — a contact added AFTER group-up (the woods-add flow) still gets announced, and multicast on the p2p iface can't be trusted to carry the broadcast above.
             if let Some((false, _our, go)) = crate::network::wfd::current_group() {
                 checker.send_lan_unicast(

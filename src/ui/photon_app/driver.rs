@@ -3319,11 +3319,10 @@ impl FluorApp<Px> for PhotonApp {
             }
         }
 
-        // Periodic fleet-sweep backstop (~5 min, jittered): re-arm history recovery for every conversation so devices converge even when the edge-triggered kicks (roster merge, sibling-online) were missed. Signed-in only; a complete conversation costs one early-stop page.
+        // The fleet-history sweep: re-arm history recovery for every conversation so devices converge even when an edge-triggered kick (a roster merge, a sibling online) was missed.
+        // EDGES, NOT A CADENCE (Nick 2026-11-07, "no timer unless proof"): the sweep runs once per session and again after the network changes under us (a moved reflexive on the desktop, ConnectivityManager on Android, each clearing `last_fleet_sweep`); every other kick is its own edge (a sibling online, a roster merge, a gap). The ~5-minute repeat cost 1,142 history requests in six idle hours.
         if self.session.is_some() {
-            let due = self.last_fleet_sweep.map_or(true, |t| {
-                t.elapsed() > std::time::Duration::from_secs(crate::jitter(600).max(60) as u64)
-            });
+            let due = self.last_fleet_sweep.is_none();
             if due {
                 self.last_fleet_sweep = Some(now);
                 self.kick_fleet_history_sweep("periodic backstop");

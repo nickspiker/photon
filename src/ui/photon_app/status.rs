@@ -3088,6 +3088,17 @@ impl PhotonApp {
                     local_ip,
                     port,
                 } => {
+                    // THE ANSWER THAT REPLACES THE CADENCE (Nick 2026-11-07, "no timer unless proof"): a device first heard on this network gets one beacon back, straight to it, so two devices find each other in one exchange and nobody beacons on a clock.
+                    // Ours goes out at session start and after a network change; everything after that is an answer.
+                    if let Some(dk) = device_pubkey {
+                        if !self.lan_answered.contains(&dk) {
+                            self.lan_answered.push(dk);
+                            let to = std::net::SocketAddr::from((local_ip, port));
+                            if !joiner_beacon_reply.contains(&to) {
+                                joiner_beacon_reply.push(to);
+                            }
+                        }
+                    }
                     // An OWN-handle beacon from another device = a machine on this network claiming to be part of (or asking to join) OUR fleet — the proximity evidence the AddDevice tap list runs on. Record it and light any matching candidate immediately; the registry entry it must match is still signature-verified, so a LAN squatter with no valid bindreq never becomes tappable.
                     let own_hp = self.session.as_ref().map(|s| s.handle_proof);
                     if Some(handle_proof) == own_hp {
@@ -3101,7 +3112,10 @@ impl PhotonApp {
                                 None => self.lan_heard_addr.push((dk, from)),
                             }
                             if !self.contacts.iter().any(|c| c.is_sibling && c.device_key() == Some(dk)) && !self.lan_heard.iter().any(|(k, _)| *k == dk) {
-                                joiner_beacon_reply.push(std::net::SocketAddr::from((local_ip, port)));
+                                let to = std::net::SocketAddr::from((local_ip, port));
+                                if !joiner_beacon_reply.contains(&to) {
+                                    joiner_beacon_reply.push(to);
+                                }
                             }
                             match self.lan_heard.iter_mut().find(|(k, _)| *k == dk) {
                                 Some(e) => e.1 = now,
@@ -5210,6 +5224,11 @@ impl PhotonApp {
                             self.our_reflexive = None;
                             self.our_reflexive_other = None;
                             crate::network::traverse::request_reflexive_reset();
+                            // A new network: the fleet-history sweep runs again on it (its one edge besides session start).
+                            self.last_fleet_sweep = None;
+                            // And the LAN beacon goes again, answering anew whoever is here.
+                            self.last_lan_beacon = None;
+                            self.lan_answered.clear();
                         }
                         // A move — or the FIRST learn after a network change wiped everything (18:51: the flip cleared our_lan_ip, so the new interface's address read as a first learn, not a move, and the reseed edge never fired) — re-asks FGTW while we hold nothing public.
                         if moved || self.our_reflexive.is_none() {
@@ -5779,10 +5798,10 @@ impl PhotonApp {
         ) {
             checker.send_lan_unicast(session.handle_proof, hq.port(), target);
         }
-        // A joiner's beacon answered (see joiner_beacon_reply).
+        // Beacons answered directly: a device first heard on this network, or a device of ours we have not bound (see the LanPeerDiscovered arm).
         if let (Some(session), Some(hq), Some(checker)) = (self.session.as_ref(), self.handle_query.as_ref(), self.status_checker.as_ref()) {
             for target in joiner_beacon_reply {
-                crate::logf!("LAN: a device of ours we have not bound beacons from {} — answering it directly", target);
+                crate::logf!("LAN: answering a device first heard on this network, directly at {}", target);
                 checker.send_lan_unicast(session.handle_proof, hq.port(), target);
             }
         }

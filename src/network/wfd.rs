@@ -15,7 +15,27 @@ pub fn relay_reachable() -> bool {
 }
 
 pub fn set_relay_reachable(up: bool) {
-    RELAY_REACHABLE.store(up, Ordering::Relaxed);
+    let was = RELAY_REACHABLE.swap(up, Ordering::Relaxed);
+    // The pipe's flip is an edge fgtw.org's reachability changed on: the connectivity check runs on it instead of polling (handle_query.rs).
+    if was != up {
+        if let Some(tx) = REACHABILITY_WAKER.lock().unwrap().as_ref() {
+            crate::log_err!(tx.send(()), "Connectivity: the relay pipe's edge to the check");
+        }
+    }
+}
+
+/// The connectivity check's wake, registered once by its worker.
+static REACHABILITY_WAKER: std::sync::Mutex<Option<std::sync::mpsc::Sender<()>>> = std::sync::Mutex::new(None);
+
+pub fn set_reachability_waker(tx: std::sync::mpsc::Sender<()>) {
+    *REACHABILITY_WAKER.lock().unwrap() = Some(tx);
+}
+
+/// Run the connectivity check now: the platform reported a network change (Android's default-network callback).
+pub fn wake_connectivity_check() {
+    if let Some(tx) = REACHABILITY_WAKER.lock().unwrap().as_ref() {
+        crate::log_err!(tx.send(()), "Connectivity: the network change to the check");
+    }
 }
 
 /// The device's default network is METERED (cellular, tethered hotspot) — mirrored from Android's ConnectivityManager on capability-change edges. A metered-only reachable friend widens the bearer trigger: co-located peers should ride the direct radio, not the tower. The wins stack — zero data cost, single radio hop instead of phone→tower→core→tower→phone (a wave RTT drops from ~50-100ms to ~2-5ms, and measured P2P throughput runs ~8× a congested cellular uplink), and for a sustained call the radio power is comparable while the latency/cost win is total.

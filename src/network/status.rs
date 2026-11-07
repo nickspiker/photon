@@ -1271,6 +1271,10 @@ fn send_status_update(
     update: StatusUpdate,
     #[allow(unused_variables)] event_proxy: &OptionalEventProxy,
 ) {
+    // A device proven alive (a pong, salvaged or matched, direct or off the pipe) may have reopened its pipe: the relay's closed verdict for it ends here.
+    if let StatusUpdate::Online { peer_pubkey, is_online: true, .. } = &update {
+        crate::network::fgtw::relay::note_alive(peer_pubkey.as_bytes());
+    }
     // try_send, never send: the receive loop must not block on a UI that is not draining, and a full queue is a fact to log, not to wait on.
     match status_tx.try_send(update) {
         Ok(()) => {}
@@ -1884,6 +1888,8 @@ async fn run_checker(
                                     match crate::network::fgtw::relay::peel_relay_envelope(&data) {
                                         Some((sender_key, inner)) => {
                                             crate::logf!("PIPE: ← {}B envelope from {} → {}B inner (injecting)", data.len(), hex::encode(&sender_key[..4]), inner.len());
+                                            // Its pipe is open: a relay send to it is worth trying again.
+                                            crate::network::fgtw::relay::note_alive(&sender_key);
                                             // BOUNDED WAIT, never a silent wedge (field 2026-09-15, the no-ring dial): a full inject channel behind a slow dispatcher blocked this send().await forever — reads, keepalives and the liveness window all froze with it, and the pipe sat dead with no log line while the relay kept reporting delivered. Relay frames are datagram-class (senders re-fire); five seconds of backpressure drops the frame LOUDLY and keeps the pipe breathing.
                                             match tokio::time::timeout(std::time::Duration::from_secs(5), inject_tx_pipe.send(inner)).await {
                                                 Ok(Ok(())) => {}

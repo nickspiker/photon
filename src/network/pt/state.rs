@@ -86,6 +86,8 @@ pub struct OutboundTransfer {
 impl OutboundTransfer {
     /// Maximum SPEC retries before TCP fallback
     pub const SPEC_MAX_RETRIES: u32 = 5;
+    /// The unanswered SPECs after which a chat-sized frame takes the relay (see `should_relay_fallback`).
+    pub const SPEC_RELAY_RETRIES_SMALL: u32 = 2;
 
     /// Create new outbound transfer with assigned stream_id and transfer_id
     pub fn new(peer_addr: SocketAddr, data: Vec<u8>, stream_id: u8, transfer_id: usize) -> Self {
@@ -149,6 +151,12 @@ impl OutboundTransfer {
 
     /// Check if we should fall back to relay (UDP + TCP tried, no ACK). Trigger at SPEC_MAX_RETRIES (~6s now the SPEC ladder is 200ms→3.2s; was ~31s on the 1s→16s ladder), NOT later: the old ~90s / 10-retry threshold was never reached because a re-firing CLUTCH ceremony supersedes the transfer first (field logs topped out at attempt 7), so relay NEVER engaged for the peers that needed it most (asymmetric reachability, no direct path). The faster ladder pulls this in further, which is strictly the direction that comment always wanted — the relayed copy is redundant if a direct path ACKs in the meantime, so an earlier trigger only costs one best-effort store on fgtw.org.
     pub fn should_relay_fallback(&self) -> bool {
+        // A chat-sized frame (the rank's interactive class) goes to the relay after its second unanswered SPEC (~0.6 s on the ladder): with direct-first routing (Nick 2026-11-07) this ladder is a chat's only way onto the relay, and a person waits on it.
+        // A bulk payload keeps the full ladder and the TCP try first, so a slow direct path is not doubled over fgtw.org.
+        let small = self.original_payload.as_ref().is_some_and(|p| p.len() <= crate::network::rank::INTERACTIVE_MAX as usize);
+        if small {
+            return self.spec_retry_count >= Self::SPEC_RELAY_RETRIES_SMALL;
+        }
         self.spec_retry_count >= Self::SPEC_MAX_RETRIES && self.spec_tcp_fallback
     }
 

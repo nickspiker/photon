@@ -1026,8 +1026,10 @@ impl PhotonApp {
     /// The ONE route to a person we hold a contact for, at any size (a pair's peer, a molecule's friend, our own sibling): their active device at its raced addresses, every device of theirs as a relay copy.
     /// No direct path → also relay this message over the pipe. CHAT joins the ACKs' rule: ALWAYS carry the relay copy. The direct-trust heuristic starved every shape of one-way reachability the field produced (a validated path to the wrong device, an AP that began isolating clients, a peer whose reflexive went stale) — the relay copy is cheap and the receiver dedups.
     /// NO direct address is not NO send: the weave probe fired the moment a ceremony completed over the relay, hit this bail (the peer's addresses hadn't validated yet), and died silently — the probe never retransmits, so "testing the seam" never happened. The relay sentinel keeps the send alive. Parked on "pending relay": the relay carries it alone until a direct path validates (Contact::direct_parked). None = no device key, or neither an address nor a relay device.
+    /// DIRECT FIRST (Nick 2026-11-07, "keep fgtw.org but set the priority straight"): the relay copy rides only while no trusted direct path is held; with one, a send that goes unanswered falls to the relay on the transport's own retry ladder (PT `should_relay_fallback`).
+    /// The always-copy rule answered failures that are gone or caught elsewhere: a path validated to the wrong device (a probe's answer now credits the device that signed it), a stale reflexive (the TTL), an isolating AP (the ladder's fallback).
     pub(super) fn route_to_contact(contact: &crate::types::Contact) -> Option<Route> {
-        let relay_to = contact.relay_device_list();
+        let relay_to = relay_unless_direct_trusted(contact, crate::network::udp::get_local_ip());
         // The wire recipient is a DEVICE key; never fabricate one for a keyless row.
         let recipient_pubkey = contact.device_key()?;
         let direct = if contact.direct_parked() && !relay_to.is_empty() { None } else { contact.race_addrs() };

@@ -825,6 +825,11 @@ impl PhotonApp {
         if !linked.is_empty() {
             self.push_address_record_to(linked);
         }
+        // A new network: the fleet-history sweep runs again on it.
+        self.last_fleet_sweep = None;
+        // And the LAN beacon goes again, answering anew whoever is here.
+        self.last_lan_beacon = None;
+        self.lan_answered.clear();
         self.force_presence_sweep();
         self.reseed_reflexive_from_fgtw();
         self.start_portmap();

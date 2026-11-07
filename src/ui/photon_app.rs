@@ -1737,6 +1737,8 @@ pub struct PhotonApp {
     presence_surface: Option<u8>,
     /// Last always-on LAN-beacon multicast (regression fix 2026-09-02): the demand-driven presence gate would otherwise let a backgrounded device go silent + un-findable on the LAN, staling its address for self-messages. Kept on a modest cadence independent of the presence surface.
     last_lan_beacon: Option<Instant>,
+    /// Devices answered with a direct beacon since we joined this network (see the LanPeerDiscovered arm): one answer each, cleared when the network changes.
+    lan_answered: Vec<[u8; 32]>,
     /// Last time `tick()` ran the presence ping sweep on a watched presence surface. `None` until the first sweep, and reset on each surface entry. `presence_due_at` (protocol.rs) turns it into the next refresh, read by both the sweep and `wake_at()`.
     last_presence_ping: Option<Instant>,
     /// The conversation-enter presence probe: (contact, when the open-ping fired). The verdict tick clears it at one second — offline if no pong landed since.
@@ -3010,6 +3012,7 @@ impl PhotonApp {
             presence_probe: None,
             presence_surface: None,
             last_lan_beacon: None,
+            lan_answered: Vec::new(),
             last_poke: None,
             last_fleet_refold: None,
             last_stalled_refetch: None,

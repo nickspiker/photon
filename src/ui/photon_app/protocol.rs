@@ -4,8 +4,6 @@ use super::*;
 
 /// While a presence surface stays visible, a slow refresh keeps the rings honest (the entry edge pings at once).
 const PRESENCE_VISIBLE_REFRESH: std::time::Duration = std::time::Duration::from_secs(30);
-/// The always-on LAN beacon's cadence off the presence surfaces (see advance_protocol).
-const LAN_BEACON: std::time::Duration = std::time::Duration::from_secs(20);
 /// The own-chain re-fold's cadence while a Settings page is open (see advance_protocol).
 const FLEET_REFOLD_INTERVAL: std::time::Duration = std::time::Duration::from_secs(45);
 
@@ -30,14 +28,14 @@ impl PhotonApp {
         Some(self.last_presence_ping.map_or(now, |last| last + PRESENCE_VISIBLE_REFRESH))
     }
 
-    /// When the LAN beacon next goes out, or None while it cannot (offline, no session yet, or a watched surface whose ping sweep beacons instead).
+    /// When the LAN beacon goes out: now, while it is owed (once per session, once after each network change) and the device can send it; None otherwise.
     pub(super) fn lan_beacon_due_at(&self, now: Instant) -> Option<Instant> {
-        let armed = self.online
-            && self.watched_presence_surface().is_none()
+        // No `online` gate: that flag means fgtw.org answered, and a LAN beacon is exactly what must work without it.
+        let armed = self.last_lan_beacon.is_none()
             && self.session.is_some()
             && self.handle_query.is_some()
             && self.status_checker.is_some();
-        armed.then(|| self.last_lan_beacon.map_or(now, |last| last + LAN_BEACON))
+        armed.then_some(now)
     }
 
     /// When the own-chain re-fold next runs, or None while it will not (off the Settings pages, nobody watching, no handle yet).
@@ -106,10 +104,8 @@ impl PhotonApp {
                 }
             }
             // ALWAYS-ON LAN BEACON (regression fix 2026-09-02): the demand-driven gate above stopped a BACKGROUNDED device from announcing at all — so a fleet sibling on any non-presence screen went un-findable on the LAN, its address staled, and a self-message to it sprayed dead endpoints thru PT's retransmit ladder (~10s). The LAN multicast is ONE cheap subnet packet (not the unicast ping fan-out, not the WAN punch/relay machinery — those stay demand-driven and off in the background); keeping it on a modest cadence is what makes same-room delivery instant. Fires regardless of foreground while online.
-            if surface.is_some() {
-                // A watched surface already beaconed via the ping sweep — keep the timer in step so leaving the surface doesn't double-fire.
-                self.last_lan_beacon = Some(now);
-            } else if self.lan_beacon_due_at(now).is_some_and(|at| now >= at) {
+            // EDGES, NOT A CADENCE (Nick 2026-11-07): the beacon goes once per session and once after each network change (both clear `last_lan_beacon`); every device that hears it answers once, straight back (the LanPeerDiscovered arm). It used to repeat every 20-30 s on every screen — 1,458 multicasts in six idle hours.
+            if self.lan_beacon_due_at(now).is_some_and(|at| now >= at) {
                 if let (Some(session), Some(hq), Some(checker)) = (
                     self.session.as_ref(),
                     self.handle_query.as_ref(),

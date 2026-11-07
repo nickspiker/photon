@@ -335,6 +335,8 @@ impl HandleQuery {
 
             // Channel for network change notifications
             let (net_change_tx, net_change_rx) = std_channel::<()>();
+            // The relay pipe going up or down is the other edge fgtw.org's reachability changes on (wfd::set_relay_reachable fires this).
+            crate::network::wfd::set_reachability_waker(net_change_tx.clone());
 
             // Spawn async network watcher
             {
@@ -388,11 +390,11 @@ impl HandleQuery {
                     first_check = false;
                 }
 
-                // Wait for network change or 30 second timeout
-                match net_change_rx.recv_timeout(crate::jitter_dur(Duration::from_secs(30))) {
-                    Ok(()) => thread::sleep(Duration::from_millis(500)), // Stabilization delay
-                    Err(_) => {}                                         // Timeout - periodic check
+                // EDGES, NOT A POLL (Nick 2026-11-07, "no timer unless proof"): the next check waits for an interface change or the relay pipe going up or down — a GET to fgtw.org every 30 s said nothing those edges do not.
+                if net_change_rx.recv().is_err() {
+                    break;
                 }
+                thread::sleep(Duration::from_millis(500)); // Stabilization delay
             }
         });
     }
@@ -401,6 +403,9 @@ impl HandleQuery {
     #[cfg(target_os = "android")]
     fn spawn_connectivity_worker_android(online_tx: Sender<bool>) {
         thread::spawn(move || {
+            // The check runs on edges: the system's network change and the relay pipe going up or down (wfd::wake_connectivity_check / set_relay_reachable).
+            let (wake_tx, wake_rx) = channel::<()>();
+            crate::network::wfd::set_reachability_waker(wake_tx);
             let client = match reqwest::blocking::Client::builder()
                 .timeout(Duration::from_secs(5))
                 .build()
@@ -445,8 +450,10 @@ impl HandleQuery {
                     first_check = false;
                 }
 
-                // Jittered (15–30s) so a fleet of devices doesn't poll FGTW /status in lockstep.
-                thread::sleep(crate::jitter_dur(Duration::from_secs(30)));
+                // EDGES, NOT A POLL (Nick 2026-11-07): the next check waits for a network change or the relay pipe's flip.
+                if wake_rx.recv().is_err() {
+                    break;
+                }
             }
         });
     }
