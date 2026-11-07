@@ -934,6 +934,14 @@ pub fn set_local_source(on: bool) {
     LOCAL_SOURCE.store(on, Ordering::Relaxed);
 }
 
+/// Renders that found the local queue empty and played silence (counted on every in-order path, the session's idle tail included): a kept-wave replay reads it as the render running dry, as opposed to a hole held in the recording.
+static LOCAL_DRY: AtomicUsize = AtomicUsize::new(0);
+
+/// The dry-render count since the last take, reset to zero.
+pub fn take_local_dry() -> usize {
+    LOCAL_DRY.swap(0, Ordering::Relaxed)
+}
+
 /// THE USER'S OUTPUT (Nick 2026-09-29, "keeps the user chosen device, same with gain"): the route this device's user last picked on the route pill (a route id: "earpiece", "speaker", "bt:<name>", "headset:<name>"), persisted device-local as `audio.route`.
 static PICKED_ROUTE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 /// The volume the user last set per route + usage (`<route>.v` voice / `<route>.m` media → stream index), persisted device-local as `audio.vol.<key>`.
@@ -1081,7 +1089,10 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
     let frame = if NAMED.load(Ordering::Relaxed) && !LOCAL_SOURCE.load(Ordering::Relaxed) {
         named_mix(at_osc)
     } else {
-        PLAYBACK_Q.lock().unwrap().pop_front().unwrap_or_else(|| vec![0i16; FRAME_SAMPLES])
+        PLAYBACK_Q.lock().unwrap().pop_front().unwrap_or_else(|| {
+            LOCAL_DRY.fetch_add(1, Ordering::Relaxed);
+            vec![0i16; FRAME_SAMPLES]
+        })
     };
     // The speaker duck: the live render frame scaled by the mic level of the moment, right before the DAC — Q32 with the carried remainder (wave/qgain.rs), the gain pre-shifted at capture time, so this path is load + mul-add-shift-and per sample. The chirp (a local source) plays at full — the probe measures the route, it must not be ducked by the voice that reads it.
     let mut frame = frame;

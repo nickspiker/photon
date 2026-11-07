@@ -677,6 +677,8 @@ pub struct KeptStream {
     pub env_per_sec: u8,
     /// The recording's first moment, Eagle oscillations (the container header's base).
     pub base_osc: i64,
+    /// Zero-length packets played so far: holes the recording holds as silence (a window lost on the wire and never filled from the other side). The playback logs it on exit, so a choppy replay reads as the recording or as the render.
+    pub holes: usize,
     inner: Inner,
 }
 
@@ -852,7 +854,7 @@ pub fn open_blob(bytes: &[u8]) -> Option<KeptStream> {
     };
     // The recording's first moment (Eagle oscillations): archive slot k plays what happened at base + k × 10 ms — the clock a kept beam's video follows on replay.
     let base_osc = i64::from_le_bytes(bytes[8 + 5..8 + 13].try_into().ok()?);
-    Some(KeptStream { nchan, total, envelope, env_per_sec, base_osc, inner })
+    Some(KeptStream { nchan, total, envelope, env_per_sec, base_osc, holes: 0, inner })
 }
 
 /// Frames decoded-and-discarded ahead of a seek target so the stateful codec has converged by the time audible output starts (Opus pre-roll is ~80 ms; this is generous).
@@ -934,6 +936,7 @@ impl KeptStream {
                         };
                         // A zero-length packet is a hole: silence, and the decoder is left untouched (no frame was ever encoded there — the gap is genuine), so the next real packet decodes in step.
                         if opus.is_empty() {
+                            self.holes += 1;
                             continue;
                         }
                         let mut pcm = vec![0i16; frame];

@@ -292,11 +292,11 @@ impl PhotonApp {
 
     /// Close whichever overlay is open (the view and its decode go with it — up to 50 MB on a phone). Returns true when one was.
     pub(super) fn close_viewers(&mut self) -> bool {
-        // The replayed wave screen closes on the same Back / Escape / gesture (its recording keeps playing on the card).
+        // The replayed wave screen closes on the same Back / Escape / gesture, and its recording stops with it (close_replay).
         let was = self.viewer.is_some() || self.reader.is_some() || self.wave_replay.is_some();
         self.viewer = None;
         self.reader = None;
-        self.wave_replay = None;
+        self.close_replay();
         if was {
             self.scene_dirty = true;
         }

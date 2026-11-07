@@ -147,6 +147,9 @@ fn run(mut stream: KeptStream, stop: &AtomicBool, skip: usize, pos: &std::sync::
     if skip > 0 {
         stream.seek(skip);
     }
+    // The render's dry count starts with this playback, so the exit line below measures it alone.
+    crate::platform::audio::take_local_dry();
+    let mut played = 0usize;
     while !stop.load(Ordering::Relaxed) {
         // A scrub landed: reposition this stream in place. The few frames already queued at the DAC play out (~30ms), then audio continues from the mark.
         let want = seek.swap(usize::MAX, Ordering::SeqCst);
@@ -177,7 +180,16 @@ fn run(mut stream: KeptStream, stop: &AtomicBool, skip: usize, pos: &std::sync::
             .collect();
         crate::platform::audio::queue_playback(mono);
         pos.fetch_add(1, Ordering::Relaxed);
+        played += 1;
     }
+    // One line per playback (Nick 2026-11-06: "it plays back jittery"): holes are silence the recording itself holds, dry renders are the speaker finding nothing queued in time.
+    crate::logf!(
+        "WAVE playback: {} slot(s) of 10 ms played, {} hole(s) in the recording across {} channel(s), {} dry render(s)",
+        played,
+        stream.holes,
+        nchan,
+        crate::platform::audio::take_local_dry()
+    );
     // Let the DAC finish rendering the tail before the origin's stop() releases the session.
     while !stop.load(Ordering::Relaxed) && crate::platform::audio::playback_depth() > 0 {
         std::thread::sleep(Duration::from_millis(1));

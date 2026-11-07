@@ -406,6 +406,12 @@ impl PhotonApp {
             self.wave_playback = None;
             self.wave_playback_hash = None;
             self.scene_dirty = true;
+        } else if self.wave_playback.is_some() && !matches!(self.state, AppState::Conversation) {
+            // A recording plays only while its conversation shows (Nick 2026-11-06: "navigating away from a wave or beam replay it stops"): the contacts list, a settings page or the conversation's own panel all end it, the replay screen and its beam decode with it.
+            self.wave_playback = None;
+            self.wave_playback_hash = None;
+            self.wave_replay = None;
+            self.scene_dirty = true;
         } else if self.wave_playback.is_some() {
             // Still playing → repaint so the bubble's ■ progress % advances (a bounded, user-initiated activity; the per-tick cost is one repaint while a recording plays).
             self.scene_dirty = true;

@@ -1,4 +1,4 @@
-//! THE REPLAYED WAVE SCREEN (Nick 2026-11-01: "The UI for playing back a wave isn't super great in the molecule … make it uniform somehow" → "Wave screen replayed is good"): a kept recording plays on a screen of its own, one tile per voice whatever the size — two people or twenty — each person's face ringed by their own voice as the playback reaches it (the live wave's band powers, `LiveBands`), a scrub bar and Play/Pause in the dock, a tap on a face to leave that voice out of the mix. Opened from the wave card's Play; Back returns to the conversation and the recording keeps playing on the card.
+//! THE REPLAYED WAVE SCREEN (Nick 2026-11-01: "The UI for playing back a wave isn't super great in the molecule … make it uniform somehow" → "Wave screen replayed is good"): a kept recording plays on a screen of its own, one tile per voice whatever the size — two people or twenty — each person's face ringed by their own voice as the playback reaches it (the live wave's band powers, `LiveBands`), a scrub bar and Play/Pause in the dock, a tap on a face to leave that voice out of the mix. Opened from the wave card's Play; Back returns to the conversation and stops the recording, as does leaving the conversation (Nick 2026-11-06).
 //!
 //! It is drawn over the conversation the way the image viewer is (render.rs, the viewer branch): the conversation body is skipped, the area's hit stamps are swallowed inside the frame's damage, and the controls win their rects as they draw.
 
@@ -143,10 +143,12 @@ impl PhotonApp {
         self.scene_dirty = true;
     }
 
-    /// Back: the screen goes; the recording keeps playing on the card.
+    /// Back: the screen goes and the recording stops with it (Nick 2026-11-06: navigating away stops it, not plays on in the background).
     pub(super) fn close_replay(&mut self) -> bool {
         let was = self.wave_replay.take().is_some();
         if was {
+            self.wave_playback = None; // drop = stop
+            self.wave_playback_hash = None;
             self.scene_dirty = true;
         }
         was
