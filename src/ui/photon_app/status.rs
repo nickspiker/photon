@@ -351,6 +351,7 @@ impl PhotonApp {
                 StatusUpdate::FleetChainAsked { .. } => "FleetChainAsked",
                 StatusUpdate::BindReqReceived { .. } => "BindReqReceived",
                 StatusUpdate::FanoutReceived { .. } => "FanoutReceived",
+                StatusUpdate::FleetStatePushed { .. } => "FleetStatePushed",
                 StatusUpdate::FleetChainReceived { .. } => "FleetChainReceived",
                 StatusUpdate::StrangerFrame { .. } => "StrangerFrame",
                 StatusUpdate::FocusClaimReceived { .. } => "FocusClaimReceived",
@@ -471,6 +472,10 @@ impl PhotonApp {
         // The join over the mesh, deferred likewise: binding requests handed to this sponsor (while its AddDevice screen is up), and fan-outs handed to this device.
         let mut bind_reqs_after: Vec<(crate::network::fgtw::fleet::BindRequest, std::net::SocketAddr)> = Vec::new();
         let mut fanouts_after: Vec<([u8; 32], Vec<u8>, [u8; 32])> = Vec::new();
+        // Fleet state a sibling pushed us (sealed, sender) — opened and merged after the loop.
+        let mut fstate_pushes_after: Vec<(Vec<u8>, [u8; 32])> = Vec::new();
+        // Siblings that just came online, owed our fleet state.
+        let mut fstate_to_siblings_after: Vec<[u8; 32]> = Vec::new();
         // Departure have-set frames (holdings.rs), handled after the drain: (kind, nonce, sealed, sender device, sender addr).
         let mut holdings_after: Vec<(crate::network::fgtw::protocol::HoldingsKind, [u8; 32], Vec<u8>, [u8; 32], std::net::SocketAddr)> = Vec::new();
         // Fetch edges (attach_none, an unreachable peer) wait for the loop to end: the fetch state is &mut self, and the loop holds the checker.
@@ -1031,6 +1036,8 @@ impl PhotonApp {
                             // A sibling coming online is the fleet-history catch-up trigger: it may hold conversation rows written while we were apart. Deferred — the sweep needs &mut contacts. Also the heal edge: re-announce our STORED attention/claim so the reconnecting sibling sheds any stale holder beliefs.
                             if came_online && contact.is_sibling {
                                 fleet_sweep_due = true;
+                                // Our state goes to it the moment it is back: it does the same to us, and the two converge without the slot.
+                                fstate_to_siblings_after.push(peer_pubkey.key);
                                 heal_due = true;
                             }
                             // Presence VOIDS a dead holder's clearer claim (the design's crash/sleep coverage, no timers): the 3-strike offline verdict for the claim-holding device clears the claim, so the next friend message dings somewhere instead of being suppressed by a ghost. DROP-SWEEP (b): rows we suppressed under the now-dead claim are orphaned — chirp them (deferred).
@@ -4374,6 +4381,13 @@ impl PhotonApp {
                     }
                 }
                 // A fan-out for our fleet (a sibling's grow or rotation), or for the fleet this device is joining (the sponsor's grow — its key).
+                StatusUpdate::FleetStatePushed { handle_proof, sealed, sender_pubkey } => {
+                    // Only a live device of OUR fleet hands us our state; anything else is dropped unopened.
+                    let ours = self.our_handle_proof() == Some(handle_proof) && self.contacts.iter().any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key));
+                    if ours {
+                        fstate_pushes_after.push((sealed, sender_pubkey.key));
+                    }
+                }
                 StatusUpdate::FanoutReceived { handle_proof, blob, sender_pubkey, .. } => {
                     let joining = self.session.is_none() && self.add_join_hp == Some(handle_proof);
                     let ours = self.our_handle_proof() == Some(handle_proof) && self.contacts.iter().any(|c| c.is_sibling && c.knows_device(&sender_pubkey.key));
@@ -5751,6 +5765,25 @@ impl PhotonApp {
         for (req, addr) in bind_reqs_after {
             if self.on_bind_req(req, addr) {
                 changed = true;
+            }
+        }
+        for dev in fstate_to_siblings_after {
+            self.fleet_state_push(Some(dev));
+        }
+        // A sibling's state, opened under the fleet key we hold and merged exactly as a slot read would be; one we cannot open waits for the key sync, and the next push or online edge carries it again.
+        for (sealed, sender) in fstate_pushes_after {
+            let Some(key) = self.fleet_key_cached() else {
+                crate::logf!("FLEET: state from sibling {} arrived before our fleet key — the next push or online edge carries it again", crate::fp(&sender));
+                continue;
+            };
+            match crate::network::fgtw::fleet::open_fstate(&sealed, &key) {
+                Ok(state) => {
+                    crate::logf!("FLEET: state from sibling {} — {} roster entr(ies), {} global setting(s)", crate::fp(&sender), state.roster.len(), state.global_settings.len());
+                    if self.adopt_fleet_state(state, Some(sender)) {
+                        changed = true;
+                    }
+                }
+                Err(e) => crate::logf!("FLEET: state from sibling {} did not open under our key ({}) — a key rotation in flight; its next push carries it", crate::fp(&sender), e),
             }
         }
         for (hp, blob, sender) in fanouts_after {

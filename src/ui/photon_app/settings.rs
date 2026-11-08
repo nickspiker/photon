@@ -1681,6 +1681,8 @@ impl PhotonApp {
     /// Push our settings layers to the fleet slot (off-thread, best-effort). Pull-merge-push: the slot's current state folds in first, so a concurrent sibling write converges by CRDT instead of being clobbered — same doctrine as push_roster's roster-preserving pull.
     pub(super) fn spawn_settings_push(&self) {
         use crate::network::fgtw::fleet;
+        // The change goes straight to our devices; the slot write below is the backup (Nick 2026-11-07, fleet state lives on the fleet).
+        self.fleet_state_push(None);
         let Some(fs) = self.fleet_settings.as_ref() else {
             return;
         };
@@ -1721,6 +1723,8 @@ impl PhotonApp {
     /// Publish this device's contact roster to the fleet slot (off-thread, best-effort). No-op if we have no contacts to share or lack the key/membership. COALESCED: one push in flight at a time — a request landing mid-flight queues exactly one follow-up that re-snapshots the roster on the completion edge, so back-to-back launch edges (re-push, weave claims, keepalive stamps, pong adoptions, reconciles) become one or two round trips instead of a concurrent racer per edge.
     pub(super) fn spawn_roster_push(&mut self) {
         use crate::network::fgtw::fleet;
+        // The change goes straight to our devices; the slot write below is the backup.
+        self.fleet_state_push(None);
         if self.roster_push_rx.is_some() {
             self.roster_push_queued = true;
             return;

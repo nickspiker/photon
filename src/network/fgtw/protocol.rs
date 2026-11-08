@@ -2391,6 +2391,16 @@ pub fn parse_fanout_resp_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], Vec<u8>, [u8
     fgtw::protocol::parse_fanout_resp(vsf_bytes)
 }
 
+/// Build an `fstate_push` — our fleet's sealed shared state, handed to a sibling device directly (the slot on fgtw.org is only its backup).
+pub fn build_fstate_push_vsf(handle_proof: &[u8; 32], sealed: &[u8], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
+    fgtw::protocol::fstate_push(handle_proof, sealed, &envelope_signer(device_secret), vsf::eagle_time_oscillations())
+}
+
+/// Parse + verify an `fstate_push`. Returns (handle proof, sealed state, sender device pubkey). The sender's membership and the seal are the receiver's to check.
+pub fn parse_fstate_push_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], Vec<u8>, [u8; 32]), String> {
+    fgtw::protocol::parse_fstate_push(vsf_bytes)
+}
+
 /// Build a `chain_pull_miss` — the negative answer to a `chain_pull`: this sibling holds NO chains for the token. The requester re-keys only when EVERY live sibling has answered miss; a sibling that has the chains never sends this (it re-pushes instead).
 pub fn build_chain_pull_miss_vsf(
     conversation_token: &[u8; 32],

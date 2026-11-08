@@ -1909,6 +1909,103 @@ impl PhotonApp {
         self.kick_fleet_history_sweep("roster merge");
     }
 
+    /// Merge a fleet state into ours, wherever it came from: `from` names the sibling that pushed it (`fstate_push`, the day-to-day path), `None` the fgtw.org slot (read only when this device holds nothing, the recovery path).
+    /// Settings fold first (global newest-wins, device newest-copy-wins), then the roster by its CRDT; when ours holds what the incoming state lacks, the sender gets ours back (a sibling directly, the slot by a backup push).
+    pub(super) fn adopt_fleet_state(&mut self, state: fgtw::fstate::FleetState, from: Option<[u8; 32]>) -> bool {
+        // Settings layers fold in first (global LWW + device newest-copy-wins); a change persists and takes effect on the next read of each key — a sibling's toggle lands here.
+        if self.ensure_fleet_settings() {
+            let changed = self
+                .fleet_settings
+                .as_mut()
+                .unwrap()
+                .merge_from(state.global_settings, state.device_settings);
+            // A pulled `fleet.locked` lands here: sweep it onto the sibling rows so every trust gate refuses the locked device from this tick on.
+            self.apply_locked_set();
+            if changed {
+                // Snapshot + OFF-THREAD write: this inline save was one of the ~900ms UI-thread vault writes in the 2026-08-21 field capture, and it fires on every changed fstate merge (the Mac's log showed 37 pulls in one 35-minute window).
+                if let (Some(fs), Some(storage)) =
+                    (self.fleet_settings.as_ref(), self.storage.as_ref().cloned())
+                {
+                    let snapshot = fs.clone();
+                    queue_job(&self.seal_job_tx, move || {
+                        if let Err(e) = crate::storage::fleet_settings::save_fleet_settings(
+                            &snapshot, &storage,
+                        ) {
+                            crate::logf!("SETTINGS: persist after merge failed: {}", e);
+                        }
+                    });
+                }
+                self.apply_settings_to_ui();
+                // A sibling's saved draft rides the same slot: newer ones replace ours (and the open compose bar).
+                self.merge_remote_drafts();
+                // A sibling's profile edit just landed: refresh the You-page boxes from the merged values (reload-on-next-frame) and republish our pong name in case profile.name changed.
+                self.you_fields_loaded = false;
+                self.publish_profile_name();
+                self.publish_avatar_pin();
+                // A sibling may have changed the avatar (profile.avatar_ts bump rides the same merge) — newest-wins sync pulls the fresh copy; a no-change sync is one cheap wall read.
+                self.spawn_avatar_sync();
+                crate::log("SETTINGS: adopted fleet changes");
+            }
+        }
+        // Reconcile check BEFORE the merge consumes the pulled roster: do we hold contacts the slot lacks (added while a sibling was the last pusher, or pre-CRDT) or newer LWW stamps? Only then push back — an all-covered pull must NOT push, or the push's fstate event re-pulls every sibling in a ping-pong.
+        // Every non-sibling row counts — INCLUDING the self row, which rides the roster like any contact. Excluding it here meant a slot that lost it never got it pushed back, so notes-to-self stayed the one contact a reconcile couldn't restore.
+        let slot_missing_ours = self.contacts.iter().any(|c| {
+            if c.is_sibling {
+                return false;
+            }
+            match state
+                .roster
+                .iter()
+                .find(|e| e.handle_proof == c.handle_proof)
+            {
+                None => true,
+                Some(e) => c.roster_updated > e.updated,
+            }
+        });
+        self.merge_roster_entries(state.roster);
+        if slot_missing_ours {
+            match from {
+                // A sibling's state lacks what we hold: answer that sibling with ours, device to device, and the two converge.
+                Some(sib) => {
+                    crate::logf!("FLEET: our state is ahead of sibling {}'s — answering it with ours", crate::fp(&sib));
+                    self.fleet_state_push(Some(sib));
+                }
+                None => {
+                    crate::log("FLEET: local roster ahead of the slot — pushing back (reconcile)");
+                    self.spawn_roster_push();
+                }
+            }
+        }
+        true
+    }
+
+    /// Hand our fleet's shared state (roster and settings), sealed under the fleet key, straight to our siblings — every live one, or `only` that one (Nick 2026-11-07: fleet state lives on the fleet; fgtw.org keeps a backup).
+    /// Fired on every local change beside the backup write, and to a sibling the moment it comes online, so a device that was away catches up from whichever of ours is around.
+    pub(super) fn fleet_state_push(&self, only: Option<[u8; 32]>) {
+        let (Some(hp), Some(kp), Some(key)) = (self.our_handle_proof(), self.device_keypair.as_ref(), self.fleet_key_cached()) else {
+            return;
+        };
+        let Some(fs) = self.fleet_settings.as_ref() else {
+            return;
+        };
+        let state = fgtw::fstate::FleetState { roster: self.current_roster(), global_settings: fs.global.clone(), device_settings: fs.devices.clone() };
+        let sealed = match crate::network::fgtw::fleet::seal_fstate(&state, &key) {
+            Ok(s) => s,
+            Err(e) => {
+                crate::logf!("FLEET: sealing our state for the siblings failed: {}", e);
+                return;
+            }
+        };
+        let Ok(frame) = crate::network::fgtw::protocol::build_fstate_push_vsf(&hp, &sealed, kp.secret.as_bytes()) else {
+            return;
+        };
+        match only {
+            Some(sib) => crate::logf!("FLEET: our state ({} B, {} roster entr(ies)) to sibling {}", sealed.len(), state.roster.len(), crate::fp(&sib)),
+            None => crate::logf!("FLEET: our state ({} B, {} roster entr(ies)) to every live sibling", sealed.len(), state.roster.len()),
+        }
+        self.dispatch_frame_to_sibling(frame, only);
+    }
+
     /// Spawn a background pull of the fleet roster (debounced: one in flight at a time). The result is drained in `tick` and merged. No-op without a handle_proof + fleet key.
     pub(super) fn spawn_roster_pull(&mut self) {
         use crate::network::fgtw::fleet;

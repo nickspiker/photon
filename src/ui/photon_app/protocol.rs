@@ -890,7 +890,8 @@ impl PhotonApp {
                 if Some(*evt_hp) == our_hp {
                     // OUR fleet: shared-state or membership change — pull it now.
                     match *kind {
-                        "fstate" | "friendship" if self.roster_pull_rx.is_none() => {
+                        // The "fstate" notice is no longer a read: a sibling's change reaches us as its own fstate_push, and the slot that notice reports on is only the backup now (Nick 2026-11-07).
+                        "friendship" if self.roster_pull_rx.is_none() => {
                             self.spawn_roster_pull()
                         }
                         "fleet" => {
@@ -1179,61 +1180,8 @@ impl PhotonApp {
                 self.roster_pull_retries_left = 0;
                 self.roster_pull_exhausted = false;
                 self.roster_pull_parked_under = None;
-                // Settings layers fold in first (global LWW + device newest-copy-wins); a change persists and takes effect on the next read of each key — a sibling's toggle lands here.
-                if self.ensure_fleet_settings() {
-                    let changed = self
-                        .fleet_settings
-                        .as_mut()
-                        .unwrap()
-                        .merge_from(state.global_settings, state.device_settings);
-                    // A pulled `fleet.locked` lands here: sweep it onto the sibling rows so every trust gate refuses the locked device from this tick on.
-                    self.apply_locked_set();
-                    if changed {
-                        // Snapshot + OFF-THREAD write: this inline save was one of the ~900ms UI-thread vault writes in the 2026-08-21 field capture, and it fires on every changed fstate merge (the Mac's log showed 37 pulls in one 35-minute window).
-                        if let (Some(fs), Some(storage)) =
-                            (self.fleet_settings.as_ref(), self.storage.as_ref().cloned())
-                        {
-                            let snapshot = fs.clone();
-                            queue_job(&self.seal_job_tx, move || {
-                                if let Err(e) = crate::storage::fleet_settings::save_fleet_settings(
-                                    &snapshot, &storage,
-                                ) {
-                                    crate::logf!("SETTINGS: persist after merge failed: {}", e);
-                                }
-                            });
-                        }
-                        self.apply_settings_to_ui();
-                        // A sibling's saved draft rides the same slot: newer ones replace ours (and the open compose bar).
-                        self.merge_remote_drafts();
-                        // A sibling's profile edit just landed: refresh the You-page boxes from the merged values (reload-on-next-frame) and republish our pong name in case profile.name changed.
-                        self.you_fields_loaded = false;
-                        self.publish_profile_name();
-                        self.publish_avatar_pin();
-                        // A sibling may have changed the avatar (profile.avatar_ts bump rides the same merge) — newest-wins sync pulls the fresh copy; a no-change sync is one cheap wall read.
-                        self.spawn_avatar_sync();
-                        crate::log("SETTINGS: adopted fleet changes");
-                    }
-                }
-                // Reconcile check BEFORE the merge consumes the pulled roster: do we hold contacts the slot lacks (added while a sibling was the last pusher, or pre-CRDT) or newer LWW stamps? Only then push back — an all-covered pull must NOT push, or the push's fstate event re-pulls every sibling in a ping-pong.
-                // Every non-sibling row counts — INCLUDING the self row, which rides the roster like any contact. Excluding it here meant a slot that lost it never got it pushed back, so notes-to-self stayed the one contact a reconcile couldn't restore.
-                let slot_missing_ours = self.contacts.iter().any(|c| {
-                    if c.is_sibling {
-                        return false;
-                    }
-                    match state
-                        .roster
-                        .iter()
-                        .find(|e| e.handle_proof == c.handle_proof)
-                    {
-                        None => true,
-                        Some(e) => c.roster_updated > e.updated,
-                    }
-                });
-                self.merge_roster_entries(state.roster);
-                if slot_missing_ours {
-                    crate::log("FLEET: local roster ahead of the slot — pushing back (reconcile)");
-                    self.spawn_roster_push();
-                }
+                // The slot read (recovery, or this device's first state): the same merge a sibling's push takes.
+                self.adopt_fleet_state(state, None);
                 { needs_redraw = true; self.note_redraw(line!()); }
             }
             Some(Ok(Err(ref _e))) => {

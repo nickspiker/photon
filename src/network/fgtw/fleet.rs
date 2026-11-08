@@ -907,6 +907,16 @@ pub fn recover_or_establish_carrying(
     }
 }
 
+/// The fleet state sealed under the fleet key, exactly as the slot holds it: what an `fstate_push` carries device to device.
+pub fn seal_fstate(state: &fgtw::fstate::FleetState, fleet_key: &[u8; 32]) -> Result<Vec<u8>, String> {
+    PhotonSealer.seal(&fgtw::fstate::fstate_to_bytes(state), fleet_key)
+}
+
+/// Open an `fstate_push`'s sealed state under the fleet key.
+pub fn open_fstate(sealed: &[u8], fleet_key: &[u8; 32]) -> Result<fgtw::fstate::FleetState, String> {
+    fgtw::fstate::fstate_from_bytes(&PhotonSealer.open(sealed, fleet_key)?)
+}
+
 /// Publish the FULL fleet-shared state (roster + settings layers): seal under the fleet key (kete) and PUT to the membership-gated slot. The settings sync layer calls this with its cached state.
 pub fn push_fstate(
     handle_proof: &[u8; 32],

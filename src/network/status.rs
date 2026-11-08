@@ -539,6 +539,12 @@ pub enum StatusUpdate {
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
     },
+    /// A sibling handed us our fleet's shared state (`fstate_push`), sealed under the fleet key: the UI checks the sender is one of our devices, opens it and merges it.
+    FleetStatePushed {
+        handle_proof: [u8; 32],
+        sealed: Vec<u8>,
+        sender_pubkey: DevicePubkey,
+    },
     /// A sibling requesting its own removal from the fleet (bilateral removal): consent stamp + its signature over the departure request. This device's user approves; then this device countersigns and publishes the consented Remove.
     DepartReqReceived {
         consent_t: i64,
@@ -791,6 +797,7 @@ impl StatusUpdate {
             StatusUpdate::FleetChainAsked { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::BindReqReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FanoutReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::FleetStatePushed { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FleetChainReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FocusClaimReceived { sender_pubkey, .. } => {
                 Some(sender_pubkey.as_bytes())
@@ -2910,6 +2917,21 @@ async fn run_checker(
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                         sender_addr: src_addr,
                                     },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            if let Ok((handle_proof, sealed, sender_pubkey)) = crate::network::fgtw::protocol::parse_fstate_push_vsf(msg_bytes) {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::FleetStatePushed { handle_proof, sealed, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) },
                                     &event_proxy_recv,
                                 );
                                 continue;
