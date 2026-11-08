@@ -743,9 +743,8 @@ impl PhotonApp {
         };
         chrome.set_title(title_text);
 
-        // Bg noise. `shimmer` is driven by `bg_scroll` and mixes into each row's starting colour — so the noise colour bias cycles as you scroll without changing the underlying pattern topology. `scroll_offset` is per-screen: Launch/Attest gets `0` (no vertical movement on the attest screen — shimmer only); future screens (Ready, Searching, Conversation) will pass `bg_scroll` so the noise pattern also translates with their page-scroll content. Phase 2+ branches on AppState to pick which.
+        // Bg noise: one field generated once per size and rolled (`self.noise`, fluor's `NoiseField`; owner 2026-11-08: "keep a background buffer that you generate once for Photon and just rotate it vertically"). `scroll_offset` is per-screen: Launch/Attest gets `0` (the attest screen's noise stands still); Ready and Conversation translate it with their content. The shimmer (a colour bias `bg_scroll` cycled into every row) went with the regeneration it needed: the field moves, it does not change. `bg_scroll` still turns the wave's phase.
         let bg_scroll = self.bg_scroll;
-        let shimmer = bg_scroll as usize;
         let scroll_offset = content_bg_scroll; // 0 on Launch/Searching; Contacts/Conversation translate the texture with their content (see the hoist above).
                                // Background texture origin + per-half scroll. On Settings the noise mirror-axis sits ON the rail|content divider (1/3 width), and each half scrolls with ITS pane — rail-scroll drives the left half, content-scroll the right — so the background tracks the scroll of whatever you're reading. Every other screen keeps the centred origin with both halves locked together (unified scroll).
         let (bg_split_x, bg_left_scroll, bg_right_scroll) = if matches!(
@@ -891,20 +890,22 @@ impl PhotonApp {
             if let Some((sx0, sx1, wave_top, wave_h, _, _, clip_y0, clip_y1)) = about_slab_bands {
                 chromatic_wave_clipped(canvas, sx0, sx1, wave_top, wave_h, clip_y0, clip_y1, about_wave_phase, 1.0);
             }
-            paint::background_noise_split(
-                canvas,
-                shimmer,
-                bg_fullscreen,
-                bg_right_scroll,
-                bg_split_x,
-                bg_left_scroll,
-                bg_clip,
-                bg_base,
-            );
+            // The noise goes in behind all of this at the end of the frame, from the rolled field (`self.noise`), not into this layer.
         };
-        match scroll_hint {
-            Some((rect, dy, band)) => chrome.scroll_bg(rect, dy, band, ctx.damage, |canvas| paint_bg(canvas, Some(fluor::paint::Clip::new(band.x0, band.y0, band.x1, band.y1)))),
-            None => chrome.rasterize_bg(ctx.damage, |canvas| paint_bg(canvas, None)),
+        // The bg layer holds only the attest screen's logo, wave and version, the About slab and the zoom hint. On a screen with none of them it is neither kept nor flattened (a full-frame clear and blit of an empty layer, and a memmove of it on every scroll): settled, and marked stale so the first screen that uses it again paints it whole.
+        let bg_layer_used = on_launch || about_slab_bands.is_some() || show_zoom;
+        if !bg_layer_used {
+            chrome.settle_bg();
+            self.bg_layer_stale = true;
+        } else if self.bg_layer_stale {
+            chrome.invalidate_bg();
+            chrome.rasterize_bg(ctx.damage, |canvas| paint_bg(canvas, None));
+            self.bg_layer_stale = false;
+        } else {
+            match scroll_hint {
+                Some((rect, dy, band)) => chrome.scroll_bg(rect, dy, band, ctx.damage, |canvas| paint_bg(canvas, Some(fluor::paint::Clip::new(band.x0, band.y0, band.x1, band.y1)))),
+                None => chrome.rasterize_bg(ctx.damage, |canvas| paint_bg(canvas, None)),
+            }
         }
         // Window-perimeter hairline FIRST — painted straight into `target` (not the chrome group) and carves the window-shape clip_mask. fluor is under-blend only, so whatever lands in `target` first wins at shared edge pixels; drawing the hairline before any content makes it survive over full-bleed screens (Ready/Conversation) whose content reaches the window edge. The chrome group (buttons / orb / strip / title) still composites UNDER content via `flatten_into` below. The clip_mask carve here is the SOLE source of the single window-shape alpha-trim done at the OS boundary in finalize.
         chrome.rasterize_perimeter(target, buf_w, buf_h, ctx.clip_mask);
@@ -7715,8 +7716,15 @@ impl PhotonApp {
         }
 
         let mark_content = std::time::Instant::now();
-        // On a memmove frame the bg outside the damage is already composed in the buffer: flatten only the damage.
-        chrome.flatten_bg_into(target, buf_w, buf_h, scroll_hint.map(|_| fluor::paint::Clip::new(ctx.damage_clip.x0, ctx.damage_clip.y0, ctx.damage_clip.x1, ctx.damage_clip.y1)));
+        // Outside the damage the buffer already holds last frame's composite, opaque wherever the noise lay (a memmove frame's moved rows, a widget frame's untouched ones), and anything put under an opaque pixel changes nothing: the bg layer and the noise go in over the damage only.
+        let damage = fluor::paint::Clip::new(ctx.damage_clip.x0, ctx.damage_clip.y0, ctx.damage_clip.x1, ctx.damage_clip.y1);
+        if bg_layer_used {
+            chrome.flatten_bg_into(target, buf_w, buf_h, Some(damage));
+        }
+        // THE NOISE, last and under everything: the field generated once for this size and base (a resize or the storage-warning tint generates it again), laid at this screen's scroll.
+        let noise_origin = bg_split_x.unwrap_or(buf_w / 2);
+        self.noise.ensure(buf_w, buf_h, noise_origin, bg_base);
+        self.noise.under_into(&mut Canvas::new(target, buf_w, buf_h, ctx.damage), noise_origin, bg_left_scroll.unwrap_or(bg_right_scroll), bg_right_scroll, bg_fullscreen, Some(damage));
         self.scroll_shift = 0;
         self.scroll_hint_armed = None;
 

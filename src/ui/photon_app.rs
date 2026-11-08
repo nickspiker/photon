@@ -1709,8 +1709,12 @@ pub struct PhotonApp {
     chrome: Option<DefaultChrome<Px>>,
     hit_counter: HitId,
     event_proxy: Option<Arc<dyn WakeSender<PhotonEvent>>>,
-    /// Vertical scroll offset for the background noise — drives `paint::background_noise`'s `scroll_offset` (visually translates the noise pattern up/down), `shimmer` (noise colour bias cycle), AND the chromatic wave's phase. MouseWheel events in `on_event` mutate this; everything else reads it.
+    /// Every wheel and drag step summed — turns the chromatic wave's phase (until 2026-11-08 it also drove the noise's shimmer, which the rolled field dropped). MouseWheel events in `on_event` mutate this; everything else reads it.
     bg_scroll: isize,
+    /// The background noise, generated once per frame size and base colour and rolled by each screen's scroll (fluor `NoiseField`; owner 2026-11-08). render_frame lays it under everything at the end of the frame.
+    noise: fluor::paint::NoiseField,
+    /// The chrome's bg layer was left unpainted on a screen that had nothing in it (render_frame's `bg_layer_used`): the next screen that uses it paints it whole first.
+    bg_layer_stale: bool,
     /// Whether to paint the top-centre zoom-percentage watermark. The host swallows the zoom events (Ctrl/Cmd + scroll / ± / 0) and updates `ctx.viewport.ru` directly, so we can't observe a zoom event — instead `render` arms this when `ru` changes WHILE a zoom modifier is held, and the `ModifiersChanged` handler clears it the instant the modifier is released. Not time-based: it persists exactly as long as Ctrl/Cmd stays down after a zoom began. (Android pinch — show from two-fingers-down to release — waits on fluor's multi-touch `Touch` event, which doesn't exist yet.)
     zoom_hint: bool,
     /// Previous frame's `ru`, for the frame-to-frame change detection that arms `zoom_hint`. Seeded to 1.0 (the host's default zoom).
@@ -3004,6 +3008,8 @@ impl PhotonApp {
             seed_identity_count: 0,
             pb_resolve_rx: None,
             bg_scroll: 0,
+            noise: fluor::paint::NoiseField::new(),
+            bg_layer_stale: true,
             zoom_hint: false,
             last_ru: 1.0,
             attest_anim_phase: 0.,
