@@ -1,6 +1,6 @@
 ---
 name: project-one-identity
-description: "DESIGN 2026-11-08, nothing built: one identity per device for every FGTW app (\"1 means 1\"), shared attest out of Photon, Unbound screen, unified About/Attached/Discover page, open catalog; trust hardening = FIDO2 hmac-secret tag as pocket PIPE, kernel route Linux-only"
+description: "DESIGN 2026-11-08, nothing built: one identity per device for every FGTW app, shared attest, Unbound screen, About/Attached/Discover, open catalog; plate (public) + papers (non-exportable key, reset destroys) so only the owner re-adds; green is proof; contention forces BLE/NFC; FIDO2 tag as pocket PIPE"
 metadata:
   type: project
 ---
@@ -15,3 +15,5 @@ Canonical: photon docs/one-identity.md (states Unbound/Locked/Live, what moves o
 
 **Why:** Nick's direction for identity across the app family plus the security audit's device-root exposure (which stays NOT a finding for the plate itself — [[feedback_device_root_never_salted]]).
 **How to apply:** build in the docs' order (lift attest path into fgtw first); the open decisions in docs/one-identity.md are Nick's. Related: [[project_android_widevine_plate]], [[project_linux_tpm_plate]], [[project_session_registers]], [[project_security_audit]].
+
+**Plate and papers (Nick 2026-11-08, later the same day):** "leave the plate on each one, the best we can, then put the cert in the glovebox." Plate = public name (best per platform). Papers = non-exportable key in StrongBox / TPM / Secure Enclave, registered in the chain; a factory reset destroys them and leaves the plate claimed by the owner, so the device joins no other fleet and comes back only by the owner's tap (sibling or tag), which mints new papers. Green on the device in hand becomes proof (a cloned key can no longer light a clone), so the typed words can retire from the network path. Contention (more than one request for the identity in the window) shuts the network path for that add and requires BLE/NFC proximity, stays shut until the add finishes, and tells the owner someone else holds the handle. Also: tag enrolled as owner credential (one-device owners), title transfer to release a plate on sale. OPEN (Nick's): overturning the 2026-11-02 no-keystore rule for the key half, papers feeding device_secret (a v0 move), Android uninstall kills keystore keys (reinstall needs a tap), desktop papers = TPM HMAC over machine-id so they die on OS reinstall. All in docs/one-identity.md "Plate and papers".

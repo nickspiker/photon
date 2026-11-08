@@ -58,7 +58,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [Group avatars](project_group_avatars.md) — BUILT 2026-11-02; field test pending
 - [Android Widevine plate](project_android_widevine_plate.md) — 2026-11-02 KEY root = Widevine ‖ cert ‖ ANDROID_ID, PLATE = BLAKE3(Widevine ‖ cert) survives a wipe; conversion VERIFIED on the Pixel; PLATE PUBLISHED in the chain (v3 ops) + seed one-plate-one-identity gate BUILT, field test pending; pin until 2027-02-01
 - [Linux TPM plate](project_linux_tpm_plate.md) — 2026-11-02 plate + HMAC key half BUILT and VERIFIED on the AMD fTPM, logged only, nothing derives; in-app line verified after reboot; Windows TBS next
-- [One identity, every app](project_one_identity.md) — DESIGN 2026-11-08: shared attest, Unbound screen, unified About/Attached/Discover, open catalog; FIDO2 tag as pocket PIPE
+- [One identity, every app](project_one_identity.md) — DESIGN 2026-11-08: shared attest, Unbound screen, About/Attached/Discover; plate + papers (reset → only the owner re-adds), green is proof, contention forces BLE/NFC; FIDO2 tag
 - [Handle rename](project_handle_rename.md) — in the spec, scoped 2026-11-03: succession + slot move, four seams, two constraints to respect before any successor record ships
 - [Security audit](project_security_audit.md) — batch 1 + LIB-01 + VSF-05..12 + NET-04/06/07 receiver half FIXED by 2026-11-03 (v139); PROVENANCE PIN until 2027-02-01; NET-04/05 wire half = next flag day; Mediums next
 - [vault seed stretch](project_vault_seed_stretch.md) — CSTV-02 vault half NOT built: kete identity = key input AND address scope; plan recorded

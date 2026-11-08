@@ -1,6 +1,6 @@
 # One identity per device, every app
 
-Status: DESIGN, 2026-11-08, nothing built. The owner: "1 means 1": a device holds one identity, and every FGTW app on it (Photon, Mahere, Lumis first) sees it the moment it is there.
+Status: DESIGN, 2026-11-08, nothing built; "Plate and papers" below carries the trust model. The owner: "1 means 1": a device holds one identity, and every FGTW app on it (Photon, Mahere, Lumis first) sees it the moment it is there.
 
 ## Decisions (Nick 2026-11-08)
 
@@ -53,9 +53,51 @@ One shared component, embedded by every app, in three sections:
 
 Every process on a device can read its plate source (Widevine ID, machine-id, IOPlatformUUID), and every same-user process can read the desktop session file. The options beyond that, a crypto tag in the pocket acting as PIPE, and kernel enforcement, are in tohu docs/oracle-hardening.md, "Beyond the oracle".
 
+## Plate and papers (owner direction 2026-11-08)
+
+The owner: "leave the plate on each one, the best we can, then put the cert in the glovebox."
+
+- **The plate** is the device's public name, the best source each platform has: Widevine on Android, the TPM endorsement key on a desktop with a TPM, `machine-id` / `MachineGuid` / `IOPlatformUUID` otherwise (tohu docs/oracle-hardening.md). Anyone can read it and that is fine: it names the hardware, it proves nothing. fgtw.org already ties each plate to the identity that claimed it (one plate, one identity, fgtw-bootstrap).
+- **The papers** are a key made inside the device's secure hardware and never exportable, registered in the fleet chain: StrongBox on Android, the TPM on a desktop, the Secure Enclave on a Mac. Not a stored secret anyone can copy; the device's registration, and a reset destroys it.
+
+### A reset device belongs to its owner
+
+- A factory reset destroys the papers and leaves the plate, still claimed by the owner's identity.
+- So the device cannot be signed into any other fleet ("because I OWN IT"), and it cannot sign itself back into its owner's either.
+- The owner's tap adds it back: a sibling sponsors it, or the owner's tag does, and the device makes new papers for the glovebox.
+
+### Adding a device: green is proof
+
+Pairing v2 already works this way (docs/pairing-v2.md, steps 7 to 9): a bind is keyless until the owner confirms, only the device actually bound goes green, and the fleet key is sealed only after the confirm. The owner: "only one device will turn green, and I'm not going to click add until I see it do so."
+
+- **Papers make green proof.** Without them a cloned key (a desktop's key is rebuilt from its machine-id today) lights a clone beside the real device, and the confirm seals the fleet key to a key the attacker holds. With papers only one device can hold the key, so only one can light.
+- **The typed words can retire from the network path.** They pick the right request out of the registry's list; with trustworthy green, the list and the owner's eyes on the lamp do that, and a wrong pick leaves only a keyless ledger entry.
+- **The plate puts the right row first.** A reset device's plate is already the owner's, so the sponsor shows it as that device coming back; a new device's plate is unclaimed, and the green check covers it.
+
+### Contention shuts the network path
+
+The owner: "if you do get an attacker and your old reset device you'd have two devices so you'd just completely disable that option and require BLE or NFC presence, like a traditional device bind."
+
+- **More than one request for the identity in the window** closes the registry path for that add: the sponsor's screen offers only devices it can hear over BLE (and NFC once built), pairing v2's proximity rule ("proximity populates the tap list, never the registry").
+- **It stays closed** until that add finishes, so an attacker cannot withdraw and repost to reopen it.
+- **The attempt is shown to the owner.** A second request means someone else holds the handle, so the sponsor says so plainly (and the handle-rename path, project memory "Handle rename", is the follow-up).
+
+### The tag
+
+- **A one-device owner** who resets that device has no sibling to tap, so the tag is enrolled in the chain as an owner credential, able to sponsor a device back in, not only as a second factor.
+- The tag's shape (FIDO2 `hmac-secret`) and why NTAG 424 DNA does not fit: tohu docs/oracle-hardening.md, "A tag as PIPE".
+
+### Selling a device
+
+A plate claimed forever makes a sold phone a brick for its buyer. Removing a device needs a title transfer: the owner signs the plate over, or releases it, as part of the removal.
+
 ## Open decisions
 
-- **The Android session channel:** a signature-permission provider in each app, or one app as the holder?
+- **Keystores.** The papers overturn the 2026-11-02 rule against keystores (tohu docs/oracle-hardening.md rule 1). That rule guarded against a copyable stored secret and against a vendor in the loop; a non-exportable key meets the first, and local use has no Google round trip (only checking Google's attestation chain would). The owner's ruling.
+- **The papers feed the device key.** StrongBox holds an HMAC key, so the device secret becomes the chip's HMAC over a fixed label, the TPM HMAC root's twin and PIPE's 32 in, 32 out. That changes the frozen `v0` derivation: every device moves once, as Android did on 2026-11-02.
+- **Uninstall on Android.** Keystore keys die with the app, not only with a factory reset (whether a data clear kills them too is to be checked), so a reinstall needs a tap too, undoing the reinstall-resumes behaviour that fixed Jeff's phone (2026-11-04).
+- **Desktop papers that die on reset.** The TPM HMAC root survives an OS reinstall. To match Android, the key would be the TPM's HMAC over the machine-id: it needs the chip, and it changes when the OS is reinstalled.
+- **The Android session channel:** a signature-permission provider in each app, or one app as the holder? Keystore keys belong to one app, so the papers point to one holder answering for the others.
 - **The shared screens' crate:** its name and home (beside fgtw, or a crate of its own).
 - **The `kists` record on fleet state** (Rule -1).
 - **Lumis:** its interface is Kotlin, not fluor: port it, or draw the page natively from shared Rust data?
@@ -69,3 +111,11 @@ Every process on a device can read its plate source (Widevine ID, machine-id, IO
 4. The `kists` record and the About / Attached page.
 5. Discover.
 6. Lumis.
+
+The trust track runs beside it, once the open decisions are ruled:
+
+1. Contention shuts the network path (works on today's keys; the deterrent first).
+2. Desktop papers: the TPM key root fed into the device key, with the move every desktop makes once.
+3. Android papers in StrongBox, the same move.
+4. Green-only add: the typed words leave the network path.
+5. The tag as owner credential, and the title transfer.
