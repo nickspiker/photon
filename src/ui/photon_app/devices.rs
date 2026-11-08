@@ -2172,6 +2172,8 @@ impl PhotonApp {
 
     /// Refresh the Fleet page's retired rows: chain history minus current members minus the `fleet.released` set (brands the owner already freed). Synchronous fetch, page-entry only — same style as the last-member gate. A fetch failure just hides the rows this visit (release is idempotent; nothing is lost).
     pub(super) fn refresh_fleet_retired(&mut self) {
+        // A key move leaves the name on the old key; the hardware's plate carries it to the new one (carry_machine_names_by_plate).
+        self.carry_machine_names_by_plate();
         self.fleet_release_armed = None;
         self.fleet_lock_armed = None;
         self.fleet_unlock_armed = None;

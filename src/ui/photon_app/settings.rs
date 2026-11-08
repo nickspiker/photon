@@ -727,6 +727,46 @@ impl PhotonApp {
         }
     }
 
+    /// A device keeps its name through a key move (Nick 2026-11-08: "the names got fucked"): the chain holds each key's plate, the hardware's public name, so a current member with no name of its own takes the name its plate wore under an earlier key.
+    /// Writes only a missing name, fleet-linked like a rename, so a name the owner gives the new key is never overwritten; a key whose plate the chain never heard keeps its default until renamed.
+    pub(super) fn carry_machine_names_by_plate(&mut self) {
+        let Some(hp) = self.our_handle_proof() else {
+            return;
+        };
+        let Some(chain) = crate::network::fgtw::fleet::held_chain(&hp) else {
+            return;
+        };
+        let (Ok(plates), Ok(members)) = (chain.plates(), chain.fold()) else {
+            return;
+        };
+        if !self.ensure_fleet_settings() {
+            return;
+        }
+        let named = |fs: &crate::storage::fleet_settings::FleetSettings, dev: &[u8; 32]| match fs.effective(&format!("fleet.name.{}", hex::encode(dev))) {
+            Some(vsf::VsfType::x(s)) if !s.trim().is_empty() => Some(s.clone()),
+            _ => None,
+        };
+        let now = vsf::eagle_time_oscillations();
+        let mut carried = false;
+        for (dev, plate) in plates.iter().filter(|(d, _)| members.contains(d)) {
+            let fs = self.fleet_settings.as_mut().unwrap();
+            if named(fs, dev).is_some() {
+                continue;
+            }
+            let Some(name) = plates.iter().filter(|(d, p)| p == plate && d != dev).find_map(|(d, _)| named(fs, d)) else {
+                continue;
+            };
+            let key = format!("fleet.name.{}", hex::encode(dev));
+            if fs.set(&key, vsf::VsfType::x(name.clone()), now) {
+                crate::logf!("SETTINGS: device {} takes the name \"{}\" its hardware wore under an earlier key", crate::fp(dev), name);
+                carried = true;
+            }
+        }
+        if carried {
+            self.persist_and_push_settings();
+        }
+    }
+
     /// The Vault page's space breakdown (Nick 2026-09-14, "sizes of each chat/contact, waves, etc"): per-conversation byte totals for the active filter, largest first. A pure in-memory walk over the row records — every attachment row carries its size in its content record, a wave card its envelope — so this touches no disk and runs on the UI thread at tap speed. What it counts is what the rows CLAIM, which is the honest per-conversation story; the engine's occupied number above it stays the ground truth for the whole vault.
     pub(super) fn compute_vault_breakdown(&mut self) {
         use crate::types::AttachKind;

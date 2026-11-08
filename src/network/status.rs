@@ -2268,6 +2268,28 @@ async fn run_checker(
                                             &event_proxy_recv,
                                         );
                                     }
+                                    // The membership chain, the fleet's state and its fan-out, pushed whole to a sibling: past one datagram they come by PT, where no arm took them until 2026-11-08.
+                                    // Field 2026-11-08: a desktop's key move reached its MacBook as "claimed by NO parser" and the MacBook refused the new key for four hours, and every fleet-state push since 2026-11-07 (28 KB) fell the same way.
+                                    // The UDP arms are the twins: the chain is adopted by extension against the fold the receiver holds and the others are sealed to the fleet, so a sender not yet known is taken here as it is there.
+                                    else if let Ok((handle_proof, chain, sender_pubkey)) = crate::network::fgtw::protocol::parse_fleet_resp_vsf(&data) {
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::FleetChainReceived { handle_proof, chain, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey), sender_addr: src_addr },
+                                            &event_proxy_recv,
+                                        );
+                                    } else if let Ok((handle_proof, sealed, sender_pubkey)) = crate::network::fgtw::protocol::parse_fstate_push_vsf(&data) {
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::FleetStatePushed { handle_proof, sealed, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) },
+                                            &event_proxy_recv,
+                                        );
+                                    } else if let Ok((handle_proof, blob, sender_pubkey)) = crate::network::fgtw::protocol::parse_fanout_resp_vsf(&data) {
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::FanoutReceived { handle_proof, blob, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey), sender_addr: src_addr },
+                                            &event_proxy_recv,
+                                        );
+                                    }
                                     // The checkpoint spine's sibling frames (root hand-off / catch-up request / state serve) — the state serve is the LARGEST fleet frame there is (a whole spine state; the field's 183KB drops), so it rides PT streams and must complete here, not just on the datagram path.
                                     else if let Ok(((k, fanout_epoch, sealed), sender_pubkey)) =
                                         crate::network::fgtw::protocol::parse_ckpt_root_vsf(&data)
