@@ -392,6 +392,8 @@ impl PhotonApp {
                     self.fanout_push(&blob, &newcomer);
                     // Ceremony complete — back to the Fleet page it was launched from (the new device's row is the confirmation), instead of stranding the user on a finished words screen.
                     self.end_add_device_flow();
+                    // The add a contention shut has finished; the next one starts open again (docs/lifecycle.md P3).
+                    self.add_device_contended = false;
                     self.refresh_fleet_retired();
                     self.state = AppState::Settings(SettingsPage::Fleet);
                     self.ready_toast = Some(tr(Msg::DeviceAdded).into_owned());

@@ -392,6 +392,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BoundDeviceConfirm(name) => format!("{name} terikat — apakah ia berubah hijau?").into(),
         Msg::AddingDevice(name) => format!("Menambahkan {name}\u{2026}").into(),
         Msg::DeviceAdded => "Perangkat ditambahkan \u{221a}".into(),
+        Msg::JoinContended => "Lebih dari satu perangkat minta bergabung, jadi sekarang hanya perangkat di sebelah perangkat ini yang bisa ditambahkan, lewat Bluetooth atau NFC. Kalau kamu hanya menambah satu, orang lain tahu handle-mu.".into(),
         Msg::AddDeviceError(e) => format!("Galat: {e}").into(),
         Msg::AddFromSignedIn => "Tambahkan perangkat ini dari perangkat yang sudah jadi milikmu:".into(),
         Msg::JoinFailed(e) => format!("Gagal bergabung: {e}").into(),

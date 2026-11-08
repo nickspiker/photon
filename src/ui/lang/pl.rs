@@ -400,6 +400,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BoundDeviceConfirm(name) => format!("Urządzenie {name} związane — czy zrobiło się zielone?").into(),
         Msg::AddingDevice(name) => format!("Dodawanie: {name}\u{2026}").into(),
         Msg::DeviceAdded => "Urządzenie dodane \u{221a}".into(),
+        Msg::JoinContended => "Więcej niż jedno urządzenie prosi o dołączenie, więc teraz można dodać tylko urządzenie leżące obok tego, przez Bluetooth lub NFC. Jeśli dodajesz tylko jedno, ktoś inny zna twój handle.".into(),
         Msg::AddDeviceError(e) => format!("Błąd: {e}").into(),
         Msg::AddFromSignedIn => "Dodaj to urządzenie z takiego, które już jest twoje:".into(),
         Msg::JoinFailed(e) => format!("Dołączenie nie powiodło się: {e}").into(),

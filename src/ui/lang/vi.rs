@@ -392,6 +392,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BoundDeviceConfirm(name) => format!("Đã buộc {name} — nó đã chuyển xanh chưa?").into(),
         Msg::AddingDevice(name) => format!("Đang thêm {name}\u{2026}").into(),
         Msg::DeviceAdded => "Đã thêm thiết bị \u{221a}".into(),
+        Msg::JoinContended => "Có hơn một thiết bị đang xin gia nhập, nên lúc này chỉ có thể thêm thiết bị đặt cạnh thiết bị này, qua Bluetooth hoặc NFC. Nếu bạn chỉ thêm một cái, người khác đang biết handle của bạn.".into(),
         Msg::AddDeviceError(e) => format!("Lỗi: {e}").into(),
         Msg::AddFromSignedIn => "Thêm thiết bị này từ một thiết bị đã là của bạn:".into(),
         Msg::JoinFailed(e) => format!("Gia nhập thất bại: {e}").into(),

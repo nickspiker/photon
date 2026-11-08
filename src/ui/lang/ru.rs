@@ -424,6 +424,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BoundDeviceConfirm(name) => format!("Устройство {name} привязано — оно позеленело?").into(),
         Msg::AddingDevice(name) => format!("Добавляем {name}\u{2026}").into(),
         Msg::DeviceAdded => "Устройство добавлено \u{221a}".into(),
+        Msg::JoinContended => "Присоединиться просят несколько устройств, поэтому сейчас можно добавить только устройство рядом с этим, по Bluetooth или NFC. Если ты добавляешь только одно, кто-то ещё знает твой handle.".into(),
         Msg::AddDeviceError(e) => format!("Ошибка: {e}").into(),
         Msg::AddFromSignedIn => "Добавь это устройство с того, которое уже твоё:".into(),
         Msg::JoinFailed(e) => format!("Вступить не удалось: {e}").into(),

@@ -401,6 +401,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BoundDeviceConfirm(name) => format!("{name} को बाँध लिया — क्या यह हरा हुआ?").into(),
         Msg::AddingDevice(name) => format!("{name} को जोड़ा जा रहा है\u{2026}").into(),
         Msg::DeviceAdded => "डिवाइस जुड़ गया \u{221a}".into(),
+        Msg::JoinContended => "एक से ज़्यादा डिवाइस जुड़ना चाह रहे हैं, इसलिए अब सिर्फ़ इसके पास रखा डिवाइस ही जोड़ा जा सकता है, ब्लूटूथ या NFC से। अगर तुम सिर्फ़ एक जोड़ रहे हो, तो किसी और को तुम्हारा हैंडल पता है।".into(),
         Msg::AddDeviceError(e) => format!("एरर: {e}").into(),
         Msg::AddFromSignedIn => "इस डिवाइस को अपने किसी ऐसे डिवाइस से जोड़ो जो पहले से तुम्हारा है:".into(),
         Msg::JoinFailed(e) => format!("जुड़ना नाकाम: {e}").into(),

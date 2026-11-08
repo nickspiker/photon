@@ -395,6 +395,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BoundDeviceConfirm(name) => format!("Kua herea a {name} — kua huri kākāriki?").into(),
         Msg::AddingDevice(name) => format!("E tāpiri ana i a {name}\u{2026}").into(),
         Msg::DeviceAdded => "Kua tāpirihia te pūrere \u{221a}".into(),
+        Msg::JoinContended => "Neke atu i te kotahi ngā pūrere e tono ana kia hono, nā reira ko te pūrere anake kei te taha o tēnei ka tāpirihia ināianei, mā te Bluetooth, mā te NFC rānei. Mēnā kotahi anake tāu e tāpiri ana, e mōhio ana tētahi atu ki tō handle.".into(),
         Msg::AddDeviceError(e) => format!("Hapa: {e}").into(),
         Msg::AddFromSignedIn => "Tāpirihia tēnei pūrere mai i tētahi nōu kē:".into(),
         Msg::JoinFailed(e) => format!("I rahua te hono: {e}").into(),

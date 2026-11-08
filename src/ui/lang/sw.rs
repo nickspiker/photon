@@ -399,6 +399,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BoundDeviceConfirm(name) => format!("{name} kimefungwa — je, kimegeuka kijani?").into(),
         Msg::AddingDevice(name) => format!("Inaongeza {name}\u{2026}").into(),
         Msg::DeviceAdded => "Kifaa kimeongezwa \u{221a}".into(),
+        Msg::JoinContended => "Zaidi ya kifaa kimoja vinaomba kujiunga, kwa hiyo sasa kifaa kilicho kando ya hiki pekee ndicho kinaweza kuongezwa, kwa Bluetooth au NFC. Kama unaongeza kimoja tu, mtu mwingine anajua handle yako.".into(),
         Msg::AddDeviceError(e) => format!("Hitilafu: {e}").into(),
         Msg::AddFromSignedIn => "Ongeza kifaa hiki kutoka kifaa ambacho tayari ni chako:".into(),
         Msg::JoinFailed(e) => format!("Kujiunga kumeshindikana: {e}").into(),

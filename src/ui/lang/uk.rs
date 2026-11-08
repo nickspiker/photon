@@ -406,6 +406,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BoundDeviceConfirm(name) => format!("Пристрій {name} прив'язано — він позеленів?").into(),
         Msg::AddingDevice(name) => format!("Додаю пристрій {name}\u{2026}").into(),
         Msg::DeviceAdded => "Пристрій додано \u{221a}".into(),
+        Msg::JoinContended => "Приєднатися просять кілька пристроїв, тож зараз можна додати лише пристрій поруч із цим, через Bluetooth або NFC. Якщо ти додаєш лише один, хтось інший знає твій handle.".into(),
         Msg::AddDeviceError(e) => format!("Помилка: {e}").into(),
         Msg::AddFromSignedIn => "Додай цей пристрій з того, який уже твій:".into(),
         Msg::JoinFailed(e) => format!("Приєднатися не вдалося: {e}").into(),

@@ -110,8 +110,13 @@ impl PhotonApp {
         {
             return;
         }
-        let text = self.add_device_wordcheck_text.clone();
         self.add_device_typo = None;
+        if self.add_device_contended {
+            // The words pick a request out of the network's list, the path contention shuts (docs/lifecycle.md P3): the only adds left are a Bluetooth-heard row's tap and an NFC tap.
+            self.add_device_status = tr(Msg::JoinContended).into_owned();
+            return;
+        }
+        let text = self.add_device_wordcheck_text.clone();
         match fgtw::sponsor::match_words(&text, &self.add_device_candidates) {
             WordMatch::NoCandidates { typo } => {
                 // Nothing to match against yet — the voca spell-check still catches finger trouble while the registry answers.
@@ -180,6 +185,11 @@ impl PhotonApp {
         self.lan_heard.retain(|(_, t)| now.duration_since(*t) < LAN_HEARD_FRESH);
         let lan_heard: Vec<[u8; 32]> = self.lan_heard.iter().map(|(k, _)| *k).collect();
         self.add_device_candidates = fgtw::sponsor::candidates(reqs, &seed, &hp, &heard, &lan_heard);
+        if !self.add_device_contended && fgtw::sponsor::contended(&self.add_device_candidates) {
+            // docs/lifecycle.md P3: from here until an add completes, only Bluetooth or NFC presence can add.
+            self.add_device_contended = true;
+            crate::logf!("SECURITY: {} devices ask to join at once — the network path is shut for this add; only a device beside this one can join", self.add_device_candidates.len());
+        }
         self.refresh_add_device_match();
     }
 

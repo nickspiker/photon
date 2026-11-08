@@ -393,6 +393,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BoundDeviceConfirm(name) => format!("Naitali ang {name} — naging berde ba ito?").into(),
         Msg::AddingDevice(name) => format!("Idinadagdag ang {name}\u{2026}").into(),
         Msg::DeviceAdded => "Naidagdag ang device \u{221a}".into(),
+        Msg::JoinContended => "Higit sa isang device ang humihiling sumali, kaya ang device lang na katabi nito ang maidadagdag ngayon, sa Bluetooth o NFC. Kung isa lang ang idinadagdag mo, may ibang nakakaalam ng handle mo.".into(),
         Msg::AddDeviceError(e) => format!("Error: {e}").into(),
         Msg::AddFromSignedIn => "Idagdag ang device na ito mula sa isang device na sa iyo na:".into(),
         Msg::JoinFailed(e) => format!("Hindi nakasali: {e}").into(),

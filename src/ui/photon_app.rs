@@ -2127,6 +2127,8 @@ pub struct PhotonApp {
     stranger_seen: Vec<[u8; 32]>,
     /// AddDevice flow: the tap-to-bind (BLE/list select) path is in flight, so the Bound result shows the "did it turn green?" confirm instead of auto-rotating (that auto path is words-match only, where the typed key IS the confirmation). Reset when the flow ends.
     add_device_bind_ble: bool,
+    /// More than one device asked to join at once (docs/lifecycle.md P3): the network path is shut, words and LAN picks alike, and only a device heard over Bluetooth (or tapped by NFC) can be added. Raised on the first contended candidate set and held until an add completes, so withdrawing and reposting cannot reopen it.
+    add_device_contended: bool,
     /// Diagnostics "Submit" flow: result of the off-thread log upload to FGTW (blocking HTTP over up to 16 MiB). `Ok(())` → "Log sent" toast; `Err` → the reason. Drained in tick.
     log_submit_rx: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     log_submit_tx: Option<std::sync::mpsc::Sender<Result<(), String>>>,
@@ -3291,6 +3293,7 @@ impl PhotonApp {
             fleet_asked: Vec::new(),
             stranger_seen: Vec::new(),
             add_device_bind_ble: false,
+            add_device_contended: false,
             log_submit_rx: None,
             log_submit_tx: None,
             log_submit_inflight: false,

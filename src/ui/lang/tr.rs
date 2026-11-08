@@ -395,6 +395,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BoundDeviceConfirm(name) => format!("{name} bağlandı — yeşile döndü mü?").into(),
         Msg::AddingDevice(name) => format!("{name} ekleniyor\u{2026}").into(),
         Msg::DeviceAdded => "Cihaz eklendi \u{221a}".into(),
+        Msg::JoinContended => "Birden fazla cihaz katılmak istiyor, bu yüzden şimdi yalnızca bunun yanındaki bir cihaz eklenebilir, Bluetooth ya da NFC ile. Yalnızca bir tane ekliyorsan, handle'ını başka biri biliyor.".into(),
         Msg::AddDeviceError(e) => format!("Hata: {e}").into(),
         Msg::AddFromSignedIn => "Bu cihazı, zaten senin olan bir cihazdan ekle:".into(),
         Msg::JoinFailed(e) => format!("Katılma başarısız: {e}").into(),

@@ -5229,7 +5229,7 @@ impl PhotonApp {
                 let nearby: Vec<&AddCandidate> = self
                     .add_device_candidates
                     .iter()
-                    .filter(|c| c.heard_ble || c.heard_lan)
+                    .filter(|c| c.pickable(self.add_device_contended))
                     .take(7)
                     .collect();
                 if !nearby.is_empty() {

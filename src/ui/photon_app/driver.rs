@@ -826,7 +826,7 @@ impl FluorApp<Px> for PhotonApp {
             if let Some(cand) = self
                 .add_device_candidates
                 .iter()
-                .filter(|c| c.heard_ble || c.heard_lan)
+                .filter(|c| c.pickable(self.add_device_contended))
                 .nth(idx)
             {
                 let req = cand.req.clone();

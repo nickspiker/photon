@@ -404,6 +404,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BoundDeviceConfirm(name) => format!("{name} est lié — est-il passé au vert ?").into(),
         Msg::AddingDevice(name) => format!("Ajout {}\u{2026}", de(name)).into(),
         Msg::DeviceAdded => "Appareil ajouté \u{221a}".into(),
+        Msg::JoinContended => "Plus d'un appareil demande à rejoindre : seul un appareil posé à côté de celui-ci peut être ajouté maintenant, par Bluetooth ou NFC. Si tu n'en ajoutes qu'un, quelqu'un d'autre connaît ton handle.".into(),
         Msg::AddDeviceError(e) => format!("Erreur : {e}").into(),
         Msg::AddFromSignedIn => "Ajoute cet appareil depuis un appareil qui est déjà le tien :".into(),
         Msg::JoinFailed(e) => format!("Impossible de rejoindre : {e}").into(),

@@ -670,6 +670,8 @@ pub enum Msg<'a> {
     BoundDeviceConfirm(&'a str),
     AddingDevice(&'a str),
     DeviceAdded,
+    /// More than one device asks to join at once (docs/lifecycle.md P3): only a device beside this one can be added, and if the owner is adding one, someone else knows the handle.
+    JoinContended,
     AddDeviceError(&'a str),
     AddFromSignedIn,
     JoinFailed(&'a str),
