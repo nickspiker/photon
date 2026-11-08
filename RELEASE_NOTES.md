@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v147
 - **A missed message shows on the taskbar and tray.** When a conversation or invitation in your list wears the magenta unread ring, the Photon icon in the tray (and on the taskbar on Windows and many Linux desktops, or the Dock on a Mac) wears it too, and it clears when you have read them.
 - **Desktops tie their key to their own security chip.** On a Windows or Linux computer whose security chip (TPM) Photon may use, the device key now comes from that chip, so copying a few readable files off the computer no longer lets anyone pose as it; the first start of this version moves the device over by itself, keeps you signed in, and needs nothing from you.
 - **Adding a device asks for it to be beside you when anything looks off.** If more than one device asks to join your identity at the same time, only a device your other device can reach by Bluetooth or NFC can be added for that add, and Photon tells you that someone else may know your handle.
@@ -13,6 +15,8 @@ One sentence per line, however long; plain language for the person who installs 
 - **Keys are kept tighter in memory.** Secret keys are wiped as soon as they are no longer needed, the long-lived ones are kept out of swap, and Photon no longer leaves a memory dump behind if it crashes.
 - **The diagnostic log is private on shared computers.** On a computer with several accounts, the log folder can now be read only by you.
 - **The background costs less to draw.** The moving background is made once and scrolled, instead of being drawn fresh for every frame.
+
+Built from photon b812c486 · chirp b01db995 · fgtw b6470717 · fluor b6bea4e5 · kete 05552740 · limbus 30ab5cc3 · manifestus 91795a9b · nunc f2c0c226 · opsin ff2056fd · rarangi be4386cb · spirix b12187fb · tapuwae 5c462e1d · tohu f109d653 · voca 04dcf2df · vsf 9b9c2b1b
 
 ## v146
 - **Photon talks to the internet far less.** Messages now go straight to your friend's device and use the fgtw.org relay only when there is no direct path; devices on the same network find each other without asking fgtw.org; your own devices hand each other your contacts, settings and drafts directly, with fgtw.org keeping only a sealed backup; and a dozen background checks that ran every few seconds whether or not you used Photon now happen only when something actually changes, which saves battery and data on phones.
