@@ -509,12 +509,17 @@ impl FriendshipChains {
         let eggs_struct = ClutchEggs {
             eggs: eggs.to_vec(),
         };
-        let avalanche = avalanche_expand_eggs(&eggs_struct);
+        let mut avalanche = avalanche_expand_eggs(&eggs_struct);
 
         // Step 2: derive the per-participant ACTIVE material — NOT to keep (lanes replaced participant chains), but because the history key and lane root were always derived from these pristine bytes and every v8 blob in the field carries roots born this way. The material lives exactly long enough to seed the two keys, then scrubs.
         let mut active_snapshots: Vec<Vec<u8>> = Vec::with_capacity(sorted_participants.len());
         for participant in &sorted_participants {
             active_snapshots.push(derive_chain_from_avalanche(&avalanche, participant));
+        }
+        // The 2 MB expansion is egg material; the snapshots are all that is wanted from it (CSTV-08).
+        {
+            use zeroize::Zeroize;
+            avalanche.zeroize();
         }
 
         // Friend-history bulk key — derived HERE, at ceremony birth, from the pristine active chains (the one moment both sides are byte-identical). Every completion path flows thru from_clutch, so this is the single derivation site. See crypto::clutch::derive_history_key.

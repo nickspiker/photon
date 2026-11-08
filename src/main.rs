@@ -57,6 +57,8 @@ fn main() {
     photon_messenger::report_prior_crash();
     // Native faults (access violation / SIGSEGV / stack overflow) bypass the panic hook on every OS — this writes the same sidecar so they ride the next submission too.
     photon_messenger::platform::crash_native::install();
+    // No core image of the keys in memory if this process crashes (CSTV-08).
+    photon_messenger::crypto::no_core_dumps();
     // X protocol errors into the log (winit reports them only thru `tracing`), so an X connection the server drops leaves its lead-up on record.
     #[cfg(target_os = "linux")]
     photon_messenger::platform::x11_diag::install();

@@ -3,6 +3,7 @@
 // lib.rs   — constants (PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384, OSC_PER_SEC, PEER_EXPIRY_OSC=7d, KBUCKET_STALE_OSC=1h), always-on VSF logging sink (16 MiB + jittered 24–48h caps, name-scrubbed), and helpers: init_logging/log/log_at/clear_log/snapshot_log_bytes/log_size_bytes/read_log_from/install_log_bridge, LogRecord + parse_log_records (shared record decode: photonlog bin + the in-app Diagnostics viewer), fp(public_id) (non-PII log label), dozenal helpers (DOZENAL_NAMES, NumBase + num_base/dms_ui, dms_log/dms_age (an OSCILLATION count, floor glyphs)/dms_size/dms_length DMS doubling counts as a pure logarithm, next_fine_edge (the oscillation at which a live age's last digit next ticks — the wake edge), live_since (the since-opened counter, shared by render and tick), day_share_glyphs/next_day_share_edge/fraction_of_day/fmt_clock (time of day as a fixed-width SHARE of today, the inksurf clock; hex = seconds since midnight), local_datetime + fmt_when (an absolute stamp, always the whole date: dozenal `year month-glyph day weekday .share`, hex = the raw oscillation stamp), link_rtt_label (a round trip as a duration), doublings_of + dms_fine (a ratio's floored doubling count, and the four-digit fine form with fraction-of-a-doubling digits), the one-atom anchors LIGHT_METRES_PER_SECOND/PROTIUM_KG/HYDROGEN_LINE_KELVIN for the Base page's imagined speed/temperature/mass ladders, hex_seconds_ms/fmt_halves/unit_size hex-linear renders, fmt_mag (THE quantity render: every count a doubling count in dozenal, spirix lb + glyph-flagged digits, zero answered by spirix's own escape class), fmt_share (the other and only other form: a proportion as a radix point and its digits, integer base twelve so a third stays exactly .Tera), rep_reading + rep_support (reputation in log form: signed doublings of praise over dings with a +1 prior, and the doubling count of everyone who spoke), dozenal_glyphs UI / dozenal_spell read-aloud / dozenal_words camelCase log form, deglyph_for_log), jitter/jitter_dur (anti-thundering-herd 50–100% pad), module re-exports. main.rs  — winit event loop, window creation, tokio async runtime.
 //
 // crypto/
+//   mod.rs          — pin_in_ram (mlock / VirtualLock a long-lived secret at a fixed address: the device secret, the blob name key, the fleet key's RAM copy) and no_core_dumps (RLIMIT_CORE 0, Linux not dumpable), both CSTV-08.
 //   blind.rs        — friend-blinded private identity secret S (RAM-only, never persisted): PrivateS{None,Provisional,Live}, derive_blind_pad (per-device+friend OTP pad), make/open_blind_blob ((S⊕pad)‖check, fail-closed), s_check/s_id (tamper commitment + 4-byte tag epoch), seal/open_sibling_s (kete-AEAD S-transfer to a sibling).
 //   chain.rs        — the braid: rolling-chain encryption (512-link, 16KB; see docs/braid.md). Chain, advance() (weaves ≤2 prior peer strands), BRAID_V1/V2 + strand_value/strand_bytes (v2 weaves a 32-byte value per strand), derive_salt, generate/verify_ack_proof, encrypt/decrypt_layers.
 //   clutch.rs       — 8-algorithm parallel key ceremony: smear_hash, derive_conversation_token, derive_ceremony_instance, spaghettify, sibling_party_id (device-derived fleet-weave party id), offer provenance (prior + braid claims), agreed_braid.
@@ -1088,7 +1089,12 @@ pub(crate) fn log_dir() -> Option<std::path::PathBuf> {
             .or_else(|_| std::env::var("USERNAME"))
             .unwrap_or_else(|_| "shared".into());
         let dir = std::env::temp_dir().join(format!("photon-{user}"));
-        if std::fs::create_dir_all(&dir).is_ok() {
+        // CSTV-07: the temp root is every user's, so the directory must be ours, 0700, and no symlink; one that is not falls through to the config dir below. Windows' temp root is already the user's own.
+        #[cfg(unix)]
+        let usable = crate::storage::private_dir(&dir, unsafe { libc::getuid() }).unwrap_or(false);
+        #[cfg(not(unix))]
+        let usable = std::fs::create_dir_all(&dir).is_ok();
+        if usable {
             // One-shot migration: drop the old persistent-dir log so it doesn't sit stale forever (records are ephemeral diagnostics — nothing worth carrying over).
             static OLD_LOG_SWEPT: std::sync::Once = std::sync::Once::new();
             OLD_LOG_SWEPT.call_once(|| {
@@ -1103,6 +1109,17 @@ pub(crate) fn log_dir() -> Option<std::path::PathBuf> {
     crate::storage::photon_config_dir().ok()
 }
 
+/// The log's files open owner-only (0600 when created) and never thru a symlink (CSTV-07): the log, its trim and the crash sidecar.
+#[cfg(feature = "logging")]
+fn private_file(opts: &mut std::fs::OpenOptions) -> &mut std::fs::OpenOptions {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+    }
+    opts
+}
+
 /// Open the sink (idempotent) and drain any buffered records into it FIRST so the file stays chronological; counters seed from post-drain metadata.
 #[cfg(feature = "logging")]
 fn ensure_log_open(guard: &mut Option<std::fs::File>) {
@@ -1115,7 +1132,7 @@ fn ensure_log_open(guard: &mut Option<std::fs::File>) {
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join("photon.log.vsf");
     let mut opts = std::fs::OpenOptions::new();
-    opts.create(true).append(true);
+    private_file(opts.create(true).append(true));
     // FILE_ATTRIBUTE_TEMPORARY (0x100): the cache manager keeps the contents in RAM and skips lazy writeback unless memory pressure forces it — the file still exists, survives process exit, and reads back for submission, it just avoids physically wearing the disk while it can. Windows' answer to the tmpfs macOS doesn't have.
     #[cfg(windows)]
     {
@@ -1179,9 +1196,7 @@ pub fn write_crash_sidecar(text: &str) {
     let Some(dir) = log_dir() else { return };
     // WHY: the panic hook's sidecar touches no shared lock by design; a failure here shows as the open below failing, and there is nowhere safer to report it.
     let _ = std::fs::create_dir_all(&dir);
-    if let Ok(mut f) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
+    if let Ok(mut f) = private_file(std::fs::OpenOptions::new().create(true).append(true))
         .open(dir.join("photon.crash.txt"))
     {
         // WHY: the panic hook's last resort: there is no sink left to report a failed crash write to.
@@ -1382,9 +1397,7 @@ fn trim_log_file(now_osc: i64) -> Option<(std::fs::File, u64, i64)> {
     #[cfg(unix)]
     let _trim_lock = {
         use std::os::unix::io::AsRawFd;
-        let lf = std::fs::OpenOptions::new()
-            .create(true)
-            .write(true)
+        let lf = private_file(std::fs::OpenOptions::new().create(true).write(true))
             .open(&path)
             .ok()?;
         if unsafe { libc::flock(lf.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
@@ -1410,10 +1423,7 @@ fn trim_log_file(now_osc: i64) -> Option<(std::fs::File, u64, i64)> {
     let age_cutoff = now_osc - jitter(LOG_AGE_KEEP_BASE_OSC); // keep a random 12–24h
     let (keep, new_oldest) = log_keep_offset(&bytes, LOG_TRIM_TO_BYTES, age_cutoff);
     let kept = &bytes[keep..]; // log_keep_offset returns an offset inside the buffer, or exactly its length
-    let mut w = std::fs::OpenOptions::new()
-        .create(true)
-        .write(true)
-        .truncate(true)
+    let mut w = private_file(std::fs::OpenOptions::new().create(true).write(true).truncate(true))
         .open(&path)
         .ok()?;
     w.write_all(kept).ok()?;

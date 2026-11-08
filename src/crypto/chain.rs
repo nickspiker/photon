@@ -831,3 +831,11 @@ mod tests {
         );
     }
 }
+
+// CSTV-08: 512 live keys, wiped when a chain (or any clone of it) goes.
+impl Drop for Chain {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.links.zeroize();
+    }
+}

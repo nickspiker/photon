@@ -1084,7 +1084,7 @@ pub fn derive_clutch_seed_parallel(
 }
 
 /// All 8 ephemeral keypairs for full CLUTCH ceremony. Each algorithm has its own keypair format.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ClutchAllKeypairs {
     // Class 0: Classical EC (32B secrets, variable pubkeys)
     pub x25519_secret: [u8; 32],
@@ -1341,7 +1341,7 @@ impl ClutchKemResponsePayload {
 }
 
 /// Shared secrets from encapsulation (one direction) - all 12 algorithms. PQC KEMs produce variable-size secrets, EC ECDH produces curve-sized secrets.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct ClutchKemSharedSecrets {
     // PQC KEM shared secrets
     pub frodo: Vec<u8>,
@@ -1727,7 +1727,7 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
         };
 
         // Guard against empty chunk (start == stop) causing infinite loop
-        let chunk = if start == stop {
+        let mut chunk = if start == stop {
             // Hash current state to get a non-empty chunk
             let mut chunk_hasher = Hasher::new();
             chunk_hasher.update(b"empty_chunk_fallback");
@@ -1736,15 +1736,18 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
         } else {
             omelette[start..stop].to_vec()
         };
+        // Append or prepend into a buffer built at its final size, then wipe both sources: a freed or outgrown buffer keeps its bytes (CSTV-08).
+        let mut grown = Vec::with_capacity(omelette.len() + chunk.len());
         if append {
-            // Append to end
-            omelette.extend_from_slice(&chunk);
+            grown.extend_from_slice(&omelette);
+            grown.extend_from_slice(&chunk);
         } else {
-            // Prepend to start (faster than splice for large buffers)
-            let mut temp = chunk;
-            temp.append(&mut omelette);
-            omelette = temp;
+            grown.extend_from_slice(&chunk);
+            grown.extend_from_slice(&omelette);
         }
+        omelette.zeroize();
+        chunk.zeroize();
+        omelette = grown;
 
         // Overgrow is okay, we'll trim at the end
         if omelette.len() > target_size {
@@ -1799,8 +1802,8 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
             }
 
             // Read chunks (avoid borrow checker by cloning)
-            let chunk1 = omelette[idx1..idx1 + chunk_size].to_vec();
-            let chunk2 = omelette[idx2..idx2 + chunk_size].to_vec();
+            let mut chunk1 = omelette[idx1..idx1 + chunk_size].to_vec();
+            let mut chunk2 = omelette[idx2..idx2 + chunk_size].to_vec();
 
             // Apply diverse operation based on round (byte-wise for variable sizes)
             for j in 0..chunk_size {
@@ -1820,6 +1823,9 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
                     _ => val,
                 };
             }
+            // The copies held egg-derived bytes (CSTV-08).
+            chunk1.zeroize();
+            chunk2.zeroize();
         }
     }
 
@@ -1834,6 +1840,8 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
 
     // Step 5: Trim to exactly 2MB
     omelette.truncate(TOTAL_SIZE);
+    // truncate leaves the cut tail in the buffer's spare capacity (CSTV-08).
+    omelette.spare_capacity_mut().zeroize();
 
     // Step 6: Split into two 1MB pads (legacy, for backwards compat logging only)
     let low_pad = omelette[0..MIN_SIZE].to_vec();
@@ -1845,6 +1853,8 @@ pub fn avalanche_hash_eggs(eggs: &ClutchEggs) -> (Vec<u8>, Vec<u8>) {
         crate::logf!("CLUTCH: avalanche_hash 2MB: step0={:.1}ms step1={:.1}ms step2={:.1}ms step3={:.1}ms total={:.1}ms", step0_elapsed.as_secs_f64() * 1000.0, (step1_elapsed - step0_elapsed).as_secs_f64() * 1000.0, (step2_elapsed - step1_elapsed).as_secs_f64() * 1000.0, (total_elapsed - step2_elapsed).as_secs_f64() * 1000.0, total_elapsed.as_secs_f64() * 1000.0);
     }
 
+    // The pads are the output; the 2 MB they were cut from is not (CSTV-08).
+    omelette.zeroize();
     (low_pad, high_pad)
 }
 
@@ -1909,7 +1919,7 @@ pub fn avalanche_expand_eggs(eggs: &ClutchEggs) -> Vec<u8> {
         };
 
         // Guard against empty chunk (start == stop) causing infinite loop
-        let chunk = if start == stop {
+        let mut chunk = if start == stop {
             // Hash current state to get a non-empty chunk
             let mut chunk_hasher = Hasher::new();
             chunk_hasher.update(b"empty_chunk_fallback");
@@ -1918,13 +1928,18 @@ pub fn avalanche_expand_eggs(eggs: &ClutchEggs) -> Vec<u8> {
         } else {
             omelette[start..stop].to_vec()
         };
+        // Append or prepend into a buffer built at its final size, then wipe both sources: a freed or outgrown buffer keeps its bytes (CSTV-08).
+        let mut grown = Vec::with_capacity(omelette.len() + chunk.len());
         if append {
-            omelette.extend_from_slice(&chunk);
+            grown.extend_from_slice(&omelette);
+            grown.extend_from_slice(&chunk);
         } else {
-            let mut temp = chunk;
-            temp.append(&mut omelette);
-            omelette = temp;
+            grown.extend_from_slice(&chunk);
+            grown.extend_from_slice(&omelette);
         }
+        omelette.zeroize();
+        chunk.zeroize();
+        omelette = grown;
 
         if omelette.len() > target_size {
             break;
@@ -1971,8 +1986,8 @@ pub fn avalanche_expand_eggs(eggs: &ClutchEggs) -> Vec<u8> {
                 continue;
             }
 
-            let chunk1 = omelette[idx1..idx1 + chunk_size].to_vec();
-            let chunk2 = omelette[idx2..idx2 + chunk_size].to_vec();
+            let mut chunk1 = omelette[idx1..idx1 + chunk_size].to_vec();
+            let mut chunk2 = omelette[idx2..idx2 + chunk_size].to_vec();
 
             for j in 0..chunk_size {
                 let val = omelette[pos + j];
@@ -1990,6 +2005,9 @@ pub fn avalanche_expand_eggs(eggs: &ClutchEggs) -> Vec<u8> {
                     _ => val,
                 };
             }
+            // The copies held egg-derived bytes (CSTV-08).
+            chunk1.zeroize();
+            chunk2.zeroize();
         }
     }
 
@@ -2004,6 +2022,8 @@ pub fn avalanche_expand_eggs(eggs: &ClutchEggs) -> Vec<u8> {
 
     // Trim to exactly 2MB
     omelette.truncate(TOTAL_SIZE);
+    // truncate leaves the cut tail in the buffer's spare capacity (CSTV-08).
+    omelette.spare_capacity_mut().zeroize();
 
     #[cfg(feature = "development")]
     {
@@ -2688,7 +2708,7 @@ mod tests {
         );
 
         // Even with identical input bytes in every slot, the per-egg domain labels must make all 29 distinct — that is what proves the eggs are separated by NAME and not by value.
-        let unique_eggs: crate::linear_map::SortedSet<[u8; 32]> = eggs.eggs.into_iter().collect();
+        let unique_eggs: crate::linear_map::SortedSet<[u8; 32]> = eggs.eggs.iter().copied().collect();
         assert_eq!(unique_eggs.len(), 29);
     }
 
@@ -3017,5 +3037,42 @@ mod tests {
         // Should be deterministic
         let output2 = spaghettify(&large_input);
         assert_eq!(output, output2);
+    }
+}
+
+// CSTV-08: the round's private keys, shared secrets and eggs wipe themselves when they go, on every path (a clone, an early return, a panic), and never print.
+impl Drop for ClutchAllKeypairs {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl std::fmt::Debug for ClutchAllKeypairs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClutchAllKeypairs").finish_non_exhaustive()
+    }
+}
+
+impl Drop for ClutchKemSharedSecrets {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl std::fmt::Debug for ClutchKemSharedSecrets {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ClutchKemSharedSecrets").finish_non_exhaustive()
+    }
+}
+
+impl Drop for ClutchSharedSecrets {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl Drop for ClutchEggs {
+    fn drop(&mut self) {
+        self.eggs.zeroize();
     }
 }

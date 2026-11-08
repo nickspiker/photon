@@ -44,6 +44,9 @@ static DEVICE_SECRET: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new
 
 /// Install the device secret (from the resolved device keypair).
 pub fn install_device_secret(secret: [u8; 32]) {
+    // The static never moves, so it is pinned out of swap the first time it holds the secret (CSTV-08).
+    static PINNED: std::sync::Once = std::sync::Once::new();
+    PINNED.call_once(|| crate::crypto::pin_in_ram("the device secret", &DEVICE_SECRET));
     if let Ok(mut g) = DEVICE_SECRET.lock() {
         *g = Some(secret);
     }
@@ -412,6 +415,8 @@ fn blob_addr(content_hash: &[u8; 32]) -> Option<[u8; 32]> {
 
 /// Install the blob name key for this session. Call whenever a session's identity seed becomes available. (The file-era blobs/ dir is NOT imported — the census deletes it like every other stray.)
 pub fn blob_init_names(identity_seed: &[u8; 32]) {
+    static PINNED: std::sync::Once = std::sync::Once::new();
+    PINNED.call_once(|| crate::crypto::pin_in_ram("the blob name key", &BLOB_NAME_KEY));
     *BLOB_NAME_KEY.lock().unwrap() = Some(blob_name_key_of(identity_seed));
 }
 
@@ -1075,26 +1080,35 @@ fn private_temp_runtime_dir() -> std::path::PathBuf {
 /// Make `path` a 0700 directory when absent, and accept it only as a real directory (no symlink) owned by `uid` with no group or other bits; one of ours that is open is tightened.
 #[cfg(unix)]
 fn private_dir_ok(path: &std::path::Path, uid: u32) -> bool {
+    match private_dir(path, uid) {
+        Ok(ok) => ok,
+        Err(e) => {
+            crate::logf!("RUNTIME: {} create failed: {}", path.display(), e);
+            false
+        }
+    }
+}
+
+/// [`private_dir_ok`] without a word to the log: the log sink's own directory is checked from inside the sink, where logging would re-enter it (CSTV-07). A create error other than "already there" is returned, never logged.
+#[cfg(unix)]
+pub(crate) fn private_dir(path: &std::path::Path, uid: u32) -> std::io::Result<bool> {
     use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
     match std::fs::DirBuilder::new().mode(0o700).create(path) {
         Ok(()) => {}
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(e) => {
-            crate::logf!("RUNTIME: {} create failed: {}", path.display(), e);
-            return false;
-        }
+        Err(e) => return Err(e),
     }
     // symlink_metadata, never metadata: a symlink planted at the name must read as the symlink it is, not as whatever it points at.
     let Ok(m) = std::fs::symlink_metadata(path) else {
-        return false;
+        return Ok(false);
     };
     if !m.is_dir() || m.uid() != uid {
-        return false;
+        return Ok(false);
     }
     if m.mode() & 0o077 != 0 && std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700)).is_err() {
-        return false;
+        return Ok(false);
     }
-    true
+    Ok(true)
 }
 
 /// A runtime artifact path keyed to the DATA dir it guards: two instances on different data dirs (the PHOTON_DATA_DIR two-party dev setup) must never share a lock or a control socket.

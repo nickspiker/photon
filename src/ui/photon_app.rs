@@ -2958,6 +2958,9 @@ impl PhotonApp {
         let (start_in_background, resident_mode) = (false, false);
         let (holdings_tx, holdings_rx) = std::sync::mpsc::channel();
         let (group_face_tx, group_face_rx) = std::sync::mpsc::channel();
+        // The fleet key's RAM copy sits inside this Arc for the life of the process, so its address never moves: pinned out of swap once, here (CSTV-08).
+        let fleet_key_ram = std::sync::Arc::new(std::sync::Mutex::new(None));
+        crate::crypto::pin_in_ram("the fleet key", &*fleet_key_ram);
         Self {
             start_in_background,
             resident_mode,
@@ -3386,7 +3389,7 @@ impl PhotonApp {
             roster_push_rx: None,
             roster_push_queued: false,
             fleet_settings: None,
-            fleet_key_ram: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            fleet_key_ram,
             needs_initial_roster_pull: false,
             roster_pull_retries_left: 0,
             roster_pull_parked_under: None,
