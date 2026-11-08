@@ -91,9 +91,12 @@ The owner: "if you do get an attacker and your old reset device you'd have two d
 
 A plate claimed forever makes a sold phone a brick for its buyer. Removing a device needs a title transfer: the owner signs the plate over, or releases it, as part of the removal.
 
+### Decided: papers overrule the keystore rule
+
+The owner, 2026-11-08: "I think we have to overrule for papers." The 2026-11-02 rule against keystores (tohu docs/oracle-hardening.md rule 1) stays for the plate and for any copyable stored secret; the papers, a key the hardware will not export, are the exception. Using them locally puts no vendor in the loop; checking a vendor's attestation chain would, and stays out.
+
 ## Open decisions
 
-- **Keystores.** The papers overturn the 2026-11-02 rule against keystores (tohu docs/oracle-hardening.md rule 1). That rule guarded against a copyable stored secret and against a vendor in the loop; a non-exportable key meets the first, and local use has no Google round trip (only checking Google's attestation chain would). The owner's ruling.
 - **The papers feed the device key.** StrongBox holds an HMAC key, so the device secret becomes the chip's HMAC over a fixed label, the TPM HMAC root's twin and PIPE's 32 in, 32 out. That changes the frozen `v0` derivation: every device moves once, as Android did on 2026-11-02.
 - **Uninstall on Android.** Keystore keys die with the app, not only with a factory reset (whether a data clear kills them too is to be checked), so a reinstall needs a tap too, undoing the reinstall-resumes behaviour that fixed Jeff's phone (2026-11-04).
 - **Desktop papers that die on reset.** The TPM HMAC root survives an OS reinstall. To match Android, the key would be the TPM's HMAC over the machine-id: it needs the chip, and it changes when the OS is reinstalled.
