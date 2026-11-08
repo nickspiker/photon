@@ -683,19 +683,6 @@ impl HandleQuery {
                         // === Load all data in background (proof → network → disk → cloud) ===
                         let device_secret_bytes = *keypair.secret.as_bytes();
 
-                        // Dev-mode tap so `vaultinfo` can decrypt this session's vault end-to-end. Logged at the same point in the flow the values themselves come into existence so it's obvious from the trace which run produced which keys. Spaces around `=` so double-clicking the value in a terminal selects only the encoded token. Values printed in voca FULL (PascalCase word concatenation, ~22 words for a 32-byte key) — denser than hex on the page, copy-pasteable as one token, and reads aloud cleanly. `vaultinfo` auto-detects voca vs hex on input. Never enabled in release builds.
-                        #[cfg(feature = "development")]
-                        {
-                            use num_bigint::BigUint;
-                            let handle_seed = vault_seed;
-                            // device_secret is NEVER logged: the identity/handle seeds are handle-derivable anyway (no new capability in the log), but the device secret is fingerprint-derived and the log is SUBMITTABLE — writing it would hand fleet-membership keys to anyone who can pull the blob (which only needs the handle).
-                            crate::logf!(
-                                "Development: identity_seed = {}  handle_seed = {}",
-                                voca::encode(BigUint::from_bytes_be(&identity_seed)),
-                                voca::encode(BigUint::from_bytes_be(&handle_seed))
-                            );
-                        }
-
                         // Initialize FlatStorage for this session. A bare `return` here would silently strand the UI on the Attesting spinner because the result channel never gets a verdict — the worker has already proven FGTW says the handle is ours, but with no local vault we can't reach Ready. Surface the failure as a QueryResult::Error so the Launch screen flips to its error state and the user sees what happened. open_session_vault, NEVER a bare constructor: on a resume the UI thread already holds this vault's engine and is writing to it (CLUTCH chains, avatars, presence state). A second independent engine here is two in-RAM states racing one file — the exact corruption that bricks a live vault ("seal verification failed" on every open after the stale engine's commit).
                         let storage = match crate::storage::open_session_vault(
                             identity_seed,

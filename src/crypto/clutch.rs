@@ -1408,11 +1408,8 @@ impl ClutchKemSharedSecrets {
         };
 
         #[cfg(feature = "development")]
-        crate::logf!(
-            "CLUTCH: HQC256 decap: our_sk[..8]={} their_ct[..8]={}",
-            hex::encode(&our_keys.hqc256_secret[..8]),
-            hex::encode(&response.hqc256_ciphertext[..8])
-        );
+        // Their ciphertext only: a prefix of our secret key in a submittable log was CSTV-09.
+        crate::logf!("CLUTCH: HQC256 decap: their_ct[..8]={}", hex::encode(&response.hqc256_ciphertext[..8]));
 
         let hqc = hqc256_decapsulate(&our_keys.hqc256_secret, &response.hqc256_ciphertext)?;
         #[cfg(feature = "development")]
