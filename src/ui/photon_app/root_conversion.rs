@@ -123,7 +123,8 @@ fn convert(old: &DeviceSigner, identity_seed: &[u8; 32], hp: &[u8; 32], legacy: 
             if members.is_empty() {
                 crate::log("ROOT: the held chain folds to nobody — the fan-out is not grown here; the key sync at the next start grows it");
             } else {
-                match fleet::grow_fleet_wraps(hp, &old.keypair(), &held, &members, identity_seed) {
+                // The OLD device's full bundle, not its bare key: the installed signer is already the new root, so signer_for could not upgrade it, and a bare Ed25519 grow is below any promoted fleet's floor.
+                match fleet::grow_fleet_wraps_as(hp, old, &held, &members, identity_seed) {
                     Ok(revision) => crate::logf!("ROOT: fan-out grown to revision {} — the new key holds its own wrap of the fleet key", revision),
                     Err(e) => crate::logf!("ROOT: fan-out grow failed ({}); the key sync at the next start grows it", e),
                 }

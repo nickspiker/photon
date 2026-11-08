@@ -559,6 +559,17 @@ pub fn grow_fleet_wraps(
     fgtw::client::grow_fleet_wraps(&PhotonTransport, handle_proof, &signer_for(device_key), held_key, members, identity_seed)
 }
 
+/// [`grow_fleet_wraps`] under an explicit signer — for a device key that is NOT the installed one (the root conversion grows under the OLD device's bundle, which `signer_for` cannot upgrade because the installed signer is already the new root).
+pub fn grow_fleet_wraps_as(
+    handle_proof: &[u8; 32],
+    signer: &DeviceSigner,
+    held_key: &[u8; 32],
+    members: &[[u8; 32]],
+    identity_seed: &[u8; 32],
+) -> Result<u64, String> {
+    fgtw::client::grow_fleet_wraps(&PhotonTransport, handle_proof, signer, held_key, members, identity_seed)
+}
+
 // ── The epoch-spine custody slot: {k ‖ epoch_k ‖ prev_k ‖ prev_epoch} sealed under a fleet-key-derived custody key, addressed by the fleet key — the wiped-device jump-to-head, refreshed by each checkpoint winner and re-sealed across rotations. Live siblings never need it (ckpt_state frames serve device-to-device). ──
 
 /// Custody domain — binary version numeral per convention.
