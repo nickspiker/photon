@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v146
 - **Photon talks to the internet far less.** Messages now go straight to your friend's device and use the fgtw.org relay only when there is no direct path; devices on the same network find each other without asking fgtw.org; your own devices hand each other your contacts, settings and drafts directly, with fgtw.org keeping only a sealed backup; and a dozen background checks that ran every few seconds whether or not you used Photon now happen only when something actually changes, which saves battery and data on phones.
 - **Group invitations reach every friend.** An invitation, a join or the check that proves a new connection works could not be sent to a friend whose connection had been set up a particular way, and it failed silently; those now go through.
 - **A reinstalled device gets its groups back.** Group history that your other devices hold now shows on a reinstalled phone, even when the group was started by a device of yours (or a friend's) that has since been replaced.
@@ -13,6 +15,8 @@ One sentence per line, however long; plain language for the person who installs 
 - **Windows: reopening from the tray shows the window.** Closing Photon to the tray and opening it again left an empty, invisible window that still took your clicks; it now draws as it should.
 - **A maximized window stays maximized when the screen changes.** Changing your screen resolution with Photon maximized left it at the old size; it now fills the new screen.
 - **Files sent from this version need this version or newer to open.** A photo or file you send is now named by the wrapper it travels in, so a friend or device on an older version cannot open it until it updates, which happens by itself; everything sent before keeps opening as it always did.
+
+Built from photon 2553aae5 · chirp b01db995 · fgtw 6720b439 · fluor d1961d7c · kete 0f566864 · limbus 30ab5cc3 · manifestus 0822a954 · nunc f2c0c226 · opsin c20d6ad6 · rarangi be4386cb · spirix b12187fb · tapuwae 5c462e1d · tohu e5838375 · voca 04dcf2df · vsf 56905743
 
 ## v145
 - **Updates no longer get stuck on "Restarting".** A downloaded update waited for every key exchange with your friends to finish, and one that had stalled could hold it for hours, so devices sat on an old version; an update now waits only for a wave, a beam or the few seconds a key exchange spends computing, and phones no longer put off the download for the same reason.
