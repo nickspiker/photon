@@ -30,8 +30,9 @@ fn off<T: ?Sized>(p: *const T) -> u64 {
     (p as *const u8 as u64).wrapping_sub(arc_base())
 }
 
+/// Grant `slot`'s token: past the handle table (512 bytes) and the u32 count at G#200 (ferros SANDBOX.md, "Handles", since 2026-11-03).
 fn cap(slot: u64) -> u64 {
-    4 + 32 * slot
+    0x204 + 32 * slot
 }
 
 /// One call to the ip server: the reply's length, or an io error when the kernel refused the call.
