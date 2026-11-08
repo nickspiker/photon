@@ -15,6 +15,8 @@ pub use blob::{
 pub use bootstrap::load_bootstrap_peers;
 #[cfg(not(target_os = "android"))]
 pub use fingerprint::get_machine_fingerprint;
+#[cfg(not(target_os = "android"))]
+pub use fingerprint::select_desktop_root;
 pub use fingerprint::{derive_device_keypair, FgtwPaths, Keypair};
 pub use node::{KBucket, NodeContact, NodeId, RoutingTable};
 pub use peer_store::PeerStore;

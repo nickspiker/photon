@@ -138,6 +138,7 @@ fn main() {
         };
         install_listener(&lock);
         photon_messenger::log("LIFELINE: lock acquired — starting the headless pump");
+        photon_messenger::network::fgtw::select_desktop_root();
         photon_messenger::ui::photon_app::lifeline::run_lifeline(PhotonApp::new());
         // Yield: return releases the flock; the full-UI launch retrying acquire takes over. Exit 0 so a supervising unit restarts us back into watcher mode.
         photon_messenger::flush_log_buffer();
@@ -229,6 +230,10 @@ fn main() {
             std::env::set_var("XCURSOR_SIZE", cursor_size.to_string());
         }
     }
+
+    // The device root, named once the instance lock is ours and before anything derives from it (docs/lifecycle.md, "The move to papers").
+    #[cfg(not(target_os = "android"))]
+    photon_messenger::network::fgtw::select_desktop_root();
 
     // Hand off to fluor's host. PhotonApp::new() is parameterless: the host hands us the event-loop proxy via FluorApp::set_event_proxy and the initial viewport via FluorApp::init, so there's nothing to thread thru up-front.
     #[cfg(all(unix, not(target_os = "android")))]

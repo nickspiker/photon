@@ -1712,12 +1712,12 @@ fn select_android_root(_java_fingerprint: &[u8]) -> Option<Vec<u8>> {
             use crate::ui::photon_app::root_conversion::{note_owed, Owed};
             if !new_present && old_present {
                 warn!("device root: vault founded under ANDROID_ID {} and none under Widevine {} (plate {id_prefix}); keeping the legacy root, conversion owed", prefix(l), prefix(w));
-                note_owed(Owed::Convert { legacy: l.clone(), widevine: w.clone() });
+                note_owed(Owed::Convert { legacy: l.clone(), new: w.clone() });
                 AndroidRoot::LegacyAndroidId
             } else {
                 info!("device root: Widevine {} (plate {id_prefix}; vault present: {new_present}; legacy {} vault present: {old_present})", prefix(w), prefix(l));
                 if old_present {
-                    note_owed(Owed::Cleanup { legacy: l.clone(), widevine: w.clone() });
+                    note_owed(Owed::Cleanup { legacy: l.clone(), new: w.clone() });
                 }
                 AndroidRoot::Widevine
             }

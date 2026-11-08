@@ -63,7 +63,7 @@ mod conv_panel;
 mod drafts;
 mod molecules;
 mod group_avatar;
-#[cfg(target_os = "android")]
+#[cfg(any(target_os = "android", target_os = "linux", target_os = "windows"))]
 pub mod root_conversion;
 mod devices;
 mod holdings;
@@ -2084,8 +2084,8 @@ pub struct PhotonApp {
     search_status: Option<(String, u32)>,
     /// Device keypair injected externally (Android: from `NetworkContext` via `set_device_keypair` before `init`). When `Some`, `init` uses it directly; when `None`, `init` derives a fresh keypair from `get_machine_fingerprint` (desktop path). Android MUST set this before `init` runs — leaving it `None` on Android would silently downgrade to a zeroed placeholder keypair, which would be a critical key-derivation failure.
     device_keypair: Option<crate::network::fgtw::Keypair>,
-    /// ANDROID ROOT CONVERSION PIN, MIGRATION-EXPIRES: 2027-02-01: the one-shot latch for `root_conversion_tick`.
-    #[cfg(target_os = "android")]
+    /// The one-shot latch for `root_conversion_tick`: a device moving onto its new root (Android onto Widevine, Linux and Windows onto the papers, docs/lifecycle.md).
+    #[cfg(any(target_os = "android", target_os = "linux", target_os = "windows"))]
     root_conversion_started: bool,
     /// This device's full signing bundle — Ed25519 plus the Falcon and SPHINCS+ keys derived from the same machine fingerprint — when that fingerprint was available to Rust at init. `None` on Android, where the fingerprint lives Java-side and only the Ed25519 keypair is injected; such a device signs single-egg and cannot lift the fleet floor until the fingerprint reaches the native side.
     signing_bundle: Option<crate::network::fgtw::fleet::SigningBundle>,
@@ -3272,7 +3272,7 @@ impl PhotonApp {
             hourglass_rng: 0x9E37_79B9_7F4A_7C15,
             search_status: None,
             device_keypair: None,
-            #[cfg(target_os = "android")]
+            #[cfg(any(target_os = "android", target_os = "linux", target_os = "windows"))]
             root_conversion_started: false,
             pending_keyboard_request: None,
             pending_input_reset: false,

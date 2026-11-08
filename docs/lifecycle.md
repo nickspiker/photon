@@ -30,6 +30,14 @@ A device key has to be **stable**, so a reset device comes back as itself withou
 | no TPM, no Secure Enclave | `machine-id` / `MachineGuid` / `IOPlatformUUID` | none | as today (`BLAKE3` of the plate source) | — |
 
 A device without papers stays at level 0 and is added by proximity only (rule P2 below).
+
+**The root is a strict priority, never a choice** (owner, 2026-11-08: "don't think the user should be choosing"). Each platform takes the first source that answers:
+- Linux, Windows: TPM papers, then the machine identity (built: photon `fingerprint.rs` `select_desktop_root`, tohu `DesktopRoot`).
+- macOS: Secure Enclave papers (not built), then `IOPlatformUUID`.
+- Android: StrongBox papers (not built), then Widevine ‖ certificate ‖ `ANDROID_ID`, then `ANDROID_ID` (the conversion pin).
+
+A device never falls down the list once it has moved up it: a source that does not answer while the device's vault is under it stops the start, because falling through would make it a different device and the census would delete its vault (Android's reinstall trap, 2026-11-04). A TPM that is absent or that the user may not open answers the same every time and falls through on a device that never moved; any other failure is asked again before it counts.
+
 To check: whether macOS lets a Developer ID–signed app make Secure Enclave keys without a provisioning profile; whether clearing an Android app's data kills its keystore keys (uninstalling does).
 
 ## The state model (what the screens render)

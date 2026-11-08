@@ -1,23 +1,27 @@
-//! ANDROID ROOT CONVERSION PIN, MIGRATION-EXPIRES: 2027-02-01 (Nick 2026-11-02: thirty versions after v138).
-//! A phone whose device vault was founded under the `ANDROID_ID` root moves onto the Widevine root (tohu/docs/oracle-hardening.md) once its session is live.
-//! The old device key sponsors the new key into the fleet (the add is idempotent), the vault is re-homed entry by entry at the same addresses under the new secret, the new key countersigns the old key's departure, the old vault's files go, and the process exits so the next start selects the Widevine root and runs as the new device.
-//! Nothing here reads a root itself: the selection at service start (jni_android.rs `select_android_root`) read both and left what is owed in [`note_owed`].
-//! The selection always prefers the Widevine vault when it exists, so an interrupted conversion leaves a phone running as the new device with whatever was carried; [`Owed::Cleanup`] then finishes the fleet half and removes the old vault, and the fleet refills any entry the interruption skipped.
+//! A device whose vault was founded under an old root moves onto its new one, once its session is live:
+//! Android from `ANDROID_ID` onto the Widevine root (tohu/docs/oracle-hardening.md, 2026-11-02; ANDROID ROOT CONVERSION PIN, MIGRATION-EXPIRES: 2027-02-01), and Linux and Windows from the machine identity onto the papers (docs/lifecycle.md, "The move to papers", 2026-11-08).
+//! The old device key sponsors the new key into the fleet (the add is idempotent), the vault is re-homed entry by entry at the same addresses under the new secret, the new key countersigns the old key's departure, the old vault's files go, and the process starts again on the new root: Android exits and its service restarts it, a desktop re-execs its own image.
+//! Nothing here reads a root itself: the selection at start (jni_android.rs `select_android_root`, fingerprint.rs `select_desktop_root`) read both and left what is owed in [`note_owed`].
+//! The selection always prefers the new root's vault when it exists, so an interrupted move leaves the device running as the new device with whatever was carried; [`Owed::Cleanup`] then finishes the fleet half and removes the old vault, and the fleet refills the rest.
 //! Logs carry BLAKE3 prefixes of device keys only, never a root.
 
 use super::PhotonApp;
 use crate::network::fgtw::fleet::{self, DeviceSigner, FleetSigner, SigningBundle};
 use std::sync::Mutex;
 
-/// What the root selection at service start found owed, for the session to settle.
+/// What the root selection at start found owed, for the session to settle. `legacy` and `new` are the two roots' raw bytes (the old one is `ANDROID_ID` or the machine identity, the new one Widevine or the papers).
 pub enum Owed {
-    /// Only a vault under the legacy root: this process runs as the legacy device; once the session is live, move everything to the Widevine root.
-    Convert { legacy: Vec<u8>, widevine: Vec<u8> },
-    /// A vault under both roots: this process runs on the Widevine root; the legacy device may still sit in the fleet and its vault still on disk.
-    Cleanup { legacy: Vec<u8>, widevine: Vec<u8> },
+    /// Only a vault under the legacy root: this process runs as the legacy device; once the session is live, move everything to the new root.
+    Convert { legacy: Vec<u8>, new: Vec<u8> },
+    /// A vault under both roots: this process runs on the new root; the legacy device may still sit in the fleet and its vault still on disk.
+    Cleanup { legacy: Vec<u8>, new: Vec<u8> },
 }
 
 static OWED: Mutex<Option<Owed>> = Mutex::new(None);
+
+/// Desktop: the move is done and this process still runs on the legacy root; the UI thread re-execs the image on its next tick (the update path's re-exec, which flushes the open draft and the writers first).
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+static REEXEC_OWED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Parked by the worker once the new key is in the chain: the UI thread, which owns the sibling addresses, pushes the extended chain to every sibling and answers here, and only then does the worker carry on.
 /// Without this the old device exited before any sibling heard the add, and the desktop took 82 minutes to find the new key at the seed, rejecting the phone's history requests until then (2026-11-02).
@@ -34,6 +38,16 @@ impl PhotonApp {
     /// On the status tick, once per process: when the session is live and the device vault is open, start whatever the root selection left owed.
     /// The edge is the first tick with a session and an open vault; nothing is timed.
     pub(super) fn root_conversion_tick(&mut self) {
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        if REEXEC_OWED.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            match std::env::current_exe() {
+                Ok(exe) => {
+                    crate::log("ROOT: moved; starting again on the papers (the session is typed once more)");
+                    self.update_reexec = Some(exe);
+                }
+                Err(e) => crate::logf!("ROOT: moved, but this image cannot find itself to start again ({}); the next launch runs on the papers", e),
+            }
+        }
         // The worker's one request of this thread: push the chain that now holds the new key to the siblings, then let it carry on.
         let parked = CHAIN_PUSH.lock().ok().and_then(|mut g| g.take());
         if let Some(done) = parked {
@@ -71,8 +85,8 @@ impl PhotonApp {
         let spawned = std::thread::Builder::new()
             .name("root-conversion".into())
             .spawn(move || match owed {
-                Owed::Convert { legacy, widevine } => convert(&ours, &identity_seed, &hp, &legacy, &widevine),
-                Owed::Cleanup { legacy, widevine } => cleanup(&ours, &identity_seed, &hp, &legacy, &widevine),
+                Owed::Convert { legacy, new } => convert(&ours, &identity_seed, &hp, &legacy, &new),
+                Owed::Cleanup { legacy, new } => cleanup(&ours, &identity_seed, &hp, &legacy, &new),
             });
         if let Err(e) = spawned {
             crate::logf!("ROOT: the conversion worker could not start ({}); it is retried at the next start", e);
@@ -89,11 +103,11 @@ fn pubkey_of(signer: &DeviceSigner) -> [u8; 32] {
     signer.keypair().public.to_bytes()
 }
 
-/// This process runs as the legacy device: carry the identity to the Widevine root and exit.
-fn convert(old: &DeviceSigner, identity_seed: &[u8; 32], hp: &[u8; 32], legacy: &[u8], widevine: &[u8]) {
-    let new = signer_of(widevine);
+/// This process runs as the legacy device: carry the identity to the new root and start again on it.
+fn convert(old: &DeviceSigner, identity_seed: &[u8; 32], hp: &[u8; 32], legacy: &[u8], new_root: &[u8]) {
+    let new = signer_of(new_root);
     let (old_pub, new_pub) = (pubkey_of(old), pubkey_of(&new));
-    crate::logf!("ROOT: moving device {} onto the Widevine root as device {}", crate::fp(&old_pub), crate::fp(&new_pub));
+    crate::logf!("ROOT: moving device {} onto its new root as device {}", crate::fp(&old_pub), crate::fp(&new_pub));
     // 1. The old key sponsors the new key into the fleet; a crash after this and before the vault is carried lands back here, where the add is idempotent.
     let req = fleet::make_bind_request(&new, identity_seed, hp, &[0u8; 32]);
     if let Err(e) = fleet::bind_device_held(old, hp, &req) {
@@ -127,7 +141,7 @@ fn convert(old: &DeviceSigner, identity_seed: &[u8; 32], hp: &[u8; 32], legacy: 
     }
     crate::log("ROOT: the extended chain went to the siblings");
     // 2. The vault, entry by entry, at the same addresses.
-    let new_secret = tohu::device::device_secret_from(widevine);
+    let new_secret = tohu::device::device_secret_from(new_root);
     let Some(old_vault) = crate::storage::device_vault() else {
         crate::log("ROOT: the device vault is not open; retried at the next start");
         return;
@@ -145,22 +159,28 @@ fn convert(old: &DeviceSigner, identity_seed: &[u8; 32], hp: &[u8; 32], legacy: 
             return;
         }
     }
-    // 3. The old device leaves, the new device countersigns: the bilateral removal with both halves on one phone.
+    // 3. The old device leaves, the new device countersigns: the bilateral removal with both halves on one device.
     depart_old(old, &new, hp);
-    // 4. The old vault's files go; this process still holds them open and exits in the next line.
+    // 4. The old vault's files go; this process still holds them open and starts again in a moment.
     crate::log_err!(kete::discard_device_vault(crate::storage::APP, &tohu::device::device_secret_from(legacy)), "discarding the legacy vault");
-    crate::log("ROOT: moved; exiting so the next start runs on the Widevine root (the session is typed once more)");
-    // The log batches in RAM and process::exit runs no destructor, so the lines above reach the disk here or never.
-    crate::flush_log_buffer();
-    std::process::exit(0);
+    #[cfg(target_os = "android")]
+    {
+        crate::log("ROOT: moved; exiting so the next start runs on the Widevine root (the session is typed once more)");
+        // The log batches in RAM and process::exit runs no destructor, so the lines above reach the disk here or never.
+        crate::flush_log_buffer();
+        std::process::exit(0);
+    }
+    // A desktop has no service to start it again: the UI thread re-execs the image, and the selection then finds only the papers' vault.
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
+    REEXEC_OWED.store(true, std::sync::atomic::Ordering::Release);
 }
 
-/// This process runs on the Widevine root beside a leftover legacy vault: finish the fleet half and remove the vault.
-fn cleanup(ours: &DeviceSigner, identity_seed: &[u8; 32], hp: &[u8; 32], legacy: &[u8], widevine: &[u8]) {
+/// This process runs on the new root beside a leftover legacy vault: finish the fleet half and remove the vault.
+fn cleanup(ours: &DeviceSigner, identity_seed: &[u8; 32], hp: &[u8; 32], legacy: &[u8], new_root: &[u8]) {
     let old = signer_of(legacy);
     let (old_pub, our_pub) = (pubkey_of(&old), pubkey_of(ours));
-    if our_pub != pubkey_of(&signer_of(widevine)) {
-        crate::log("ROOT: this process does not run as the Widevine device; cleanup left for the next start");
+    if our_pub != pubkey_of(&signer_of(new_root)) {
+        crate::log("ROOT: this process does not run as the new device; cleanup left for the next start");
         return;
     }
     crate::logf!("ROOT: finishing the move from device {} to device {}", crate::fp(&old_pub), crate::fp(&our_pub));

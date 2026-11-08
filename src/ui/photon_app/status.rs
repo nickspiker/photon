@@ -54,8 +54,8 @@ impl PhotonApp {
         // Group pictures: ours made, held ones read (group_avatar.rs); then one look on the edge a roster change, a landing or a presence answer raised.
         timed_drain!("group_faces", self.drain_group_faces());
         self.group_faces_tick();
-        // ANDROID ROOT CONVERSION PIN, MIGRATION-EXPIRES: 2027-02-01: one look per process for a move the root selection left owed.
-        #[cfg(target_os = "android")]
+        // One look per process for a root move the selection left owed (Android onto Widevine, Linux and Windows onto the papers).
+        #[cfg(any(target_os = "android", target_os = "linux", target_os = "windows"))]
         self.root_conversion_tick();
         timed_drain!("img_decoded", self.drain_img_decoded());
         timed_drain!("img_view", self.drain_img_view());

@@ -63,3 +63,72 @@ pub fn get_machine_fingerprint() -> io::Result<Vec<u8>> {
     }
     tohu::device::machine_fingerprint()
 }
+
+/// Name this process's device root before anything derives from it (Linux and Windows); call once the instance lock is won, so a lifeline that waited hours for the lock still sees what the instance before it left on disk.
+/// A strict priority, never a choice (Nick 2026-11-08: "don't think the user should be choosing"): the papers when this machine's TPM answers, the machine identity when it has none.
+/// A vault under the machine identity alone runs as the legacy device and leaves the move owed for the session ([`crate::ui::photon_app::root_conversion`]); vaults under both run on the papers and leave the cleanup owed.
+/// A TPM that does not answer on a device whose vault is under its papers stops the start: falling to the machine identity would make it a different device and census its vault away (Android's reinstall trap, 2026-11-04).
+/// Logs name the choice, never a root.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub fn select_desktop_root() {
+    use crate::ui::photon_app::root_conversion::{note_owed, Owed};
+    use tohu::device::{desktop_select_root, DesktopRoot};
+    // The development override is a whole device identity of its own, which never reaches tohu's root.
+    #[cfg(feature = "development")]
+    if std::env::var_os("PHOTON_FINGERPRINT").is_some_and(|v| !v.is_empty()) {
+        return;
+    }
+    let legacy = match tohu::device::machine_identity() {
+        Ok(id) => id,
+        Err(e) => {
+            crate::logf!("ROOT: the machine identity does not read ({}); the device stays on it and fails where it did before", e);
+            desktop_select_root(DesktopRoot::Legacy);
+            return;
+        }
+    };
+    // A chip that has no TPM, or a user who may not open it, answers the same every time; anything else is asked again, a few times, before it counts.
+    let mut answer = tohu::device::papers_root();
+    for _ in 1..(1 << 2) {
+        match &answer {
+            Err(e) if !matches!(e.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::PermissionDenied) => answer = tohu::device::papers_root(),
+            _ => break,
+        }
+    }
+    let papers = match answer {
+        Ok(p) => p,
+        Err(e) => {
+            if crate::storage::other_ring_present(&tohu::device::device_secret_from(&legacy)) {
+                let why = format!("ROOT: the TPM did not answer ({}) and this device's vault is under its papers; Photon stops rather than start as a different device and lose that vault", e);
+                crate::write_crash_sidecar(&why);
+                crate::log(&why);
+                crate::flush_log_buffer();
+                std::process::exit(1);
+            }
+            crate::logf!("ROOT: no papers on this machine ({}); the device stays on the machine identity, added by proximity only", e);
+            desktop_select_root(DesktopRoot::Legacy);
+            return;
+        }
+    };
+    let vault_under = |root: &[u8]| kete::device_vault_present(crate::storage::APP, &tohu::device::device_secret_from(root));
+    let (on_papers, on_legacy) = (vault_under(&papers), vault_under(&legacy));
+    let root = if on_legacy && !on_papers {
+        crate::log("ROOT: this device's vault is under the machine identity — running as that device until the session moves it onto the papers");
+        note_owed(Owed::Convert { legacy, new: papers });
+        DesktopRoot::Legacy
+    } else {
+        if on_legacy {
+            crate::log("ROOT: vaults under both roots — running on the papers; the old device's departure and vault are finished once the session is live");
+            note_owed(Owed::Cleanup { legacy, new: papers });
+        } else {
+            crate::log("ROOT: running on the papers");
+        }
+        DesktopRoot::Papers
+    };
+    if !desktop_select_root(root) {
+        crate::log("ROOT: a root was already named in this process before the selection; the device keeps that one");
+    }
+}
+
+/// No selection on other platforms: Android selects at service start (jni_android.rs), macOS has no papers yet.
+#[cfg(not(any(target_os = "android", target_os = "linux", target_os = "windows")))]
+pub fn select_desktop_root() {}

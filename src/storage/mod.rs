@@ -288,6 +288,26 @@ fn census_sweep(device_secret: &[u8; 32]) {
     }
 }
 
+/// A vault ring on disk that is not `secret`'s (docs/lifecycle.md, "The move to papers"). The census leaves only the running root's ring and the log, so another ring is a moved device's papers vault; running on `secret` would census it away.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub fn other_ring_present(secret: &[u8; 32]) -> bool {
+    let ring = tohu::device_vault_path_name(APP.id, secret);
+    let ours = [format!("{}.vsf", ring), format!("{}.shadow.vsf", ring), "photon.log.vsf".to_string()];
+    let mut dirs: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(d) = photon_config_dir() {
+        dirs.push(d);
+    }
+    if let Some(d) = photon_data_dir() {
+        if !dirs.contains(&d) {
+            dirs.push(d);
+        }
+    }
+    dirs.iter().filter_map(|d| std::fs::read_dir(d).ok()).flat_map(|rd| rd.flatten()).any(|e| {
+        let name = e.file_name().to_string_lossy().into_owned();
+        name.ends_with(".vsf") && !ours.contains(&name)
+    })
+}
+
 /// The secondary (data-dir) photon dir — the vault mirror's home where the XDG split gives two roots. Honors the same dev/test override as [`photon_config_dir`] (the override points the whole instance at ONE dir; the census dedupes).
 #[cfg(target_os = "ferros")]
 fn photon_data_dir() -> Option<std::path::PathBuf> {
