@@ -3430,15 +3430,7 @@ impl FluorApp<Px> for PhotonApp {
         // NFC instant add: a tapped secret matching a candidate's published commitment IS the proximity + intent proof — bind it now, no words typed. The green-confirm rotation gate still stands (two-phase), so "instant" = tap phones, press confirm.
         if want_scan {
             if let Some(s) = crate::network::pairing_nfc::take_secret() {
-                let matched = self
-                    .add_device_candidates
-                    .iter()
-                    .find(|c| {
-                        c.req.nfc_hash != [0u8; 32]
-                            && fgtw::pair::nfc_secret_hash(&s, &c.req.device_pubkey, c.req.t)
-                                == c.req.nfc_hash
-                    })
-                    .map(|c| c.req.clone());
+                let matched = fgtw::sponsor::nfc_match(&s, &self.add_device_candidates).map(|i| self.add_device_candidates[i].req.clone());
                 match matched {
                     Some(req) if !self.add_device_checking => {
                         crate::logf!(

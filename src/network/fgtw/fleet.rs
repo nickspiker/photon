@@ -36,11 +36,13 @@ struct PhotonTransport;
 impl FgtwTransport for PhotonTransport {
     #[cfg(target_os = "ferros")]
     fn post(&self, _body: Vec<u8>) -> Result<FgtwResponse, String> {
+        fgtw_log_to_ours();
         Err("no fgtw.org from ferros: the fleet is the peers".to_string())
     }
 
     #[cfg(not(target_os = "ferros"))]
     fn post(&self, body: Vec<u8>) -> Result<FgtwResponse, String> {
+        fgtw_log_to_ours();
         let resp = crate::network::http::blocking()
             .post(FGTW_URL)
             .timeout(std::time::Duration::from_secs(15))
@@ -57,6 +59,12 @@ impl FgtwTransport for PhotonTransport {
     }
 }
 
+/// The fgtw crate's own account of what it did (a seed mirror that failed, a grow refused) into this app's log, registered before the first call that can say anything: every such call reaches the transport first.
+fn fgtw_log_to_ours() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| fgtw::set_log(crate::log));
+}
+
 /// Photon's roster AEAD: the same `kete` per-key ChaCha20-Poly1305 the vault uses, so fleet-state ciphertext stays byte-identical.
 struct PhotonSealer;
 impl FleetSealer for PhotonSealer {
@@ -70,93 +78,40 @@ impl FleetSealer for PhotonSealer {
 
 // ── The chains this device HOLDS (peers-first, seed-last — docs/peers-are-fgtw.md, Nick 2026-10-26: "not sure why we have to rely on this fgtw.org unless everyone on our list does not respond"). ──
 //
-// Every membership chain this process has seen that FOLDS — our own fleet's and every contact's — keyed by the handle proof its genesis claims. The seed (fgtw.org) was the only source of a chain until now; every `fetch` below still asks it, but a copy in hand answers when the seed does not, and a copy a PEER hands us (`fleet_resp`, protocol.rs) is adopted by the same rule a seed copy is. Our own chain is persisted to the vault by the app (devices.rs `fleet_chain_store`) and reloaded at attest, so a device that never reaches the seed still serves its fleet's chain to friends and joiners.
-// Two copies of one chain are ordered by `prefer`: an extension wins over its prefix; between forks (two members appended at once with no seed to serialise them) the longer valid chain wins, then the newer tip, then the lower head hash — deterministic, so every holder converges on the same head without a server. Nothing here trusts bytes: a caller adopts only what folds and claims the slot it asked for.
+// The rule (which copy wins, what the seed calls do with a held copy) is fgtw's (`fgtw::held`, moved there 2026-11-08 so every client of a fleet holds chains alike); the held set itself is this process's. Our own chain is persisted to the vault by the app (devices.rs `fleet_chain_store`) and reloaded at attest, so a device that never reaches the seed still serves its fleet's chain to friends and joiners.
 
-static HELD_CHAINS: std::sync::Mutex<Vec<([u8; 32], MembershipBlob)>> = std::sync::Mutex::new(Vec::new());
+static HELD_CHAINS: std::sync::Mutex<fgtw::held::HeldChains> = std::sync::Mutex::new(fgtw::held::HeldChains::new());
 
 /// Should `new` replace `old` as the held copy of one fleet's chain? Both must have folded already.
 pub(crate) fn prefer(new: &MembershipBlob, old: &MembershipBlob) -> bool {
-    if new.extends(old) {
-        return new.ops.len() > old.ops.len();
-    }
-    if old.extends(new) {
-        return false;
-    }
-    // A fork: longest valid chain, then the newest tip, then the lower head hash — the same verdict on every device.
-    let (nt, ot) = (new.ops.last().map(|o| o.eagle_time).unwrap_or(0), old.ops.last().map(|o| o.eagle_time).unwrap_or(0));
-    (new.ops.len(), nt, std::cmp::Reverse(new.head())) > (old.ops.len(), ot, std::cmp::Reverse(old.head()))
+    fgtw::held::prefer(new, old)
 }
 
 /// The chain we hold for `handle_proof`, if any.
 pub fn held_chain(handle_proof: &[u8; 32]) -> Option<MembershipBlob> {
-    let held = HELD_CHAINS.lock().ok()?;
-    held.iter().find(|(hp, _)| hp == handle_proof).map(|(_, b)| b.clone())
+    fgtw::held::ChainHold::held(&HELD_CHAINS, handle_proof)
 }
 
 /// Keep `blob` as the held copy of its fleet's chain if it is preferred over what we hold (or we hold nothing). Returns whether the held copy changed. The caller has folded it.
 pub fn hold_chain(blob: &MembershipBlob) -> bool {
-    let Some(hp) = blob.genesis_handle_proof() else { return false };
-    let Ok(mut held) = HELD_CHAINS.lock() else { return false };
-    match held.iter_mut().find(|(h, _)| *h == hp) {
-        Some((_, old)) => {
-            if prefer(blob, old) {
-                *old = blob.clone();
-                true
-            } else {
-                false
-            }
-        }
-        None => {
-            held.push((hp, blob.clone()));
-            true
-        }
-    }
+    fgtw::held::ChainHold::hold(&HELD_CHAINS, blob)
 }
 
 /// A chain handed to us by a PEER (a `fleet_resp` frame, or our own vault copy at attest): parse, fold, require it to claim the slot `handle_proof`, hold it if preferred. Returns the fold facts the contact drain adopts — (members, tip eagle time, genesis hash) — or why it was refused. Who sent it does not matter: the chain is self-verifying (every op signed by a member, consent eggs inside), and the drain's genesis pin + monotonic tip decide what is adopted.
 pub fn adopt_chain_bytes(handle_proof: &[u8; 32], bytes: &[u8]) -> Result<(MembershipBlob, Vec<[u8; 32]>, i64, [u8; 32]), String> {
-    let blob = MembershipBlob::from_vsf_bytes(bytes)?;
-    if blob.genesis_handle_proof() != Some(*handle_proof) {
-        return Err("chain claims a different handle".into());
-    }
-    let (members, tip) = blob.fold_with_ts().map_err(|e| format!("chain does not fold: {e:?}"))?;
-    hold_chain(&blob);
-    let genesis = blob.genesis_hash().unwrap_or([0u8; 32]);
-    Ok((blob, members, tip, genesis))
+    fgtw::held::adopt_chain_bytes(&HELD_CHAINS, handle_proof, bytes)
 }
 
 // ── Oracle wrappers: identical signatures to the pre-migration free functions, transport/sealer injected. ──
 
 /// The identity's fleet chain: the seed's copy when it answers, else the copy we hold; `None` only when neither exists. A seed copy that folds is held; where the two differ, `prefer` picks (a local extension the seed never received outranks the seed's prefix). Parsed but not trusted until `fold()` — a caller that trusts the result folds it.
 pub fn fetch(handle_proof: &[u8; 32]) -> Result<Option<MembershipBlob>, String> {
-    let held = held_chain(handle_proof);
-    match fgtw::client::fetch(&PhotonTransport, handle_proof) {
-        Ok(Some(seed)) => {
-            if seed.fold().is_ok() {
-                hold_chain(&seed);
-            }
-            Ok(Some(match held {
-                Some(h) if h.fold().is_ok() && !prefer(&seed, &h) => h,
-                _ => seed,
-            }))
-        }
-        // The seed holds nothing: a verdict only when we hold nothing either — a seed that lost a record is not an identity's death while a device still carries the chain.
-        Ok(None) => Ok(held),
-        Err(e) => match held {
-            Some(h) => {
-                crate::logf!("FLEET: seed unreachable ({}) — serving the held chain for {}", e, crate::fp(handle_proof));
-                Ok(Some(h))
-            }
-            None => Err(e),
-        },
-    }
+    fgtw::held::fetch(&PhotonTransport, &HELD_CHAINS, handle_proof)
 }
 
 /// Publish a new (or extended) chain to the seed (`stale` reason → `"fleet: stale"` for the retry loop). The blob is held locally first, whatever the seed says: the chain is the fleet's, the seed mirrors it.
 pub fn publish(blob: &MembershipBlob) -> Result<(), String> {
-    hold_chain(blob);
-    fgtw::client::publish(&PhotonTransport, blob)
+    fgtw::held::publish(&PhotonTransport, &HELD_CHAINS, blob)
 }
 
 /// Fetch a contact's published succession record, or `None` if none exists (docs/identity-succession.md). Structural only — the caller runs `SuccessorRecord::verify_for_pin` against its own pin.
@@ -202,7 +157,7 @@ pub fn seed_unreachable(e: &str) -> bool {
 
 /// Whether `me` folds as a current member of the chain this device holds for `handle_proof`.
 pub fn held_member(handle_proof: &[u8; 32], me: &[u8; 32]) -> bool {
-    held_chain(handle_proof).and_then(|c| c.fold().ok()).is_some_and(|m| m.contains(me))
+    fgtw::held::held_member(&HELD_CHAINS, handle_proof, me)
 }
 
 /// Bring the chain the vault keeps for this identity (`fleet_chain`, stored by every fold) into the held set, so a verdict asked before any network answer has the device's own copy to fold. Off the UI thread: it opens the session vault.
@@ -399,26 +354,12 @@ pub fn bindreq_post(req: &BindRequest, handle_proof: &[u8; 32]) -> Result<(), St
     Ok(())
 }
 
-/// The fan-out blobs this device holds, by handle: (handle proof, revision, blob bytes) — the newest grow or mint it sealed or was handed. A revision floor for the next grow when the seed is unreachable, and the copy a sibling's `fanout_resp` is compared against.
-static HELD_FANOUT: std::sync::Mutex<Vec<([u8; 32], u64, Vec<u8>)>> = std::sync::Mutex::new(Vec::new());
+/// The fan-out blobs this device holds, by handle — the newest grow or mint it sealed or was handed. A revision floor for the next grow when the seed is unreachable, and the copy a sibling's `fanout_resp` is compared against. The set is this process's; the rule is fgtw's (`fgtw::held`).
+static HELD_FANOUT: std::sync::Mutex<fgtw::held::HeldFanouts> = std::sync::Mutex::new(fgtw::held::HeldFanouts::new());
 
 /// Keep a fan-out blob as the held copy for `handle_proof` if its revision is at least the held one's.
 pub fn hold_fanout(handle_proof: &[u8; 32], revision: u64, blob: &[u8]) {
-    let Ok(mut held) = HELD_FANOUT.lock() else { return };
-    match held.iter_mut().find(|(h, _, _)| h == handle_proof) {
-        Some(e) => {
-            if revision >= e.1 {
-                e.1 = revision;
-                e.2 = blob.to_vec();
-            }
-        }
-        None => held.push((*handle_proof, revision, blob.to_vec())),
-    }
-}
-
-/// The held fan-out's revision for `handle_proof` (0 = none held).
-fn held_fanout_revision(handle_proof: &[u8; 32]) -> u64 {
-    HELD_FANOUT.lock().ok().and_then(|h| h.iter().find(|(hp, _, _)| hp == handle_proof).map(|e| e.1)).unwrap_or(0)
+    fgtw::held::FanoutHold::hold_fanout(&HELD_FANOUT, handle_proof, revision, blob)
 }
 
 /// GROW the fan-out HELD-FIRST: seal the current key to `members` at the next revision (the seed's revision + 1 when it answers, else the held one + 1), hold the blob, mirror it to the seed as a best effort, and return (revision, blob) for the caller to hand to the newcomer and the siblings as a `fanout_resp`. Never a mint. A seed that holds a DIFFERENT key fingerprint is a rotation this device missed: the grow is refused, since sealing a stale key to the newcomer would hand it a dead key.
@@ -429,42 +370,12 @@ pub fn fanout_grow_held(
     members: &[[u8; 32]],
     identity_seed: &[u8; 32],
 ) -> Result<(u64, Vec<u8>), String> {
-    let kfp = fgtw::fanout::fleet_key_fingerprint(held_key);
-    let seed = match fetch_fanout(handle_proof) {
-        Ok(Some((revision, seed_kfp, _, _))) => {
-            if seed_kfp != kfp {
-                return Err("fanout: held key is not the published key — grow refused (a rotation this device missed)".into());
-            }
-            Some(revision)
-        }
-        Ok(None) => None,
-        Err(e) => {
-            crate::logf!("FANOUT: seed unreachable for the grow ({}) — growing from the held revision", e);
-            None
-        }
-    };
-    let revision = seed.unwrap_or(0).max(held_fanout_revision(handle_proof)) + 1;
-    let wraps = fanout_seal(handle_proof, held_key, members, identity_seed)?;
-    let me = device_key.public.to_bytes();
-    let epoch_pub = fgtw::pq::epoch_bundle(held_key).public();
-    let blob = fanout_to_bytes(revision, &kfp, &me, &epoch_pub, &wraps);
-    hold_fanout(handle_proof, revision, &blob);
-    match fgtw::client::post_fanout(&PhotonTransport, handle_proof, &signer_for(device_key), revision, held_key, &wraps) {
-        Ok(()) => crate::logf!("FANOUT: grew to revision {} ({} ira(s) wrapped) — held and mirrored to the seed", revision, members.len()),
-        Err(e) => crate::logf!("FANOUT: grew to revision {} ({} ira(s) wrapped) — held; the seed mirror failed ({}), the fan-out reaches the fleet over the mesh", revision, members.len(), e),
-    }
-    Ok((revision, blob))
+    fgtw::held::fanout_grow_held(&PhotonTransport, &HELD_FANOUT, handle_proof, &signer_for(device_key), held_key, members, identity_seed)
 }
 
 /// Open a fan-out blob handed to us (a `fanout_resp`) with this device's ira keypair + the identity seed: `Ok(Some((revision, key)))` when it holds a wrap for us and its header's epoch bundle is the one the key derives (a header we cannot reproduce is refused), `Ok(None)` when no wrap is ours, `Err` when the blob does not parse. A blob that opens is held.
 pub fn fanout_open_blob(handle_proof: &[u8; 32], blob: &[u8], device_key: &Keypair, identity_seed: &[u8; 32]) -> Result<Option<(u64, [u8; 32])>, String> {
-    let f = fgtw::fanout::fanout_from_bytes_full(blob)?;
-    let Some(k) = fanout_open(handle_proof, &f.kfp, &f.wraps, device_key, identity_seed) else { return Ok(None) };
-    if fgtw::pq::epoch_bundle(&k).public() != f.epoch_pub {
-        return Err("fanout: header epoch bundle does not match the fleet key — tampered header".into());
-    }
-    hold_fanout(handle_proof, f.revision, blob);
-    Ok(Some((f.revision, k)))
+    fgtw::held::fanout_open_blob(&HELD_FANOUT, handle_proof, blob, device_key, identity_seed)
 }
 
 /// Existing-device side of device-ADD: bind the device a verified binding request names, carrying its consent into the Add op.
@@ -476,39 +387,28 @@ pub fn bind_device(
     fgtw::client::bind_device(&PhotonTransport, member_key, handle_proof, req)
 }
 
-/// The same bind, SEED-OPTIONAL: append the consent-carrying Add to the chain we hold (refreshed from the seed when it answers), hold the result, and publish it to the seed as a mirror — a seed that cannot be reached does not fail the add, since the chain reaches the fleet and the new device over the peer frames (`fleet_resp`). Returns the extended chain for the caller to hand out. A seed `stale` answer (a sibling extended first) re-fetches and re-applies, as the seed-only bind does.
+/// The same bind, SEED-OPTIONAL (fgtw::sponsor::bind_device_held): the consent-carrying Add appended to the chain we hold (refreshed from the seed when it answers), held, and published to the seed as a mirror. Returns the extended chain for the caller to hand out.
 pub fn bind_device_held(
     member_key: &impl FleetSigner,
     handle_proof: &[u8; 32],
     req: &BindRequest,
 ) -> Result<MembershipBlob, String> {
-    let me = member_key.keypair().public.to_bytes();
-    for _attempt in 0..4 {
-        let mut blob = fetch(handle_proof)?.ok_or("no fleet to add to — attest this identity first")?;
-        let members = blob.fold().map_err(|e| format!("stored fleet invalid: {e:?}"))?;
-        if !members.contains(&me) {
-            return Err("this device isn't a fleet member, so it can't add another".into());
-        }
-        if members.contains(&req.device_pubkey) {
-            return Ok(blob); // already in — idempotent
-        }
-        // The joiner's bundle and plate ride its own signed request onto the Add.
-        blob.add_with(member_key, req.device_pubkey, vsf::eagle_time_oscillations(), req.t, req.device_sig.clone(), req.bundle.clone(), req.plate, req.plate_kind);
-        match publish(&blob) {
-            Ok(()) => return Ok(blob),
-            Err(e) if e.contains("stale") => continue,
-            Err(e) => {
-                crate::logf!("FLEET: add bound and held; the seed mirror failed ({}) — the chain reaches the fleet over the peer frames", e);
-                return Ok(blob);
-            }
-        }
-    }
-    Err("fleet add: lost too many extension races".into())
+    fgtw::sponsor::bind_device_held(&PhotonTransport, &HELD_CHAINS, member_key, handle_proof, req)
+}
+
+/// Whether the joiner's plate is one this fleet locked out (fgtw::sponsor::plate_locked, over the chain we hold).
+pub fn plate_locked(handle_proof: &[u8; 32], req: &BindRequest) -> bool {
+    fgtw::sponsor::plate_locked(&HELD_CHAINS, handle_proof, req)
 }
 
 /// This device's own self-signed departure. RETIRED as a publish path (the worker refuses bare removes since the bilateral cutover) — kept only so old call sites fail with the worker's clear message instead of a missing symbol.
 pub fn depart_device(device_key: &Keypair, handle_proof: &[u8; 32]) -> Result<(), String> {
     fgtw::client::depart_device(&PhotonTransport, &signer_for(device_key), handle_proof)
+}
+
+/// APPROVER: countersign a sibling's departure, publish the consented Remove, and for a new-owner departure release its brand (fgtw::sponsor::approve_departure).
+pub fn approve_departure(signer: &impl FleetSigner, handle_proof: &[u8; 32], leaving: &[u8; 32], consent_t: i64, consent_sig: &[u8], intent: u8) -> Result<fgtw::sponsor::Approved, String> {
+    fgtw::sponsor::approve_departure(&PhotonTransport, signer, handle_proof, leaving, consent_t, consent_sig, intent)
 }
 
 /// APPROVER half of the bilateral removal: countersign a sibling's departure request and publish the consented Remove. The mirror of the add ceremony's sponsor step.

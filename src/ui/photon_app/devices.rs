@@ -8,7 +8,7 @@ impl PhotonApp {
         self.add_device_candidates.clear();
         self.add_device_registry_reqs.clear();
         // Requests handed to us over the LAN stay: they arrived while the screen was closed and are what this screen is for. Lapsed ones are dropped when the rows are built.
-        self.add_device_lan_reqs.retain(|r| vsf::eagle_time_oscillations().abs_diff(r.t) <= crate::network::fgtw::fleet::BINDREQ_FRESH_OSC as u64);
+        fgtw::sponsor::retain_fresh(&mut self.add_device_lan_reqs, vsf::eagle_time_oscillations());
         self.add_device_bound = None;
         self.add_device_bind_ble = false;
         self.add_device_typo = None;
@@ -101,9 +101,9 @@ impl PhotonApp {
         });
     }
 
-    /// Re-derive the AddDevice status from the current entry + candidate set — the live matcher (docs/pairing-v2.md). Per candidate: every completed typed token must equal the expected token exactly; the still-being-typed last token passes while it's a prefix of the candidate's next word. Divergence flags the exact word; a full 23-token exact match IS the selection and auto-binds (correct words are the confirmation — the fleet key still waits behind the green confirm).
+    /// Re-derive the AddDevice status from the current entry + candidate set — the live matcher (fgtw::sponsor::match_words, docs/pairing-v2.md). A full 23-token exact match IS the selection and auto-binds (correct words are the confirmation — the fleet key still waits behind the green confirm).
     pub(super) fn refresh_add_device_match(&mut self) {
-        use crate::network::fgtw::fleet;
+        use fgtw::sponsor::WordMatch;
         if !matches!(self.state, AppState::AddDevice)
             || self.add_device_bound.is_some()
             || self.add_device_checking
@@ -111,78 +111,41 @@ impl PhotonApp {
             return;
         }
         let text = self.add_device_wordcheck_text.clone();
-        let tokens = fleet::pair_word_list(&text);
         self.add_device_typo = None;
-        if self.add_device_candidates.is_empty() {
-            // Nothing to match against yet — the voca spell-check still catches finger trouble while the registry answers.
-            self.add_device_typo = fleet::first_bad_pair_word(&text);
-            self.add_device_status = match &self.add_device_typo {
-                Some(w) => tr(Msg::InvalidWord(w)).into_owned(),
-                None => tr(Msg::WaitingForDevice).into_owned(),
-            };
-            return;
-        }
-        if tokens.is_empty() {
-            let n = self.add_device_candidates.len();
-            self.add_device_status = if n == 1 {
-                tr(Msg::TypeWords).into_owned()
-            } else {
-                tr(Msg::DevicesAskingToJoin(n)).into_owned()
-            };
-            return;
-        }
-        // The last typed token is COMPLETE (must match exactly) only once a separator follows it — same rule as first_bad_pair_word, so nothing flashes red mid-word.
-        let last_complete = text != text.trim_end();
-        let n = tokens.len();
-        let mut full_match: Option<usize> = None;
-        let mut alive = 0usize;
-        let mut alive_idx = 0usize;
-        let mut deepest = 0usize;
-        for (ci, cand) in self.add_device_candidates.iter().enumerate() {
-            let mut depth = 0usize;
-            let mut ok = n <= cand.tokens.len();
-            if ok {
-                for (i, t) in tokens.iter().enumerate() {
-                    let is_last = i + 1 == n;
-                    let hit = if !is_last || last_complete {
-                        &cand.tokens[i] == t
-                    } else {
-                        cand.tokens[i].starts_with(t.as_str())
-                    };
-                    if hit {
-                        depth += 1;
-                    } else {
-                        ok = false;
-                        break;
-                    }
-                }
+        match fgtw::sponsor::match_words(&text, &self.add_device_candidates) {
+            WordMatch::NoCandidates { typo } => {
+                // Nothing to match against yet — the voca spell-check still catches finger trouble while the registry answers.
+                self.add_device_status = match &typo {
+                    Some(w) => tr(Msg::InvalidWord(w)).into_owned(),
+                    None => tr(Msg::WaitingForDevice).into_owned(),
+                };
+                self.add_device_typo = typo;
             }
-            deepest = deepest.max(depth);
-            if ok {
-                alive += 1;
-                alive_idx = ci;
-                if n == fleet::PAIR_WORD_COUNT && tokens[n - 1] == cand.tokens[n - 1] {
-                    full_match = Some(ci);
-                }
+            WordMatch::Nothing { asking } => {
+                self.add_device_status = if asking == 1 {
+                    tr(Msg::TypeWords).into_owned()
+                } else {
+                    tr(Msg::DevicesAskingToJoin(asking)).into_owned()
+                };
             }
-        }
-        if let Some(ci) = full_match {
-            // Exact 23-word match against a verified request — the selection is made. Bind (phase one); the fold re-verifies the consent this request carries. WORDS path → auto-rotate (clear any stale BLE-tap flag so the Bound handler doesn't park on the confirm).
-            let req = self.add_device_candidates[ci].req.clone();
-            self.add_device_bind_ble = false;
-            self.spawn_bind_device(req);
-            return;
-        }
-        if alive == 0 {
-            // The entry left every candidate at token index `deepest` — name that exact word in red.
-            let bad = tokens.get(deepest.min(n - 1)).cloned().unwrap_or_default();
-            self.add_device_status = tr(Msg::NoMatchingDevice(&bad)).into_owned();
-            self.add_device_typo = Some(bad);
-        } else if alive == 1 {
-            let name = &self.add_device_candidates[alive_idx].name;
-            self.add_device_status = tr(Msg::MatchingDevice(name)).into_owned();
-        } else {
-            self.add_device_status = tr(Msg::MatchingMultiple(alive)).into_owned();
+            WordMatch::Full(ci) => {
+                // Exact 23-word match against a verified request — the selection is made. Bind (phase one); the fold re-verifies the consent this request carries. WORDS path → auto-rotate (clear any stale BLE-tap flag so the Bound handler doesn't park on the confirm).
+                let req = self.add_device_candidates[ci].req.clone();
+                self.add_device_bind_ble = false;
+                self.spawn_bind_device(req);
+            }
+            WordMatch::NoMatch(bad) => {
+                // The entry left every candidate at this exact word — name it in red.
+                self.add_device_status = tr(Msg::NoMatchingDevice(&bad)).into_owned();
+                self.add_device_typo = Some(bad);
+            }
+            WordMatch::One(ci) => {
+                let name = &self.add_device_candidates[ci].name;
+                self.add_device_status = tr(Msg::MatchingDevice(name)).into_owned();
+            }
+            WordMatch::Many(k) => {
+                self.add_device_status = tr(Msg::MatchingMultiple(k)).into_owned();
+            }
         }
     }
 
@@ -209,63 +172,37 @@ impl PhotonApp {
 
     /// The AddDevice candidate rows from both sources — the seed's registry list and the requests handed to us over the LAN — merged by device key (newest stamp wins), each with its precomputed word tokens and keyed name so the per-keystroke matcher is a plain string walk. Requests were signature-verified where they came in (bindreq_list / on_bind_req); the seed is in-session by definition on this screen. `heard_ble` / `heard_lan` mark proximity: the candidate's beacon heard right now over BLE (its keyed tag recomputed from its own pubkey + stamp) or over the LAN.
     pub(super) fn rebuild_add_device_candidates(&mut self) {
-        use crate::network::fgtw::fleet;
         let Some((seed, hp)) = self.session.as_ref().map(|s| (s.identity_seed, s.handle_proof)) else { return };
-        let now = vsf::eagle_time_oscillations();
-        self.add_device_lan_reqs.retain(|r| now.abs_diff(r.t) <= fleet::BINDREQ_FRESH_OSC as u64);
-        let mut reqs: Vec<fleet::BindRequest> = Vec::new();
-        for req in self.add_device_registry_reqs.iter().chain(self.add_device_lan_reqs.iter()) {
-            match reqs.iter_mut().find(|r| r.device_pubkey == req.device_pubkey) {
-                Some(have) => {
-                    if req.t > have.t {
-                        *have = req.clone();
-                    }
-                }
-                None => reqs.push(req.clone()),
-            }
-        }
-        let heard = crate::network::pairing_beacon::heard();
+        fgtw::sponsor::retain_fresh(&mut self.add_device_lan_reqs, vsf::eagle_time_oscillations());
+        let reqs = fgtw::sponsor::merge_requests(&self.add_device_registry_reqs, &self.add_device_lan_reqs);
+        let heard: Vec<[u8; fgtw::pair::BEACON_UUID_LEN]> = crate::network::pairing_beacon::heard().iter().map(|b| b.uuid).collect();
         let now = std::time::Instant::now();
         self.lan_heard.retain(|(_, t)| now.duration_since(*t) < LAN_HEARD_FRESH);
-        let lan_heard = self.lan_heard.clone();
-        self.add_device_candidates = reqs
-            .into_iter()
-            .map(|req| {
-                let words = fleet::masked_device_words(&req.device_pubkey, &seed);
-                AddCandidate {
-                    name: fleet::device_name_default(&req.device_pubkey, &seed),
-                    tokens: fleet::pair_word_list(&words),
-                    heard_ble: heard.iter().any(|b| fgtw::pair::beacon_matches(&b.uuid, &hp, &req.device_pubkey, req.t)),
-                    heard_lan: lan_heard.iter().any(|(k, _)| *k == req.device_pubkey),
-                    req,
-                }
-            })
-            .collect();
+        let lan_heard: Vec<[u8; 32]> = self.lan_heard.iter().map(|(k, _)| *k).collect();
+        self.add_device_candidates = fgtw::sponsor::candidates(reqs, &seed, &hp, &heard, &lan_heard);
         self.refresh_add_device_match();
     }
 
-    /// A binding request handed to this sponsor directly (`bind_req`): verified exactly as a registry row is — both signatures under our fleet's identity key, the stamp fresh — then merged into the candidates; the device is marked heard on the LAN at the address it came from (the address its chain and fan-out will be handed to). Returns whether the candidate set changed.
+    /// A binding request handed to this sponsor directly (`bind_req`): verified exactly as a registry row is — both signatures under our fleet's identity key, the stamp fresh (fgtw::sponsor::check_lan_request) — then merged into the candidates; the device is marked heard on the LAN at the address it came from (the address its chain and fan-out will be handed to). Returns whether the candidate set changed.
     pub(super) fn on_bind_req(&mut self, req: crate::network::fgtw::fleet::BindRequest, from: std::net::SocketAddr) -> bool {
-        use crate::network::fgtw::fleet;
+        use fgtw::sponsor::{LanRefusal, Offered};
         let Some((seed, hp)) = self.session.as_ref().map(|s| (s.identity_seed, s.handle_proof)) else { return false };
-        let identity_pubkey = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key().to_bytes();
-        let now = vsf::eagle_time_oscillations();
-        if now.abs_diff(req.t) > fleet::BINDREQ_FRESH_OSC as u64 {
-            crate::logf!("JOIN: a binding request from {} at {} is stale — ignored", crate::fp(&req.device_pubkey), from);
-            return false;
-        }
-        if !req.verify(&hp, &identity_pubkey) {
-            crate::logf!("SECURITY: a binding request from {} at {} does not verify for our fleet — ignored", crate::fp(&req.device_pubkey), from);
-            return false;
+        match fgtw::sponsor::check_lan_request(&req, &hp, &seed, vsf::eagle_time_oscillations()) {
+            Ok(()) => {}
+            Err(LanRefusal::Stale) => {
+                crate::logf!("JOIN: a binding request from {} at {} is stale — ignored", crate::fp(&req.device_pubkey), from);
+                return false;
+            }
+            Err(LanRefusal::Unverified) => {
+                crate::logf!("SECURITY: a binding request from {} at {} does not verify for our fleet — ignored", crate::fp(&req.device_pubkey), from);
+                return false;
+            }
         }
         let dk = req.device_pubkey;
-        match self.add_device_lan_reqs.iter_mut().find(|r| r.device_pubkey == dk) {
-            Some(have) if have.t >= req.t => return false,
-            Some(have) => *have = req,
-            None => {
-                crate::logf!("JOIN: device {} asks to join from {} — a candidate without the registry", crate::fp(&dk), from);
-                self.add_device_lan_reqs.push(req);
-            }
+        match fgtw::sponsor::offer_lan(&mut self.add_device_lan_reqs, req) {
+            Offered::Unchanged => return false,
+            Offered::Updated => {}
+            Offered::New => crate::logf!("JOIN: device {} asks to join from {} — a candidate without the registry", crate::fp(&dk), from),
         }
         let now = std::time::Instant::now();
         match self.lan_heard.iter_mut().find(|(k, _)| *k == dk) {
@@ -431,7 +368,7 @@ impl PhotonApp {
             self.change_focus(None);
             return; // request replaced between open and Enter — stale box, drop it
         }
-        if *blake3::hash(typed.to_lowercase().as_bytes()).as_bytes() != commit {
+        if !fgtw::sponsor::depart_words_match(&typed, &commit) {
             crate::log("FLEET: departure words mismatch — countersign withheld");
             self.ready_toast = Some(tr(Msg::DepartWordsMismatch).into_owned());
             self.depart_words_entry = Some((pk, tb)); // keep the box; the human retypes or Esc-cancels
@@ -454,36 +391,36 @@ impl PhotonApp {
 
     /// APPROVER: run the DECLARED departure path to completion — countersign, then for a new-owner intent release the brand in the same breath (the flow-completes rule: the approve tap finishes the handoff; a release failure surfaces IMMEDIATELY as the retired row's Release pill, the visible retry).
     pub(super) fn complete_departure_approval(&mut self, pk: [u8; 32], name: &str, intent: u8) {
+        use fgtw::sponsor::Approved;
         let Some((_, t, sig, _, _)) = self.pending_depart_req.clone() else {
             return;
         };
         let (Some(hp), Some(kp)) = (self.our_handle_proof(), self.device_signer()) else {
             return;
         };
-        match crate::network::fgtw::fleet::depart_device_consented(&kp, &hp, &pk, t, &sig) {
-            Ok(()) => {
+        // New owner: the release rides the same approval (fgtw::sponsor::approve_departure) — the hardware walks out the door attestable.
+        match crate::network::fgtw::fleet::approve_departure(&kp, &hp, &pk, t, &sig, intent) {
+            Ok(approved) => {
                 crate::logf!("FLEET: countersigned {}'s departure — consented Remove published (intent {})", name, intent);
                 self.pending_depart_req = None;
-                if intent == 1 {
-                    // New owner: the release rides the same approval — the hardware walks out the door attestable.
-                    match crate::network::fgtw::fleet::release_device(kp.keypair(), &hp, &pk) {
-                        Ok(()) => {
-                            crate::logf!("FLEET: released the brand on {} — hardware free for its new owner", name);
-                            self.settings_set(
-                                &format!("fleet.released.{}", hex::encode(pk)),
-                                vsf::VsfType::ke(pk.to_vec()),
-                            );
-                            self.fleet_retired.retain(|d| d != &pk);
-                            self.ready_toast = Some(tr(Msg::DepartCompleteNewOwner(name)).into_owned());
-                        }
-                        Err(e) => {
-                            // The countersign LANDED; only the release half failed. The retired row appears with its Release pill — the named, visible retry — and the toast says exactly that.
-                            crate::logf!("FLEET: release after countersign failed ({}) — retired row holds the retry", e);
-                            self.ready_toast = Some(tr(Msg::DepartReleasePending(name)).into_owned());
-                        }
+                match approved {
+                    Approved::Released(Ok(())) => {
+                        crate::logf!("FLEET: released the brand on {} — hardware free for its new owner", name);
+                        self.settings_set(
+                            &format!("fleet.released.{}", hex::encode(pk)),
+                            vsf::VsfType::ke(pk.to_vec()),
+                        );
+                        self.fleet_retired.retain(|d| d != &pk);
+                        self.ready_toast = Some(tr(Msg::DepartCompleteNewOwner(name)).into_owned());
                     }
-                } else {
-                    self.ready_toast = Some(tr(Msg::FleetSignedOut(name)).into_owned());
+                    Approved::Released(Err(e)) => {
+                        // The countersign LANDED; only the release half failed. The retired row appears with its Release pill — the named, visible retry — and the toast says exactly that.
+                        crate::logf!("FLEET: release after countersign failed ({}) — retired row holds the retry", e);
+                        self.ready_toast = Some(tr(Msg::DepartReleasePending(name)).into_owned());
+                    }
+                    Approved::BrandKept => {
+                        self.ready_toast = Some(tr(Msg::FleetSignedOut(name)).into_owned());
+                    }
                 }
                 // Adopt the shrink immediately (rotation sentinel + row drop) instead of waiting for the next poll.
                 if let Some(our_hp) = self.our_handle_proof() {
@@ -2061,8 +1998,7 @@ impl PhotonApp {
         use crate::network::fgtw::fleet;
         // The joiner's plate against this fleet's locked plates: a device the owner locked out, wiped and brought back under a fresh key is the same hardware, and the words matching does not readmit it (fleet::FleetOp::plate).
         if let (Some(plate), Some(hp)) = (req.plate, self.our_handle_proof()) {
-            let locked = fleet::held_chain(&hp).and_then(|c| c.locked_plates().ok()).unwrap_or_default();
-            if locked.contains(&plate) {
+            if fleet::plate_locked(&hp, &req) {
                 crate::logf!("ADD-DEVICE: refused — the joiner's plate {} is one this fleet locked out", hex::encode(&plate[..4]));
                 self.add_device_status = tr(Msg::AddDeviceError("this is a device you locked out; unlock it on the Fleet page first")).into_owned();
                 return;

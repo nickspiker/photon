@@ -5755,14 +5755,8 @@ impl PhotonApp {
         // Sibling departure requests (deferred): verify the leaver's signature over its own departure request, then surface the approval to THIS user (fleet page pill + toast). The countersign happens only on the human's two-tap approve — never automatically, that's the whole point of bilateral.
         for (t, sig, leaver, intent, words_commit) in depart_reqs_after {
             let Some(hp) = self.our_handle_proof() else { continue };
-            let msg = fgtw::fleet::departreq_signing_bytes(&hp, &leaver, t);
-            // Receipt-time check, deliberately shallow: the blob parses, and its Ed25519 egg verifies against the leaver's device key — enough to drop junk before it reaches a human. The PQ eggs are verified by the FOLD when the approver publishes the consented Remove (depart_device_consented fetches the chain, which holds the leaver's declared bundle and the floor); doing that here would mean a blocking chain fetch on the status tick.
-            let valid = fgtw::pq::eggs_from_bytes(&sig)
-                .ok()
-                .and_then(|eggs| eggs.into_iter().find(|e| e.scheme == fgtw::fleet::scheme::ED25519))
-                .map(|e| fgtw::pq::verify_egg(fgtw::fleet::scheme::ED25519, &leaver, &msg, &e.sig))
-                .unwrap_or(false);
-            if !valid {
+            // Receipt-time check, deliberately shallow (fgtw::sponsor::depart_receipt_valid): the blob parses, and its Ed25519 egg verifies against the leaver's device key — enough to drop junk before it reaches a human. The PQ eggs are verified by the FOLD when the approver publishes the consented Remove (depart_device_consented fetches the chain, which holds the leaver's declared bundle and the floor); doing that here would mean a blocking chain fetch on the status tick.
+            if !fgtw::sponsor::depart_receipt_valid(&hp, &leaver, t, &sig) {
                 crate::logf!("SECURITY: depart_req from {} carries an INVALID request signature — dropped", crate::fp(&leaver));
                 continue;
             }
