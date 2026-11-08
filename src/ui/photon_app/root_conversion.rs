@@ -165,7 +165,13 @@ fn convert(old: &DeviceSigner, identity_seed: &[u8; 32], hp: &[u8; 32], legacy: 
     crate::log_err!(kete::discard_device_vault(crate::storage::APP, &tohu::device::device_secret_from(legacy)), "discarding the legacy vault");
     #[cfg(target_os = "android")]
     {
-        crate::log("ROOT: moved; exiting so the next start runs on the Widevine root (the session is typed once more)");
+        // The boot capsule is sealed under the device secret, so the live session goes into a new one under the new root: a key move costs nobody the handle (Nick 2026-11-08: "it SHOULD not ask to re-attest, roll keys, then regenerate the boot capsule").
+        match tohu::session().map(|s| tohu::set_session_under(&s, &new_secret)) {
+            Some(Ok(())) => crate::log("ROOT: the session capsule is sealed under the new root; the next start resumes without the handle"),
+            Some(Err(e)) => crate::logf!("ROOT: the session capsule could not be sealed under the new root ({}); the next start asks for the handle once", e),
+            None => crate::log("ROOT: no live session to carry; the next start asks for the handle once"),
+        }
+        crate::log("ROOT: moved; exiting so the next start runs on the Widevine root");
         // The log batches in RAM and process::exit runs no destructor, so the lines above reach the disk here or never.
         crate::flush_log_buffer();
         std::process::exit(0);

@@ -135,7 +135,8 @@ Papers change what feeds the device secret, which tohu freezes at `v0` (oracle-h
 2. The old key, still a member, sponsors the new key into the chain and grows the fan-out to it (the 2026-11-04 fan-out fix), then pushes the chain to the siblings before anything else (the 2026-11-02 Kaitiakitanga fix).
 3. The vault re-homes from the old secret to the new: entry addresses never mix the secret in, only the value keys do.
 4. The old key departs; the plate carries over unchanged.
-5. The old root stays readable under a dated pin (`MIGRATION-EXPIRES`, `feedback_pins_are_dated`) so a device that has not moved yet still opens.
+5. The live session carries over: Android seals its boot capsule under the new root before it restarts, and the desktop's registers are not sealed to a root at all, so a key move asks nobody for the handle (owner, 2026-11-08: "it SHOULD not ask to re-attest, roll keys, then regenerate the boot capsule").
+6. The old root stays readable under a dated pin (`MIGRATION-EXPIRES`, `feedback_pins_are_dated`) so a device that has not moved yet still opens.
 
 Devices without papers do not move. ferros does not move.
 
