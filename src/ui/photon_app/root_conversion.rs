@@ -19,7 +19,7 @@ pub enum Owed {
 
 static OWED: Mutex<Option<Owed>> = Mutex::new(None);
 
-/// Desktop: the move is done and this process still runs on the legacy root; the UI thread re-execs the image on its next tick (the update path's re-exec, which flushes the open draft and the writers first).
+/// Desktop: the move is done and this process still runs on the legacy root; the UI thread re-execs the image on its next tick (the update path's re-exec, which flushes the open draft and the writers first). The session registers live in the runtime dir, not sealed to the root, so the new image resumes without the handle (Nick 2026-11-08).
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 static REEXEC_OWED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -42,7 +42,7 @@ impl PhotonApp {
         if REEXEC_OWED.swap(false, std::sync::atomic::Ordering::AcqRel) {
             match std::env::current_exe() {
                 Ok(exe) => {
-                    crate::log("ROOT: moved; starting again on the papers (the session is typed once more)");
+                    crate::log("ROOT: moved; starting again on the papers (the session registers carry over: the desktop keeps them in RAM, not sealed to the root)");
                     self.update_reexec = Some(exe);
                 }
                 Err(e) => crate::logf!("ROOT: moved, but this image cannot find itself to start again ({}); the next launch runs on the papers", e),

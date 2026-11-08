@@ -1308,6 +1308,20 @@ impl PhotonApp {
         }
     }
 
+    /// The rows the contacts list draws with the magenta unread ring (render.rs `RowView`): a non-sibling contact's own conversation, a group not left, an invitation not yet answered, each named by a key prefix for the log.
+    /// The taskbar and tray orb ring exactly when one of these does, so a conversation the list never shows cannot hold the orb lit (2026-11-08: the orb stayed magenta with nothing unread on screen). Lazy, so the tick's check builds no names.
+    pub(super) fn unread_rows(&self) -> impl Iterator<Item = String> + '_ {
+        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let contacts = self.contacts.iter().filter(move |c| !c.is_sibling && us.is_some_and(|us| super::dm_conversation(&self.conversations, &us, c).is_some_and(|v| v.unread_count > 0))).map(|c| format!("contact {}", crate::fp(&c.handle_hash)));
+        let groups = self
+            .molecule_rosters
+            .iter()
+            .filter(|(g, _)| !self.molecule_is_left(g) && self.conversations.iter().any(|v| v.id().as_bytes() == &g.0 && v.unread_count > 0))
+            .map(|(g, _)| format!("group {}", hex::encode(&g.0[..4])));
+        let offers = self.bond_offers.iter().filter(|o| !o.accepted).map(|o| format!("invitation {}", hex::encode(&o.molecule_id.0[..4])));
+        contacts.chain(groups).chain(offers)
+    }
+
     /// Clear a conversation's unread, any size, and persist its state.
     pub(super) fn clear_unread_of(&mut self, id: crate::types::ConversationId) {
         if let Some(pos) = self.conversations.iter().position(|v| v.id() == id && v.unread_count > 0) {
