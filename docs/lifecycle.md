@@ -1,71 +1,135 @@
 # The identity/device lifecycle — flow tree, screen names, conventions
 
-> Status: DESIGN, agreed 2026-07-17 (session notes). This is the canonical map of every screen a device passes thru from first launch to final exit, the names we give them, and the visual conventions they share.
-> Driven by three live flow defects: the handle-collision screen reading as device-pairing, a device double-attesting two handles, and the last device of a fleet shredding itself into an orphaned identity with no ceremony.
+> Status: REVISED 2026-11-08 for plate and papers (owner: "Write it! I think we distilled the idea quite well. Then build it!"); first agreed 2026-07-17.
+> This is the canonical map of every state a device passes thru from first launch to final exit, the screens that render them, and the names we give them.
+> Companions: [one-identity.md](one-identity.md) (one identity per device for every app, the About / Attached / Discover page), tohu docs/oracle-hardening.md (where each plate and key comes from), [pairing-v2.md](pairing-v2.md) (the add ceremony), [device-trust-and-recovery.md](device-trust-and-recovery.md) (consent-only removal, custodians).
+
+## Why: a device key must be stable and secret
+
+A device key has to be **stable**, so a reset device comes back as itself without the rest of the fleet doing anything, and **secret**, so nothing else can become it.
+
+- **ferros has both, and is the reference.** Only the kernel reads the hardware root, and PIPE will answer challenges without ever revealing it. Reset a Pixel on ferros all day and reinstall: it walks back in as the same device, and nothing below applies.
+- **Hosted OSes give one or the other, never both.**
+  - The stable sources (Widevine, `machine-id`, `MachineGuid`, the TPM, `IOPlatformUUID`) can be read, or in the TPM's case used, by anything running on the device. Stable, not secret: today a desktop's key is rebuilt from its `machine-id` by any process, so the handle plus that file is the device, from any computer.
+  - The secret sources (StrongBox, keys bound inside a TPM, the Secure Enclave) die with a reset. Secret, not stable.
+- **So on hosted OSes the device carries two things** (owner, 2026-11-08: "leave the plate on each one, the best we can, then put the cert in the glovebox"):
+  - **The plate:** the stable, public value. It names the hardware and proves nothing. fgtw.org ties each plate to the identity that claimed it (one plate, one identity), which keeps the anti-sybil rule (`feedback_device_root_never_salted`: one device, one plate, never salted).
+  - **The papers:** a key the secure hardware makes and will not export, registered in the fleet chain. It proves the device, and a reset destroys it.
+- **The re-tap after a reset is the platform's cost, not the design's.** The protocol treats papers and the ferros root as one thing, the device's key, differing only in assurance level. Nothing in the chain branches on which OS a device runs, and none of this machinery goes into ferros.
+- **Ruled 2026-11-08: the papers overrule the keystore rule** ("I think we have to overrule for papers"). The rule still holds for the plate and for anything copyable; a key the hardware will not export is the exception, and using it locally puts no vendor in the loop.
+- **What stays as today:** a plate is a statement, so a modified client can state any plate, and anti-sybil stays at the casual level until an answered source (PIPE, a certified TPM) proves one. Checking a vendor's attestation chain would prove it sooner but puts the vendor in the loop, so it stays out.
+
+## Plate and papers per platform
+
+| platform | plate (public name) | papers (non-exportable) | the device secret | what destroys the papers |
+|---|---|---|---|---|
+| ferros | the kernel's hardware root | none needed | the kernel's root (PIPE later) | nothing |
+| Android | `BLAKE3(Widevine ID ‖ signing cert)` | StrongBox HMAC key (the TEE keystore where there is no StrongBox) | the key's HMAC over a fixed label | factory reset; uninstalling the app that holds it |
+| Linux, Windows with a TPM | the TPM endorsement key | the TPM's HMAC primary | the TPM's HMAC over `machine-id` / `MachineGuid`, so it changes when the OS is reinstalled | OS reinstall |
+| macOS with a Secure Enclave (T2, Apple silicon) | `IOPlatformUUID` | a Secure Enclave P-256 key, this-device-only (never in iCloud Keychain or a backup) | key agreement with a fixed public key: deterministic, 32 bytes | erase |
+| no TPM, no Secure Enclave | `machine-id` / `MachineGuid` / `IOPlatformUUID` | none | as today (`BLAKE3` of the plate source) | — |
+
+A device without papers stays at level 0 and is added by proximity only (rule P2 below).
+To check: whether macOS lets a Developer ID–signed app make Secure Enclave keys without a provisioning profile; whether clearing an Android app's data kills its keystore keys (uninstalling does).
 
 ## The state model (what the screens render)
 
-Three independent axes; every screen is a view of one combination.
+Four independent axes; every screen is a view of one combination.
 
-**Device** (this physical machine):
-- `virgin` — no identity material on the device.
-- `bound(I)` — carries identity I's vault + is (or was) listed in I's fleet chain. THE RULE: **one identity per device, one-or-more devices per identity** — a device is never bound to two identities at once.
-- A wiped device returns to `virgin` (its chain listing, if never departed, lingers as a ghost the worker's one-owner index still holds — see D2).
+**Device** (this hardware, as the fleet and fgtw.org see it):
+- `virgin` — no papers here and the plate unclaimed: new hardware, or hardware whose plate was released.
+- `owned(I)` — no papers here, the plate claimed by identity I: a reset (or, on Android, an uninstall) destroyed the papers. It joins no other identity and cannot sign itself back into I.
+- `bound(I)` — papers here and registered in I's chain. THE RULE: **one identity per device, one-or-more devices per identity.**
+- `locked(I)` — the plate is in I's `locked_plates` (declared stolen or lost). Refused under any papers, for every identity, until I unlocks it.
 
 **Identity** (the handle's fleet chain, global):
 - `unclaimed` — no chain at this handle_proof.
-- `live` — chain folds to ≥1 member device.
-- `abandoned` — chain exists, folds to 0 members (every device departed). Nobody can enrol (no sponsor exists); the name is dead. See D3.
-- `superseded` — custodian-quorum recovery replaced the chain (designed, not built — docs/total-loss).
+- `live` — the chain folds to ≥1 member device. It can never fold to zero (D3: identity never dies).
+- `superseded` — custodian-quorum recovery replaced the chain (designed, not built: docs/device-trust-and-recovery.md).
 
-**Session** (RAM, per boot):
-- `signed-in` — tohu registers live; app resumes to Ready without ceremony.
-- `signed-out` — reboot/de-attest cleared the registers; the handle must be re-typed (Member-resume, ~1s proof, no new claim).
+**Session** (per boot, shared by every FGTW app on the device, one-identity.md):
+- `signed-in` — the tohu registers are live; every app opens straight in.
+- `signed-out` — a reboot cleared them; the handle is typed again in any app (Member resume, ~1 s proof, no new claim), and every app sees it.
+
+**App** (per identity, the `kists` record, one-identity.md):
+- `attached` / `detached`.
 
 ## Conventions
 
-- **Flood states**: a whole-screen colour + matching orb tint marks an exceptional device state that must be recognizable across the room. Amber = development build (exists). **Green = "Selected!"** — the joining device is being confirmed by its sponsor (designed, pending build). **Red = final-exit interstitial** — the screen that ends an identity (proposed here, D3). Floods are themes, not dialogs: the whole surface changes.
+- **Flood states**: a whole-screen colour + matching orb tint marks an exceptional device state that must be recognizable across the room. Amber = development build (exists). **Green = "Selected!"**, the joining device lit by its sponsor's pick (with papers it is proof: only the picked papers can light). Floods are themes, not dialogs: the whole surface changes.
 - **The interstitial pattern** (from the permanence warning, `LaunchState::Confirm`): an irreversible act arms a full explanation + a re-labelled button; ONLY pressing that button again proceeds; every other interaction — editing, tapping anywhere else, navigating — cancels. No timed anything (event-shown, interaction-cleared, per the no-time-based-UI rule).
-- **Notices**: event-shown, interaction-cleared bands/toasts. Green band = confirmations ("Device added √"), amber = warnings (clock-off, degraded vault), never timed.
-- **Screen names** (canonical, use these in code comments + tickets): `Launch`, `Claim` (the permanence interstitial), `Attesting`, `KnownHandle` (see D1), `JoinerWords`, `JoinerSelected` (green flood), `SponsorAdd` (the words-entry screen, today `AppState::AddDevice`), `SponsorConfirm` ("did it turn green?"), `Ready`, `Conversation`, `Panel(page)` (the settings panel), `LastRites` (red flood, D3).
+- **Notices**: event-shown, interaction-cleared bands/toasts. Green band = confirmations ("Device added √"), amber = warnings (clock-off, degraded vault, "someone else knows your handle"), never timed.
+- **Screen names** (canonical, use these in code comments + tickets): `Launch`, `Unbound` (Launch on a `virgin` device: "This device is unbound — tap to attest"), `Owned` (Launch on an `owned` or `locked` device), `Claim` (the permanence interstitial), `Attesting`, `KnownHandle` (D1), `JoinerWaiting` (posted, waiting to be picked), `JoinerSelected` (green flood), `SponsorAdd` (today `AppState::AddDevice`), `SponsorConfirm` ("did it turn green?"), `Ready`, `Conversation`, `Panel(page)`.
+
+## The rules (owner, 2026-11-08: "build it")
+
+- **P1 — a reset device belongs to its owner.** Its plate stays claimed by I; only I's tap (a bound sibling, or the owner's tag) adds it back, and it makes new papers in the act.
+- **P2 — no papers, proximity only.** Without papers green is not proof (a key rebuilt from a public value lights a clone), so such a device is added only over BLE or NFC, never from the network list.
+- **P3 — contention shuts the network path.** More than one request for the identity in the window: the sponsor offers only devices it can hear (BLE now, NFC later) until that add finishes, so withdrawing and reposting cannot reopen it, and says plainly that someone else knows the handle. Owner: "you'd just completely disable that option and require BLE or NFC presence, like a traditional device bind."
+- **P4 — green is proof, so the words leave the network path.** With papers only one device can hold the picked key, so only one can light; the owner confirms on seeing it ("I'm not going to click add until I see it do so"). The 23 typed words stay only where a device has no papers and no proximity.
+- **P5 — the same plate retires its own ghost.** When an `owned` device is added back, the old row with the same plate is retired in the same act. The new papers sign the add, so the hardware itself consents, which keeps removal consent-only (docs/device-trust-and-recovery.md). Lost hardware stays a ghost until locked.
+- **P6 — the owner can release a dead device's plate alone,** so broken hardware can be sold or given away. A live device leaves in two signatures as today (its departure, then a member's release), and the release now frees the plate as well as the key.
+- **P7 — on Android the papers belong to one holder app** on the device, which answers for the others (one-identity.md). Uninstalling the holder costs a tap; uninstalling any other app costs nothing.
+- **P8 — the owner's tag is a credential, not a device.** A FIDO2 key with `hmac-secret` (tohu docs/oracle-hardening.md, "A tag as PIPE"), enrolled in the chain: it can sponsor a device back in, so a one-device owner who resets has a way home, and it can gate the start of a session. It replaces the 2026-07-17 backup tag (D3), whose flashed seed was a copyable bearer key.
 
 ## The flow tree
 
 ```
-LAUNCH  (handle box; the only entry screen)
-│
-│  [device already bound(I≠typed)?  → DEVICE BUSY line — see D2 — offer: resume I / Panel→Security to wipe]
-│
-└─ Attest pressed → PROBE (silent: ~1s proof, chain fetch + fold)
-   ├─ Fresh     → CLAIM interstitial ("Yes — forever")
-   │               └─ second press → ATTESTING → READY          (genesis; worker one-owner gate applies, D2)
-   ├─ Member    → ATTESTING (resume; no ceremony) → READY
-   ├─ JoinOurs  → KNOWN HANDLE                                   (the collision-ambiguous branch — D1)
-   │               ├─ "It's mine — approve from my other device"
-   │               │     → JOINER WORDS (this device shows words; ceremony polls)
-   │               │        └─ sponsor binds → JOINER SELECTED (green flood, "Selected!")
-   │               │             └─ sponsor confirms → signed in → READY
+FIRST LAUNCH of any FGTW app
+├─ session signed-in (another app attested)    → READY
+├─ bound(I), signed-out                        → LAUNCH "Re-enter your handle" → Member → READY
+├─ owned(I) / locked(I)                        → OWNED "This device belongs to another identity" — nothing else
+│                                                 (the owner adds it back from a sibling, P1)
+└─ virgin → UNBOUND "This device is unbound — tap to attest" → handle → PROBE
+   ├─ Fresh     → CLAIM interstitial ("Yes — forever") → ATTESTING (genesis carries plate + papers) → READY
+   ├─ JoinOurs  → KNOWN HANDLE (D1)
+   │               ├─ "It's mine — add this device" → JOINER WAITING (request posted)
+   │               │     └─ picked → JOINER SELECTED (green flood) → owner confirms → READY
    │               └─ "Pick another name" → LAUNCH
-   └─ Taken     → error line → LAUNCH                            (genesis/identity mismatch — near-theoretical)
+   ├─ plate claimed by another identity → OWNED
+   └─ Taken     → error line → LAUNCH          (genesis/identity mismatch — near-theoretical)
 
-SPONSOR side (existing device):
-READY → orb → PANEL(Fleet) → SPONSOR ADD (types the joiner's words)
-   └─ match → bind published → SPONSOR CONFIRM ("is it green and says Selected?")
-        └─ yes → fleet-key rotation (the joiner's signal to proceed) → notice band "Device added √"
+SPONSOR side (a bound device, or the owner's tag):
+READY → orb → PANEL(Fleet) → SPONSOR ADD
+   ├─ one request, joiner has papers   → the network list; an owned device's own plate shows as "your <device> is back"
+   ├─ joiner has no papers             → proximity only (P2)
+   ├─ two or more requests             → proximity only until this add ends + amber "someone else knows your handle" (P3)
+   └─ pick → bind published → joiner lights → SPONSOR CONFIRM ("is it green?")
+        └─ yes → fleet-key rotation; a same-plate ghost retired in the same act (P5) → "Device added √"
+
+EVENTS on a bound device
+├─ reboot                    → signed-out (every app) → re-enter the handle in any app (+ the tag, if it gates sessions)
+├─ app reinstall             → ferros, desktop, Mac: resume │ Android: the holder's papers gone → owned(I) → owner taps (P1, P7)
+├─ OS reinstall / reset      → owned(I) → owner taps back in → new papers, ghost retired (P5)
+├─ lost / stolen             → owner locks the plate from a sibling → locked(I); a thief's reset leaves it locked(I)
+├─ sell / give               → depart (the device signs out) + release (frees plate and key) → virgin
+│                              device already dead → owner releases the plate alone (P6)
+├─ hardware swap, fTPM reset → a new plate → new hardware; the old row is a ghost
+└─ last device               → cannot sign out (D3: identity never dies)
+
+OWNER CREDENTIALS (P8)
+├─ tag enrolled  → sponsors a device back in; can gate the session start
+├─ tag lost      → revoke it from a bound device; enroll the spare
+└─ every device and every tag gone → custodian supersession (designed, not built)
 
 EXITS (PANEL → Security, the destructiveness ramp — green→yellow→orange→red):
    Lock            — reversible; re-type the handle to resume.
-   Depart          — self-signed fleet departure; device keeps nothing? (keeps NOTHING identity-flavoured — departure then wipe of identity material; device → virgin, identity lives on the other devices)
-   Shred           — crypto-wipe WITHOUT departing (the chain still lists this device; the worker one-owner index keeps the ghost until a sibling removes it — the escape hatch for a dead device is removal-by-… nothing today; ticket)
+   Depart          — self-signed fleet departure, then the identity material is wiped; refused for the last member (D3).
+   Shred           — crypto-wipe WITHOUT departing; the device becomes owned(I), and P5 retires its row when it comes back.
    Remove & shred  — depart THEN wipe, gated on the departure landing.
-        └─ if this is the fleet's LAST member → LAST RITES (red flood interstitial, D3) before anything happens.
-
-SESSION:
-   reboot → signed-out → LAUNCH → Member → resume.
-   takeover detected mid-app (AlreadyAttested: fold-verified foreign chain) → session cleared → LAUNCH.
-
-RECOVERY (future): custodian-quorum supersession (docs/total-loss) enters at LAUNCH as its own probe branch.
 ```
+
+## The move to papers (one migration per device)
+
+Papers change what feeds the device secret, which tohu freezes at `v0` (oracle-hardening rule 7), so every device with papers moves once, the way Android moved onto the Widevine root on 2026-11-02 (photon `ui/photon_app/root_conversion.rs`, kete `FlatStorage::rehome_into`):
+
+1. The device makes its papers and derives the new device secret beside the old one.
+2. The old key, still a member, sponsors the new key into the chain and grows the fan-out to it (the 2026-11-04 fan-out fix), then pushes the chain to the siblings before anything else (the 2026-11-02 Kaitiakitanga fix).
+3. The vault re-homes from the old secret to the new: entry addresses never mix the secret in, only the value keys do.
+4. The old key departs; the plate carries over unchanged.
+5. The old root stays readable under a dated pin (`MIGRATION-EXPIRES`, `feedback_pins_are_dated`) so a device that has not moved yet still opens.
+
+Devices without papers do not move. ferros does not move.
 
 ## D1 — the collision flow (KnownHandle)
 
@@ -119,6 +183,8 @@ Grief economics: burning buys nothing (an ended name frees immediately); denial-
 
 Custodian supersession (members>0 recovery, docs/total-loss) needs its own continuity story under this model — a custodian-authorized replacement chain has a NEW genesis, so friends must be taught to accept it (quorum attestation in the new genesis vs. the pinned old hash); design deferred to the recovery work.
 
+> **SUPERSEDED 2026-11-08 by P8** (the owner's tag is a FIDO2 credential, not a flashed seed: a seed written to a tag is a copyable bearer key, which the papers model exists to end). Kept as testimony.
+
 **The backup tag — self-custody for a dollar.** A fleet member is a KEYPAIR in the chain, not a computer: an NFC tag flashed with a device-key seed IS a device, and it counts toward members > 0. Worried about losing your only phone? Add a tag and put it in a drawer.
 - Enrol (from any signed-in device, Panel → Fleet → "Add a backup tag"): the phone mints a fresh device keypair, signs BOTH halves of the bilateral add with it (it holds the seed at birth — no protocol change, the tag is an ordinary member whose consent was signed at mint), binds it into the chain, writes the seed to the tag, zeroizes its local copy.
 - Recover (new phone): tap the tag → load the device key → the probe reads `Member` → resume, no ceremony. Then bind the new phone properly as itself and either re-flash the tag with a fresh key or leave it.
@@ -148,11 +214,14 @@ Under braid v2 a row's text itself can be discarded once its 32-byte strand valu
 
 **Not built:** Appear offline, Mute, Unfriend's goodbye, date-range and per-kind selectors beyond waves, "ask them too", and discarding a deleted row's text under braid v2.
 
-## Implementation punch list (ordered)
+## Build order (2026-11-08)
 
-1. Redeploy the fgtw.org worker (one-owner gate + index live). Verify with a two-handle genesis attempt against a scratch device key.
-2. Device-binding marker + the Launch DEVICE BUSY line (D2 client gate).
-3. KnownHandle screen (D1): copy + two affordances; move the bind-request post + beacon behind "It's mine".
-4. LastRites (D3): last-member detection on both Depart and Remove & shred + the red flood interstitial (reuses the amber/green flood mechanism).
-5. JoinerSelected green flood + sponsor-confirm hold (already designed, waiting — same flood mechanism as 4).
-6. Ticket: collision counter + notification toggle on Panel→Fleet; name-release worker support.
+The 2026-07-17 punch list is done or superseded (the worker's one-owner gate, the device-binding marker and KnownHandle are built; LastRites was cut by D3).
+
+1. **P3, contention shuts the network path.** Works on today's keys, so the deterrent comes first.
+2. **Papers on the desktop:** the TPM HMAC over `machine-id` / `MachineGuid` in tohu, and the move (root_conversion generalised off Android). Then the Secure Enclave on macOS.
+3. **Papers on Android:** StrongBox in the holder app, and the move.
+4. **P2 and P4:** no papers means proximity only; with papers the words leave the network path.
+5. **P5 and P6:** the same plate retires its ghost; the owner releases a plate (chain op + worker).
+6. **P8, the tag:** FIDO2 `hmac-secret` enrolment and sponsoring.
+7. **One identity, every app:** the shared attest and the Unbound / Owned screens (one-identity.md's order).
