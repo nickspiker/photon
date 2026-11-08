@@ -995,7 +995,7 @@ impl PhotonApp {
             };
             let mut sent = 0usize;
             for i in slots.iter().copied() {
-                let plain = if single { crate::storage::blob_load(&seed, &chunks[i]) } else { crate::storage::blob_chunk_load(&chunks[i]) };
+                let plain = if single { crate::storage::blob_load_wire(&seed, &chunks[i]) } else { crate::storage::blob_chunk_load(&chunks[i]) };
                 let Some(plain) = plain else {
                     crate::logf!("PIGEON: chunk {} of {}… is not on this device — cannot serve it", i, hex::encode(&hash[..4]));
                     continue;

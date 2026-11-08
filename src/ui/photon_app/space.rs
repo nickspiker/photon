@@ -139,7 +139,7 @@ impl PhotonApp {
             .iter()
             .flat_map(|c| c.messages.iter())
             .filter(|m| !m.deleted && m.is_wave_recording() && m.star_osc <= 0)
-            .filter_map(|m| m.file.as_ref().map(|f| (m.timestamp, f.hash, f.size)))
+            .filter_map(|m| m.file.as_ref().map(|f| (m.timestamp, f.addr(), f.size)))
             .filter(|(_, h, _)| !self.space_evicted.contains(h) && crate::storage::blob_present_known(h) == Some(true))
             .collect();
         let candidates = pick(recs, need);

@@ -387,9 +387,9 @@ impl ChatMessage {
         self.control.as_ref().and_then(|c| c.wave())
     }
 
-    /// The attachment's (hash, name, size) — the typed identity, the old content-string triple's shape.
+    /// The attachment's (address, name, size): the hash its original is stored, fetched and served under ([`crate::types::AttachRef::addr`]), never the identity `fh`.
     pub fn file_parts(&self) -> Option<([u8; 32], String, u64)> {
-        self.file.as_ref().map(|f| (f.hash, if f.name.is_empty() { self.head_name.clone() } else { f.name.clone() }, f.size))
+        self.file.as_ref().map(|f| (f.addr(), if f.name.is_empty() { self.head_name.clone() } else { f.name.clone() }, f.size))
     }
 
     /// A headed row whose head has not been read yet: its kind, name and pictures are still on the way.

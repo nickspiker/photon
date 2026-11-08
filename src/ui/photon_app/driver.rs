@@ -1571,12 +1571,12 @@ impl FluorApp<Px> for PhotonApp {
                     match slot {
                         // LOFT (slot 12): shred the LOCAL blob only — no tombstone, no marker, no sibling push; the row stays and its pill flips to fetch. Incoming pigeons only (the sender's fleet holds the original).
                         12 => {
-                            let hash = self
+                            let names = self
                                 .conv_by_id(sci)
                                 .and_then(|c| c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out && !m.is_outgoing && !m.deleted))
-                                .and_then(|m| m.file_parts().map(|(h, _, _)| h));
-                            if let Some(h) = hash {
-                                queue_job(&self.attach_job_tx, move || crate::storage::blob_delete(&h));
+                                .and_then(|m| m.file.as_ref().map(|f| f.stored_names()));
+                            if let Some(names) = names {
+                                queue_job(&self.attach_job_tx, move || names.iter().for_each(crate::storage::blob_delete));
                                 crate::log("msg-details: pigeon lofted — local bytes dropped, the row and re-fetch stay");
                             }
                             self.scene_dirty = true;
@@ -3203,8 +3203,8 @@ impl FluorApp<Px> for PhotonApp {
             // Blob shredding runs OFF-THREAD (field 2026-09-12: deleting a wave froze photon for minutes — a kept recording is a CHUNKED blob, one vault commit per chunk, and the vault was committing at seconds per op; the UI thread owes nobody those commits). Deletes are idempotent and nothing here awaits them.
             let mut shred: Vec<[u8; 32]> = Vec::new();
             for row in &cascade {
-                if let Some((hash, _, _)) = row.file_parts() {
-                    shred.push(hash);
+                if let Some(f) = row.file.as_ref() {
+                    shred.extend(f.stored_names());
                 }
             }
             if !cascade.is_empty() {
@@ -3215,9 +3215,9 @@ impl FluorApp<Px> for PhotonApp {
                 self.persist_conversation_async(sci);
             }
             if let Some(row) = &tombstoned {
-                // Attachments truly shred: only ROW CONTENT is braid-bound (preserved) — the blob file has no weave duty, so the bytes themselves are deleted (off-thread, below) here and on every device that applies this tombstone.
-                if let Some((hash, _, _)) = row.file_parts() {
-                    shred.push(hash);
+                // Attachments truly shred: only ROW CONTENT is braid-bound (preserved) — the blob file has no weave duty, so the bytes themselves are deleted (off-thread, below) here and on every device that applies this tombstone, under every name a copy can rest under (`AttachRef::stored_names`).
+                if let Some(f) = row.file.as_ref() {
+                    shred.extend(f.stored_names());
                 }
             }
             if !shred.is_empty() {

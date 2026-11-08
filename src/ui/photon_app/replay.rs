@@ -92,7 +92,7 @@ impl PhotonApp {
         // The recording's people, as its row names them; a recording kept before rows named them reads as us and, in a pair, the other person.
         let named: Vec<[u8; 32]> = conv
             .and_then(|id| self.conv_by_id(id))
-            .and_then(|v| v.messages.iter().find_map(|m| m.file.as_ref().filter(|f| f.hash == hash).map(|f| f.parties.clone())))
+            .and_then(|v| v.messages.iter().find_map(|m| m.file.as_ref().filter(|f| f.addr() == hash).map(|f| f.parties.clone())))
             .unwrap_or_default();
         let gid = self.active_molecule().map(|gi| self.molecule_rosters[gi].0);
         let parties = if !named.is_empty() {
@@ -129,11 +129,11 @@ impl PhotonApp {
         let base_osc = self.wave_playback.as_ref().map_or(0, |p| p.base_osc);
         // THE WAVE'S KEPT BEAM (saved only when the user turned it on): the BeamVideo row against the same wave row, decoding on its own worker once it is held here.
         let video = conv.and_then(|id| self.conv_by_id(id)).and_then(|v| {
-            let wave_ts = v.messages.iter().find(|m| m.file.as_ref().is_some_and(|f| f.hash == hash)).and_then(|m| match m.reference {
+            let wave_ts = v.messages.iter().find(|m| m.file.as_ref().is_some_and(|f| f.addr() == hash)).and_then(|m| match m.reference {
                 Some((crate::types::RefKind::Wave, t)) => Some(t),
                 _ => None,
             })?;
-            v.messages.iter().find(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == wave_ts) && m.file.as_ref().is_some_and(|f| f.role == crate::types::AttachRole::BeamVideo)).and_then(|m| m.file.as_ref().map(|f| f.hash))
+            v.messages.iter().find(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == wave_ts) && m.file.as_ref().is_some_and(|f| f.role == crate::types::AttachRole::BeamVideo)).and_then(|m| m.file.as_ref().map(|f| f.addr()))
         });
         // Presence from the cache only (the UI thread makes no vault call): a blob not yet known here is the worker's to find, and its load says so if it is missing.
         let video = video.filter(|h| crate::storage::blob_present_known(h) != Some(false)).and_then(|h| self.session.as_ref().and_then(|s| crate::wave::replay_video::ReplayVideo::start(s.identity_seed, h)));

@@ -141,7 +141,7 @@ impl PhotonApp {
             let raw_tmp = raw_temp_path(kind, &hash, &bytes);
             let p = crate::ui::attach_preview::prepare(&bytes, &name, raw_tmp.as_deref());
             // Sealed to disk HERE, not in the drain: the row and the push need only the manifest.
-            // WRAPPED (storage/wrapped.rs, 2026-10-17): the original rests and travels inside its own VSF document, named by the document's header hb; the raw hash keeps naming it in the row's identity and for older builds (an alias), until v146. A wrap that fails stores the raw form as before.
+            // WRAPPED (storage/wrapped.rs, 2026-10-17): the original rests and travels inside its own VSF document, named by the document's header hb — from v146 the row's identity too. A wrap that fails stores the raw form, named by its raw hash.
             let (wrap, manifest) = match crate::storage::blob_store_wrapped(&seed, &bytes, None) {
                 Ok((hb, m)) => (Some(hb), m),
                 Err(e) => {
@@ -218,15 +218,17 @@ impl PhotonApp {
     pub(super) fn attach_send_now(&mut self, conv: crate::types::ConversationId, name: String, bytes: Vec<u8>, meta: crate::types::AttachMeta, preview: Vec<u8>, hash: [u8; 32], manifest: Option<crate::storage::BlobManifest>, head: Option<[u8; 32]>, wrap: Option<[u8; 32]>) {
         // Images and music travel NAMELESS (Nick: "the user typed nothing. just an image" / "no name, just the waveform") — a filename is metadata nobody chose to send; the receiver derives extensions from the bytes' own magic.
         let wire_name = if meta.kind.is_image() || meta.kind == crate::types::AttachKind::Audio { "" } else { name.as_str() };
+        // THE v146 FORM: a wrapped original's hb is the row's identity (`fh`) and its address (`fw`) alike; a wrap that failed leaves the raw hash in `fh` and no `fw`, the raw form.
+        let id = wrap.unwrap_or(hash);
         // HEADED (flag day 2026-10-07): the chain row is two pointers; THIS device's row is hydrated at once from what it just built (runtime fields the writers never carry for a headed row), so the sender sees its picture and name without reading the head back.
         let (file, meta) = match head {
             Some(hh) => (
-                crate::types::AttachRef::pointer(hash, bytes.len() as u64, crate::types::AttachRole::File, hh),
+                crate::types::AttachRef::pointer(id, bytes.len() as u64, crate::types::AttachRole::File, hh),
                 crate::types::AttachMeta { preview_hash: meta.preview_hash.map(|_| hh), ..meta },
             ),
-            None => (crate::types::AttachRef::file(hash, wire_name, bytes.len() as u64), meta),
+            None => (crate::types::AttachRef::file(id, wire_name, bytes.len() as u64), meta),
         };
-        // The wrapper's hb rides the row as `fw` (metadata, never identity — row_control.rs).
+        // `fw` stays written: it is what marks the original as wrapped (row_control.rs, `AttachRef::addr`).
         let file = crate::types::AttachRef { wrap, ..file };
         // The row: ordinary chain send (or fleet-forward on a chainless device) — everything downstream treats it as a normal message. Its typed extras are STAGED so the minted row carries them before the transmit reads it.
         self.attach_stage = Some((meta, preview, file));
@@ -236,7 +238,7 @@ impl PhotonApp {
         }
         if head.is_some() {
             if let Some(view) = self.conv_by_id_mut(conv) {
-                if let Some(m) = view.messages.iter_mut().rev().find(|m| m.is_outgoing && m.file.as_ref().is_some_and(|f| f.hash == hash)) {
+                if let Some(m) = view.messages.iter_mut().rev().find(|m| m.is_outgoing && m.file.as_ref().is_some_and(|f| f.hash == id)) {
                     m.head_name = name.clone();
                 }
             }
@@ -250,8 +252,8 @@ impl PhotonApp {
             }
             None => self.pair_contact_of(conv).map(|ci| (ci, None)).into_iter().collect(),
         };
-        // The original goes out as the WRAPPER under its hb when it was stored wrapped (`manifest` is then the wrapper's chunks); a wrapper-aware friend verifies and keeps it as is, an older build refuses the unfamiliar name and fetches by `fh`, which the serve path answers unwrapped.
-        let original = wrap.unwrap_or(hash);
+        // The original goes out under its address: the WRAPPER under its hb when it was stored wrapped (`manifest` is then the wrapper's chunks), which the friend verifies and keeps as is.
+        let original = id;
         for (ci, token) in targets {
             // The head (or, unheaded, the preview blob) first — small, the name and the picture the friend sees before the file lands — then the original: one frame for a small file, manifest + chunks for a large one.
             match head {
@@ -274,15 +276,6 @@ impl PhotonApp {
             crate::deglyph_for_log(&name),
             bytes.len()
         );
-    }
-
-    /// The name the rows and progress maps know a blob by: a WRAPPER's hb maps to the raw hash of the row that names it (`fw`); anything else is its own name.
-    pub(super) fn raw_name_of(&self, h: &[u8; 32]) -> [u8; 32] {
-        self.conversations
-            .iter()
-            .flat_map(|c| c.messages.iter())
-            .find_map(|m| m.file.as_ref().filter(|f| f.wrap == Some(*h)).map(|f| f.hash))
-            .unwrap_or(*h)
     }
 
     /// The wire seal key for an attachment exchanged with `device`: fleet key when the device is one of OUR siblings, else the conversation's friendship history key. (Blob files at rest use a separate local-only key.)
@@ -338,7 +331,6 @@ impl PhotonApp {
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return;
         };
-        let bar = self.raw_name_of(content_hash);
         let (device, addr_pair, relay_to, token) = {
             let Some(c) = self.contacts.get(ci) else {
                 return;
@@ -382,7 +374,8 @@ impl PhotonApp {
         let dispatch = checker.history_dispatch();
         let content_hash = *content_hash;
         queue_job(&self.attach_job_tx, move || {
-            let Some(plain) = crate::storage::blob_load(&seed, &content_hash) else {
+            // The bytes STORED under the name, a wrapper as the wrapper: the friend checks them against this name, and an unwrapped original would never bind to a wrapper's hb.
+            let Some(plain) = crate::storage::blob_load_wire(&seed, &content_hash) else {
                 crate::log("attach: blob missing locally — nothing to push");
                 return;
             };
@@ -397,7 +390,7 @@ impl PhotonApp {
                         recipient_pubkey: device,
                         vsf_bytes,
                         relay_to,
-                        tag: Some(bar), // the bar for THIS blob reads its transfer by this tag (the row's raw hash, also for a wrapper)
+                        tag: Some(content_hash), // the bar for THIS blob reads its transfer by this tag (the row's address)
                     }), "the attachment blob to the network dispatch");
                     crate::log("attach: blob dispatched over PT");
                 }
@@ -444,9 +437,7 @@ impl PhotonApp {
         let (kp_pub, kp_sec) = (*kp.public.as_bytes(), *kp.secret.as_bytes());
         let dispatch = checker.history_dispatch();
         let content_hash = *content_hash;
-        // The bar speaks the row's RAW hash even when the chunks are a wrapper's.
-        let bar = self.raw_name_of(&content_hash);
-        self.attach_send_total.insert(bar, m.chunks.len() as u32);
+        self.attach_send_total.insert(content_hash, m.chunks.len() as u32);
         queue_job(&self.attach_job_tx, move || {
             // Only the CHUNKS carry the blob's tag: the bar counts them against the chunk total, and the manifest is not one of them.
             let send = |vsf_bytes: Vec<u8>, tag: Option<[u8; 32]>| {
@@ -478,7 +469,7 @@ impl PhotonApp {
                     crate::network::fgtw::protocol::build_attach_chunk_vsf(&token, &content_hash, i as u32, sealed, &kp_pub, &kp_sec)
                 }) {
                     Ok(v) => {
-                        send(v, Some(bar));
+                        send(v, Some(content_hash));
                         sent += 1;
                     }
                     Err(e) => crate::logf!("attach: chunk {} frame build failed: {}", i, e),
@@ -525,13 +516,9 @@ impl PhotonApp {
         else {
             return;
         };
-        // THE ASK (storage/wrapped.rs, until v146): a row naming a WRAPPER (`fw`) asks for it by its hb; a holder still on an older build knows only the raw hash, so the rounds alternate — whichever form answers is stored, and every load by the row's raw hash reads either. The in-flight bookkeeping stays keyed by the raw hash.
-        let wrap = self.conversations.iter().flat_map(|c| c.messages.iter()).find_map(|m| m.file.as_ref().filter(|f| f.hash == *content_hash).and_then(|f| f.wrap));
+        // THE ASK names the blob by the address the caller passes (`AttachRef::addr`: a wrapper's hb, or a raw-form row's raw hash), the name every holder stores and serves it under.
         let round = self.attach_fetch_inflight.get(content_hash).map_or(0, |f| f.tries);
-        let ask = match wrap {
-            Some(hb) if round % 2 == 0 => hb,
-            _ => *content_hash,
-        };
+        let ask = *content_hash;
         // ONE DEVICE PER ASK (field 2026-09-17, Nick: "re-uploads/replications of pigeons"): the request used to fan out to the friend's every device AND all our siblings at once, and every holder answered with the whole blob — a 142 MB pigeon served in full by three devices, ~300 KB pigeons landing nine times each. Now the candidates are ranked — the friend's devices with a proven direct path first, then the friend's other online devices, then our online siblings, then the rest — one is asked, and each re-ask (attach_fetch_retry_tick, once the asked device goes quiet) moves to the next.
         let tries = round;
         let mut targets: Vec<(
@@ -794,6 +781,11 @@ impl PhotonApp {
         if !std::mem::take(&mut self.replicate_dirty) || self.session.is_none() {
             return;
         }
+        if !self.rewrap_gate() {
+            // The sweep is owed, and runs on the tick after the re-wrap job ends.
+            self.replicate_dirty = true;
+            return;
+        }
         let now = std::time::Instant::now();
         let mut armed = 0usize;
         // Every conversation at any size (docs/conversations.md) — a sibling's is the bridge terminal and holds no files.
@@ -809,7 +801,7 @@ impl PhotonApp {
                         .filter(|m| !m.deleted)
                         .flat_map(|m| {
                             // A recording also waits while the disk is below its floor, and never returns once evicted here (space.rs).
-                            let original = m.file.as_ref().filter(|f| !metered && (!m.is_wave_recording() || self.recording_wanted(&f.hash))).map(|f| f.hash);
+                            let original = m.file.as_ref().filter(|f| !metered && (!m.is_wave_recording() || self.recording_wanted(&f.addr()))).map(|f| f.addr());
                             let head = m.file.as_ref().and_then(|f| f.head);
                             original.into_iter().chain(head)
                         })
@@ -833,6 +825,41 @@ impl PhotonApp {
         if armed > 0 {
             crate::logf!("REPLICATE: {} file(s) not on this device — fetching each from the fleet, one device at a time", armed);
         }
+    }
+
+    /// THE RE-WRAP PASS, ahead of every sweep (v146; storage `rewrap_raw_copies`): a v122–145 row (`fw` ≠ `fh`) addresses its original by the wrapper hb, but this device may hold only the RAW copy — one an older build delivered by `fh`, or one kept raw here — and the sweep would fetch the wrapper from the fleet for nothing.
+    /// Rows not handed to the pass yet go to the attach worker (the UI thread makes no vault call), which rebuilds each wrapper it can from the raw bytes; true once no job is in flight, false while one runs.
+    fn rewrap_gate(&mut self) -> bool {
+        if let Some(rx) = self.rewrap_rx.as_ref() {
+            if matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)) {
+                return false;
+            }
+            self.rewrap_rx = None;
+        }
+        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else { return true };
+        let mut pairs: Vec<([u8; 32], [u8; 32])> = Vec::new();
+        for m in self.conversations.iter().flat_map(|c| c.messages.iter()).filter(|m| !m.deleted) {
+            let Some(f) = m.file.as_ref() else { continue };
+            if f.addr() != f.hash && self.rewrap_seen.insert(f.addr()) {
+                pairs.push((f.hash, f.addr()));
+            }
+        }
+        if pairs.is_empty() {
+            return true;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let wake = self.event_proxy.clone();
+        queue_job(&self.attach_job_tx, move || {
+            let (rebuilt, mismatched) = crate::storage::rewrap_raw_copies(&seed, &pairs);
+            crate::logf!("REWRAP: {} v122–145 file(s) checked — {} wrapper(s) rebuilt from a raw copy held here, {} raw copy(ies) that wrap to another hb left as they are", pairs.len(), rebuilt, mismatched);
+            // Each rebuilt wrapper's presence was forgotten by its store; the sweep re-probes it before arming anything.
+            crate::log_err!(tx.send(()), "hand the re-wrap pass's end to the UI");
+            if let Some(w) = wake {
+                super::wake_ui(&w);
+            }
+        });
+        self.rewrap_rx = Some(rx);
+        false
     }
 
     /// Move each fetch whose asked device went QUIET ([`Self::fetch_quiet`]) to the next candidate, and let go after MAX_TRIES asks in a row that brought none of the blob. A device still sending is never left for another, and a blob that lands leaves the map on its own edge (drain_attach_installed).
@@ -1007,11 +1034,8 @@ impl PhotonApp {
     /// Drain completed peer-avatar downloads: colour-convert the VSF-RGB pixels to the display buffer (same path as the self avatar) and install them on the matching contact, invalidating its scaled cache so the next render rebuilds + shows it. A `None` result (no avatar / fetch failed) just leaves the placeholder.
     /// Drain attachment blobs a worker verified + stored off-thread: send the attach_have confirm (needs the keypair + checker, which is why it can't run in the worker) so the pusher's pill flips to delivered, then clear the compose wrap and repaint.
     pub(super) fn drain_attach_installed(&mut self) {
-        while let Ok(mut r) = self.attach_installed_rx.try_recv() {
-            // A WRAPPER in flight (storage/wrapped.rs) is named by its hb on the wire; every map here — progress, sniff verdicts, attach_have — speaks the row's RAW hash.
-            if let Some(raw) = self.conversations.iter().flat_map(|c| c.messages.iter()).find_map(|m| m.file.as_ref().filter(|f| f.wrap == Some(r.content_hash)).map(|f| f.hash)) {
-                r.content_hash = raw;
-            }
+        while let Ok(r) = self.attach_installed_rx.try_recv() {
+            // Every map here — progress, sniff verdicts, attach_have — speaks the row's ADDRESS, the name the blob travelled under (`AttachRef::addr`).
             // A piece of a blob we asked for landed: the ask brought something, so it does not count toward letting go (attach_fetch_retry_tick).
             if let Some(f) = self.attach_fetch_inflight.get_mut(&r.content_hash) {
                 f.progressed = true;
@@ -1047,7 +1071,7 @@ impl PhotonApp {
                 self.attach_sniffed.insert(r.content_hash, local);
                 for conv in self.conversations.iter_mut() {
                     for m in conv.messages.iter_mut() {
-                        let is_row = m.file.as_ref().is_some_and(|f| f.hash == r.content_hash);
+                        let is_row = m.file.as_ref().is_some_and(|f| f.addr() == r.content_hash);
                         // A headed row whose head is not read yet is left alone — a bare kind here would read as hydrated and its head would never load; the verdict applies when the head hydrates it (drain_heads_loaded).
                         if !is_row || m.head_pending().is_some() {
                             continue;
@@ -1073,7 +1097,7 @@ impl PhotonApp {
             // A blob a leaver asked us to take (holdings.rs): one fewer item at risk on its screen.
             self.holdings_pull_settled(&r.content_hash, true);
             // A recording landing is the disk's edge (space.rs).
-            if self.conversations.iter().flat_map(|c| c.messages.iter()).any(|m| m.is_wave_recording() && m.file.as_ref().is_some_and(|f| f.hash == r.content_hash)) {
+            if self.conversations.iter().flat_map(|c| c.messages.iter()).any(|m| m.is_wave_recording() && m.file.as_ref().is_some_and(|f| f.addr() == r.content_hash)) {
                 self.space_check("a recording landed");
             }
             if let (Some(kp), Some(checker)) =

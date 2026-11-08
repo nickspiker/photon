@@ -794,7 +794,7 @@ struct FetchAsk {
     last_heard: std::time::Instant,
     /// The asked device read online when asked, so its offline verdict is an edge for this ask; a fallback ask at an offline device has no such edge.
     asked_online: bool,
-    /// Asks so far: the candidate rotation's index and the wrapper/raw alternation's parity.
+    /// Asks so far: the candidate rotation's index.
     tries: u8,
     /// Asks in a row that went quiet with nothing of this blob landing; at MAX_TRIES the fetch is let go.
     fruitless: u8,
@@ -920,27 +920,25 @@ fn drain_chunk_intake(intake: std::sync::Arc<std::sync::Mutex<ChunkIntake>>, job
             continue;
         }
         // The chunk stores forgot the CHUNKS' presence; the blob each belongs to is what the render asks about — probed once per blob, after the whole batch is durable.
-        let mut verdicts: crate::linear_map::SortedMap<[u8; 32], (bool, Option<[u8; 32]>)> = crate::linear_map::SortedMap::new();
+        let mut verdicts: crate::linear_map::SortedMap<[u8; 32], bool> = crate::linear_map::SortedMap::new();
         let last_of: crate::linear_map::SortedMap<[u8; 32], usize> = landed.iter().enumerate().filter(|(_, l)| l.1.is_some()).map(|(i, l)| (l.0.content_hash, i)).collect();
         for (i, (pc, total, sniffed, len)) in landed.into_iter().enumerate() {
             let Some(total) = total else {
                 crate::logf!("ATTACH: chunk {} before its manifest — stored at its own hash, the manifest will find it", pc.index);
                 continue;
             };
-            let (complete, raw_of_wrapper) = *verdicts.entry(pc.content_hash).or_insert_with(|| {
+            let complete = *verdicts.entry(pc.content_hash).or_insert_with(|| {
                 crate::storage::blob_presence_forget(&pc.content_hash);
-                let complete = crate::storage::blob_present_probe_now(&pc.content_hash);
-                // The last chunk of a WRAPPER: aliased and reported under the row's raw hash.
-                (complete, if complete { crate::storage::alias_if_wrapper(&seed, &pc.content_hash) } else { None })
+                // Whole, and its bytes bind to its name (a wrapper verified, a raw blob hashed) — a blob that fails is gone again and is asked for anew.
+                crate::storage::blob_present_probe_now(&pc.content_hash) && crate::storage::wrapper_landed_ok(&pc.content_hash)
             });
             let complete = complete && last_of.get(&pc.content_hash) == Some(&i);
-            let content_hash = if complete { raw_of_wrapper.unwrap_or(pc.content_hash) } else { pc.content_hash };
             crate::log_err!(pc.tx.send(AttachInstalled {
                 sniffed,
                 manifest: None,
                 chunk: Some((pc.index, total, complete)),
                 conversation_token: pc.conversation_token,
-                content_hash,
+                content_hash: pc.content_hash,
                 sender_pubkey: pc.sender_pubkey,
                 sender_addr: pc.sender_addr,
                 len,
@@ -2051,6 +2049,9 @@ pub struct PhotonApp {
     replicate_dirty: bool,
     replicate_rows_seen: usize,
     replicate_metered: bool,
+    /// THE RE-WRAP PASS (attachments.rs `rewrap_gate`, v146): the wrapper hbs of v122–145 rows already handed to it this session, and its job in flight — the replication sweep waits on that job, so a wrapper rebuilt here from a raw copy is never fetched from the fleet.
+    rewrap_seen: crate::linear_map::SortedSet<[u8; 32]>,
+    rewrap_rx: Option<std::sync::mpsc::Receiver<()>>,
     /// Blob asks already answered, by the hash of the signed frame: the direct and relay copies of one ask carry the same bytes, so the second copy is dropped however late it lands. Capped by count, never aged.
     attach_asks_seen: std::collections::VecDeque<[u8; 32]>,
     /// Whole-blob serves queued or running, by (requesting device, hash): an ask racing one is answered by it. Each serve job removes its own entry when it ends ([`AttachServing`]), the edge after which a new ask is a real new ask.
@@ -3243,6 +3244,8 @@ impl PhotonApp {
             replicate_dirty: true,
             replicate_rows_seen: 0,
             replicate_metered: false,
+            rewrap_seen: crate::linear_map::SortedSet::new(),
+            rewrap_rx: None,
             attach_asks_seen: std::collections::VecDeque::new(),
             attach_serving: std::sync::Arc::new(std::sync::Mutex::new(crate::linear_map::SortedSet::new())),
             express_seen: Vec::new(),

@@ -321,6 +321,18 @@ mod tests {
         [b; 32]
     }
 
+    /// The anti-entropy digest over attachment rows of both historic forms (raw before v122, `fw` beside a raw `fh` v122–145) is golden: it must never move, or every device holding those rows would disagree with every other forever.
+    #[test]
+    fn historic_attachment_digest_is_golden() {
+        let (raw_form, wrapped_form) = crate::types::row_control::tests::historic_rows();
+        let mut conv = Conversation::new([pid(1), pid(2)]);
+        conv.insert_message_sorted(crate::types::ChatMessage::attachment(raw_form, true, 1_000));
+        conv.insert_message_sorted(crate::types::ChatMessage::attachment(wrapped_form, false, 2_000));
+        let (n, digest) = conv.anti_entropy_digest();
+        assert_eq!(n, 2);
+        assert_eq!(blake3::Hash::from(digest).to_hex().as_str(), "13abcf74099d7002af4785a95f46e24309e6fecfac18b22cc94e777c18270420");
+    }
+
     /// One participant, two, or many — the same constructor, and an id that depends only on WHO is present.
     #[test]
     fn id_is_the_participant_set_regardless_of_order() {

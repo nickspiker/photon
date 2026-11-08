@@ -2,7 +2,7 @@
 //!
 //! The identity is the document's header `hb` — BLAKE3 over the whole wrapped file with only the hb slot zeroed, the hash VSF computes last — so one value addresses the blob, names it on the wire, keys the vault and the device-removal have-set, and verifies a fetched copy by itself.
 //! The wrapper is DETERMINISTIC: unsigned, no thumbnails (they live in the head), and the header time is the CONTENT's own time when known (a photo's capture, a recording's start) — never the moment of wrapping, never a filesystem mtime — so the same content always wraps to the same bytes and the same hb, wherever and whoever wraps it.
-//! Inside: `rh` (hb) = BLAKE3 of the raw bytes, the identity rows carried before the wrapper (and keep carrying until v146), and `data` = `v(b'b', raw)`, VSF's standard binary blob (length in bits, vsf_type.rs).
+//! Inside: `rh` (hb) = BLAKE3 of the raw bytes, checked against the payload on every unwrap (and the identity every row minted before v146 carries as its `fh`), and `data` = `v(b'b', raw)`, VSF's standard binary blob (length in bits, vsf_type.rs).
 
 use vsf::file_format::VsfSection;
 use vsf::VsfType;
@@ -43,7 +43,7 @@ fn verified_header(doc: &[u8]) -> Result<vsf::file_format::VsfHeader, String> {
     vsf::verification::read_verified(doc, None).map(|(h, _)| h).map_err(|e| format!("wrapped: {e}"))
 }
 
-/// The hb a header CLAIMS, plus where the header ends — compared, never trusted: only [`StreamVerifier`] reads it, from a first chunk that is not a whole document (so `read_verified` cannot apply), and its `finish` hashes every byte before anything acts on the content.
+/// The hb a header CLAIMS, plus where the header ends — compared, never trusted: only [`StreamVerifier`] (whose `finish` hashes every byte) and [`claims`] (whose caller unwraps thru the full check) read it, from a first chunk that is not a whole document (so `read_verified` cannot apply), and nothing acts on the content before that check.
 fn claimed_hb(chunk: &[u8]) -> Result<([u8; 32], usize), String> {
     let h = vsf::verification::parse_full_header(chunk).map_err(|e| format!("wrapped: header: {e}"))?;
     match h.rolling_hash {
@@ -79,9 +79,9 @@ pub fn unwrap(doc: &[u8], expect_hb: &[u8; 32]) -> Result<(Vec<u8>, Option<i64>)
     Ok((raw, time))
 }
 
-/// The raw hash a wrapper names (its `rh`) — what a pre-wrapper row or an old build's request knows the content by. Schema-validated, not hash-verified.
-pub fn raw_hash(doc: &[u8]) -> Result<[u8; 32], String> {
-    payload(doc).map(|(_, rh)| rh)
+/// Does this first chunk's header CLAIM to be the wrapper named `hb`? A claim only — it picks the path (unwrap rather than stream raw), and [`unwrap`] verifies every byte before the content is used.
+pub fn claims(first_chunk: &[u8], hb: &[u8; 32]) -> bool {
+    claimed_hb(first_chunk).is_ok_and(|(c, _)| c == *hb)
 }
 
 fn payload(doc: &[u8]) -> Result<(Vec<u8>, [u8; 32]), String> {
@@ -158,7 +158,7 @@ mod tests {
         assert_ne!(a.hb, wrap(b"other bytes", Some(2_565_000_000_000_000_000)).unwrap().hb);
     }
 
-    /// The round trip is byte-exact and carries the content time; the wrapper names its raw content.
+    /// The round trip is byte-exact and carries the content time; the first chunk claims the wrapper's own hb and no other.
     #[test]
     fn unwrap_returns_the_original_and_its_time() {
         let raw: Vec<u8> = (0..70_000u32).map(|i| (i * 31 % 251) as u8).collect();
@@ -166,7 +166,9 @@ mod tests {
         let (back, t) = unwrap(&w.bytes, &w.hb).unwrap();
         assert_eq!(back, raw);
         assert_eq!(t, Some(2_565_123_456_789_000_000));
-        assert_eq!(raw_hash(&w.bytes).unwrap(), *blake3::hash(&raw).as_bytes());
+        assert!(claims(&w.bytes[..1 << 12], &w.hb));
+        assert!(!claims(&w.bytes[..1 << 12], blake3::hash(&raw).as_bytes()));
+        assert!(!claims(&raw, &w.hb));
         assert_eq!(unwrap(&wrap(&raw, None).unwrap().bytes, &wrap(&raw, None).unwrap().hb).unwrap().1, None);
     }
 

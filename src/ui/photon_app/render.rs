@@ -3496,7 +3496,7 @@ impl PhotonApp {
                             let mut m: crate::linear_map::SortedMap<i64, (Option<[u8; 32]>, Option<[u8; 32]>)> = crate::linear_map::SortedMap::new();
                             for e in raw_msgs.iter().filter(|m| !m.deleted) {
                                 if let (Some((crate::types::RefKind::Wave, t)), Some(f)) = (e.reference, e.file.as_ref()) {
-                                    let h = f.hash;
+                                    let h = f.addr();
                                     if f.role == crate::types::AttachRole::WaveEnv {
                                         let slot = m.entry(t).or_default();
                                         if e.is_outgoing {

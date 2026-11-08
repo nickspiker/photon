@@ -643,11 +643,7 @@ fn blob_present_probe(v: &std::sync::Arc<FlatStorage>, addr: &[u8; 32], content_
             complete_cache_set(*content_hash, true);
             true
         }
-        // A raw hash whose content is held WRAPPED is present exactly when its wrapper is.
-        _ => match wrap_alias(content_hash).and_then(|hb| blob_addr(&hb).map(|a| (hb, a))) {
-            Some((hb, a)) if hb != *content_hash => blob_present_probe(v, &a, &hb),
-            _ => false,
-        },
+        _ => false,
     }
 }
 
@@ -685,8 +681,9 @@ pub fn decode_poisoned(content_hash: &[u8; 32]) -> bool {
     device_vault_if_open().is_some_and(|v| matches!(v.read_addr(&decode_poison_key(content_hash)), Ok(Some(_))))
 }
 
-/// Load an attachment blob from the vault, verified after the vault's own AEAD. A chunked blob is rebuilt from its chunks (RAM-sized callers only — recordings and small files; Save streams thru blob_write_file instead). None = not held locally.
-/// Asked by a wrapper hb it returns the wrapper document; asked by a RAW hash whose content is held wrapped (storage/wrapped.rs) it follows the alias, verifies the wrapper and returns the unwrapped original — so every consumer that loads by a row's raw hash keeps working unchanged.
+/// Load an attachment's ORIGINAL from the vault, verified after the vault's own AEAD. A chunked blob is rebuilt from its chunks (RAM-sized callers only — recordings and small files; Save streams thru blob_write_file instead). None = not held locally.
+/// Asked by a raw hash it returns the bytes that hash to it; asked by a wrapper hb (storage/wrapped.rs) it verifies the wrapper and its payload and returns the unwrapped original — every consumer that decodes, plays, sniffs or saves reads the original by the row's address.
+/// The wire never takes this: a holder serves what it stores, thru [`blob_load_wire`].
 pub fn blob_load(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<Vec<u8>> {
     if BLOB_NAME_KEY.lock().unwrap().is_none() {
         blob_init_names(identity_seed);
@@ -697,21 +694,31 @@ pub fn blob_load(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<Ve
 /// [`blob_load`] for a session whose blob names are already set up — no seed in hand (a file dragged out of the window reads its bytes at drop time, from a closure that must not carry the identity seed). None before the names exist.
 pub fn blob_load_named(content_hash: &[u8; 32]) -> Option<Vec<u8>> {
     BLOB_NAME_KEY.lock().unwrap().as_ref()?;
-    if let Some(bytes) = blob_load_stored(content_hash) {
-        if !blob_binds(&bytes, content_hash) {
-            crate::log("blob: content hash mismatch on load — corrupt blob value dropped");
-            return None;
-        }
+    let bytes = blob_load_stored(content_hash)?;
+    if blake3::hash(&bytes).as_bytes() == content_hash {
         return Some(bytes);
     }
-    let hb = wrap_alias(content_hash)?;
-    let doc = blob_load_stored(&hb)?;
-    let (raw, _) = wrapped::unwrap(&doc, &hb).map_err(|e| crate::logf!("blob: wrapped original refused on load — {}", e)).ok()?;
-    if blake3::hash(&raw).as_bytes() != content_hash {
-        crate::log("blob: wrapper's payload is not the content its alias names — dropped");
+    match wrapped::unwrap(&bytes, content_hash) {
+        Ok((raw, _)) => Some(raw),
+        Err(e) => {
+            crate::logf!("blob: stored value is neither the content nor a wrapper named by its hash ({}) — dropped", e);
+            None
+        }
+    }
+}
+
+/// The bytes STORED under `content_hash`, for the wire alone (a push, a serve): a wrapper stays the wrapper, because the receiver checks what arrives against the very name it was sent under, and an unwrapped original never binds to a wrapper's hb.
+/// None when nothing is held or the stored bytes do not bind to the name.
+pub fn blob_load_wire(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<Vec<u8>> {
+    if BLOB_NAME_KEY.lock().unwrap().is_none() {
+        blob_init_names(identity_seed);
+    }
+    let bytes = blob_load_stored(content_hash)?;
+    if !blob_binds(&bytes, content_hash) {
+        crate::log("blob: content hash mismatch on load — corrupt blob value dropped");
         return None;
     }
-    Some(raw)
+    Some(bytes)
 }
 
 /// The bytes stored under `content_hash` — one value, or its chunks reassembled — with no binding check (callers check).
@@ -734,53 +741,54 @@ pub fn blob_binds(bytes: &[u8], content_hash: &[u8; 32]) -> bool {
     blake3::hash(bytes).as_bytes() == content_hash || wrapped::verify(bytes, content_hash).is_ok()
 }
 
-/// THE RAW-FORM WINDOW CLOSES AT v146 (Nick 2026-10-17: back-compat for 12 releases, then halt the build; Nick 2026-10-30, the v134 deploy: "Bump it another 12 versions" — about a third of the network was on a wrapper-aware build): the wrapper shipped in v122, so releases 122..=145 carry the raw-hash alias, the raw-request serving, the alternating fetch ask and the raw hash in row identity. v146 does not compile until they are gone and identity names the wrapper hb (docs/attachments.md "The wrapped original").
-const _: () = assert!(crate::VERSION_MINOR < 146, "v146: the raw-form compat window is over — drop the wrapped-original alias, raw-request serving and alternating fetch ask, and move row identity to the wrapper hb");
-
-/// THE RAW → WRAPPER ALIAS (until v146): a content held wrapped is still asked for by its RAW hash — every row's identity and every older build's request carry it — so the vault keeps a 32-byte pointer from the raw hash to the wrapper's hb, at its own keyed address.
-fn alias_addr(raw_hash: &[u8; 32]) -> Option<[u8; 32]> {
-    let k = (*BLOB_NAME_KEY.lock().unwrap())?;
-    let mut input = Vec::with_capacity(9 + 32);
-    input.extend_from_slice(b"wrapalias");
-    input.extend_from_slice(raw_hash);
-    Some(*blake3::keyed_hash(&k, &input).as_bytes())
-}
-
-pub fn wrap_alias_store(identity_seed: &[u8; 32], raw_hash: &[u8; 32], hb: &[u8; 32]) -> Result<(), String> {
-    if BLOB_NAME_KEY.lock().unwrap().is_none() {
-        blob_init_names(identity_seed);
-    }
-    let addr = alias_addr(raw_hash).ok_or("blob: no session name key")?;
-    let vault = device_vault().ok_or("blob: vault unavailable")?;
-    blob_presence_forget(raw_hash);
-    vault.write_addr(&addr, hb).map_err(|e| e.to_string())
-}
-
-/// The wrapper hb a raw hash's content is held under, if it is held wrapped.
-pub fn wrap_alias(raw_hash: &[u8; 32]) -> Option<[u8; 32]> {
-    let addr = alias_addr(raw_hash)?;
-    let bytes = device_vault()?.read_addr(&addr).ok()??;
-    <[u8; 32]>::try_from(bytes.as_slice()).ok()
-}
-
-/// Wrap an original (storage/wrapped.rs), store the wrapper under its hb — one value or chunks + manifest, as its size wants — and alias the raw hash to it. Returns the wrapper hb and its manifest (None = one value).
+/// Wrap an original (storage/wrapped.rs) and store the wrapper under its hb — one value or chunks + manifest, as its size wants. Returns the wrapper hb and its manifest (None = one value).
 pub fn blob_store_wrapped(identity_seed: &[u8; 32], raw: &[u8], content_time: Option<i64>) -> Result<([u8; 32], Option<BlobManifest>), String> {
     let w = wrapped::wrap(raw, content_time)?;
     let m = blob_store_any(identity_seed, &w.hb, &w.bytes)?;
-    wrap_alias_store(identity_seed, blake3::hash(raw).as_bytes(), &w.hb)?;
     Ok((w.hb, m))
 }
 
-/// A blob just landed whole (every chunk, or the one value): when it is a verified WRAPPER, alias the raw hash it names to it (so loads by the row's raw hash find it) and return that raw hash — the name every row and progress map knows the content by. None for anything that is not a verified wrapper.
-pub fn alias_if_wrapper(identity_seed: &[u8; 32], hb: &[u8; 32]) -> Option<[u8; 32]> {
-    let doc = blob_load_stored(hb)?;
-    wrapped::verify(&doc, hb).ok()?;
-    let raw_hash = wrapped::raw_hash(&doc).ok()?;
-    wrap_alias_store(identity_seed, &raw_hash, hb).ok()?;
-    complete_cache_set(raw_hash, true);
-    Some(raw_hash)
+/// A blob just landed whole (every chunk, or the one value): do its bytes bind to the name it landed under — a raw blob hashing to it, or a wrapper that verifies to it as its hb?
+/// One that does not (a manifest whose chunks build some other document, a wrapper that fails its own check) is deleted here and logged, so it never reads as held and the fetch asks again.
+pub fn wrapper_landed_ok(content_hash: &[u8; 32]) -> bool {
+    let Some(bytes) = blob_load_stored(content_hash) else {
+        crate::logf!("blob: {}… landed but will not read back whole — left for the next ask", hex::encode(&content_hash[..4]));
+        return false;
+    };
+    if blob_binds(&bytes, content_hash) {
+        return true;
+    }
+    crate::logf!("blob: {}… landed but binds to neither its raw hash nor a verified wrapper — deleted", hex::encode(&content_hash[..4]));
+    blob_delete(content_hash);
+    false
 }
 
+/// THE RE-WRAP PASS (v146, docs/attachments.md "The wrapped original"): a v122–145 row (`fw` ≠ `fh`) whose wrapper is not held here but whose RAW original is — a copy an older build delivered by `fh`, or one this device kept raw — gets its wrapper rebuilt from the raw bytes.
+/// The wrapper is deterministic, and those rows were wrapped with no content time, so `wrap(raw, None)` reproduces the exact document; one whose hb is not the row's `fw` is logged and left alone.
+/// The raw copy is never deleted (a tombstone shreds both names). Vault reads and writes: a worker's job, never the UI thread. Returns (rebuilt, mismatched).
+pub fn rewrap_raw_copies(identity_seed: &[u8; 32], pairs: &[([u8; 32], [u8; 32])]) -> (usize, usize) {
+    let (mut rebuilt, mut mismatched) = (0usize, 0usize);
+    for (raw_hash, hb) in pairs {
+        if blob_present_probe_now(hb) || !blob_present_probe_now(raw_hash) {
+            continue;
+        }
+        let Some(raw) = blob_load(identity_seed, raw_hash) else {
+            continue;
+        };
+        match wrapped::wrap(&raw, None) {
+            Ok(w) if w.hb == *hb => match blob_store_any(identity_seed, &w.hb, &w.bytes) {
+                Ok(_) => rebuilt += 1,
+                Err(e) => crate::logf!("blob: re-wrap of {}… could not be stored: {}", hex::encode(&hb[..4]), e),
+            },
+            Ok(_) => {
+                crate::logf!("blob: re-wrap of {}… makes another wrapper — the raw copy stays as it is", hex::encode(&hb[..4]));
+                mismatched += 1;
+            }
+            Err(e) => crate::logf!("blob: re-wrap of {}… failed: {}", hex::encode(&hb[..4]), e),
+        }
+    }
+    (rebuilt, mismatched)
+}
 
 /// Store a file from DISK without ever holding it in RAM — the mirror of [`blob_write_file`], which streams the other way.
 ///
@@ -901,19 +909,19 @@ pub fn blob_write_file(identity_seed: &[u8; 32], content_hash: &[u8; 32], path: 
     }
     let addr = blob_addr(content_hash)?;
     let vault = device_vault()?;
+    // One value: the original itself, or a WRAPPER named by this hash, unwrapped (verified, payload against its rh) and written as the original byte-exact.
     if let Ok(Some(plain)) = vault.read_addr(&addr) {
-        if blake3::hash(&plain).as_bytes() != content_hash {
-            return None;
-        }
-        std::fs::write(path, &plain).map_err(|e| save_refused(path, e)).ok()?;
-        return Some(plain.len() as u64);
+        let raw = if blake3::hash(&plain).as_bytes() == content_hash { plain } else { wrapped::unwrap(&plain, content_hash).ok()?.0 };
+        std::fs::write(path, &raw).map_err(|e| save_refused(path, e)).ok()?;
+        return Some(raw.len() as u64);
     }
-    // Held WRAPPED: unwrap thru the verified load (originals are capped at the 256 MB attachment limit, so this fits in RAM) and write the original byte-exact.
-    let Some(m) = blob_manifest(content_hash) else {
+    let m = blob_manifest(content_hash)?;
+    // A chunked WRAPPER (its first chunk's header claims this hb): unwrap thru the verified load (originals are capped at the 256 MB attachment limit, so this fits in RAM) and write the original byte-exact.
+    if m.chunks.first().and_then(blob_chunk_load).is_some_and(|first| wrapped::claims(&first, content_hash)) {
         let raw = blob_load(identity_seed, content_hash)?;
         std::fs::write(path, &raw).map_err(|e| save_refused(path, e)).ok()?;
         return Some(raw.len() as u64);
-    };
+    }
     let mut f = std::fs::File::create(path).map_err(|e| save_refused(path, e)).ok()?;
     let mut hasher = blake3::Hasher::new();
     let mut n = 0u64;
@@ -957,13 +965,6 @@ pub fn blob_delete(content_hash: &[u8; 32]) {
         }
         complete_cache_set(*content_hash, false);
         blob_presence_forget(content_hash);
-        // Held wrapped: the wrapper goes with its raw name, and so does the alias.
-        if let Some(hb) = wrap_alias(content_hash).filter(|hb| hb != content_hash) {
-            blob_delete(&hb);
-            if let Some(a) = alias_addr(content_hash) {
-                crate::log_err!(v.delete_addr(&a), "blob: wrap alias delete");
-            }
-        }
     }
 }
 
@@ -1230,6 +1231,140 @@ mod tests {
     fn serial() -> std::sync::MutexGuard<'static, ()> {
         static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
         GATE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Bytes long enough to chunk (two full chunks and a short tail) or to fit one value, never all one byte.
+    fn sample(len: usize, salt: u8) -> Vec<u8> {
+        (0..len).map(|i| (i % 251) as u8 ^ salt).collect()
+    }
+
+    /// A scratch directory for files a test writes out, fresh per test name.
+    fn scratch(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("photon-{}-{}", name, std::process::id()));
+        if let Err(e) = std::fs::remove_dir_all(&dir) {
+            assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "stale scratch dir removal: {e}");
+        }
+        std::fs::create_dir_all(&dir).expect("create scratch dir");
+        dir
+    }
+
+    /// THE v146 STORE: a wrapper rests under its hb and nothing points at it from the raw hash — one value and a chunked one alike.
+    /// A load by the hb is the original; the wire load is the document itself, bound to the hb; Save writes the original; a delete clears it.
+    #[test]
+    fn a_wrapper_rests_under_its_hb_alone() {
+        let _g = serial();
+        isolate_test_storage();
+        let seed = [0x61; 32];
+        let _vault = open_session_vault(seed, [0x62; 32], [0x63; 32]).expect("session vault");
+        let dir = scratch("wrapped-rest");
+        for (raw, chunked) in [(sample(70_000, 0x0A), false), (sample(BLOB_CHUNK_SIZE * 2 + 1234, 0x0B), true)] {
+            let raw_hash = *blake3::hash(&raw).as_bytes();
+            let (hb, m) = blob_store_wrapped(&seed, &raw, None).expect("store wrapped");
+            assert_eq!(m.is_some(), chunked, "one value under a chunk, chunks + manifest past one");
+            assert_eq!(hb, wrapped::wrap(&raw, None).unwrap().hb, "the stored name is the deterministic wrapper's hb");
+            assert!(blob_present_probe_now(&hb), "held under its hb");
+            assert!(!blob_present_probe_now(&raw_hash), "and not under the raw hash: no alias");
+            assert!(blob_load(&seed, &raw_hash).is_none());
+            assert_eq!(blob_load(&seed, &hb).as_deref(), Some(raw.as_slice()), "a load by the hb is the original");
+            let wire = blob_load_wire(&seed, &hb).expect("wire load");
+            assert_eq!(wire, wrapped::wrap(&raw, None).unwrap().bytes, "the wire load is the document as stored");
+            assert!(blob_binds(&wire, &hb));
+            assert!(wrapper_landed_ok(&hb));
+            let out = dir.join(if chunked { "big.bin" } else { "small.bin" });
+            assert_eq!(blob_write_file(&seed, &hb, &out), Some(raw.len() as u64));
+            assert_eq!(std::fs::read(&out).expect("read back"), raw, "Save writes the original byte-exact");
+            blob_delete(&hb);
+            assert!(!blob_present_probe_now(&hb), "a delete clears it");
+            assert!(blob_load(&seed, &hb).is_none());
+        }
+        std::fs::remove_dir_all(&dir).expect("remove scratch dir");
+    }
+
+    /// WHAT GOES OUT BINDS TO THE NAME IT GOES OUT UNDER (a push or a serve, one value or chunks): the bytes a holder sends for a wrapper's hb pass the receiver's check and land as the original — and the unwrapped original, sent under that hb, never would.
+    #[test]
+    fn what_goes_out_binds_to_the_name_it_goes_out_under() {
+        let _g = serial();
+        isolate_test_storage();
+        let seed = [0x64; 32];
+        let _vault = open_session_vault(seed, [0x65; 32], [0x66; 32]).expect("session vault");
+        // One value: the whole-blob frame carries blob_load_wire's bytes.
+        let raw = sample(90_000, 0x1C);
+        let (hb, _) = blob_store_wrapped(&seed, &raw, None).expect("store wrapped");
+        let sent = blob_load_wire(&seed, &hb).expect("wire load");
+        assert!(blob_binds(&sent, &hb), "the receiver's check passes");
+        assert!(!blob_binds(&blob_load(&seed, &hb).unwrap(), &hb), "the original under the hb would be refused");
+        blob_delete(&hb);
+        blob_store(&seed, &hb, &sent).expect("the receiver stores what landed");
+        assert!(wrapper_landed_ok(&hb));
+        assert_eq!(blob_load(&seed, &hb).as_deref(), Some(raw.as_slice()));
+        blob_delete(&hb);
+        // Chunked: the serve sends the manifest and each chunk as stored; the chunks stream-verify to the hb, and the receiver's landing is the original.
+        let raw = sample(BLOB_CHUNK_SIZE * 2 + 77, 0x2D);
+        let (hb, m) = blob_store_wrapped(&seed, &raw, None).expect("store wrapped");
+        let m = m.expect("chunked");
+        let chunks: Vec<Vec<u8>> = m.chunks.iter().map(|h| blob_chunk_load(h).expect("chunk")).collect();
+        let mut v = wrapped::StreamVerifier::new(hb);
+        for c in &chunks {
+            v.update(c).expect("chunk streams");
+        }
+        v.finish().expect("the served chunks hash to the hb");
+        blob_delete(&hb);
+        assert!(!blob_present_probe_now(&hb));
+        blob_manifest_store(&seed, &hb, &m).expect("manifest lands");
+        blob_store_many(&seed, m.chunks.iter().copied().zip(chunks).collect()).expect("chunks land");
+        assert!(blob_present_probe_now(&hb));
+        assert!(wrapper_landed_ok(&hb));
+        assert_eq!(blob_load(&seed, &hb).as_deref(), Some(raw.as_slice()));
+        blob_delete(&hb);
+    }
+
+    /// A landing whose bytes bind to nothing — neither its own hash nor a wrapper of that hb — is deleted, never kept as held.
+    #[test]
+    fn a_landing_that_binds_to_nothing_is_deleted() {
+        let _g = serial();
+        isolate_test_storage();
+        let seed = [0x67; 32];
+        let _vault = open_session_vault(seed, [0x68; 32], [0x69; 32]).expect("session vault");
+        let name = [0x7E; 32];
+        blob_store(&seed, &name, b"not the bytes that name").expect("store");
+        assert!(blob_present_probe_now(&name));
+        assert!(!wrapper_landed_ok(&name));
+        assert!(!blob_present_probe_now(&name), "gone again, to be asked for anew");
+        // A raw blob always passes.
+        let raw = sample(5_000, 0x3E);
+        let raw_hash = *blake3::hash(&raw).as_bytes();
+        blob_store(&seed, &raw_hash, &raw).expect("store raw");
+        assert!(wrapper_landed_ok(&raw_hash));
+        blob_delete(&raw_hash);
+    }
+
+    /// THE RE-WRAP PASS: a v122–145 row whose raw copy is held but whose wrapper is not gets the EXACT wrapper rebuilt under its `fw`; the raw copy stays; a raw copy that wraps to another hb is left alone and nothing is stored under the row's `fw`.
+    #[test]
+    fn the_rewrap_pass_rebuilds_the_exact_wrapper_from_a_raw_copy() {
+        let _g = serial();
+        isolate_test_storage();
+        let seed = [0x6A; 32];
+        let _vault = open_session_vault(seed, [0x6B; 32], [0x6C; 32]).expect("session vault");
+        for raw in [sample(40_000, 0x4F), sample(BLOB_CHUNK_SIZE + 9, 0x50)] {
+            let raw_hash = *blake3::hash(&raw).as_bytes();
+            blob_store_any(&seed, &raw_hash, &raw).expect("raw copy");
+            let fw = wrapped::wrap(&raw, None).unwrap();
+            assert!(!blob_present_probe_now(&fw.hb));
+            assert_eq!(rewrap_raw_copies(&seed, &[(raw_hash, fw.hb)]), (1, 0));
+            assert!(blob_present_probe_now(&fw.hb), "the wrapper is held under the row's fw");
+            assert_eq!(blob_load_wire(&seed, &fw.hb), Some(fw.bytes.clone()), "byte for byte the document the sender made");
+            assert!(blob_present_probe_now(&raw_hash), "the raw copy is never deleted by the pass");
+            assert_eq!(rewrap_raw_copies(&seed, &[(raw_hash, fw.hb)]), (0, 0), "a held wrapper is not rebuilt again");
+            blob_delete(&fw.hb);
+            blob_delete(&raw_hash);
+        }
+        let raw = sample(3_000, 0x61);
+        let raw_hash = *blake3::hash(&raw).as_bytes();
+        blob_store(&seed, &raw_hash, &raw).expect("raw copy");
+        let other = [0x7F; 32];
+        assert_eq!(rewrap_raw_copies(&seed, &[(raw_hash, other)]), (0, 1));
+        assert!(!blob_present_probe_now(&other), "nothing stored under an fw the raw copy does not wrap to");
+        blob_delete(&raw_hash);
     }
 
     /// A file streamed IN from disk must be byte-identical to the same file stored whole — same content hash, same chunk hashes, same manifest — or a drop and a pick would address the same bytes differently and neither could fetch the other's.

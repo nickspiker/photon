@@ -77,8 +77,8 @@ impl PhotonApp {
                     continue;
                 }
                 m.deleted = true;
-                if let Some((hash, _, _)) = m.file_parts() {
-                    discard_blobs.push(hash);
+                if let Some(f) = m.file.as_ref() {
+                    discard_blobs.extend(f.stored_names());
                 }
                 cleared.push(m.clone());
             }

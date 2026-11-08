@@ -1969,12 +1969,9 @@ impl PhotonApp {
                     conv.insert_message_sorted(marker_row);
                     persist_ci = contact_idx;
                     if let Some(row) = tombstoned {
-                        if let Some(hash) = row.file.as_ref().map(|f| f.hash) {
-                            {
-                                // Off-thread like the local delete (2026-09-12): a chunked blob's shred is many vault commits the UI thread doesn't owe.
-                                let h = hash;
-                                queue_job(&self.attach_job_tx, move || crate::storage::blob_delete(&h));
-                            }
+                        if let Some(names) = row.file.as_ref().map(|f| f.stored_names()) {
+                            // Off-thread like the local delete (2026-09-12): a chunked blob's shred is many vault commits the UI thread doesn't owe; every name a copy can rest under goes (`AttachRef::stored_names`).
+                            queue_job(&self.attach_job_tx, move || names.iter().for_each(crate::storage::blob_delete));
                         }
                         crate::logf!(
                             "CHAT: friend deleted a message (ts {}) — tombstone applied + gossiped",
@@ -2275,7 +2272,7 @@ impl PhotonApp {
 
                 // A friend's attachment row: its device pushes the blob right behind it, so that push is this device's answer and nobody else is asked meanwhile (no push window to wait out).
                 if !contact_is_sibling && is_new_row {
-                    if let Some(h) = msg.file.as_ref().map(|f| f.hash) {
+                    if let Some(h) = msg.file.as_ref().map(|f| f.addr()) {
                         self.attach_expect_pushes.push((h, conv.id(), sender_pubkey.key));
                     }
                 }
@@ -2944,12 +2941,9 @@ impl PhotonApp {
                         if row.deleted && !existing.deleted {
                             existing.deleted = true;
                             tombstoned_in_merge = true; // drops a row from the syncable set (inserts self-invalidate; this upgrade path doesn't)
-                            if let Some(hash) = existing.file.as_ref().map(|f| f.hash) {
-                                {
-                                // Off-thread like the local delete (2026-09-12): a chunked blob's shred is many vault commits the UI thread doesn't owe.
-                                let h = hash;
-                                queue_job(&self.attach_job_tx, move || crate::storage::blob_delete(&h));
-                            }
+                            if let Some(names) = existing.file.as_ref().map(|f| f.stored_names()) {
+                                // Off-thread like the local delete (2026-09-12): a chunked blob's shred is many vault commits the UI thread doesn't owe; every name a copy can rest under goes (`AttachRef::stored_names`).
+                                queue_job(&self.attach_job_tx, move || names.iter().for_each(crate::storage::blob_delete));
                             }
                             upgraded = true;
                         }
@@ -3125,7 +3119,7 @@ impl PhotonApp {
                     let recs: Vec<[u8; 32]> = fresh
                         .iter()
                         .filter(|m| !m.deleted && m.is_wave_recording())
-                        .filter_map(|m| m.file.as_ref().map(|f| f.hash))
+                        .filter_map(|m| m.file.as_ref().map(|f| f.addr()))
                         .filter(|h| self.recording_wanted(h) && crate::storage::blob_present_known(h) == Some(false))
                         .collect();
                     for h in recs {
@@ -3135,7 +3129,7 @@ impl PhotonApp {
                 }
                 let hints: Vec<i64> = fresh.iter().filter_map(|m| match m.reference { Some((crate::types::RefKind::FetchHint, t)) => Some(t), _ => None }).collect();
                 for t in hints {
-                    let hash = self.conv_of(idx).and_then(|v| v.messages.iter().find(|m| m.timestamp == t && !m.deleted).and_then(|m| m.file.as_ref().map(|f| f.hash)));
+                    let hash = self.conv_of(idx).and_then(|v| v.messages.iter().find(|m| m.timestamp == t && !m.deleted).and_then(|m| m.file.as_ref().map(|f| f.addr())));
                     if let Some(h) = hash {
                         if crate::storage::blob_present_known(&h) != Some(true) {
                             crate::logf!("WAVE: fetch hint from a sibling — fetching recording {}…", hex::encode(&h[..4]));

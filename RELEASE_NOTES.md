@@ -12,6 +12,7 @@ One sentence per line, however long; plain language for the person who installs 
 - **Leaving a recording stops it.** Going back from a wave or beam replay, or leaving its conversation, now stops the playback instead of letting it carry on in the background.
 - **Windows: reopening from the tray shows the window.** Closing Photon to the tray and opening it again left an empty, invisible window that still took your clicks; it now draws as it should.
 - **A maximized window stays maximized when the screen changes.** Changing your screen resolution with Photon maximized left it at the old size; it now fills the new screen.
+- **Files sent from this version need this version or newer to open.** A photo or file you send is now named by the wrapper it travels in, so a friend or device on an older version cannot open it until it updates, which happens by itself; everything sent before keeps opening as it always did.
 
 ## v145
 - **Updates no longer get stuck on "Restarting".** A downloaded update waited for every key exchange with your friends to finish, and one that had stalled could hold it for hours, so devices sat on an old version; an update now waits only for a wave, a beam or the few seconds a key exchange spends computing, and phones no longer put off the download for the same reason.

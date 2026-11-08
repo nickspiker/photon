@@ -1591,6 +1591,16 @@ mod tests {
         }
     }
 
+    /// The row keys of attachment rows in both historic forms (raw before v122, `fw` beside a raw `fh` v122–145) are golden: a moved key would orphan every stored row of that shape.
+    #[test]
+    fn historic_attachment_row_keys_are_golden() {
+        let (raw_form, wrapped_form) = crate::types::row_control::tests::historic_rows();
+        let a = crate::types::ChatMessage::attachment(raw_form, true, 1_000);
+        let b = crate::types::ChatMessage::attachment(wrapped_form, false, 2_000);
+        assert_eq!(hex::encode(message_row_key(a.timestamp, &a.ident_bytes())), "00000000000003e84cb560377141ba6a");
+        assert_eq!(hex::encode(message_row_key(b.timestamp, &b.ident_bytes())), "00000000000007d081898a87cc004406");
+    }
+
     /// THE self-conversation storage seam (the notes black-hole class): rows saved under the DEDUPED self participant set must serve back thru the page reader's [pid, pid] degenerate addressing — save table == serve table, or a sibling asking for our notes gets an empty page while both UIs claim "synchronized".
     #[test]
     fn self_conversation_pages_serve_like_any_other() {

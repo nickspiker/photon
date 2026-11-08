@@ -6,7 +6,7 @@
 //! Phase 3, copy-then-release: one tap asks ONE sibling (the most complete holder that answered) to fetch the at-risk set from this device now, and persists `release.when_copied` (device-local).
 //! The sibling fetches thru the ordinary attachment fetch, aimed at the leaver first, and re-answers as items land; when nothing is at risk any more the leaver sends its departure request by itself, and the approval words appear on its Security page as for any Release.
 //! The flag survives a restart: with it set, the check re-runs as soon as the session and the fleet key are up, and a fresh pull goes out once the answers show what is still at risk.
-//! The list carries RAW content hashes: presence follows the raw→hb alias, so a wrapped original answers the same as a raw one; the ask moves to header hb when the raw form retires at v146.
+//! The list carries each original's ADDRESS (`AttachRef::addr`): a wrapped original's header hb, a raw-form one's raw hash — the name every device stores it under.
 //! Every presence probe runs on a worker (the UI thread makes no vault call); the fleet key is read from RAM only.
 
 use super::*;
@@ -154,7 +154,7 @@ impl PhotonApp {
                 if f.role == crate::types::AttachRole::WaveEnv {
                     continue;
                 }
-                let mut hashes = vec![f.hash];
+                let mut hashes = vec![f.addr()];
                 hashes.extend(f.head);
                 all.push(HeldItem { recording: f.role == crate::types::AttachRole::WaveAudio, size: f.size, hashes });
             }
@@ -335,7 +335,7 @@ impl PhotonApp {
             let Some(conv) = self.conv_of(ci) else { continue };
             for m in conv.messages.iter().filter(|m| !m.deleted) {
                 if let Some(f) = m.file.as_ref() {
-                    pairs.push((f.hash, ci));
+                    pairs.push((f.addr(), ci));
                     if let Some(h) = f.head {
                         pairs.push((h, ci));
                     }

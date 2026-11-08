@@ -388,7 +388,7 @@ impl PhotonApp {
                         for m in conv.messages.iter_mut().filter(|m| m.file.as_ref().and_then(|f| f.head) == Some(hh)) {
                             m.hydrate(hh, &h);
                             // Our own sniff of bytes that already landed outranks the head's claim (a program dressed as a picture reads as a program).
-                            if let (Some(local), Some(a)) = (m.file.as_ref().and_then(|f| self.attach_sniffed.get(&f.hash)).copied(), m.attach.as_mut()) {
+                            if let (Some(local), Some(a)) = (m.file.as_ref().and_then(|f| self.attach_sniffed.get(&f.addr())).copied(), m.attach.as_mut()) {
                                 a.kind = crate::types::AttachKind::reconcile(local, a.kind);
                             }
                         }

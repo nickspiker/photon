@@ -218,9 +218,10 @@ impl AttachRole {
     }
 }
 
-/// An attachment row's identity: which bytes (the content hash the blob transport serves under), what the sender called them, how many, and what they are for. The blob itself never rides a row.
+/// An attachment row's identity: which bytes, what the sender called them, how many, and what they are for. The blob itself never rides a row; [`AttachRef::addr`] names where it rests and travels.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AttachRef {
+    /// `fh`, IDENTITY: the raw BLAKE3 of the original on every row minted before v146, the wrapper hb from v146 on (then equal to `wrap`).
     pub hash: [u8; 32],
     /// The sender's filename; empty for images and audio, which travel nameless.
     pub name: String,
@@ -228,7 +229,7 @@ pub struct AttachRef {
     pub role: AttachRole,
     /// THE HEAD (flag day 2026-10-07, Nick: "keep the chain simply text, text formatting, links, pointers… store the pdf or tiff or whatever in a wrapped vsf blob with a thumbnail… off chain"): the hash of the attachment's HEAD blob — name, kind, dims, thumbnails, a wave's envelope — so the row on the chain is two pointers and nothing else. `None` on every row minted before the flag day, which still carries those fields inline and reads exactly as it always did.
     pub head: Option<[u8; 32]>,
-    /// THE WRAPPED ORIGINAL (storage/wrapped.rs, Nick 2026-10-17): the header hb of the original wrapped in its own VSF document — the address a wrapper-aware build fetches, stores and verifies under. NOT identity, exactly like the head: an older build drops the unknown `fw` field, so identity keeps the raw `hash` until v146 retires the raw form.
+    /// THE WRAPPED ORIGINAL (storage/wrapped.rs, Nick 2026-10-17): the header hb of the original wrapped in its own VSF document — the address the original is fetched, stored, served and verified under ([`AttachRef::addr`]). Identity stays `hash` on every row: a v122–145 row's `fh` is raw beside it and keeps its key forever, and a v146 row writes the hb into both.
     pub wrap: Option<[u8; 32]>,
     /// A WAVE RECORDING's people, in channel order (Nick 2026-11-01, the replayed wave screen): channel k of the recording is `parties[k]` — channel 0 ourselves, then each link's far party in the order the keep merged them. Empty on every other row and on recordings kept before the field; NOT identity (like the head), and an older build drops the unknown field.
     pub parties: Vec<[u8; 32]>,
@@ -256,6 +257,21 @@ impl AttachRef {
     /// Same attachment row identity — everything but the head (see `ident_bytes`).
     pub fn same_identity(&self, other: &AttachRef) -> bool {
         self.hash == other.hash && self.size == other.size && self.name == other.name && self.role == other.role
+    }
+
+    /// THE ADDRESS the original is stored, asked for, served, pushed and tracked under: the wrapper hb when the row names one (`fw`), else the raw `fh`.
+    /// Three forms meet here: no `fw` (raw, before v122) addresses by `fh`; `fw` ≠ `fh` (v122–145) addresses by `fw`; `fw` = `fh` (v146 on) is one hash for both.
+    pub fn addr(&self) -> [u8; 32] {
+        self.wrap.unwrap_or(self.hash)
+    }
+
+    /// Every name a copy of this row's original can rest under here — the address, and for a v122–145 row the raw `fh` too (a raw copy the re-wrap pass left, or one an older build delivered) — so a tombstone shreds them all.
+    pub fn stored_names(&self) -> Vec<[u8; 32]> {
+        if self.addr() == self.hash {
+            vec![self.hash]
+        } else {
+            vec![self.addr(), self.hash]
+        }
     }
 }
 
@@ -316,7 +332,7 @@ pub fn declare_row_fields(s: SectionSchema) -> SectionSchema {
         .field("fnm", TypeConstraint::Utf8Text) // attachment filename (may be empty)
         .field("fz", TypeConstraint::AnyUnsigned) // attachment size in bytes
         .field("fhd", TypeConstraint::AnyHash) // hb the attachment's HEAD blob (flag day 2026-10-07); absent on older rows — an older build ignores it
-        .field("fw", TypeConstraint::AnyHash) // hb the WRAPPED original's header hb (storage/wrapped.rs, 2026-10-17); absent on older rows and from older builds, which fetch by `fh`
+        .field("fw", TypeConstraint::AnyHash) // hb the WRAPPED original's header hb (storage/wrapped.rs, 2026-10-17) — the address when present; absent on raw-form rows, which address by `fh`
         .field("fp", TypeConstraint::Any) // hb × N a wave recording's parties in channel order (2026-11-01); absent on every other row and from older builds
 }
 
@@ -420,7 +436,7 @@ pub fn get_file(section: &SectionBuilder) -> Option<AttachRef> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     fn every_control() -> Vec<RowControl> {
@@ -473,19 +489,58 @@ mod tests {
         assert_ne!(f.ident_bytes(), AttachRef { role: AttachRole::WaveAudio, ..f.clone() }.ident_bytes());
     }
 
-    /// THE WRAPPER IS NOT IDENTITY (2026-10-17, until v146): a wrapper-aware build and an older one must derive the same braid keys for the same file photon, so the wrapper hb changes neither the identity bytes nor `same_identity` — and it rides the wire (`fw`) intact for the builds that read it.
+    /// THE WRAPPER FIELD IS NOT IDENTITY: identity is `fh` alone, so a v122–145 row (`fh` raw, `fw` the wrapper hb) keeps the key, digest and braid ingredient it was minted with, and a copy that lost its `fw` is still the same row.
+    /// A v146 row writes the wrapper hb into `fh` as well, and its identity is that hb: the same rule, never a second one. Both forms ride the wire (`fh`, `fw`) intact.
     #[test]
     fn wrapper_hb_is_metadata_not_identity() {
         let bare = AttachRef::pointer([3; 32], 4096, AttachRole::File, [4; 32]);
         let wrapped = AttachRef { wrap: Some([5; 32]), ..bare.clone() };
         assert_eq!(bare.ident_bytes(), wrapped.ident_bytes());
         assert!(bare.same_identity(&wrapped));
+        let v146 = AttachRef { hash: [5; 32], wrap: Some([5; 32]), ..bare.clone() };
+        assert_eq!(v146.ident_bytes(), AttachRef { wrap: None, ..v146.clone() }.ident_bytes());
+        assert_ne!(v146.ident_bytes(), wrapped.ident_bytes(), "a v146 row is a different row from a v122–145 one naming the same wrapper");
         let schema = declare_row_fields(SectionSchema::new("t"));
-        let b = put_file(SectionBuilder::new(schema.clone()), &wrapped).unwrap();
-        // A complete file, read back thru the verified reader — the shape every real row travels in.
-        let doc = vsf::VsfBuilder::new().provenance_only().add_unboxed("t", b.encode().unwrap()).build().unwrap();
-        let back = SectionBuilder::parse_document(schema, &doc, None).unwrap();
-        assert_eq!(get_file(&back), Some(wrapped));
+        for row in [wrapped, v146] {
+            let b = put_file(SectionBuilder::new(schema.clone()), &row).unwrap();
+            // A complete file, read back thru the verified reader — the shape every real row travels in.
+            let doc = vsf::VsfBuilder::new().provenance_only().add_unboxed("t", b.encode().unwrap()).build().unwrap();
+            let back = SectionBuilder::parse_document(schema.clone(), &doc, None).unwrap();
+            assert_eq!(get_file(&back), Some(row));
+        }
+    }
+
+    /// The ADDRESS of all three forms: `fh` with no `fw` (raw), `fw` beside a raw `fh` (v122–145), and `fw` = `fh` (v146); a tombstone shreds the raw name too only where it differs.
+    #[test]
+    fn address_is_the_wrapper_when_there_is_one() {
+        let raw_form = AttachRef::file([1; 32], "a.txt", 9);
+        assert_eq!(raw_form.addr(), [1; 32]);
+        assert_eq!(raw_form.stored_names(), vec![[1; 32]]);
+        let v122 = AttachRef { wrap: Some([2; 32]), ..raw_form.clone() };
+        assert_eq!(v122.addr(), [2; 32]);
+        assert_eq!(v122.stored_names(), vec![[2; 32], [1; 32]]);
+        let v146 = AttachRef { hash: [2; 32], wrap: Some([2; 32]), ..raw_form.clone() };
+        assert_eq!(v146.addr(), [2; 32]);
+        assert_eq!(v146.stored_names(), vec![[2; 32]]);
+        // What every storage and transport site reads off a row.
+        assert_eq!(crate::types::ChatMessage::attachment(v122, true, 1).file_parts().map(|(h, _, _)| h), Some([2; 32]));
+    }
+
+    /// The raw-form row (before v122: no `fw`) and the v122–145 row (`fh` raw, `fw` the wrapper hb, a head): golden identity bytes, hashed and hard-coded, so no later change to the address can move a historic row's key, digest or braid ingredient.
+    pub(crate) fn historic_rows() -> (AttachRef, AttachRef) {
+        let raw_form = AttachRef::file([0x11; 32], "photo.jpg", 70_000);
+        let wrapped_form = AttachRef { wrap: Some([0x22; 32]), ..AttachRef::pointer([0x11; 32], 70_000, AttachRole::File, [0x33; 32]) };
+        (raw_form, wrapped_form)
+    }
+
+    #[test]
+    fn historic_attachment_identity_is_golden() {
+        let (raw_form, wrapped_form) = historic_rows();
+        assert_eq!(blake3::hash(&raw_form.ident_bytes()).to_hex().as_str(), "4cb560377141ba6a0a19e51c445f14f4d53b40151ef75d5e109040ae763467dc");
+        assert_eq!(blake3::hash(&wrapped_form.ident_bytes()).to_hex().as_str(), "81898a87cc004406ba7293ab5db6698f88aa3c82b0ccf7fdb0ef1b0c02bd33da");
+        // Identity reads `fh` alone: the same row with no wrapper and no head has the same bytes.
+        let unwrapped = AttachRef { wrap: None, head: None, ..wrapped_form.clone() };
+        assert_eq!(wrapped_form.ident_bytes(), unwrapped.ident_bytes());
     }
 
     /// A malformed slot set is dropped, never guessed into a signal.
