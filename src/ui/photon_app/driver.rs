@@ -3098,6 +3098,19 @@ impl FluorApp<Px> for PhotonApp {
         if self.drain_voice_measure() {
             needs_redraw = true;
         }
+        // A missed message rings the taskbar and tray orb in magenta, as the contacts list rings the avatar (Nick 2026-11-08): anything unread, or an invitation not yet answered.
+        // An edge of the state the list draws from, pushed once per change; ctx.window reaches the taskbar on Windows and X11, and the tray backends cover the rest.
+        #[cfg(not(any(target_os = "android", target_os = "ferros")))]
+        {
+            let unread = self.conversations.iter().any(|v| v.unread_count > 0) || self.bond_offers.iter().any(|o| !o.accepted);
+            if unread != self.unread_orb {
+                self.unread_orb = unread;
+                crate::platform::tray::set_unread(unread);
+                let icon = if unread { crate::platform::tray::orb_rgba(crate::platform::tray::WINDOW_ORB, true) } else { None };
+                ctx.window.set_icon(icon.as_ref().map(|(rgba, w, h)| (rgba.as_slice(), *w, *h)));
+                crate::logf!("UNREAD: the orb {} the magenta ring", if unread { "wears" } else { "drops" });
+            }
+        }
         // The glass radius lands from the insets listener after the first layout — apply it the frame it arrives (no-op once installed).
         #[cfg(target_os = "android")]
         if let Some(chrome) = self.chrome.as_mut() {

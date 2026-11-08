@@ -2720,6 +2720,9 @@ pub struct PhotonApp {
     /// The tray icon exists (once per process — a re-spawn would park a second orb). Set on the resident-at-launch spawn or the first toggle-on; toggle-off leaves the icon until exit (v1 — despawn needs a service handle plumb-thru).
     #[cfg(not(target_os = "android"))]
     tray_spawned: bool,
+    /// The taskbar and tray orb wear the magenta unread ring: the last edge pushed to the OS, so a change of "anything unread" is pushed once and nothing is pushed while it holds.
+    #[cfg(not(any(target_os = "android", target_os = "ferros")))]
+    unread_orb: bool,
     /// The bell string this session last published to the worker (Android: `fcm:<project>:<token>`), so the ping-cycle publish is a no-op until the token rotates. `None` = nothing published yet. Read+written only on Android (the doorbell publish is `#[cfg(target_os = "android")]`); the field exists on every platform to keep the struct shape uniform.
     #[allow(dead_code)]
     published_bell: Option<String>,
@@ -2956,6 +2959,8 @@ impl PhotonApp {
             published_bell: None,
             #[cfg(not(target_os = "android"))]
             tray_spawned: false,
+            #[cfg(not(any(target_os = "android", target_os = "ferros")))]
+            unread_orb: false,
             settings_background_check: None,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             settings_lifeline_check: None,
