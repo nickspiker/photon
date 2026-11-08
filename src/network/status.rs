@@ -4780,7 +4780,7 @@ async fn run_checker(
                     let bytes = msg_bytes.clone();
                     tokio::spawn(async move {
                         if let Err(e) =
-                            crate::network::fgtw::relay::send_via_relay(&kp, &dev, &bytes).await
+                            crate::network::fgtw::relay::send_via_relay_always(&kp, &dev, &bytes).await
                         {
                             crate::logf!("RELAY: chat to {} failed: {}", hex::encode(&dev[..4]), e);
                         }
@@ -4886,7 +4886,7 @@ async fn run_checker(
                     let bytes = msg_bytes.clone();
                     tokio::spawn(async move {
                         if let Err(e) =
-                            crate::network::fgtw::relay::send_via_relay(&kp, &dev, &bytes).await
+                            crate::network::fgtw::relay::send_via_relay_always(&kp, &dev, &bytes).await
                         {
                             crate::logf!("RELAY: ack to {} failed: {}", hex::encode(&dev[..4]), e);
                         }
@@ -5052,7 +5052,7 @@ async fn run_checker(
             // No direct path proven → store on the relay in parallel. A peer we can't reach directly (asymmetric reachability — one end v6-only, the other v4-only behind symmetric NAT) still gets the offer via dual-stack fgtw.org. We relay explicitly here because the direct transfer keeps getting cancelled on address churn before its own retry-threshold relay fallback could fire.
             let mut relayed = 0usize;
             for dev in &request.relay_to {
-                match crate::network::fgtw::relay::send_via_relay(&keypair, dev, &vsf_bytes).await {
+                match crate::network::fgtw::relay::send_via_relay_always(&keypair, dev, &vsf_bytes).await {
                     Ok(()) => {
                         relayed += 1;
                         crate::logf!("RELAY: ClutchOffer delivered to {}", hex::encode(&dev[..4]))
@@ -5118,7 +5118,7 @@ async fn run_checker(
                 udp::send(&socket, &bytes_to_send, alt).await;
             }
             for dev in &request.relay_to {
-                match crate::network::fgtw::relay::send_via_relay(&keypair, dev, &vsf_bytes).await {
+                match crate::network::fgtw::relay::send_via_relay_always(&keypair, dev, &vsf_bytes).await {
                     Ok(()) => crate::logf!(
                         "RELAY: ClutchKemResponse relayed to {}",
                         hex::encode(&dev[..4])
@@ -5172,7 +5172,7 @@ async fn run_checker(
                 udp::send(&socket, &bytes_to_send, alt).await;
             }
             for dev in &request.relay_to {
-                match crate::network::fgtw::relay::send_via_relay(&keypair, dev, &vsf_bytes).await {
+                match crate::network::fgtw::relay::send_via_relay_always(&keypair, dev, &vsf_bytes).await {
                     Ok(()) => crate::logf!(
                         "RELAY: ClutchComplete relayed to {}",
                         hex::encode(&dev[..4])
@@ -5302,7 +5302,7 @@ async fn run_checker(
                     let peer_addr = tick.peer_addr;
                     let (tx, proxy) = (status_tx.clone(), event_proxy.clone());
                     tokio::spawn(async move {
-                        match crate::network::fgtw::relay::send_via_relay(
+                        match crate::network::fgtw::relay::send_via_relay_always(
                             &kp,
                             &relay_info.recipient_pubkey,
                             &relay_info.payload,

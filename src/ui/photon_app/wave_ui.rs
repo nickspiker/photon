@@ -1572,7 +1572,7 @@ impl PhotonApp {
                 for frame in frames.iter().cloned() {
                     let kp = kp.clone();
                     crate::network::http::runtime().spawn(async move {
-                        if let Err(e) = crate::network::fgtw::relay::send_via_relay(&kp, &dev, &frame).await {
+                        if let Err(e) = crate::network::fgtw::relay::send_via_relay_always(&kp, &dev, &frame).await {
                             crate::logf!("WAVE: express {} via relay to {} failed: {}", kind, crate::fp(&dev), e);
                         }
                     });

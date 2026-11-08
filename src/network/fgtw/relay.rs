@@ -119,11 +119,30 @@ pub async fn send_via_relay(_keypair: &Keypair, _recipient_pubkey: &[u8; 32], _m
     Err("no relay from ferros".to_string())
 }
 
+#[cfg(target_os = "ferros")]
+pub async fn send_via_relay_always(_keypair: &Keypair, _recipient_pubkey: &[u8; 32], _message_bytes: &[u8]) -> Result<(), String> {
+    Err("no relay from ferros".to_string())
+}
+
+/// A frame someone is waiting on (a chat, its ACK, a ceremony step, a wave signal, the transport's own fallback): tried even when the relay last said the device had no open pipe.
+/// The device may have come back without sending us anything (a phone woken in a pocket), and only a send learns it; background traffic waits for the device to be heard from instead.
 #[cfg(not(target_os = "ferros"))]
-pub async fn send_via_relay(
+pub async fn send_via_relay_always(keypair: &Keypair, recipient_pubkey: &[u8; 32], message_bytes: &[u8]) -> Result<(), String> {
+    relay_send(keypair, recipient_pubkey, message_bytes, false).await
+}
+
+/// Background traffic (a ping, a history page, a phonebook push): skipped while the relay's last word for the device was "no open pipe".
+#[cfg(not(target_os = "ferros"))]
+pub async fn send_via_relay(keypair: &Keypair, recipient_pubkey: &[u8; 32], message_bytes: &[u8]) -> Result<(), String> {
+    relay_send(keypair, recipient_pubkey, message_bytes, true).await
+}
+
+#[cfg(not(target_os = "ferros"))]
+async fn relay_send(
     keypair: &Keypair,
     recipient_pubkey: &[u8; 32],
     message_bytes: &[u8],
+    honour_closed: bool,
 ) -> Result<(), String> {
     // A fan-out list can carry our own device after an echo-poisoned era (an own frame looping back elected us a contact's endpoint, field 2026-08-12) — relaying to ourselves just manufactures the next echo, so refuse it at the one seam every relay send passes thru.
     if recipient_pubkey == keypair.public.as_bytes() {
@@ -133,7 +152,7 @@ pub async fn send_via_relay(
         return Err("relay: recipient is locked out".to_string());
     }
     // The same answer the relay would give, without asking it again: the verdict stands until the device is heard from.
-    if pipe_known_closed(recipient_pubkey) {
+    if honour_closed && pipe_known_closed(recipient_pubkey) {
         return Err("relay: recipient offline (frame discarded)".to_string());
     }
     let client = reqwest::Client::builder()
