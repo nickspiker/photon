@@ -6,6 +6,10 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Your devices keep each other up to date again.** Settings, device names and the list of your devices are handed straight from one of your devices to the others, but anything too big for a single packet was being thrown away on arrival, so since the last update those changes only crept across through fgtw.org; they now arrive directly.
+- **Long replies arrive.** A message too big for one packet, like the listing a remote command sends back, could vanish on its way between two devices on the same network, and everything sent after it waited behind it; those now arrive and nothing waits.
+- **A device keeps its name when its key changes.** When a device moves to a new key (as desktops did with the last update), it now keeps the name you gave it instead of showing a made-up two-word name.
+- **Security fixes.** A specially made key could pass a signature check for any message; signatures are now checked strictly, and messages from your devices and friends are read more strictly too. The libraries Photon uses for encrypted web connections and its internet time check are updated, closing published flaws that could let a hostile server slow, crash or mislead them.
 
 ## v147
 - **A missed message shows on the taskbar and tray.** When a conversation or invitation in your list wears the magenta unread ring, the Photon icon in the tray (and on the taskbar on Windows and many Linux desktops, or the Dock on a Mac) wears it too, and it clears when you have read them.
