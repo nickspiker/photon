@@ -1837,7 +1837,8 @@ async fn run_checker(
         });
     }
 
-    let (inject_tx, mut inject_rx) = tokio::sync::mpsc::channel::<Vec<u8>>(64);
+    // Each injected frame carries where it came from: the relay pipe hands `RELAY_ADDR`, a PT transfer no PT arm claimed hands its real sender.
+    let (inject_tx, mut inject_rx) = tokio::sync::mpsc::channel::<(Vec<u8>, SocketAddr)>(64);
 
     // Spawn RELAY PIPE task — the live bridge for peers with NO direct path (asymmetric reachability: one end IPv6-only, the other IPv4-only). fgtw.org is dual-stack, so both reach it. We hold ONE WebSocket open to our own device's PipeHub (keyed by our device key); a sender's signed `relay` request is forwarded straight down it by the worker — no polling, no store-and-forward, no R2. Every frame received is fed into the inject channel, so it rides the receiver task's real dispatch tagged RELAY_ADDR (the app skips address-learning + marks reached_via_relay). Trust is applied downstream exactly as for a UDP packet (each parser verifies the signature; CLUTCH handlers gate on fold-respecting knows_device). This carries the WHOLE data plane, not just the ceremony — presence and chat ride it too.
     // Runs on EVERY platform including Android, which is the whole reason the relay exists: the peers that need it are on Android. tokio-tungstenite is not target-gated in Cargo and ring/rustls cross-compile under the NDK (the same precedent that un-gated nunc); unlike peer_updates' desktop-only WS, this runs in the JNI network runtime too. If a device build ever fails to hold the WS over cellular, that's the thing to chase — not a reason to gate it off, which would strand the exact peers it serves.
@@ -1898,7 +1899,7 @@ async fn run_checker(
                                             // Its pipe is open: a relay send to it is worth trying again.
                                             crate::network::fgtw::relay::note_alive(&sender_key);
                                             // BOUNDED WAIT, never a silent wedge (field 2026-09-15, the no-ring dial): a full inject channel behind a slow dispatcher blocked this send().await forever — reads, keepalives and the liveness window all froze with it, and the pipe sat dead with no log line while the relay kept reporting delivered. Relay frames are datagram-class (senders re-fire); five seconds of backpressure drops the frame LOUDLY and keeps the pipe breathing.
-                                            match tokio::time::timeout(std::time::Duration::from_secs(5), inject_tx_pipe.send(inner)).await {
+                                            match tokio::time::timeout(std::time::Duration::from_secs(5), inject_tx_pipe.send((inner, RELAY_ADDR))).await {
                                                 Ok(Ok(())) => {}
                                                 Ok(Err(_)) => {
                                                     // Receiver task gone — the whole status task is tearing down.
@@ -1938,6 +1939,9 @@ async fn run_checker(
         });
     }
 
+    // The receive loop's own way back into itself: a PT transfer that no PT arm claims is dispatched again as the datagram it is, so every frame kind the UDP path knows works at any size (2026-11-08).
+    let inject_tx_pt = inject_tx.clone();
+
     // Spawn UDP receiver task
     tokio::spawn(async move {
         crate::log("Status: Receiver task started, waiting for UDP packets...");
@@ -1972,10 +1976,10 @@ async fn run_checker(
             let recv_result: std::io::Result<(usize, SocketAddr)> = tokio::select! {
                 r = socket_recv.recv_from(&mut buf) => r,
                 injected = inject_rx.recv() => match injected {
-                    Some(bytes) => {
+                    Some((bytes, from)) => {
                         let n = bytes.len();
                         injected_holder = Some(bytes);
-                        Ok((n, RELAY_ADDR))
+                        Ok((n, from))
                     }
                     None => {
                         // Pipe task dropped its sender — never expected while the session lives; keep serving UDP.
@@ -2558,14 +2562,12 @@ async fn run_checker(
                                             hex::encode(&data[..data.len().min(64)]),
                                             hex::encode(&data[data.len().saturating_sub(64)..]) // WHY/PROOF: a packet shorter than 64 bytes shows whole — its tail starts at 0, not at a wrapped index
                                         );
-                                        send_status_update(
-                                            &status_tx_recv,
-                                            StatusUpdate::PTReceived {
-                                                peer_addr: src_addr,
-                                                data,
-                                            },
-                                            &event_proxy_recv,
-                                        );
+                                        // No PT arm took it: dispatch it again as the datagram it is, through every arm the UDP path has, with its real sender, the way a relay-pipe frame always went.
+                                        // Since v146 a chat row goes direct when a path is trusted, so a row too big for one datagram (bridge output, a long message) came by PT and died here; the bridge's listing on 2026-11-08 left the MacBook holding everything after it behind a chain gap.
+                                        match inject_tx_pt.try_send((data, src_addr)) {
+                                            Ok(()) => crate::log("PT: handed to the full dispatcher"),
+                                            Err(e) => crate::logf!("PT: the dispatcher's queue is full or gone ({}); the frame is dropped and its sender's retry carries it", e),
+                                        }
                                     }
                                 }
                             }
