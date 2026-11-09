@@ -1302,6 +1302,16 @@ impl PhotonApp {
         Some(newest)
     }
 
+    /// The contacts box read as a handle (Nick 2026-11-09: "if you typed their handle in and if it's an exact match it shows up in your people list"): the party id the typed text derives to, byte-exact as handles are.
+    /// A contact whose name does not contain the text still answers to its handle; the handle itself is never stored, only compared through the party id it derives to.
+    /// One BLAKE3 and one Ed25519 key derivation per call: no proof, no network.
+    pub(super) fn typed_handle_party(text: &str) -> Option<[u8; 32]> {
+        if text.is_empty() {
+            return None;
+        }
+        Some(crate::crypto::clutch::identity_party_id(&crate::storage::contacts::derive_identity_seed(text)))
+    }
+
     pub(super) fn clear_unread(&mut self, ci: usize) {
         if let Some(id) = self.conv_mut_of(ci).map(|v| v.id()) {
             self.clear_unread_of(id);

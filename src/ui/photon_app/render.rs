@@ -252,6 +252,8 @@ impl PhotonApp {
                 .as_ref()
                 .map(|t| t.chars.iter().collect::<String>().to_lowercase())
                 .unwrap_or_default();
+            // A handle typed exactly matches its contact too (typed_handle_party); the render pass below filters the same way.
+            let typed_party = Self::typed_handle_party(&self.contacts_textbox.as_ref().map(|t| t.chars.iter().collect::<String>()).unwrap_or_default());
             // Wrap every listed contact's name at the row's text width (measured at the hover weight, so a hovered row never re-wraps) and sum the resulting row heights — one line = the layout row, each extra line adds a line step. The row walk below reads the same lines.
             let avatar_r = rl.contact_avatar_diameter as f32 * 0.5;
             let text_x = rl.rows.x0 as f32 + avatar_r * 3.0;
@@ -335,7 +337,7 @@ impl PhotonApp {
                     .filter(|(_, c)| {
                         // Must mirror the render pass's `matching` filter exactly (siblings hidden, the strip's filter) or the two clamps disagree within a frame.
                         super::ready_admits_contact(rf, c, &us_pid)
-                            && (filter.is_empty() || self.atom_naming || c.display_name().to_lowercase().contains(&filter))
+                            && (filter.is_empty() || self.atom_naming || c.display_name().to_lowercase().contains(&filter) || typed_party == Some(c.handle_hash))
                     })
                     .map(|(ci, _)| contact_row_height(row_h, lines_by_ci[ci].len()))
                     .sum::<isize>()
@@ -2122,6 +2124,8 @@ impl PhotonApp {
                 .unwrap_or_default();
             // NEW ATOM mode: the box holds a title, not a search — the list stays whole.
             let filter = if self.atom_naming { String::new() } else { filter };
+            // The box also answers to a handle typed exactly: the contact it derives to shows whatever its name (typed_handle_party).
+            let typed_party = if self.atom_naming { None } else { Self::typed_handle_party(&self.contacts_textbox.as_ref().map(|t| t.chars.iter().collect::<String>()).unwrap_or_default()) };
             // …and it is the member picker: us, then the people (the pre-pass sized exactly these).
             let rf = if self.atom_naming { ReadyFilter::People } else { self.ready_filter };
             let us_pid = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
@@ -2130,7 +2134,7 @@ impl PhotonApp {
                 .then_some(ReadyRow::Me)
                 .into_iter()
                 // Everyone under All, people alone under People (docs/conversations.md D8, revised 2026-10-29); fleet siblings are infrastructure, never listed.
-                .chain(self.contacts.iter().enumerate().filter(|(_, c)| super::ready_admits_contact(rf, c, &us_pid) && (filter.is_empty() || c.display_name().to_lowercase().contains(&filter))).map(|(i, _)| ReadyRow::Contact(i)))
+                .chain(self.contacts.iter().enumerate().filter(|(_, c)| super::ready_admits_contact(rf, c, &us_pid) && (filter.is_empty() || c.display_name().to_lowercase().contains(&filter) || typed_party == Some(c.handle_hash))).map(|(i, _)| ReadyRow::Contact(i)))
                 // ATOM and MOLECULE rows (docs/molecules.md §10.5): one list with the friends, sorted by the same key, narrowed by the strip.
                 .chain(
                     self.molecule_rosters
