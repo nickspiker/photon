@@ -2488,6 +2488,14 @@ pub struct PhotonApp {
     join_startfresh_hit_id: HitId,
     /// "Copy words" tappable on the JOIN words screen — puts the space-separated pairing words on the clipboard so they can ride any channel (email, messenger) to the device that types them, instead of being read + retyped by hand.
     join_copywords_hit_id: HitId,
+    /// "My devices aren't nearby: ask through fgtw.org" on the JOIN words screen, and "Not nearby? Look through fgtw.org" on the Add-device screen (local first, 2026-11-10).
+    join_mailbox_hit_id: HitId,
+    add_mailbox_hit_id: HitId,
+    /// The running join's mailbox opt-in, set by the tap; the join thread posts to fgtw.org once it reads true.
+    join_mailbox: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    join_mailbox_asked: bool,
+    /// The Add-device screen is also reading fgtw.org's binding requests, because the person asked.
+    add_device_mailbox: bool,
     /// Interaction-state for the copy affordance label ("copy words" → "copied — paste them on your other device"). Cleared when the flow ends, never by a timer (no time-based UI).
     join_words_copied: bool,
     /// Two-tap arm for "Start fresh" on the JOIN screen (destructive → confirm).
@@ -3475,6 +3483,11 @@ impl PhotonApp {
             back_btn_hit_id: HIT_NONE,
             join_startfresh_hit_id: HIT_NONE,
             join_copywords_hit_id: HIT_NONE,
+            join_mailbox_hit_id: HIT_NONE,
+            add_mailbox_hit_id: HIT_NONE,
+            join_mailbox: None,
+            join_mailbox_asked: false,
+            add_device_mailbox: false,
             join_words_copied: false,
             join_startfresh_armed: false,
             pending_picker_request: false,

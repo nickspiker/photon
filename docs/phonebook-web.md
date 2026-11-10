@@ -60,10 +60,10 @@ Nick 2026-11-10: "if I do any change to the phonebook, avatar, device removal, w
 | Change | Status |
 |---|---|
 | Chains (device added, removed, locked, declared) | **Built 2026-11-10** (`chain_news`): a new held head goes to our siblings and contacts (our chain) or to our siblings and the owner's devices (a contact's chain). Our own writes still reach fgtw.org first inside the fgtw client, a moment before the mesh push. |
-| Addresses | Pushed to contacts on change; not yet passed on by friends. |
-| Avatars | Not pushed on change (friends learn of it on their next pong). |
-| Settings | Pushed to siblings; fgtw.org is still read on every change (pull, merge, push). |
-| Join requests | Local first (LAN beacon, NFC); fgtw.org's registry is still posted to and read on every join, to become a mailbox read only when someone asks. |
+| Addresses | **Built 2026-11-10**: pushed to contacts on change; a friend's fresh own push is passed on to our siblings, once (`pass_address_on`), and a record a sibling passes on goes no further. |
+| Avatars and names | **Built 2026-11-10**: a changed avatar pin or name owes every contact one announce pong, sent with a ping round at once (`announce_profile`); the pong salvage carries the sealed name and pin. |
+| Settings and roster | **Built 2026-11-10**: pushed to siblings first; the fgtw.org backup merges into the slot as last seen and writes by compare-and-set (`merge_into_slot`, the worker's `prev`), reading fgtw.org only when it answers that the slot moved. |
+| Join requests | **Built 2026-11-10**: local first (LAN beacon, the direct bind_req, NFC). The joining device posts to fgtw.org, listens to its hub and reads its chain copy only after "My devices aren't nearby: ask through fgtw.org"; the adding device reads fgtw.org's requests only after "Not nearby? Look through fgtw.org". |
 
 ## First claim on a handle
 

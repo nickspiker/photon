@@ -955,6 +955,14 @@ pub enum Msg<'a> {
     DiagSubmit,
     DiagView,
     /// Ideas page: the explainer.
+    /// The joining device's opt-in to the bootstrap mailbox: its binding request is posted to fgtw.org only when this is tapped (2026-11-10, local first).
+    JoinAskFgtw,
+    /// After the tap: the request waits on fgtw.org for the person's other device.
+    JoinAskedFgtw,
+    /// The Add-device screen's opt-in to read fgtw.org's binding requests (devices that are not nearby).
+    AddLookFgtw,
+    /// After the tap: fgtw.org's requests are being read too.
+    AddLookingFgtw,
     IdeasIntro,
     IdeasSendIdea,
     IdeasSendFix,

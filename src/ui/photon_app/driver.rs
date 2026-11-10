@@ -299,6 +299,11 @@ impl FluorApp<Px> for PhotonApp {
         // "Copy words" tappable on the JOIN words screen.
         reserve_hits(&mut self.hit_counter, 1);
         self.join_copywords_hit_id = self.hit_counter;
+        // The two fgtw.org opt-ins (local first): the JOIN screen's "ask through fgtw.org" and the Add-device screen's "look through fgtw.org".
+        reserve_hits(&mut self.hit_counter, 1);
+        self.join_mailbox_hit_id = self.hit_counter;
+        reserve_hits(&mut self.hit_counter, 1);
+        self.add_mailbox_hit_id = self.hit_counter;
 
         // Green-confirm tappable on the AddDevice screen ("It's in — finish"): the two-phase press that releases the fleet-key rotation after the human sees the new device enrolled.
         reserve_hits(&mut self.hit_counter, 1);
@@ -774,6 +779,29 @@ impl FluorApp<Px> for PhotonApp {
                 }
             }
             ctx.window.request_redraw();
+            return EventResponse::Handled;
+        }
+
+        // The JOIN screen's opt-in: the person's devices aren't nearby, so the request is posted to fgtw.org's mailbox (the join thread reads the flag; the poke wakes it now).
+        if hit_id == self.join_mailbox_hit_id && self.join_mailbox_hit_id != HIT_NONE {
+            if let Some(flag) = self.join_mailbox.as_ref() {
+                flag.store(true, std::sync::atomic::Ordering::Relaxed);
+                if let Some(poke) = self.add_join_poke.as_ref() {
+                    crate::log_err!(poke.send(()), "the mailbox poke to the join thread");
+                }
+                self.join_mailbox_asked = true;
+                ctx.window.request_redraw();
+            }
+            return EventResponse::Handled;
+        }
+
+        // The Add-device screen's opt-in: read fgtw.org's binding requests too (devices that aren't nearby).
+        if hit_id == self.add_mailbox_hit_id && self.add_mailbox_hit_id != HIT_NONE && matches!(self.state, AppState::AddDevice) {
+            if !self.add_device_mailbox {
+                self.add_device_mailbox = true;
+                self.spawn_bindreq_watch();
+                ctx.window.request_redraw();
+            }
             return EventResponse::Handled;
         }
 

@@ -27,7 +27,8 @@ impl PhotonApp {
         }
         let tb_id = self.textbox.as_ref().map(|t| t.hit_id());
         self.change_focus(tb_id);
-        self.spawn_bindreq_watch();
+        // Local first (2026-11-10): nearby devices arrive over the LAN and NFC; fgtw.org's binding requests are read only after the person taps "Not nearby? Look through fgtw.org" (add_mailbox_hit_id).
+        self.add_device_mailbox = false;
     }
 
     /// Off-thread candidate watch for the AddDevice screen: list the registry (member-gated, signature-verified in the client), push the set up, then wait on a hub poke (`pair_evt` kind "request") or an ~8s cadence — whichever first — until the flow's stop flag drops it. Push-driven with a poll floor, the join loop's shape.
@@ -3061,6 +3062,10 @@ impl PhotonApp {
             .as_ref()
             .map(|h| h.port())
             .unwrap_or(crate::PHOTON_PORT);
+        // The mailbox opt-in (local first): the join posts to fgtw.org only after the person taps "My devices aren't nearby" (join_mailbox).
+        let mailbox = std::sync::Arc::new(AtomicBool::new(false));
+        self.join_mailbox = Some(mailbox.clone());
+        self.join_mailbox_asked = false;
         std::thread::spawn(move || {
             // Derive the COMPLETE session roots once. identity_seed is microseconds; the ~1s memory-hard proof is reused from the probe when the caller passed it (the add-this-device branch already paid it), else computed here. Joined hands them to the attest worker so it never re-derives.
             let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
@@ -3100,67 +3105,82 @@ impl PhotonApp {
             let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
             let poke_tx = wake_tx.clone();
             // The binding request: "I consent to join fleet hp", signed by the device key + co-signed by the identity key — the consent egg the Add op will carry. Built ONCE and sent two ways with the same stamp (docs/pairing-v2.md over the mesh): to the seed's registry when it answers, and straight to every sponsor device heard on the LAN as a `bind_req` frame (the UI thread hands it out on each beacon). A seed that cannot be reached is logged, never fatal — the LAN carries the request; the seed's one-owner verdict (device_owned) still ends the ceremony.
-            let mint = |tx: &std::sync::mpsc::Sender<JoinUpdate>| -> Result<i64, String> {
+            let mint = |tx: &std::sync::mpsc::Sender<JoinUpdate>| -> Result<fgtw::fleet::BindRequest, String> {
                 let req = fleet::make_bind_request(&device_key, &identity_seed, &hp, &nfc_secret);
                 let frame = crate::network::fgtw::protocol::build_bind_req_vsf(&req, &hp, device_key.keypair().secret.as_bytes())?;
                 crate::log_err!(tx.send(JoinUpdate::Aimed { hp, bind_req: frame, poke: poke_tx.clone() }), "the join aim to the UI thread");
-                match fleet::bindreq_post(&req, &hp) {
-                    Ok(()) => crate::log("JOIN: binding request posted to the seed's registry and armed for the LAN"),
-                    Err(e) if e.starts_with("device_owned") => return Err(e),
-                    Err(e) => crate::logf!("JOIN: the seed did not take the binding request ({}) — the LAN carries it", e),
-                }
-                Ok(req.t)
+                Ok(req)
             };
-            let offer_et = match mint(&tx) {
-                Ok(et) => et,
+            // LOCAL FIRST (Nick 2026-11-10: fgtw.org "a notify upon request"): the request goes to the person's devices nearby (LAN beacon, the direct bind_req, NFC), and fgtw.org's registry is posted to only when the person says their devices aren't nearby (the mailbox flag); until then fgtw.org is not touched at all.
+            let posted = std::cell::Cell::new(false);
+            let post = |req: &fgtw::fleet::BindRequest| -> Result<(), String> {
+                match fleet::bindreq_post(req, &hp) {
+                    Ok(()) => crate::log("JOIN: binding request posted to fgtw.org's mailbox, as asked"),
+                    Err(e) if e.starts_with("device_owned") => return Err(e),
+                    Err(e) => crate::logf!("JOIN: fgtw.org did not take the binding request ({}) — the LAN carries it", e),
+                }
+                Ok(())
+            };
+            let mut req = match mint(&tx) {
+                Ok(r) => r,
                 Err(e) => {
                     crate::log_err!(tx.send(JoinUpdate::Failed(tr(Msg::RequestFailed(&e)).into_owned())), "the join failure to the UI thread");
                     return;
                 }
             };
+            let offer_et = req.t;
             // Pairing v2 proximity beacon (docs/pairing-v2.md): advertise keyed_hash(device_pk ‖ published eagle_time) within the handle for the whole ceremony — the guard drops on every exit path below, stopping the radio. Re-announced on each repost (below) so the aired id tracks the offer's current stamp.
             let _beacon = crate::network::pairing_beacon::announce_guard(&hp, &me, offer_et);
 
             // Push subscription: the FGTW hub broadcasts `pair_evt` frames on registry changes ("request") and when the chain extends ("fleet"). Each one for OUR identity pokes `wake_tx`, and the poll loop's sleep below is a `recv_timeout` — so the ceremony reacts the moment the other device acts, with the poll cadence as the guarantee when the socket drops (best-effort accelerator, never load-bearing). The task dies with the socket or the stop flag; no reconnect — the poll still covers everything.
-            #[cfg(not(target_os = "ferros"))]
-            {
-                let stop = stop.clone();
-                crate::network::http::runtime().spawn(async move {
-                    use futures::StreamExt;
-                    let Ok((mut ws, _)) = tokio_tungstenite::connect_async(crate::network::http::SEED_WS).await else {
-                        return;
-                    };
-                    loop {
-                        tokio::select! {
-                            frame = ws.next() => {
-                                match frame {
-                                    Some(Ok(m)) => {
-                                        if stop.load(Ordering::Relaxed) {
-                                            return;
-                                        }
-                                        if let Some((_kind, evt_hp)) = fleet::parse_pair_event(&m.into_data()) {
-                                            if evt_hp == hp {
-                                                // The poll loop holding wake_rx has ended (its ceremony is over): this subscription has no one left to wake.
-                                                if wake_tx.send(()).is_err() {
-                                                    return;
+            // Started only with the mailbox (local first): until the person asks through fgtw.org, nothing in this ceremony connects to it.
+            let mut hub_wake = Some(wake_tx);
+            let subscribe_hub = |wake_tx: std::sync::mpsc::Sender<()>| {
+                #[cfg(not(target_os = "ferros"))]
+                {
+                    let stop = stop.clone();
+                    crate::network::http::runtime().spawn(async move {
+                        use futures::StreamExt;
+                        let Ok((mut ws, _)) = tokio_tungstenite::connect_async(crate::network::http::SEED_WS).await else {
+                            return;
+                        };
+                        loop {
+                            tokio::select! {
+                                frame = ws.next() => {
+                                    match frame {
+                                        Some(Ok(m)) => {
+                                            if stop.load(Ordering::Relaxed) {
+                                                return;
+                                            }
+                                            if let Some((_kind, evt_hp)) = fleet::parse_pair_event(&m.into_data()) {
+                                                if evt_hp == hp {
+                                                    // The poll loop holding wake_rx has ended (its ceremony is over): this subscription has no one left to wake.
+                                                    if wake_tx.send(()).is_err() {
+                                                        return;
+                                                    }
                                                 }
                                             }
                                         }
+                                        _ => return, // closed or errored — poll cadence takes over
                                     }
-                                    _ => return, // closed or errored — poll cadence takes over
                                 }
-                            }
-                            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
-                                if stop.load(Ordering::Relaxed) {
-                                    return;
+                                _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                                    if stop.load(Ordering::Relaxed) {
+                                        return;
+                                    }
                                 }
                             }
                         }
-                    }
-                });
-            }
+                    });
+                }
+                #[cfg(target_os = "ferros")]
+                drop(wake_tx);
+            };
             // PUSH-DRIVEN, no deadline, no poll cadence. The hub events (request / fleet) wake each check instantly; the ONLY timers are the ones the protocol/transport demand — the binding request's 5-minute freshness (re-post at ~3.5min when no event arrives sooner) and a degraded-transport fallback cadence when the socket is dead. The user standing at the screen is the timeout: the ceremony ends when the bind lands, when they tap the orb (the stop flag), or on a hard network error. The request is WITHDRAWN by this device (its author) on every exit — green, cancel, or wrong-fleet — and lapses by stamp if the thread dies unclean.
             let withdraw = |why: &str| {
+                if !posted.get() {
+                    return; // nothing was posted to withdraw
+                }
                 if let Err(e) = fleet::bindreq_withdraw(device_key.keypair(), &hp) {
                     crate::logf!(
                         "JOIN: request withdraw ({}) failed (lapses anyway): {}",
@@ -3189,6 +3209,17 @@ impl PhotonApp {
                 if stop.load(Ordering::Relaxed) {
                     withdraw("cancel");
                     return;
+                }
+                // The person asked through fgtw.org (their devices aren't nearby): post the request there, once, and start listening to its hub.
+                if mailbox.load(Ordering::Relaxed) && !posted.get() {
+                    if let Err(e) = post(&req) {
+                        crate::log_err!(tx.send(JoinUpdate::Failed(tr(Msg::RequestFailed(&e)).into_owned())), "the join failure to the UI thread");
+                        return;
+                    }
+                    posted.set(true);
+                    if let Some(w) = hub_wake.take() {
+                        subscribe_hub(w);
+                    }
                 }
                 if ceremony_start.elapsed() >= MAX_CEREMONY {
                     crate::log("JOIN: ceremony ran too long without binding — stopping re-posts");
@@ -3225,7 +3256,8 @@ impl PhotonApp {
                     }
                 }
                 // Genesis re-checked on EVERY fetch, not just the probe: a relay that served the real chain once must not be able to swap in a structurally-valid foreign chain mid-ceremony and have this loop adopt its members (the probe-time-only TOCTOU — docs/pairing-v2.md).
-                match fleet::current_members_verified(&hp) {
+                // fgtw.org's copy is read only once the person asked through it; nearby, the sponsor hands this device its chain directly (above).
+                match if posted.get() { fleet::current_members_verified(&hp) } else { Ok(Vec::new()) } {
                     Ok(m) if m.contains(&me) => {
                         // In the fleet by the seed's (or the held) copy — the green.
                         green(&tx, "by the seed");
@@ -3257,8 +3289,12 @@ impl PhotonApp {
                     Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                         if last_repost.elapsed() >= REPOST_EVERY {
                             // Restamp the offer (registry + LAN, one stamp), then re-emit the beacon under the NEW eagle_time so the aired id keeps matching the entry the sponsor now reads.
-                            if let Ok(et) = mint(&tx) {
-                                crate::network::pairing_beacon::reannounce(&hp, &me, et);
+                            if let Ok(r) = mint(&tx) {
+                                crate::network::pairing_beacon::reannounce(&hp, &me, r.t);
+                                if posted.get() {
+                                    crate::log_err!(post(&r), "re-posting the binding request to fgtw.org");
+                                }
+                                req = r;
                             }
                             last_repost = std::time::Instant::now();
                         }
@@ -3268,8 +3304,12 @@ impl PhotonApp {
                         std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(8)));
                         if last_repost.elapsed() >= REPOST_EVERY {
                             // Restamp the offer (registry + LAN, one stamp), then re-emit the beacon under the NEW eagle_time so the aired id keeps matching the entry the sponsor now reads.
-                            if let Ok(et) = mint(&tx) {
-                                crate::network::pairing_beacon::reannounce(&hp, &me, et);
+                            if let Ok(r) = mint(&tx) {
+                                crate::network::pairing_beacon::reannounce(&hp, &me, r.t);
+                                if posted.get() {
+                                    crate::log_err!(post(&r), "re-posting the binding request to fgtw.org");
+                                }
+                                req = r;
                             }
                             last_repost = std::time::Instant::now();
                         }

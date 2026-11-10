@@ -1702,6 +1702,39 @@ impl PhotonApp {
                         );
                         y += csize * 0.9;
                     }
+                    // The mailbox opt-in (local first, 2026-11-10): the request goes to the person's devices nearby, and to fgtw.org only after this tap.
+                    {
+                        y += line_h * 0.6;
+                        let msize = line_h * 0.6;
+                        let (mlabel, mcolour) = if self.join_mailbox_asked {
+                            (tr(Msg::JoinAskedFgtw), *theme::STATUS_TEXT_COLOUR)
+                        } else {
+                            (tr(Msg::JoinAskFgtw), *theme::CONTACT_NAME_COLOUR)
+                        };
+                        ctx.text.draw_text_center(
+                            &mut canvas,
+                            &mlabel,
+                            cx,
+                            y,
+                            &TextStyle::new(msize, mcolour).weight(500).font("Oxanium"),
+                            None,
+                            None,
+                        );
+                        if !self.join_mailbox_asked {
+                            let half_w = buf_w as f32 * 0.4;
+                            restamp_hit_rect(
+                                &mut chrome.hit_test_map,
+                                buf_w,
+                                buf_h,
+                                (cx - half_w) as isize,
+                                (y - msize * 0.8) as isize,
+                                (cx + half_w) as isize,
+                                (y + msize * 0.8) as isize,
+                                self.join_mailbox_hit_id,
+                            );
+                        }
+                        y += msize * 0.9;
+                    }
                     // The confirm reminder closes the block: the add is approved on the OTHER device.
                     {
                         y += line_h * 0.9;
@@ -5288,6 +5321,30 @@ impl PhotonApp {
                         y += row_h;
                     }
                     y += gap;
+                }
+                // The fgtw.org opt-in (local first, 2026-11-10): binding requests from devices that aren't nearby are read only after this tap.
+                {
+                    let (label, colour) = if self.add_device_mailbox {
+                        (tr(Msg::AddLookingFgtw), fluor::theme::HINT_COLOUR)
+                    } else {
+                        (tr(Msg::AddLookFgtw), *theme::CONTACT_NAME_COLOUR)
+                    };
+                    let size = u * 0.45;
+                    ctx.text.draw_text_center(&mut canvas, &label, cx, y + size, &TextStyle::new(size, colour).font("Oxanium"), None, None);
+                    if !self.add_device_mailbox {
+                        let half_w = buf_w as f32 * 0.42;
+                        restamp_hit_rect(
+                            &mut chrome.hit_test_map,
+                            buf_w,
+                            buf_h,
+                            (cx - half_w) as isize,
+                            y as isize,
+                            (cx + half_w) as isize,
+                            (y + size * 2.) as isize,
+                            self.add_mailbox_hit_id,
+                        );
+                    }
+                    y += size * 2. + gap;
                 }
             } else if !self.add_device_checking {
                 // Green-confirm affordance (two-phase) — sits IN the field slot (tb_cy), the same place the words field would be. On the WORDS path the Bound handler auto-fires the rotation, so this never renders; it's the tap/BLE gate. Hit-stamped so Android taps land.
