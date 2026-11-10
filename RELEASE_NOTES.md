@@ -6,10 +6,14 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v150
 - **Updates carry three signatures.** Every update is now signed three ways, two of them built to hold up against quantum computers, and Photon checks all three before it installs an update or trusts itself at start.
 - **Leaving your fleet is a yes or no.** When one of your devices asks to leave, your other devices show a notification and the Fleet page offers Approve or Deny; there are no words to type on either side.
 - **Your fleet's record is kept by your devices.** If fgtw.org ever loses the record of which devices are yours, the next of your devices to check in puts back the copy it holds, instead of starting a new record with only itself in it.
 - **Your contacts backup and your picture reach fgtw.org again.** Since an earlier change on the server, most devices had their contacts backup and picture uploads refused; they go through now.
+
+Built from photon 178e7480 · chirp b01db995 · fgtw 70206beb · fluor 02c209c2 · kete 05552740 · limbus 30ab5cc3 · manifestus ccc5bda1 · nunc b518ad11 · opsin 60ea6940 · rarangi 387b44ab · spirix b12187fb · tapuwae 5c462e1d · tohu 7df2ac9b · voca 04dcf2df · vsf 83582de3
 
 ## v149
 - **Signing in is quick and says what it is doing.** A device your own records already list opens straight away without waiting on fgtw.org, and the sign-in screen now tells you each step (proving your handle, checking this device, opening your vault) instead of a bare wait.
