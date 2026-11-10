@@ -11,6 +11,8 @@ source scripts/lib/manifest.sh
 source scripts/lib/snapbuild.sh
 # The release git flow (provenance-by-tag preflight/tag/advance) — a plain `git push` of an hour-old bump commit is rejected the instant another device pushed to main during the build (field 2026-08-28, five dead deploys). See the lib header; proven by scripts/test/release-git-test.sh.
 source scripts/lib/release-git.sh
+# Photon for ferros devices (the kist capsule): its toolchain check, freeze, build and signing, from the ferros repo beside this one (see the lib header).
+source scripts/lib/ferros-kist.sh
 
 # Source-level gates FIRST — before the lock, the release bump, or any of the cross-compiles below — so a comment/parse/migration slip fails in under a second, not after the whole platform matrix has built.
 source scripts/lib/preflight.sh
@@ -32,6 +34,9 @@ source scripts/lib/cmake-scrub.sh
 for t in target/release target/debug target/*-*/release target/*-*/debug; do
     scrub_divergent_cmake_caches "$t"
 done
+
+# The ferros toolchain (ferros, ferros-rust, ferros-libc beside photon, nightly, the aarch64 binutils) is checked NOW, in a second: Photon for ferros is a required target like Windows ARM64, so a missing piece refuses the deploy here instead of an hour in, after every other platform built.
+ferros_kist_preflight || exit 1
 
 # Version scheme (2026-07-16): major.minor.patch. THIS SCRIPT does the release increment: whatever the tree holds (X.Y.0 fresh, or X.Y.P after dev publishes), the release ships X.(Y+1).0 — minor bumped, patch zeroed (patch 0 is RESERVED for releases; dev publishes bump the patch ≥1 and reach clients via the dev manifest).
 # Ordering discipline (same as the dev publishes): refuse a dirty tree, bump, COMMIT THE BUMP FIRST — so every built binary embeds the actual release commit (no "+dirty") and the signed manifest stamps the same HEAD. A failure anywhere rolls that one commit back (trap below), leaving the tree exactly as it started.
@@ -112,6 +117,12 @@ if snapbuild_take; then
     SNAP_DIR="$SNAPBUILD_ROOT/photon"
     export CARGO_TARGET_DIR="$(pwd)/target"
     echo "Source frozen (reflink snapshot) — edit away, this deploy builds from the frozen tree"
+fi
+# Photon for ferros freezes in the same instant: ferros's std/photon is copied into the snapshot beside the frozen photon, so its `../../../photon` is the frozen tree (and the version injected below). The snapshot dir dies with the snapshot. No snapshot: the live std/photon, against the live tree, like everything else.
+if [ "$SNAP_DIR" != "." ]; then
+    ferros_kist_freeze "$SNAPBUILD_ROOT" || { echo "ERROR: could not place ferros's std/photon in the snapshot"; exit 1; }
+else
+    ferros_kist_freeze "" || { echo "ERROR: could not read the ferros repos' commits"; exit 1; }
 fi
 # VERSION INJECTION (tag-authority): the ship version lands in the BUILD TREE only — the snapshot when it took, else the live files with a guaranteed restore. No commit either way; the number is earned at the tag. Cargo.lock gets the same surgical awk as release_advance_main (network-free, deterministic).
 # The release notes roll with the version: the top `## Upcoming` section becomes `## v<ship>` in the tree that builds, so the binary's compiled-in notes name the version they ship under.
@@ -282,6 +293,14 @@ echo ""
 echo "Building Android release..."
 timed "android-arm64" ./scripts/android/build.sh
 
+# Build Photon for ferros devices: std/photon from the frozen tree on the ferros toolchain, the flat image signed into the kist capsule with the release key (scripts/lib/ferros-kist.sh), then checked against AUTHOR_PUBKEY and Photon's option before the manifest may name it.
+echo ""
+echo "Building Photon for ferros (the kist capsule)..."
+timed "ferros-arm64 (kist)" ferros_kist_build
+echo ""
+echo "Signing the ferros capsule (release key, Photon's option)..."
+ferros_kist_sign ./target/release/photon-manifest
+
 # Every binary exists + is signed. Read the Windows hash (for the .ps1 installer) and BUILD the signed manifest now — it only reads local files + hashes them, so it belongs in the build phase. Publishing it is the last upload in the publish phase, so a running client never sees a manifest whose binaries aren't up yet.
 WINDOWS_SHA256=$(cat target/x86_64-pc-windows-gnu/release/photon-messenger.exe.sha256)
 
@@ -289,7 +308,9 @@ WINDOWS_SHA256=$(cat target/x86_64-pc-windows-gnu/release/photon-messenger.exe.s
 # A failure partway thru the uploads changes no live file — the manifest, the installers and the site switch to the new folder together, at the end.
 REL_PATH="$R2_PATH/v$SHIP_VERSION"
 REL_URL="$R2_URL/v$SHIP_VERSION"
-RELEASE_FILES=(photon-messenger-linux-x86_64-release photon-messenger-linux-arm64-release photon-messenger-windows-release.exe photon-messenger-windows-arm64-release.exe photon-messenger-macos-x86_64-release photon-messenger-macos-arm64-release photon-messenger-android-release.apk)
+RELEASE_FILES=(photon-messenger-linux-x86_64-release photon-messenger-linux-arm64-release photon-messenger-windows-release.exe photon-messenger-windows-arm64-release.exe photon-messenger-macos-x86_64-release photon-messenger-macos-arm64-release photon-messenger-android-release.apk photon-messenger-ferros-arm64-release.vsf)
+# The ferros capsule's row names its file over plain HTTP: a ferros device has no TLS, and the host answers http:// without a redirect (checked 2026-11-10). Nothing is trusted for the transport: the device checks the signed manifest, the capsule's blake3 against its row, and the capsule's own signature (docs/updates.md, "ferros").
+REL_URL_PLAIN="http://${REL_URL#https://}"
 
 echo ""
 echo "Building signed release manifest..."
@@ -303,7 +324,8 @@ COMMIT="$TIP_COMMIT"
     --artefact Windows arm64  "$FULL_VERSION" "$COMMIT" "$REL_URL/photon-messenger-windows-arm64-release.exe" "$(b3 target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe)" "$(manifest_size target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe)" \
     --artefact macOS   x86_64 "$FULL_VERSION" "$COMMIT" "$REL_URL/photon-messenger-macos-x86_64-release"   "$(b3 target/x86_64-apple-darwin/release/photon-messenger)" "$(manifest_size target/x86_64-apple-darwin/release/photon-messenger)" \
     --artefact macOS   arm64  "$FULL_VERSION" "$COMMIT" "$REL_URL/photon-messenger-macos-arm64-release"   "$(b3 target/aarch64-apple-darwin/release/photon-messenger)" "$(manifest_size target/aarch64-apple-darwin/release/photon-messenger)" \
-    --artefact Android arm64  "$FULL_VERSION" "$COMMIT" "$REL_URL/photon-messenger-android-release.apk"   "$(b3 android/app/build/outputs/apk/release/app-release.apk)" "$(manifest_size android/app/build/outputs/apk/release/app-release.apk)"
+    --artefact Android arm64  "$FULL_VERSION" "$COMMIT" "$REL_URL/photon-messenger-android-release.apk"   "$(b3 android/app/build/outputs/apk/release/app-release.apk)" "$(manifest_size android/app/build/outputs/apk/release/app-release.apk)" \
+    --artefact ferros  arm64  "$FULL_VERSION" "$COMMIT" "$REL_URL_PLAIN/photon-messenger-ferros-arm64-release.vsf" "$(b3 "$FERROS_KIST_CAPSULE")" "$(manifest_size "$FERROS_KIST_CAPSULE")"
 
 # Patch the Windows installer with the correct per-arch hashes NOW (a build-phase transform, no upload).
 sed "s/\$expectedHashX64 = \"[A-F0-9]*\"/\$expectedHashX64 = \"$WINDOWS_SHA256\"/" installers/install-release.ps1 > /tmp/install-release.ps1
@@ -344,7 +366,7 @@ add_built_from_line() {
 add_built_from_line "${SNAP_DIR:-.}" || { echo "ERROR: could not add the Built-from line to the release notes"; exit 1; }
 
 echo ""
-echo "BUILD PHASE complete — all 8 platforms + signed manifest built. Nothing public yet."
+echo "BUILD PHASE complete: every platform (the ferros capsule too) + signed manifest built. Nothing public yet."
 
 # ════════════════════════════════════════════════════════════════════════════════════════════════════
 # PUBLISH PHASE — everything below goes OUTWARD. Every artefact already exists locally, so the uploads are the first irreversible outward step. (The GitHub mirror / website / notice further down are best-effort once R2 is live, as noted at each.)
@@ -403,6 +425,8 @@ r2_put "$R2_BUCKET/$REL_PATH/photon-messenger-macos-arm64-release" \
 r2_put "$R2_BUCKET/$REL_PATH/photon-messenger-android-release.apk" \
     --file android/app/build/outputs/apk/release/app-release.apk \
     --content-type application/vnd.android.package-archive --remote
+r2_put "$R2_BUCKET/$REL_PATH/photon-messenger-ferros-arm64-release.vsf" \
+    --file "$FERROS_KIST_CAPSULE" --content-type application/octet-stream --remote
 
 # THE SWITCH: the installers (patched to the folder above, which is now fully up), then the manifest — a few small files, so the new release goes live together.
 r2_put "$R2_BUCKET/$R2_PATH/install-release.sh" \
@@ -424,9 +448,9 @@ r2_put "$R2_BUCKET/$R2_PATH/manifest-release.vsf" \
 r2_put "$R2_BUCKET/$R2_PATH/release-notes.md" \
     --file "${SNAP_DIR:-.}/RELEASE_NOTES.md" --content-type "text/markdown; charset=utf-8" --remote
 
-note_time "R2 upload (10 artefacts)" $((SECONDS - PHASE_T0))
+note_time "R2 upload (11 artefacts)" $((SECONDS - PHASE_T0))
 echo ""
-echo "Linux ARM64, Linux x86_64, Windows x86_64, Windows ARM64, macOS x86_64, macOS ARM64, Android binaries + manifest deployed to R2"
+echo "Linux ARM64, Linux x86_64, Windows x86_64, Windows ARM64, macOS x86_64, macOS ARM64, Android binaries, the ferros capsule + manifest deployed to R2"
 echo "  Windows SHA256: $WINDOWS_SHA256"
 
 # R2 is fully live — the release is public. Its provenance is the built commit $COMMIT: the hash build.rs baked into every binary (PHOTON_GIT_COMMIT) and the SHA the signed manifest stamped. Pin it with the IMMUTABLE v<n> tag and push THAT — the commit rides along with its hash intact, even tho main has moved past its parent during the ~1h build. This is NOT a branch push (a plain `git push` of the hour-old bump is rejected non-fast-forward the moment any device touched main during the build — five deploys died exactly here, 2026-08-28). main itself only ever gets the fast-forwarding dev-line bump, further down.
@@ -435,7 +459,9 @@ GH_TAG="v$SHIP_VERSION"
 release_publish_tag "$GH_TAG" "$COMMIT" "release v${SHIP_VERSION} (${FULL_VERSION}, ${DOZENAL_VERSION}) — version injected at build (tag-authority), source tip ${PHOTON_STAMP_COMMIT}
 
 Built from these sibling commits (build.sh --version ${SHIP_VERSION} rebuilds from them):
-${SIBLING_LINES}"
+${SIBLING_LINES}
+Photon for ferros (the kist capsule) was built on these (std/photon, ferros_rt and the target from ferros; the std fork; libc):
+${FERROS_KIST_FROM}"
 trap - ERR INT TERM HUP
 
 # Mirror the identical signed artefacts to a GitHub Release `v<n>` (redundant fallback behind R2).
@@ -456,6 +482,7 @@ if ensure_release "$GH_TAG" false; then
     mirror "photon-messenger-macos-x86_64-release"   target/x86_64-apple-darwin/release/photon-messenger
     mirror "photon-messenger-macos-arm64-release"   target/aarch64-apple-darwin/release/photon-messenger
     mirror "photon-messenger-android-release.apk"   android/app/build/outputs/apk/release/app-release.apk
+    mirror "photon-messenger-ferros-arm64-release.vsf" "$FERROS_KIST_CAPSULE"
 else
     echo "WARNING: GitHub release creation failed — skipping the mirror entirely (R2 is authoritative and live)"
 fi
