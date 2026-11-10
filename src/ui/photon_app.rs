@@ -69,6 +69,7 @@ mod devices;
 mod holdings;
 mod space;
 mod ideas;
+mod octopus;
 mod driver;
 mod input;
 mod launch;
@@ -2770,6 +2771,18 @@ pub struct PhotonApp {
     my_gripes: Vec<ideas::Gripe>,
     gripe_tx: Option<std::sync::mpsc::Sender<ideas::GripeEvent>>,
     gripe_rx: Option<std::sync::mpsc::Receiver<ideas::GripeEvent>>,
+    /// The Octopus page is open for this run of Photon (typed into the Diagnostics note); RAM only, never saved.
+    octopus_open: bool,
+    /// fgtw.org's last answer for the Octopus page: bucket counts and its activity log.
+    octopus_view: Option<crate::network::fgtw::octopus::OctopusView>,
+    /// This device's phonebook rows, copied when the Octopus page last refreshed (never per frame: the copy clones the store).
+    octopus_peers: Vec<crate::network::fgtw::PeerRecord>,
+    /// The Octopus page's one line of news: what the last request did, or why it failed.
+    octopus_status: Option<String>,
+    /// The one Octopus request in flight; its answer lands here.
+    octopus_rx: Option<std::sync::mpsc::Receiver<octopus::OctopusEvent>>,
+    /// The Octopus pill asked once (Nuke all, or a bucket's Clear), by its slot; the second press on the same pill does it.
+    octopus_armed: Option<HitId>,
     /// Everyone's gripes (the list is public — docs/ideas.md), as last fetched; the Ideas page shows them, ranked by likeness to what is in the box.
     public_gripes: Vec<crate::network::fgtw::PublicGripe>,
     /// The public list has been fetched once this session: the baseline the ticker compares against, so an idea is announced only when it is new since then.
@@ -3586,6 +3599,12 @@ impl PhotonApp {
             my_gripes: Vec::new(),
             gripe_tx: None,
             gripe_rx: None,
+            octopus_open: false,
+            octopus_view: None,
+            octopus_peers: Vec::new(),
+            octopus_status: None,
+            octopus_rx: None,
+            octopus_armed: None,
             public_gripes: Vec::new(),
             public_gripes_known: false,
             ideas_ticker: false,

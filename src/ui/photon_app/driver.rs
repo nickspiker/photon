@@ -312,7 +312,7 @@ impl FluorApp<Px> for PhotonApp {
         // Settings panel (STUB) hit-id blocks + widgets. Reserve a contiguous 9-id block for the nav-rail rows and a 32-id block for the immediate-mode action pills, then construct the stateful fluor widgets (dropdown / slider / textbox) and the custom checkboxes. All get placeholder geometry; `update_widget_layout` repositions the ones on the active page each frame.
         reserve_hits(&mut self.hit_counter, 1);
         self.settings_nav_base = self.hit_counter;
-        reserve_hits(&mut self.hit_counter, SettingsPage::ALL.len() as HitId); // one rail row per page
+        reserve_hits(&mut self.hit_counter, SettingsPage::ALL_OCTOPUS.len() as HitId); // one rail row per page, the Octopus page included
         reserve_hits(&mut self.hit_counter, 1);
         self.settings_btn_base = self.hit_counter;
         reserve_hits(&mut self.hit_counter, SETTINGS_PILL_SLOTS); // the Fleet page's slot map runs to 56 + six rows; the dispatch windows below read the SAME constant (the 2026-10-06 sweep found 39 reserved against pills stamped at 56+ — the Lock-out pill bug)
@@ -886,7 +886,7 @@ impl FluorApp<Px> for PhotonApp {
         if let AppState::Settings(page) = self.state {
             if self.settings_nav_base != HIT_NONE
                 && hit_id >= self.settings_nav_base
-                && hit_id < (self.settings_nav_base + SettingsPage::ALL.len() as HitId)
+                && hit_id < (self.settings_nav_base + SettingsPage::ALL_OCTOPUS.len() as HitId)
             {
                 let idx = (hit_id - self.settings_nav_base) as usize;
                 if let Some(p) = self.settings_pages().get(idx).copied() { // (hit past the list — see above)
@@ -897,6 +897,9 @@ impl FluorApp<Px> for PhotonApp {
                         self.settings_fleet_selected = None;
                         self.fleet_release_armed = None;
                         self.fleet_lock_armed = None;
+                    }
+                    if *p != SettingsPage::Octopus {
+                        self.octopus_armed = None;
                     }
                     if *p != SettingsPage::Security {
                         self.settings_removeshred_armed = false;
@@ -932,6 +935,10 @@ impl FluorApp<Px> for PhotonApp {
                         self.load_my_gripes();
                         self.refresh_gripe_states();
                         self.refresh_public_gripes();
+                    }
+                    // Opening the Octopus page copies this device's phonebook and asks fgtw.org for its buckets and log.
+                    if *p == SettingsPage::Octopus {
+                        self.octopus_refresh();
                     }
                     // Opening the Wave page snapshots the profile list (the render reads a copy).
                     if *p == SettingsPage::Wave {
@@ -1253,6 +1260,25 @@ impl FluorApp<Px> for PhotonApp {
                         self.compute_vault_breakdown();
                         ctx.window.request_redraw();
                     }
+                } else if page == SettingsPage::Octopus {
+                    use super::render::{OCTOPUS_PILL_BUCKET0, OCTOPUS_PILL_NUKE, OCTOPUS_PILL_REFRESH};
+                    if slot == OCTOPUS_PILL_REFRESH {
+                        self.octopus_armed = None;
+                        self.octopus_refresh();
+                    } else if slot == OCTOPUS_PILL_NUKE || slot >= OCTOPUS_PILL_BUCKET0 {
+                        // The first tap arms the pill, the second on the same pill acts; the bucket is looked up by its slot in the view the page drew (a refresh can reorder it, and then the slot names nothing).
+                        if self.octopus_armed != Some(slot) {
+                            self.octopus_armed = Some(slot);
+                        } else {
+                            self.octopus_armed = None;
+                            if slot == OCTOPUS_PILL_NUKE {
+                                self.octopus_clear(None);
+                            } else if let Some(name) = self.octopus_view.as_ref().and_then(|v| v.buckets.get((slot - OCTOPUS_PILL_BUCKET0) as usize)).map(|b| b.name.clone()) {
+                                self.octopus_clear(Some(name));
+                            }
+                        }
+                    }
+                    self.scene_dirty = true;
                 } else if page == SettingsPage::Ideas {
                     if slot == super::render::IDEAS_PILL_IDEA {
                         self.submit_gripe("idea");
@@ -3007,7 +3033,8 @@ impl FluorApp<Px> for PhotonApp {
         let presence = self.presence_due_at(now);
         let lan_beacon = self.lan_beacon_due_at(now);
         // Pairing flows: join-words (new device) and add-device matcher/confirm (old device) results arrive on mpsc channels from worker threads, with nothing else guaranteed to drive a tick while the user's hands are off — so poll-drain at 2 Hz while either flow is live. This is channel plumbing, not time-based UI: nothing is shown or cleared on a clock.
-        let pairing = (self.add_join_rx.is_some() || self.add_device_rx.is_some())
+        // The Octopus page's one request rides the same poll: its answer has nothing else to wake the tick either.
+        let pairing = (self.add_join_rx.is_some() || self.add_device_rx.is_some() || self.octopus_rx.is_some())
             .then(|| Instant::now() + std::time::Duration::from_millis(500));
         // Periodic own-chain re-fold (the fleet-membership doorbell) — only where advance_protocol runs it: a Settings page someone is watching.
         let fleet_refold = self.fleet_refold_due_at(now);
@@ -5079,7 +5106,7 @@ fn fling_pick(samples: &[i32]) -> i32 {
 }
 
 /// The settings pill block: ONE number for its reservation, its click window and its hover window. The Fleet page's slot map is the widest user — bands at 8/16/24/32/40/48/56 plus a row index below six — so 64 covers it with room; a pill stamped past this lands in the next block's ids.
-const SETTINGS_PILL_SLOTS: HitId = 64;
+pub(super) const SETTINGS_PILL_SLOTS: HitId = 64;
 
 fn reserve_hits(counter: &mut HitId, n: HitId) {
     *counter = counter.checked_add(n).expect("hit-id space exhausted: more than 65 535 ids reserved — a span is leaking, not a real need");

@@ -58,6 +58,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             SettingsPage::Language => "Lingua",
             SettingsPage::Dozenal => "Base",
             SettingsPage::About => "Informazioni",
+            SettingsPage::Octopus => "Octopus",
         }
         .into(),
         // ---- wave screen ----

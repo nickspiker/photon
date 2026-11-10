@@ -8,6 +8,11 @@ pub(super) const DEBUG_PILL_SLOT0: HitId = 10;
 /// The Ideas page's two pills in the settings pill block.
 pub(super) const IDEAS_PILL_IDEA: HitId = 20;
 pub(super) const IDEAS_PILL_FIX: HitId = 21;
+/// The Octopus page's pills in the settings pill block: Refresh, Nuke all, then one per fgtw.org bucket from slot 8 up to the block's end.
+pub(super) const OCTOPUS_PILL_REFRESH: HitId = 0;
+pub(super) const OCTOPUS_PILL_NUKE: HitId = 1;
+pub(super) const OCTOPUS_PILL_BUCKET0: HitId = 8;
+pub(super) const OCTOPUS_BUCKET_SLOTS: HitId = super::driver::SETTINGS_PILL_SLOTS - OCTOPUS_PILL_BUCKET0;
 
 /// Lines an image attachment's preview band reserves above its pill (typed attachments 2026-09-10): the row's micro thumb, or the decoded preview blob (twice as tall).
 pub(super) const IMG_PREVIEW_LINES: usize = 4;
@@ -129,6 +134,7 @@ impl PhotonApp {
                 AppState::Settings(SettingsPage::Dozenal) => "Settings:Dozenal",
                 AppState::Settings(SettingsPage::Conversations) => "Settings:Conversations",
                 AppState::Settings(SettingsPage::About) => "Settings:About",
+                AppState::Settings(SettingsPage::Octopus) => "Settings:Octopus",
                 AppState::ConversationPanel(_) => "ConversationPanel",
             },
             Vec::new(),
@@ -6835,6 +6841,56 @@ impl PhotonApp {
                         }).collect();
                         let pills: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = labels.iter().enumerate().map(|(i, l)| (l.as_str(), btn_base + DEBUG_PILL_SLOT0 + i as HitId, true, None)).collect();
                         flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &pills, "Open Sans");
+                    }
+                    flow.gap(hspan2);
+                    measured_extent = Some((flow.used(), inset.h));
+                }
+                SettingsPage::Octopus => {
+                    // THE OCTOPUS PAGE (octopus.rs, Nick 2026-11-10): fgtw.org's buckets as pills (the first tap arms, the second clears), Nuke all the same way, then the worker's activity log and this device's phonebook.
+                    // Admin text for the one person who opened it, in English only.
+                    let inset = layout.content_inset();
+                    let mut flow = Flow::new(inset, settings_content_scroll);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    let busy = self.octopus_rx.is_some();
+                    if let Some(status) = self.octopus_status.as_deref() {
+                        flow.prose(&mut canvas, ctx.text, status, hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                    }
+                    let nuke_armed = self.octopus_armed == Some(OCTOPUS_PILL_NUKE);
+                    flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
+                        ("Refresh", btn_base + OCTOPUS_PILL_REFRESH, !busy, None),
+                        (if nuke_armed { "Nuke all — sure?" } else { "Nuke all" }, btn_base + OCTOPUS_PILL_NUKE, !busy, Some(*theme::PILL_RED)),
+                    ], "Open Sans");
+                    if let Some(view) = self.octopus_view.as_ref() {
+                        flow.gap(hspan2 * 0.6);
+                        flow.line(&mut canvas, ctx.text, "fgtw.org buckets", hspan2 * 0.9, *theme::LABEL_COLOUR, 600);
+                        let labels: Vec<(String, HitId)> = view.buckets.iter().take(OCTOPUS_BUCKET_SLOTS as usize).enumerate().map(|(i, b)| {
+                            let slot = OCTOPUS_PILL_BUCKET0 + i as HitId;
+                            let label = if self.octopus_armed == Some(slot) { format!("Clear {} — sure?", b.name) } else { format!("{} · {}", b.name, crate::fmt_num64(b.count)) };
+                            (label, slot)
+                        }).collect();
+                        let pills: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = labels.iter().map(|(l, slot)| (l.as_str(), btn_base + *slot, !busy, (self.octopus_armed == Some(*slot)).then(|| *theme::PILL_RED))).collect();
+                        flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.8, &pills, "Open Sans");
+                        flow.gap(hspan2 * 0.6);
+                        flow.line(&mut canvas, ctx.text, "fgtw.org activity, newest first", hspan2 * 0.9, *theme::LABEL_COLOUR, 600);
+                        for e in view.entries.iter().rev() {
+                            let mut line = format!("{}  {}  {}", crate::fmt_when(e.t), e.kind, e.msg);
+                            if let Some(hp) = e.hp {
+                                line.push_str(&format!("  id {}", crate::fp(&hp)));
+                            }
+                            if let Some(dev) = e.dev {
+                                line.push_str(&format!("  dev {}", crate::fp(&dev)));
+                            }
+                            if let Some(ip) = e.ip {
+                                line.push_str(&format!("  {ip}"));
+                            }
+                            flow.prose(&mut canvas, ctx.text, &line, hspan2 * 0.75, *theme::LABEL_COLOUR, 400);
+                        }
+                    }
+                    flow.gap(hspan2 * 0.6);
+                    flow.line(&mut canvas, ctx.text, "This device's phonebook", hspan2 * 0.9, *theme::LABEL_COLOUR, 600);
+                    for p in &self.octopus_peers {
+                        let line = format!("id {}  dev {}  {}  seen {}", crate::fp(&p.handle_proof), crate::fp(p.device_pubkey.as_bytes()), p.ip, crate::fmt_when(p.local_seen));
+                        flow.prose(&mut canvas, ctx.text, &line, hspan2 * 0.75, *theme::LABEL_COLOUR, 400);
                     }
                     flow.gap(hspan2);
                     measured_extent = Some((flow.used(), inset.h));

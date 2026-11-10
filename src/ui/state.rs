@@ -71,6 +71,8 @@ pub enum SettingsPage {
     Conversations,
     /// Explainer / philosophy / version / feedback / credits.
     About,
+    /// THE OCTOPUS PAGE (Nick 2026-11-10): fgtw.org's buckets with their counts and a Clear each, Nuke all, the worker's activity log and this device's phonebook. Never in `ALL`: typing exactly "Octopus" in the Diagnostics note opens it for this run of Photon only (`ALL_OCTOPUS`).
+    Octopus,
 }
 
 impl SettingsPage {
@@ -110,6 +112,43 @@ impl SettingsPage {
         SettingsPage::About,
     ];
 
+    /// The rail with the Octopus page at its end, while this run of Photon has it open.
+    #[cfg(not(target_os = "ferros"))]
+    pub const ALL_OCTOPUS: [SettingsPage; 16] = [
+        SettingsPage::You,
+        SettingsPage::Fleet,
+        SettingsPage::Security,
+        SettingsPage::Recovery,
+        SettingsPage::Conversations,
+        SettingsPage::Wave,
+        SettingsPage::Beam,
+        SettingsPage::Notifications,
+        SettingsPage::Updates,
+        SettingsPage::Diagnostics,
+        SettingsPage::Ideas,
+        SettingsPage::Vault,
+        SettingsPage::Language,
+        SettingsPage::Dozenal,
+        SettingsPage::About,
+        SettingsPage::Octopus,
+    ];
+
+    /// ferros's rail with the Octopus page at its end.
+    #[cfg(target_os = "ferros")]
+    pub const ALL_OCTOPUS: [SettingsPage; 11] = [
+        SettingsPage::Conversations,
+        SettingsPage::Wave,
+        SettingsPage::Beam,
+        SettingsPage::Notifications,
+        SettingsPage::Updates,
+        SettingsPage::Diagnostics,
+        SettingsPage::Ideas,
+        SettingsPage::Language,
+        SettingsPage::Dozenal,
+        SettingsPage::About,
+        SettingsPage::Octopus,
+    ];
+
     /// Human-readable rail label for this page.
     pub fn label(self) -> &'static str {
         match self {
@@ -130,6 +169,7 @@ impl SettingsPage {
             SettingsPage::Dozenal => "Base",
             SettingsPage::Conversations => "Conversations",
             SettingsPage::About => "About",
+            SettingsPage::Octopus => "Octopus",
         }
     }
 }

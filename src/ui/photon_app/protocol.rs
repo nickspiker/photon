@@ -434,6 +434,10 @@ impl PhotonApp {
         if self.drain_gripe_events() {
             { needs_redraw = true; self.note_redraw(line!()); }
         }
+        // The Octopus page: the word typed into the Diagnostics note opens it, and its one request's answer lands here.
+        if self.octopus_unlock_check() | self.drain_octopus() {
+            { needs_redraw = true; self.note_redraw(line!()); }
+        }
         // Diagnostics log-submit results (off-thread FGTW upload).
         let log_submit_updates: Vec<Result<(), String>> = self
             .log_submit_rx

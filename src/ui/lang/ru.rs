@@ -57,6 +57,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             SettingsPage::Language => "Язык",
             SettingsPage::Dozenal => "Основание",
             SettingsPage::About => "О программе",
+            SettingsPage::Octopus => "Octopus",
         }
         .into(),
         // «Между вами» — это множественное «вы» о двух людях, а не вежливое обращение: тыканье сохраняется.

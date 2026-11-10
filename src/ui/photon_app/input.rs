@@ -522,7 +522,9 @@ impl PhotonApp {
     /// Encrypt + send the compose-box contents to the open contact, append it as an outgoing bubble, and persist. No-op unless a CLUTCH-Complete contact is open with a friendship chain and the box is non-empty. The crypto/wire/persist layers already exist (`FriendshipChains::prepare_send`, `StatusChecker::send_message`, `save_messages`); this is the UI→chain→network glue. Orb (chrome app-icon) tap. Returns true if it acted (caller redraws). Routed by screen: Ready → open the settings / about / help panel (its own screen with a nine-page nav rail); Settings → no-op (the dedicated back affordance exits). Launch / AddDevice / Conversation ignore the orb. The interim Ready → AddDevice entry moved onto the Fleet page's "Add device" pill.
     /// Which settings pages the nav rail shows, gated by attest state. Pre-attest (no session) there is no identity to configure — You/Fleet/Recovery/Appearance/Notifications/Diagnostics all need one — so About, Updates, and Security narrowed to its one pre-attest verb, Wipe (Nick 2026-09-16: a bound device with a lost or foreign handle, or a hand-me-down phone, had no way out but the dev chord or the OS).
     pub(super) fn settings_pages(&self) -> &'static [SettingsPage] {
-        if self.session.is_some() {
+        if self.session.is_some() && self.octopus_open {
+            &SettingsPage::ALL_OCTOPUS
+        } else if self.session.is_some() {
             &SettingsPage::ALL
         } else {
             // Wipe is the identity's, and on ferros the identity is `ahau`'s, the OS capsule (`SettingsPage::ALL`).
@@ -1022,6 +1024,13 @@ impl PhotonApp {
         self.ckpt_loaded = false;
         self.ckpt_last_attempt = None;
         self.roster_pull_rx = None;
+        // The Octopus page belonged to the identity that opened it.
+        self.octopus_open = false;
+        self.octopus_view = None;
+        self.octopus_peers.clear();
+        self.octopus_status = None;
+        self.octopus_rx = None;
+        self.octopus_armed = None;
         self.roster_push_rx = None;
         self.roster_push_queued = false;
         self.needs_initial_roster_pull = true;
