@@ -518,6 +518,8 @@ pub enum StatusUpdate {
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
     },
+    /// A `fleet_req` heard on the beacon port (DEVICES FIRST, ferros 2026-11-10): a device on this link asking for its identity's devices. The UI answers our own identity's: a device our fold knows gets the chain, any other gets our beacon; another identity's gets nothing.
+    LanFleetAsked { handle_proof: [u8; 32], sender_pubkey: DevicePubkey, src_ip: std::net::IpAddr },
     /// A sponsor picked this joining device (`bind_select`): the join thread checks the sender against the fleet's chain and lights green; nothing is bound by it.
     BindSelectReceived { handle_proof: [u8; 32], joiner: [u8; 32], sender_pubkey: DevicePubkey },
     /// A friend's device pushed us its own new address record and it was news: the UI passes it on to our siblings, once (docs/phonebook-web.md "Changes travel to the people who care").
@@ -816,6 +818,7 @@ impl StatusUpdate {
             StatusUpdate::FleetChainReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::AddressPushed { record } => Some(record.device_pubkey.as_bytes()),
             StatusUpdate::BindSelectReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::LanFleetAsked { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FocusClaimReceived { sender_pubkey, .. } => {
                 Some(sender_pubkey.as_bytes())
             }
@@ -1520,6 +1523,9 @@ async fn run_checker(
                         {
                             crate::logf!("LAN: Discovered peer via multicast: {}", src_addr);
                             send_status_update(&status_tx_mcast, lan_update, &event_proxy_mcast);
+                        } else if let Ok((handle_proof, sender_pubkey)) = crate::network::fgtw::protocol::parse_fleet_req_vsf(packet) {
+                            // DEVICES FIRST (ferros, 2026-11-10): a fleet_req broadcast on the beacon port by a device on this link looking for its identity's devices; the UI answers it (LanFleetAsked).
+                            send_status_update(&status_tx_mcast, StatusUpdate::LanFleetAsked { handle_proof, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey), src_ip: src_addr.ip() }, &event_proxy_mcast);
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
@@ -1666,6 +1672,8 @@ async fn run_checker(
                         {
                             crate::logf!("LAN: Discovered peer via IPv6 multicast: {}", src_addr);
                             send_status_update(&status_tx_mcast6, lan_update, &event_proxy_mcast6);
+                        } else if let Ok((handle_proof, sender_pubkey)) = crate::network::fgtw::protocol::parse_fleet_req_vsf(packet) {
+                            send_status_update(&status_tx_mcast6, StatusUpdate::LanFleetAsked { handle_proof, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey), src_ip: src_addr.ip() }, &event_proxy_mcast6);
                         }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {

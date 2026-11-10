@@ -356,6 +356,7 @@ impl PhotonApp {
                 StatusUpdate::FleetChainReceived { .. } => "FleetChainReceived",
                 StatusUpdate::AddressPushed { .. } => "AddressPushed",
                 StatusUpdate::BindSelectReceived { .. } => "BindSelectReceived",
+                StatusUpdate::LanFleetAsked { .. } => "LanFleetAsked",
                 StatusUpdate::StrangerFrame { .. } => "StrangerFrame",
                 StatusUpdate::FocusClaimReceived { .. } => "FocusClaimReceived",
                 StatusUpdate::FriendKnockReceived { .. } => "FriendKnockReceived",
@@ -4326,6 +4327,17 @@ impl PhotonApp {
                 StatusUpdate::FleetChainAsked { handle_proof, sender_pubkey, sender_addr } => {
                     if self.contacts.iter().any(|c| c.knows_device(&sender_pubkey.key)) {
                         fleet_asks_after.push((handle_proof, sender_pubkey.key, sender_addr));
+                    }
+                }
+                // DEVICES FIRST on this link (ferros, 2026-11-10): a fleet_req for OUR identity heard on the beacon port. A device our fold knows gets the chain over PT at its frame port; any other device here gets our beacon, a few bytes it could hear by listening; another identity's ask gets nothing.
+                StatusUpdate::LanFleetAsked { handle_proof, sender_pubkey, src_ip } => {
+                    if self.our_handle_proof() == Some(handle_proof) {
+                        if self.contacts.iter().any(|c| c.knows_device(&sender_pubkey.key)) {
+                            fleet_asks_after.push((handle_proof, sender_pubkey.key, std::net::SocketAddr::new(src_ip, crate::PHOTON_PORT)));
+                        } else if let (Some(checker), Some(hq)) = (self.status_checker.as_ref(), self.handle_query.as_ref()) {
+                            crate::logf!("LAN: a device we do not know ({}) asked for our fleet at {} — answering with our beacon", crate::fp(&sender_pubkey.key), src_ip);
+                            checker.send_lan_unicast(handle_proof, hq.port(), std::net::SocketAddr::new(src_ip, crate::MULTICAST_PORT));
+                        }
                     }
                 }
                 // A chain handed to us: adopted after the drain by the same rule a seed copy is (fold, slot, genesis pin, monotonic tip) — the carrier earns no trust, so no sender gate here beyond caring about the handle (ours, a contact's, or the fleet this device is joining).
