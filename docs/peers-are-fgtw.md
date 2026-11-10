@@ -1,6 +1,6 @@
 # Peers Are FGTW — decentralizing discovery (design)
 
-Status: **design only, not implemented.** Captures the target architecture so we build it in deliberate pieces.
+Status: Phase A and A′ built (2026-10-26); the open phases (B, C, D) continue in `phonebook-web.md` (2026-11-10).
 Written 2026-06-28.
 
 ## The vision
