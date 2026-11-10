@@ -953,7 +953,7 @@ impl FluorApp<Px> for PhotonApp {
             }
             if self.settings_btn_base != HIT_NONE
                 && hit_id >= self.settings_btn_base
-                // 64: the Fleet page's slot map bands — 16+ row tap-copy, 24+ Release, 32+ Lock-out, 40+ Unlock, 48+ Approve-sign-out, 56+ Rename (six rows each). A pill whose id falls outside this window paints its press but never dispatches — bump the cap with every new band.
+                // 64: the Fleet page's slot map bands: 1 Approve and 2 Deny on the pending departure request, 16+ row tap-copy, 24+ Release, 32+ Lock-out, 40+ Unlock, 56+ Rename (six rows each; 48+ is free since the per-card approve went, 2026-11-10). A pill whose id falls outside this window paints its press but never dispatches; bump the cap with every new band.
                 && hit_id < (self.settings_btn_base + SETTINGS_PILL_SLOTS)
             {
                 let slot = hit_id - self.settings_btn_base;
@@ -961,6 +961,12 @@ impl FluorApp<Px> for PhotonApp {
                     if slot == 0 {
                         // "Add device" pill → the pairing-words flow.
                         self.open_add_device_flow();
+                    } else if slot == 1 {
+                        // The departure request's "Approve" (owner, 2026-11-10: one press, no words): countersign and publish the consented Remove. The leaver completes its side when it observes itself de-folded.
+                        self.approve_pending_departure();
+                    } else if slot == 2 {
+                        // The departure request's "Deny": the fleet is told, and this request's salt and stamp are refused for good.
+                        self.deny_pending_departure();
                     } else if slot >= 56 {
                         // "Rename" on a device card → the card's name band becomes a textbox prefilled with the current name (Enter commits fleet-linked, Esc cancels).
                         let idx = (slot - 56) as usize;
@@ -971,39 +977,6 @@ impl FluorApp<Px> for PhotonApp {
                             let id = tb.hit_id();
                             self.fleet_rename = Some((pk, tb));
                             self.change_focus(Some(id));
-                        }
-                    } else if slot >= 48 {
-                        // "Approve sign-out" (two-tap): the CONSENT half of the bilateral removal — countersign the leaver's departure request and publish the consented Remove. The leaver completes its side when it observes itself de-folded.
-                        let idx = (slot - 48) as usize;
-                        let devices = self.fleet_device_rows();
-                        if let Some((pk, false, _, false, name, _, _, _)) = devices.get(idx).cloned() { // WHY/PROOF: the device rows are rebuilt each frame; a hit from the frame the human saw can outlive a device leaving the list
-                            let matches_pending = self
-                                .pending_depart_req
-                                .as_ref()
-                                .is_some_and(|(d, _, _, _, _)| *d == pk);
-                            if !matches_pending {
-                                // Stale pill (request cleared between paint and tap) — disarm and ignore.
-                                self.fleet_approve_armed = None;
-                            } else if self.fleet_approve_armed == Some(pk) {
-                                self.fleet_approve_armed = None;
-                                // WORDS GATE (2026-09-04): a request carrying a commitment demands the leaver's on-screen words before the countersign — live contact with the departing device, and the reason a thief-minted "new owner" request can't be rubber-stamped. Pre-intent requests (no commitment) approve as before.
-                                let has_commit = self
-                                    .pending_depart_req
-                                    .as_ref()
-                                    .is_some_and(|(_, _, _, _, wc)| wc.is_some());
-                                if has_commit && self.depart_words_entry.is_none() {
-                                    let tb = Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.);
-                                    let id = tb.hit_id();
-                                    self.depart_words_entry = Some((pk, tb));
-                                    self.change_focus(Some(id));
-                                } else {
-                                    // Commitment-less request (pre-words era): no words gate — complete on the declared intent, an unspecified 0 taking the conservative brand-kept path.
-                                    let intent = self.pending_depart_req.as_ref().map(|(_, _, _, it, _)| *it).unwrap_or(2);
-                                    self.complete_departure_approval(pk, &name, if intent == 0 { 2 } else { intent });
-                                }
-                            } else {
-                                self.fleet_approve_armed = Some(pk);
-                            }
                         }
                     } else if slot >= 40 {
                         // Locked sibling row's "Unlock" pill (two-tap): the owner's deliberate reversal. Same handle-confirmation shape as the lock — the confirm de-attests, the unlock fires only inside the next successful attest (pending_unlock), so it is proof-of-owner, and the handle is typed only on the standard attest screen.
@@ -1116,7 +1089,7 @@ impl FluorApp<Px> for PhotonApp {
                             self.open_bridge_conversation(pk);
                         }
                     }
-                    // (No page-level slot 1: Rename moved onto each device card at band 56+i. Remove-other stays retired — sovereign records, self-signed departure only.)
+                    // (Slots 1 and 2 are the departure request's Approve and Deny; Rename moved onto each device card at band 56+i. Remove-other stays retired: sovereign records, self-signed departure only.)
                 } else if page == SettingsPage::Security {
                     if slot == 0 {
                         // "Lock" → clear session only (de-attest); vault kept, re-unlock by re-typing your handle. Works on Android (the -1 broadcast drops Kotlin's sticky session).
@@ -2669,12 +2642,6 @@ impl FluorApp<Px> for PhotonApp {
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
-                        if self.depart_words_entry.is_some() {
-                            self.depart_words_entry = None;
-                            self.change_focus(None);
-                            ctx.window.request_redraw();
-                            return EventResponse::Handled;
-                        }
                         if self.fleet_rename.is_some() {
                             // Rename abandoned — drop the box, nothing written.
                             self.fleet_rename = None;
@@ -2793,16 +2760,6 @@ impl FluorApp<Px> for PhotonApp {
                             .unwrap_or(false);
                         if focused_is_fleet_rename {
                             self.commit_fleet_rename();
-                            ctx.window.request_redraw();
-                            return EventResponse::Handled;
-                        }
-                        let focused_is_depart_words = self
-                            .depart_words_entry
-                            .as_ref()
-                            .map(|(_, t)| Some(t.hit_id()) == self.focused)
-                            .unwrap_or(false);
-                        if focused_is_depart_words {
-                            self.submit_depart_words();
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
@@ -3177,6 +3134,23 @@ impl FluorApp<Px> for PhotonApp {
                     crate::logf!("NOTIFY: tap named conversation {}, which this device does not hold", hex::encode(&id.as_bytes()[..4]));
                 }
             }
+            // A departure request's notification opens the Fleet page at its top, where the request's Approve and Deny are (owner, 2026-11-10).
+            #[cfg(target_os = "android")]
+            let fleet_tapped = crate::platform::jni_android::take_open_fleet();
+            #[cfg(not(target_os = "android"))]
+            let fleet_tapped = crate::platform::desktop_notify::take_open_fleet();
+            if fleet_tapped {
+                self.change_focus(None);
+                self.settings_content_scroll = 0.0;
+                self.refresh_fleet_retired();
+                self.state = AppState::Settings(SettingsPage::Fleet);
+                crate::log(if self.pending_depart_req.is_some() {
+                    "NOTIFY: tap opened the Fleet page on the departure request"
+                } else {
+                    "NOTIFY: tap opened the Fleet page; the departure request was settled meanwhile"
+                });
+                needs_redraw = true;
+            }
         }
 
         // Point the top-left orb at the current subject (peer avatar + their presence ring in a conversation, else the Photon orb + our connectivity). Self-diffing — a no-op unless the contact / avatar / screen changed.
@@ -3423,17 +3397,36 @@ impl FluorApp<Px> for PhotonApp {
         if want_scan != self.beacon_scan_active {
             if want_scan {
                 crate::network::pairing_beacon::start_scan();
-                crate::network::pairing_nfc::start_reader();
                 self.beacon_scan_active = true;
             } else {
                 crate::network::pairing_beacon::stop_scan();
-                crate::network::pairing_nfc::stop_reader();
                 self.beacon_scan_active = false;
+            }
+        }
+        // The NFC reader: while the AddDevice screen is up (a joiner's tap), and while a departure request is pending on an attested device (owner, 2026-11-10: a tap of the leaving device, which serves its request's salt, is Approve; the reverse of add). Android reader mode runs only with the app in front, so the screen is on. Diffed per tick like the scan, so every exit path stops the radio.
+        let want_depart_reader = self.pending_depart_req.is_some() && self.session.is_some();
+        let want_reader = want_scan || want_depart_reader;
+        if want_reader != self.depart_nfc_reader {
+            if want_reader {
+                crate::network::pairing_nfc::start_reader();
+            } else {
+                crate::network::pairing_nfc::stop_reader();
+            }
+            self.depart_nfc_reader = want_reader;
+        }
+        // A tap that read the pending departure request's salt approves it.
+        let mut tapped = if want_reader { crate::network::pairing_nfc::take_secret() } else { None };
+        if want_depart_reader {
+            if let Some(s) = tapped.filter(|s| self.pending_depart_req.as_ref().is_some_and(|p| p.salt == *s)) {
+                crate::logf!("NFC: tap read departure request {}: approving", hex::encode(&s[..4]));
+                tapped = None;
+                self.approve_pending_departure();
+                { needs_redraw = true; self.note_redraw(line!() + 100_000); }
             }
         }
         // NFC instant add: a tapped secret matching a candidate's published commitment IS the proximity + intent proof — bind it now, no words typed. The green-confirm rotation gate still stands (two-phase), so "instant" = tap phones, press confirm.
         if want_scan {
-            if let Some(s) = crate::network::pairing_nfc::take_secret() {
+            if let Some(s) = tapped {
                 let matched = fgtw::sponsor::nfc_match(&s, &self.add_device_candidates).map(|i| self.add_device_candidates[i].req.clone());
                 match matched {
                     Some(req) if !self.add_device_checking => {

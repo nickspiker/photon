@@ -605,9 +605,6 @@ impl PhotonApp {
             self.fleet_rename
                 .as_mut()
                 .map(|(_, t)| (TextboxRole::FleetRename, t)),
-            self.depart_words_entry
-                .as_mut()
-                .map(|(_, t)| (TextboxRole::DepartWords, t)),
             self.molecule_title_textbox
                 .as_mut()
                 .map(|t| (TextboxRole::GroupTitle, t)),
@@ -1086,6 +1083,12 @@ impl PhotonApp {
         self.add_device_typo = None;
         self.add_device_checking = false;
         self.beacon_scan_active = false;
+        // Departure state, both sides: no request of ours stands on a wiped device, and none of the old fleet's is ours to answer.
+        self.depart_request_t = None;
+        self.depart_salt = None;
+        self.depart_nfc_serve = None;
+        self.depart_was_denied = false;
+        self.pending_depart_req = None;
         self.add_device_rx = None;
         self.add_device_tx = None;
         self.lan_heard.clear();

@@ -46,6 +46,8 @@ class PhotonConnectionService : Service() {
         const val NOTIFICATION_ID = 1001
         const val MESSAGE_NOTIFICATION_ID = 1002
         const val WAVE_NOTIFICATION_ID = 1003
+        /** The departure-request notification (owner, 2026-11-10): a fleet device asks to leave; the tap opens the Fleet page. */
+        const val FLEET_NOTIFICATION_ID = 1004
         /// Dedicated wave channel — see postWaveNotification for why waves never share the message channel's (user-degradable) importance.
         const val WAVE_CHANNEL_ID = "photon.waves"
         const val ACTION_ANSWER_WAVE = "com.photon.ANSWER_WAVE"
@@ -54,6 +56,8 @@ class PhotonConnectionService : Service() {
         const val EXTRA_WAVE_ACTION = "com.photon.WAVE_ACTION"
         /** The conversation (64 hex chars) a message notification's tap opens. */
         const val EXTRA_OPEN_CONVERSATION = "com.photon.OPEN_CONVERSATION"
+        /** A departure-request notification's tap: open the Fleet page, where the request's Approve and Deny are. */
+        const val EXTRA_OPEN_FLEET = "com.photon.OPEN_FLEET"
         /** The extra every PendingIntent this app builds for its own Activity carries, and the value it must hold (security audit UPW-009). */
         const val EXTRA_RUN_NONCE = "com.photon.RUN_NONCE"
         /** Minted once per process (UUID v4 from SecureRandom): PhotonActivity is exported (it is the launcher), so any installed app can start it with the extras above, and only an intent minted by THIS process knows the nonce. It dies with the process, so a notification posted by an earlier run opens the app and nothing more. */
@@ -751,6 +755,48 @@ class PhotonConnectionService : Service() {
 
         playChirp(wav)
         vibrateChirp(timings, amplitudes)
+    }
+
+    /**
+     * Post the departure-request notification (owner, 2026-11-10): a device of the person's fleet asks
+     * to leave, and every fleet device asks the person. Called FROM RUST once per request. The tap opens
+     * the Fleet page with the request's Approve and Deny ready (EXTRA_OPEN_FLEET, behind this run's
+     * nonce like every PendingIntent this app builds). Its own id, so it never replaces a message's
+     * banner; the message channel, so the person's notification settings for Photon apply.
+     */
+    fun postFleetNotification(title: String, text: String) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                PhotonActivity.CHANNEL_ID,
+                PhotonActivity.CHANNEL_NAME,
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Photon message notifications"
+                setSound(null, null)
+                enableVibration(false)
+            }
+            getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
+        }
+        val tapIntent = Intent(this, PhotonActivity::class.java)
+            .putExtra(EXTRA_RUN_NONCE, RUN_NONCE)
+            .putExtra(EXTRA_OPEN_FLEET, true)
+        // Request code 1: its own PendingIntent, so FLAG_UPDATE_CURRENT here never rewrites the message banner's extras (request code 0).
+        val pendingIntent = PendingIntent.getActivity(
+            this,
+            1,
+            tapIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val notification = NotificationCompat.Builder(this, PhotonActivity.CHANNEL_ID)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentIntent(pendingIntent)
+            .setAutoCancel(true)
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .build()
+        getSystemService(NotificationManager::class.java).notify(FLEET_NOTIFICATION_ID, notification)
     }
 
     /** Play the chirp WAV (mono 16-bit PCM) on the NOTIFICATION audio stream via AudioTrack. Fire-and-

@@ -2332,23 +2332,33 @@ fn envelope_signer(device_secret: &[u8; 32]) -> crate::network::fgtw::fleet::Dev
     crate::network::fgtw::fleet::signer_for(&fgtw::keys::Keypair::from_seed(device_secret))
 }
 
-/// Build a `depart_req` — the LEAVING device's sibling-to-sibling removal request (bilateral removal, the mirror of the add ceremony): the stamp `t`, the device's consent eggs over `fgtw::fleet::departreq_signing_bytes(hp, device, t)`, the intent (1 new owner, 2 desk, 0 none on the wire) and the approval words' commitment, signed by the same device key. A surviving member's user approves on their screen; that device countersigns and publishes the consented Remove chain op.
+/// Build a `depart_req`: the LEAVING device's sibling-to-sibling removal request (bilateral removal, the mirror of the add ceremony): the stamp `t`, the device's consent eggs over `fgtw::fleet::departreq_signing_bytes(hp, device, t)`, the intent (1 new owner, 2 desk, 0 none on the wire) and this request's salt (32 fresh random bytes naming it; a denied salt is refused for good), signed by the same device key. Every fleet device that hears it asks its person, Approve or Deny (owner, 2026-11-10: no words); Approve countersigns and publishes the consented Remove chain op.
 pub fn build_depart_req_vsf(
     t_osc: i64,
     consent_sig: &[u8],
     _device_pubkey: &[u8; 32],
     device_secret: &[u8; 32],
     intent: u8,
-    words_commit: Option<&[u8; 32]>,
+    salt: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
-    let req = fgtw::protocol::DepartReq { t: t_osc, consent_sig: consent_sig.to_vec(), intent, words_commit: words_commit.copied() };
+    let req = fgtw::protocol::DepartReq { t: t_osc, consent_sig: consent_sig.to_vec(), intent, salt: *salt };
     fgtw::protocol::depart_req(&req, &envelope_signer(device_secret), vsf::eagle_time_oscillations())
 }
 
-/// Parse + verify a `depart_req`. Returns (consent_t, consent_sig, sender device pubkey = the leaving device, intent, words_commit). Intent 0 + no commitment = a pre-intent build's request — approve treats it as desk with no words gate.
-pub fn parse_depart_req_vsf(vsf_bytes: &[u8]) -> Result<(i64, Vec<u8>, [u8; 32], u8, Option<[u8; 32]>), String> {
+/// Parse + verify a `depart_req`. Returns (consent_t, consent_sig, sender device pubkey = the leaving device, intent, salt). Intent 0 = a pre-intent build's request, which approve treats as desk. A request without a salt (a build from before 2026-11-10, which carried approval words) does not parse.
+pub fn parse_depart_req_vsf(vsf_bytes: &[u8]) -> Result<(i64, Vec<u8>, [u8; 32], u8, [u8; 32]), String> {
     let (r, sender) = fgtw::protocol::parse_depart_req(vsf_bytes)?;
-    Ok((r.t, r.consent_sig, sender, r.intent, r.words_commit))
+    Ok((r.t, r.consent_sig, sender, r.intent, r.salt))
+}
+
+/// Build a `depart_deny`: this device's person said Deny to the departure request of `leaver` named by `salt` and stamped `consent_t`, in fleet `handle_proof`. Sent to every fleet device (the leaver among them); each clears the request and refuses that salt and that stamp from then on.
+pub fn build_depart_deny_vsf(handle_proof: &[u8; 32], leaver: &[u8; 32], salt: &[u8; 32], consent_t: i64, device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
+    fgtw::protocol::depart_deny(handle_proof, leaver, salt, consent_t, &envelope_signer(device_secret), vsf::eagle_time_oscillations())
+}
+
+/// Parse + verify a `depart_deny`. Returns (fleet handle proof, leaving device, the request's salt, its consent stamp, the device that denied). The caller checks the denier is a current member of our fleet.
+pub fn parse_depart_deny_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32], [u8; 32], i64, [u8; 32]), String> {
+    fgtw::protocol::parse_depart_deny(vsf_bytes)
 }
 
 /// Build a `fleet_req` — "send me the membership chain of handle `hp`". The answerer gates on knowing the asking device (a friend's or a sibling's), the chain being public but a 10–50 KB answer being amplification bait.
@@ -4429,17 +4439,20 @@ mod pong_seal_tests {
         assert!(parse_attach_none_vsf(&have).is_err());
     }
 
-    /// The departure request through photon's call shapes over fgtw's codec: the signed build/parse round-trips with intent and commitment surviving, and pre-intent absence defaulting. The section's bytes against the hand codec are pinned in fgtw (protocol.rs `depart_req_matches_the_hand_codec_and_round_trips`).
+    /// The departure request and its deny through photon's call shapes over fgtw's codec: the signed build/parse round-trips with intent and salt surviving, a pre-intent request reads intent 0, and the deny names the fleet, the leaver, the salt, the stamp and the denier. The section's bytes against the hand codec are pinned in fgtw (protocol.rs `depart_req_matches_the_hand_codec_and_round_trips`).
     #[test]
-    fn depart_req_round_trips() {
+    fn depart_req_and_deny_round_trip() {
         let kp = fgtw::keys::Keypair::from_seed(&[0x5Au8; 32]);
-        let frame = build_depart_req_vsf(9_999, &[7u8; 64], &kp.public.to_bytes(), kp.secret.as_bytes(), 1, Some(&[3u8; 32])).unwrap();
-        let (t, cs, pk, it, wc) = parse_depart_req_vsf(&frame).unwrap();
-        assert_eq!((t, cs.len(), pk, it, wc), (9_999, 64, kp.public.to_bytes(), 1, Some([3u8; 32])));
-        // Pre-intent shape: no intent, no commitment — parses as desk with no words gate.
-        let legacy = build_depart_req_vsf(5, &[1u8; 64], &kp.public.to_bytes(), kp.secret.as_bytes(), 0, None).unwrap();
-        let (_, _, _, it, wc) = parse_depart_req_vsf(&legacy).unwrap();
-        assert_eq!((it, wc), (0, None));
+        let frame = build_depart_req_vsf(9_999, &[7u8; 64], &kp.public.to_bytes(), kp.secret.as_bytes(), 1, &[3u8; 32]).unwrap();
+        let (t, cs, pk, it, salt) = parse_depart_req_vsf(&frame).unwrap();
+        assert_eq!((t, cs.len(), pk, it, salt), (9_999, 64, kp.public.to_bytes(), 1, [3u8; 32]));
+        let no_intent = build_depart_req_vsf(5, &[1u8; 64], &kp.public.to_bytes(), kp.secret.as_bytes(), 0, &[4u8; 32]).unwrap();
+        let (_, _, _, it, salt) = parse_depart_req_vsf(&no_intent).unwrap();
+        assert_eq!((it, salt), (0, [4u8; 32]));
+        let deny = build_depart_deny_vsf(&[1u8; 32], &[2u8; 32], &[3u8; 32], 9_999, kp.secret.as_bytes()).unwrap();
+        assert_eq!(parse_depart_deny_vsf(&deny).unwrap(), ([1u8; 32], [2u8; 32], [3u8; 32], 9_999, kp.public.to_bytes()));
+        assert!(parse_depart_req_vsf(&deny).is_err());
+        assert!(parse_depart_deny_vsf(&frame).is_err());
     }
 
     /// The fold-freshness tip: e6 signed round-trip (a negative osc survives — eagle times are signed, and the ek trap taught us width-typed reads die), and absence reads None (legacy sender = no verdict, never a zero sentinel).

@@ -5701,6 +5701,37 @@ impl PhotonApp {
                         flow.line(&mut canvas, ctx.text, &tr(Msg::FleetSigFloor(&floor_words, fs.full_count(), fs.members)), hspan2 * 0.82, colour, weight);
                     }
                     flow.gap(hspan2 * 0.8);
+                    // THE DEPARTURE REQUEST, first on the page (owner, 2026-11-10: "go right to the fleet page and have the unbind request 'Approve' or 'Deny' screen ready to go"): which device asks to leave, what it declared, and the two answers. Slots 1 and 2.
+                    if let Some(p) = self.pending_depart_req.as_ref() {
+                        // `departing_name`, spelled on the field: `self` is mutably borrowed thru `chrome` here.
+                        let name = self
+                            .contacts
+                            .iter()
+                            .find(|c| c.is_sibling && c.knows_device(&p.leaver))
+                            .map(|c| c.display_name())
+                            .unwrap_or_else(|| tr(Msg::ADevice).into_owned());
+                        flow.line(&mut canvas, ctx.text, &tr(Msg::DepartRequestLine(&name)), hspan2 * 1.1, *theme::CONTACT_NAME_COLOUR, 600);
+                        if p.intent != 0 {
+                            flow.line(
+                                &mut canvas,
+                                ctx.text,
+                                &tr(if p.intent == 1 { Msg::DepartIntentNewOwner } else { Msg::DepartIntentDesk }),
+                                hspan2 * 0.85,
+                                if p.intent == 1 { theme::PILL_YELLOW.1 } else { *theme::LABEL_COLOUR },
+                                600,
+                            );
+                        }
+                        let (approve, deny) = (tr(Msg::DepartApprovePill), tr(Msg::DepartDenyPill));
+                        flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2, &[
+                            (approve.as_ref(), btn_base + 1, true, Some(*theme::PILL_GREEN)),
+                            (deny.as_ref(), btn_base + 2, true, Some(*theme::PILL_RED)),
+                        ], "Oxanium");
+                        flow.gap(hspan2 * 0.8);
+                        let ru = hairline_px(ctx.viewport.ru);
+                        let hl = flow.band(ru as Coord);
+                        pane_hairline(&mut canvas, &layout, hl.y, ru, None);
+                        flow.gap(hspan2 * 0.8);
+                    }
                     for (i, (pk, is_self, online, retired, name, link, tier, about)) in
                         devices.iter().enumerate()
                     {
@@ -5795,11 +5826,6 @@ impl PhotonApp {
                         if !about.is_empty() {
                             flow.line(&mut canvas, ctx.text, &super::about_line_display(about), hspan2 * 0.7, *theme::LABEL_COLOUR, 400);
                         }
-                        // ACTION pills on their own band — flow_pills sizes to labels and wraps if the pane clamps.
-                        let departing = self
-                            .pending_depart_req
-                            .as_ref()
-                            .is_some_and(|(d, _, _, _, _)| d == pk);
                         // ACTION pills — flow_pills sizes each to its label and WRAPS to the next band when the column runs out (Nick 2026-09-08: "if the user scales it such that Bridge / Rename / Revoke are too wide, revoke should wrap to the next line"). Same helper everywhere, so no page hand-rolls a row that can overflow.
                         if *retired {
                             let armed = self.fleet_release_armed.as_ref() == Some(pk);
@@ -5812,15 +5838,12 @@ impl PhotonApp {
                                 (&tr(Msg::RenamePill), (btn_base + 56 + i as HitId), true, None),
                             ], "Oxanium");
                         } else {
-                            // Bridge + Rename + the row's state pill (Revoke / Reinstate / Approve departure). Revoke wears PILL_RED unarmed as well as armed — it is the hostile verb on this page and shouldn't have to be tapped once to look like it.
+                            // Bridge + Rename + the row's state pill (Revoke / Reinstate; a departure request's Approve and Deny sit at the top of the page). Revoke wears PILL_RED unarmed as well as armed: it is the hostile verb on this page and shouldn't have to be tapped once to look like it.
                             let mut pills: Vec<(std::borrow::Cow<'static, str>, HitId, bool, Option<(u32, u32)>)> = Vec::with_capacity(3);
                             let bridge_fill = if *online { Some(*theme::PILL_GREEN) } else { Some(*theme::PILL_GREY) };
                             pills.push((tr(Msg::BridgePill), (btn_base + 8 + i as HitId), true, bridge_fill));
                             pills.push((tr(Msg::RenamePill), (btn_base + 56 + i as HitId), true, None));
-                            if departing {
-                                let armed = self.fleet_approve_armed.as_ref() == Some(pk);
-                                pills.push((tr(Msg::ApproveSignOutPill { armed }), (btn_base + 48 + i as HitId), true, Some(if armed { *theme::PILL_RED } else { *theme::PILL_YELLOW })));
-                            } else if row_locked {
+                            if row_locked {
                                 let armed = self.fleet_unlock_armed.as_ref() == Some(pk);
                                 pills.push((tr(Msg::ReinstatePill { armed }), (btn_base + 40 + i as HitId), true, if armed { Some(*theme::PILL_RED) } else { None }));
                             } else {
@@ -5829,32 +5852,6 @@ impl PhotonApp {
                             }
                             let refs: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = pills.iter().map(|(l, h, e, f)| (l.as_ref(), *h, *e, *f)).collect();
                             flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &refs, "Oxanium");
-                        }
-                        // DEPARTURE ceremony bands (2026-09-04): the declared intent under the pills, and — once Approve is tapped on a words-carrying request — the words-entry box that gates the countersign (type what the departing device's screen shows).
-                        let departing_here = self.pending_depart_req.as_ref().is_some_and(|(d, _, _, _, _)| d == pk);
-                        if departing_here {
-                            let intent = self.pending_depart_req.as_ref().map(|(_, _, _, it, _)| *it).unwrap_or(0);
-                            if intent != 0 {
-                                flow.line(
-                                    &mut canvas,
-                                    ctx.text,
-                                    &tr(if intent == 1 { Msg::DepartIntentNewOwner } else { Msg::DepartIntentDesk }),
-                                    hspan2 * 0.85,
-                                    if intent == 1 { theme::PILL_YELLOW.1 } else { *theme::LABEL_COLOUR },
-                                    600,
-                                );
-                            }
-                            let entry_here = self.depart_words_entry.as_ref().is_some_and(|(d, _)| d == pk);
-                            if entry_here {
-                                flow.line(&mut canvas, ctx.text, &tr(Msg::DepartWordsPrompt), hspan2 * 0.85, *theme::CONTACT_NAME_COLOUR, 600);
-                                let tb_band = flow.band(hspan2 * 2.0);
-                                if let Some((_, tb)) = self.depart_words_entry.as_mut() {
-                                    tb.set_rect(tb_band.x + tb_band.w * 0.35, tb_band.center_y(), tb_band.w * 0.66, tb_band.h * 0.9);
-                                    tb.set_font_size(hspan2 * 0.95, ctx.text);
-                                    let id = tb.hit_id();
-                                    tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
-                                }
-                            }
                         }
                         // AIR between device cards — the whole point. Between cards (never after the last) the conversation's white hairline rides the midpoint (Nick 2026-09-03: "same white hairlines between messages"): pure white α=1/8 = VERSION_COLOUR, the between-messages divider treatment.
                         flow.gap(hspan2 * 0.6);
@@ -6032,13 +6029,13 @@ impl PhotonApp {
                             }
                         }
                         flow.gap(hspan2 * 0.4);
-                        // LEAVER's pending departure: the approval words, big and Oxanium, plus the waiting line — this screen IS the ceremony's display half until the de-fold completes (or relaunch clears it).
+                        // LEAVER's pending departure (owner, 2026-11-10): it is asking the person's devices, approve on any of them. No words, and nothing about which devices answered or how they are reached. A denied request says so; asking again (Release) makes a new request.
                         if self.depart_request_t.is_some() {
-                            if let Some(words) = self.depart_words.clone() {
-                                flow.line(&mut canvas, ctx.text, &tr(Msg::DepartWordsShow(&words)), hspan2 * 1.25, *theme::SEARCH_FOUND_COLOUR, 700);
-                                flow.prose(&mut canvas, ctx.text, &tr(Msg::DepartWaitingLine), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
-                                flow.gap(hspan2 * 0.6);
-                            }
+                            flow.prose(&mut canvas, ctx.text, &tr(Msg::DepartWaitingLine), hspan2 * 1.1, *theme::SEARCH_FOUND_COLOUR, 600);
+                            flow.gap(hspan2 * 0.6);
+                        } else if self.depart_was_denied {
+                            flow.prose(&mut canvas, ctx.text, &tr(Msg::DepartDenied), hspan2 * 1.1, *theme::ERROR_TEXT_COLOUR, 600);
+                            flow.gap(hspan2 * 0.6);
                         }
                         flow.line(&mut canvas, ctx.text, &tr(Msg::SecurityStatusLine), hspan2, *theme::LABEL_COLOUR, 400);
                         flow.gap(hspan2 * 0.8);

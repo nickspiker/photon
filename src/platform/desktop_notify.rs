@@ -39,6 +39,20 @@ static WAKE: std::sync::OnceLock<std::sync::Arc<dyn fluor::host::WakeSender<crat
 /// The conversation the last clicked notification named, taken by the app's tick.
 static PENDING_OPEN: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
 
+/// A clicked departure-request notification asked for the Fleet page, taken by the app's tick.
+static PENDING_OPEN_FLEET: AtomicBool = AtomicBool::new(false);
+
+/// What a click on a notification opens.
+#[allow(dead_code)] // read only where the notifier reports a click (Linux)
+#[derive(Clone, Copy)]
+enum OnClick {
+    /// The window just comes up.
+    Window,
+    Conversation([u8; 32]),
+    /// The Fleet page, where a departure request's Approve and Deny are.
+    Fleet,
+}
+
 pub fn set_wake(proxy: std::sync::Arc<dyn fluor::host::WakeSender<crate::ui::PhotonEvent>>) {
     if WAKE.set(proxy).is_err() {
         crate::log("NOTIFY: the wake handle was already set — the first one stays");
@@ -50,11 +64,22 @@ pub fn take_open_conversation() -> Option<[u8; 32]> {
     PENDING_OPEN.lock().ok().and_then(|mut g| g.take())
 }
 
+/// One-shot take of a departure-request notification's click: true = open the Fleet page.
+pub fn take_open_fleet() -> bool {
+    PENDING_OPEN_FLEET.swap(false, Ordering::Relaxed)
+}
+
 /// A notification was CLICKED: remember what it named and bring the window up; the tick opens it.
 #[allow(dead_code)] // reached only from the platforms whose notifier reports a click (Linux)
-fn clicked(conversation: Option<[u8; 32]>) {
-    if let (Some(id), Ok(mut g)) = (conversation, PENDING_OPEN.lock()) {
-        *g = Some(id);
+fn clicked(target: OnClick) {
+    match target {
+        OnClick::Window => {}
+        OnClick::Conversation(id) => {
+            if let Ok(mut g) = PENDING_OPEN.lock() {
+                *g = Some(id);
+            }
+        }
+        OnClick::Fleet => PENDING_OPEN_FLEET.store(true, Ordering::Relaxed),
     }
     crate::log("NOTIFY: desktop alert clicked — surfacing the window");
     if let Some(w) = WAKE.get() {
@@ -79,11 +104,21 @@ pub fn notify_new_message(msg_hp: &[u8; 32], sender: &str, text: &str, conversat
         *last = *msg_hp;
     }
     crate::log("NOTIFY: desktop alert posted");
-    post(sender, text, conversation);
+    post(sender, text, conversation.map_or(OnClick::Window, OnClick::Conversation));
+}
+
+/// A fleet device asks to leave the fleet (owner, 2026-11-10): the person is asked on every fleet device, and a click opens the Fleet page with the request's Approve and Deny ready. Gated like a message: an attended window has the in-app toast and the page. The app calls this once per request (`salt`, for the log): a resend of the pending request does not reach here.
+pub fn notify_fleet_request(salt: &[u8; 32], title: &str, body: &str) {
+    if window_attended() && ATTENTION_OURS.load(Ordering::Relaxed) {
+        crate::log("NOTIFY: departure request alert suppressed: the window is attended");
+        return;
+    }
+    crate::logf!("NOTIFY: departure request {} alert posted", hex::encode(&salt[..4]));
+    post(title, body, OnClick::Fleet);
 }
 
 #[cfg(target_os = "linux")]
-fn post(title: &str, body: &str, conversation: Option<[u8; 32]>) {
+fn post(title: &str, body: &str, on_click: OnClick) {
     // CLICKABLE: `--action` + `--wait` keep notify-send running until the notification closes and print the chosen action, so a click opens its conversation. It runs on its own thread; a libnotify too old for actions exits at once with nothing printed, and the plain fire-and-forget form posts instead.
     let (title, body) = (title.to_string(), body.to_string());
     std::thread::spawn(move || {
@@ -94,7 +129,7 @@ fn post(title: &str, body: &str, conversation: Option<[u8; 32]>) {
         match waited {
             Ok(out) if out.status.success() => {
                 if String::from_utf8_lossy(&out.stdout).trim() == "default" {
-                    clicked(conversation);
+                    clicked(on_click);
                 }
             }
             Ok(_) => {
@@ -110,7 +145,7 @@ fn post(title: &str, body: &str, conversation: Option<[u8; 32]>) {
 }
 
 #[cfg(target_os = "macos")]
-fn post(title: &str, body: &str, _conversation: Option<[u8; 32]>) {
+fn post(title: &str, body: &str, _on_click: OnClick) {
     // `display notification` needs no bundle/signing/notarization; attribution shows as Script Editor until we ship a proper .app with UNUserNotificationCenter.
     // Title/body are now real sender/message text interpolated into an AppleScript string literal, so backslashes and quotes MUST be escaped or a message containing them breaks (or injects into) the script.
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
@@ -124,7 +159,7 @@ fn post(title: &str, body: &str, _conversation: Option<[u8; 32]>) {
 }
 
 #[cfg(target_os = "windows")]
-fn post(title: &str, body: &str, _conversation: Option<[u8; 32]>) {
+fn post(title: &str, body: &str, _on_click: OnClick) {
     // WinRT toast via PowerShell — attribution rides PowerShell's AppUserModelID until we register our own (needs a Start-menu shortcut with an AUMID; packaging-time work). -WindowStyle Hidden keeps the transient console from flashing.
     // NO MESSAGE TEXT IN THE SCRIPT (security audit UPW-001, a zero-click command run): the title and body are a sender's name and words, and PowerShell reads U+2018–U+201B as quotes too, so no escaping of a literal is safe. The script is a constant; the text rides two environment variables the script reads as data.
     const PS: &str = "[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null; \
@@ -141,4 +176,4 @@ fn post(title: &str, body: &str, _conversation: Option<[u8; 32]>) {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-fn post(_title: &str, _body: &str, _conversation: Option<[u8; 32]>) {}
+fn post(_title: &str, _body: &str, _on_click: OnClick) {}

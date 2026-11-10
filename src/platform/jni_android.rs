@@ -2333,6 +2333,52 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOpenConversatio
     crate::logf!("NOTIFY: tap asked to open conversation {}", hex::encode(&bytes[..4]));
 }
 
+/// A departure-request notification's TAP (owner, 2026-11-10): the Activity saw EXTRA_OPEN_FLEET on its tap intent; the app's tick takes it and opens the Fleet page, where the request's Approve and Deny are.
+#[cfg(target_os = "android")]
+static PENDING_OPEN_FLEET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// One-shot take of a departure-request notification's tap: true = open the Fleet page.
+#[cfg(target_os = "android")]
+pub fn take_open_fleet() -> bool {
+    PENDING_OPEN_FLEET.swap(false, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Kotlin: a departure-request notification was tapped. Ptr-less like nativeOpenConversation, so a cold launch from the tap still opens the page once the app is up.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOpenFleet(_env: JNIEnv<'_>, _class: JClass<'_>) {
+    PENDING_OPEN_FLEET.store(true, std::sync::atomic::Ordering::Relaxed);
+    crate::log("NOTIFY: tap asked to open the Fleet page");
+}
+
+/// A fleet device asks to leave the fleet (owner, 2026-11-10): post the departure-request notification (Kotlin `postFleetNotification`); a tap opens the Fleet page with the request's Approve and Deny ready. Always posted: the request is the person's to answer on every fleet device, and the app calls this once per request (`salt`, for the log). No chirp: it is not a person's message. Callable from any thread.
+#[cfg(target_os = "android")]
+pub fn notify_fleet_request(salt: &[u8; 32], title: &str, body: &str) {
+    let Some((vm, svc)) = MESSAGE_NOTIFIER.get() else {
+        crate::log("NOTIFY: departure request not posted: the service has not registered");
+        return;
+    };
+    let mut env = match vm.attach_current_thread() {
+        Ok(env) => env,
+        Err(e) => {
+            crate::logf!("NOTIFY: departure request not posted: JVM attach failed ({:?})", e);
+            return;
+        }
+    };
+    let (Ok(title_js), Ok(body_js)) = (env.new_string(title), env.new_string(body)) else {
+        crate::log("NOTIFY: departure request not posted: string alloc failed");
+        return;
+    };
+    if crate::log_err!(
+        env.call_method(svc.as_obj(), "postFleetNotification", "(Ljava/lang/String;Ljava/lang/String;)V", &[(&title_js).into(), (&body_js).into()]),
+        "JNI: postFleetNotification"
+    ) {
+        crate::logf!("NOTIFY: departure request {} alert posted", hex::encode(&salt[..4]));
+    } else {
+        crate::log_err!(env.exception_clear(), "JNI: exception clear after postFleetNotification");
+    }
+}
+
 /// THE GRANTS GATE (platform/grants.rs): the Activity's report of the microphone and camera grants — at every resume and after every prompt — and the edge a held wave goes out on.
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeGrants(_env: JNIEnv<'_>, _this: JObject<'_>, mic: jint, camera: jint) {

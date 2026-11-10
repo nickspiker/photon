@@ -167,6 +167,13 @@ pub mod desktop_notify {
     }
 
     pub fn notify_new_message(_msg_hp: &[u8; 32], _sender: &str, _text: &str, _conversation: Option<[u8; 32]>) {}
+
+    pub fn take_open_fleet() -> bool {
+        false
+    }
+
+    /// No OS notifications on ferros yet (the shell has none to post to): the in-app toast and the Fleet page carry a departure request.
+    pub fn notify_fleet_request(_salt: &[u8; 32], _title: &str, _body: &str) {}
 }
 
 #[cfg(target_os = "ferros")]

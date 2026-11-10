@@ -570,6 +570,20 @@ fn party_colour(digest: &[u8; 32]) -> u32 {
     vsf_rgb_to_stored(rgb_vsf)
 }
 
+/// A fleet device's departure request awaiting this person's Approve or Deny (owner, 2026-11-10: no words; the request is a member's signature, checked on receipt and again by the fold). `salt` names the request: a Deny refuses it, and the leaver's stamp `t`, for good.
+#[derive(Clone)]
+struct PendingDeparture {
+    /// The leaving device.
+    leaver: [u8; 32],
+    /// The consent stamp its signature covers.
+    t: i64,
+    /// Its consent eggs (the Remove op's consent_sig).
+    sig: Vec<u8>,
+    /// 1 new owner, 2 desk, 0 a pre-intent build (approved as desk).
+    intent: u8,
+    salt: [u8; 32],
+}
+
 /// A history page opened OFF the UI thread, posted back for the drain to merge. The kete open of an up-to-MAX_PAGE_BYTES page ran inline on the render thread — 210-485ms per page in the field (2026-08-08), the single largest status-arm stall. Only the frame's identity travels; the drain re-derives contact/rid/sibling state fresh, because the indexes and in-flight cursor it would have captured at dispatch can shift while the worker runs.
 struct HistPageOpened {
     conversation_token: [u8; 32],
@@ -1435,8 +1449,6 @@ enum TextboxRole {
     UnattendedConfirm,
     /// The Fleet page's inline machine-rename box (one device card's name band swaps to it) — registry membership per the two-walk rule.
     FleetRename,
-    /// The Fleet page's departure-approval words box — typing the leaver's on-screen words is the live-contact binding that gates the countersign.
-    DepartWords,
     /// The Manage page's New-group title box (docs/molecules.md §10.5) — registry membership per the two-walk rule.
     GroupTitle,
 }
@@ -2882,16 +2894,18 @@ pub struct PhotonApp {
     /// Two-tap confirm armed for the Security page's SELF-revoke (this device revoking itself — the desk case). Mutually exclusive with the other destructive pills; cleared on any page switch.
     /// Our outstanding departure request's consent stamp (bilateral removal): Some = we asked the fleet to sign us out and await a sibling's approval. Completion = observing our own key de-folded from the adopted member set. RAM-only; a relaunch just re-requests.
     depart_request_t: Option<i64>,
+    /// LEAVER side: the salt naming our outstanding departure request (32 fresh random bytes per request, inside what our key signs). A `depart_deny` naming it ends the request; asking again makes a new one with a new salt. Lives and dies with `depart_request_t`.
+    depart_salt: Option<[u8; 32]>,
+    /// LEAVER side: our outstanding request is served over NFC (Android HCE) while it stands, so a tap of a fleet device approves it. Dropping the guard stops serving.
+    depart_nfc_serve: Option<crate::network::pairing_nfc::ServeGuard>,
+    /// LEAVER side: a fleet device denied our last request. The Security page says so until a new request is made. RAM only.
+    depart_was_denied: bool,
     /// The pending departure completes as a WIPE (Remove & shred) instead of the keep-vault de-attest. Dies with the process — a relaunch mid-ceremony safely degrades to keep-vault (the user can Shred manually).
     depart_wipe_after: bool,
-    /// A sibling's inbound departure request awaiting THIS user's approval: (leaving device pubkey, consent_t, consent_sig). One at a time — a second request overwrites (latest wins; the earlier requester just re-taps).
-    pending_depart_req: Option<([u8; 32], i64, Vec<u8>, u8, Option<[u8; 32]>)>,
-    /// LEAVER side: the approval words this device's Security page shows while its own departure request is pending — the approver must type them (live-contact binding). RAM only; gone at completion or relaunch.
-    depart_words: Option<String>,
-    /// APPROVER side: the inline words-entry box gating a countersign (device pk + textbox). Some = the Fleet card's approve is waiting on the words; Enter verifies against the request's commitment, Esc cancels.
-    depart_words_entry: Option<([u8; 32], Textbox)>,
-    /// Two-tap arm for the fleet page's "Approve sign-out" pill, keyed by the leaving device pubkey.
-    fleet_approve_armed: Option<[u8; 32]>,
+    /// A sibling's inbound departure request awaiting THIS person's Approve or Deny. One at a time: a second request overwrites (latest wins).
+    pending_depart_req: Option<PendingDeparture>,
+    /// APPROVER side: the NFC reader is running because a departure request is pending here (Android; diffed per tick like the beacon scan): a tap of the leaving device, which serves its request salt, approves it.
+    depart_nfc_reader: bool,
     /// Two-tap confirm armed for the Security page's "Remove & shred" (self-departure from the fleet chain, then crypto-wipe). Mutually exclusive with `settings_shred_armed`; cleared on any page switch, like every destructive arm.
     settings_removeshred_armed: bool,
     /// The Release card's have-set check (holdings.rs): started on arming, answered by siblings, drawn under the pill. RAM only.
@@ -3640,11 +3654,12 @@ impl PhotonApp {
             contacts_scroll_extent: 0,
             settings_shred_armed: false,
             depart_request_t: None,
+            depart_salt: None,
+            depart_nfc_serve: None,
+            depart_was_denied: false,
             depart_wipe_after: false,
             pending_depart_req: None,
-            depart_words: None,
-            depart_words_entry: None,
-            fleet_approve_armed: None,
+            depart_nfc_reader: false,
             settings_removeshred_armed: false,
             holdings_check: None,
             holdings_serve_tx: holdings_tx,
@@ -4312,9 +4327,6 @@ impl PhotonApp {
                 }
                 SettingsPage::Fleet => {
                     if let Some((_, tb)) = self.fleet_rename.as_mut() {
-                        f(tb);
-                    }
-                    if let Some((_, tb)) = self.depart_words_entry.as_mut() {
                         f(tb);
                     }
                 }

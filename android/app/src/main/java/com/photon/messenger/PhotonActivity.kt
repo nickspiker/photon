@@ -268,6 +268,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         pushFocus()
     }
     private external fun nativeOpenConversation(conversation: String)  // a notification tap's conversation (hex) → Rust's latch, drained in tick
+    private external fun nativeOpenFleet()  // a departure-request notification's tap: Rust's latch, drained in tick, opens the Fleet page
     private external fun nativeSetForeground(foreground: Boolean)  // onResume/onPause → Rust's foreground mirror (ptr-less: writes a process global; Rust gates unread + notify-suppression on it)
     private external fun nativeImeInset(px: Int)
     private external fun nativeSystemInsets(top: Int, bottom: Int, left: Int, right: Int)  // Status bar / gesture-nav / side cutout extents under an edge-to-edge surface
@@ -1020,7 +1021,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         if (intent == null) return
         // Only this process's own PendingIntents carry the run nonce (security audit UPW-009): this Activity is exported, so a launch intent from any other app is a plain launch and its extras are ignored — else a co-installed app could auto-answer a ringing wave, force the screen on over the lock, or steer the UI to a conversation.
         if (intent.getStringExtra(PhotonConnectionService.EXTRA_RUN_NONCE) != PhotonConnectionService.RUN_NONCE) {
-            if (intent.hasExtra(PhotonConnectionService.EXTRA_OPEN_CONVERSATION) || intent.hasExtra(PhotonConnectionService.EXTRA_INCOMING_WAVE) || intent.hasExtra(PhotonConnectionService.EXTRA_WAVE_ACTION)) {
+            if (intent.hasExtra(PhotonConnectionService.EXTRA_OPEN_CONVERSATION) || intent.hasExtra(PhotonConnectionService.EXTRA_OPEN_FLEET) || intent.hasExtra(PhotonConnectionService.EXTRA_INCOMING_WAVE) || intent.hasExtra(PhotonConnectionService.EXTRA_WAVE_ACTION)) {
                 PhotonLog.w(TAG, "intent extras without this run's nonce ignored")
             }
             return
@@ -1029,6 +1030,11 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         intent.getStringExtra(PhotonConnectionService.EXTRA_OPEN_CONVERSATION)?.let { conv ->
             intent.removeExtra(PhotonConnectionService.EXTRA_OPEN_CONVERSATION)
             nativeOpenConversation(conv)
+        }
+        // A departure request's tap: the Fleet page, once.
+        if (intent.getBooleanExtra(PhotonConnectionService.EXTRA_OPEN_FLEET, false)) {
+            intent.removeExtra(PhotonConnectionService.EXTRA_OPEN_FLEET)
+            nativeOpenFleet()
         }
         if (intent.getBooleanExtra(PhotonConnectionService.EXTRA_INCOMING_WAVE, false)) {
             setWaveLockScreenFlags(true)

@@ -3,6 +3,9 @@
 use fgtw::pq::FleetSigner;
 use super::*;
 
+/// Where each device keeps the departure requests it denied or heard denied: its own single-writer settings key (`fleet.depart_denied.<device>`, the `react.recent.` shape: the settings layer is LWW per key, so one shared key would drop concurrent denies). Fleet-synced like every setting; the refusal reads the union of every device's list.
+const DEPART_DENIED_PREFIX: &str = "fleet.depart_denied.";
+
 impl PhotonApp {
     pub(super) fn open_add_device_flow(&mut self) {
         self.add_device_candidates.clear();
@@ -361,48 +364,167 @@ impl PhotonApp {
         ckpt_settled_root(&convs)
     }
 
-    /// Ship one fleet-scoped frame to every non-locked sibling (direct legs race, relay covers the rest) — the ckpt frames' transport, same targeting as the chain_sync push.
-    /// REQUESTER half of the bilateral removal: sign our departure request and hand it to every sibling (the mirror of a joiner posting its binding request). No chain op happens here — a surviving member's user approves on THEIR screen, that device countersigns and publishes, and we complete when we observe our own key de-folded (`depart_request_t` + the member-adopt drain). `wipe_after` = Remove & shred's flavor: wipe on completion instead of the keep-vault de-attest.
-    /// `intent`: 1 = new owner (the approver countersigns AND releases the brand), 2 = desk (brand kept). Every departure wipes on completion now (fleet holds history); the old keep-vault flavor retired with the intent menu (2026-09-04).
-    /// APPROVER: verify the typed approval words against the pending request's commitment; a match completes the declared departure path, a miss says so and keeps the box (retype or Esc).
-    pub(super) fn submit_depart_words(&mut self) {
-        let Some((pk, tb)) = self.depart_words_entry.take() else {
-            return;
-        };
-        let typed: String = tb.chars.iter().collect::<String>().trim().to_string();
-        let Some((req_pk, _, _, _, Some(commit))) = self.pending_depart_req.clone() else {
-            self.change_focus(None);
-            return;
-        };
-        if req_pk != pk {
-            self.change_focus(None);
-            return; // request replaced between open and Enter — stale box, drop it
-        }
-        if !fgtw::sponsor::depart_words_match(&typed, &commit) {
-            crate::log("FLEET: departure words mismatch — countersign withheld");
-            self.ready_toast = Some(tr(Msg::DepartWordsMismatch).into_owned());
-            self.depart_words_entry = Some((pk, tb)); // keep the box; the human retypes or Esc-cancels
-            return;
-        }
-        self.change_focus(None);
-        let name = self
-            .contacts
+    /// The name a departing sibling goes by on the Fleet page (its fleet name), or "a device".
+    pub(super) fn departing_name(&self, pk: &[u8; 32]) -> String {
+        self.contacts
             .iter()
-            .find(|c| c.is_sibling && c.knows_device(&pk))
+            .find(|c| c.is_sibling && c.knows_device(pk))
             .map(|c| c.display_name())
-            .unwrap_or_else(|| tr(Msg::ADevice).into_owned());
-        // Release always frees the brand (intent 1). A legacy request declaring desk (2) still completes brand-kept, and an ancient intent-0 takes that same conservative path.
-        let intent = match self.pending_depart_req.as_ref().map(|(_, _, _, it, _)| *it) {
-            Some(1) => 1,
-            _ => 2,
+            .unwrap_or_else(|| tr(Msg::ADevice).into_owned())
+    }
+
+    /// APPROVER: Approve the pending departure request (owner, 2026-11-10: one press, no words; the request is a current member's signature, checked on receipt and again by the fold). Pressed on the Fleet page's request, or an NFC tap of the leaving device (Android).
+    pub(super) fn approve_pending_departure(&mut self) {
+        let Some(p) = self.pending_depart_req.clone() else {
+            return;
         };
-        self.complete_departure_approval(pk, &name, intent);
+        let name = self.departing_name(&p.leaver);
+        // Release frees the brand (intent 1). A request declaring desk (2) completes brand-kept, and a pre-intent 0 takes that same conservative path.
+        let intent = if p.intent == 1 { 1 } else { 2 };
+        self.complete_departure_approval(p.leaver, &name, intent);
+    }
+
+    /// APPROVER: Deny the pending departure request. The request goes, its salt and stamp are refused here from now on (persisted, `record_depart_denied`), and a signed `depart_deny` goes to every fleet device the request went to, the leaver among them, so each clears it and the leaver says so. Asking again takes a new salt.
+    pub(super) fn deny_pending_departure(&mut self) {
+        let Some(p) = self.pending_depart_req.take() else {
+            return;
+        };
+        let name = self.departing_name(&p.leaver);
+        self.record_depart_denied(&p.leaver, &p.salt, p.t);
+        match (self.our_handle_proof(), self.device_signer()) {
+            (Some(hp), Some(kp)) => {
+                match crate::network::fgtw::protocol::build_depart_deny_vsf(&hp, &p.leaver, &p.salt, p.t, kp.keypair().secret.as_bytes()) {
+                    Ok(frame) => {
+                        self.dispatch_frame_to_siblings(frame);
+                        crate::logf!("FLEET: denied {}'s departure request {}; the fleet is told", name, hex::encode(&p.salt[..4]));
+                    }
+                    Err(e) => crate::logf!("FLEET: denied {}'s departure here, but the deny did not build ({}); the other devices still show it", name, e),
+                }
+            }
+            _ => crate::logf!("FLEET: denied {}'s departure here; no session or key to tell the fleet with", name),
+        }
+        self.ready_toast = Some(tr(Msg::DepartDeniedHere(&name)).into_owned());
+    }
+
+    /// A `depart_deny` from a live member of our fleet. On the leaving device it ends our own request when it names our current salt; elsewhere the request is refused from now on and cleared if it is the one pending here. True when anything changed.
+    pub(super) fn on_depart_deny(&mut self, hp: [u8; 32], leaver: [u8; 32], salt: [u8; 32], t: i64, denier: [u8; 32]) -> bool {
+        if self.our_handle_proof() != Some(hp) {
+            return false;
+        }
+        let me = self.device_keypair.as_ref().map(|kp| kp.public.to_bytes());
+        if me == Some(leaver) {
+            if self.depart_salt != Some(salt) {
+                crate::logf!("FLEET: a deny from {} names a departure request of ours that is no longer current; ignored", crate::fp(&denier));
+                return false;
+            }
+            crate::logf!("SECURITY: our departure request {} was denied by {}; this device stays", hex::encode(&salt[..4]), crate::fp(&denier));
+            self.depart_request_t = None;
+            self.depart_salt = None;
+            self.depart_nfc_serve = None;
+            self.depart_was_denied = true;
+            self.ready_toast = Some(tr(Msg::DepartDenied).into_owned());
+            return true;
+        }
+        self.record_depart_denied(&leaver, &salt, t);
+        let clears = self.pending_depart_req.as_ref().is_some_and(|p| p.leaver == leaver && (p.salt == salt || p.t == t));
+        if clears {
+            crate::logf!("FLEET: {}'s departure request was denied on {}; cleared here", self.departing_name(&leaver), crate::fp(&denier));
+            self.pending_depart_req = None;
+        }
+        clears
+    }
+
+    /// Encode a list of denied departure requests as one TYPED VSF field: (ke leaver, hb salt, e6 consent stamp) per request, the `encode_react_recent` discipline.
+    fn encode_depart_denied(list: &[([u8; 32], [u8; 32], i64)]) -> Vec<u8> {
+        use vsf::schema::section::FieldValue;
+        let mut values = Vec::with_capacity(list.len() * 3);
+        for (leaver, salt, t) in list {
+            values.push(vsf::VsfType::ke(leaver.to_vec()));
+            values.push(vsf::VsfType::hb(salt.to_vec()));
+            values.push(vsf::VsfType::e(vsf::EtType::e6(*t)));
+        }
+        FieldValue::new("denied", values).flatten()
+    }
+
+    /// Decode a denied-requests blob, by type marker: a ke opens an entry, the hb after it is its salt, the e6 after that closes it. A malformed blob reads as empty.
+    fn decode_depart_denied(bytes: &[u8]) -> Vec<([u8; 32], [u8; 32], i64)> {
+        let mut ptr = 0usize;
+        let Ok(field) = vsf::file_format::VsfField::parse(bytes, &mut ptr) else {
+            return Vec::new();
+        };
+        if field.name != "denied" {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        let mut leaver: Option<[u8; 32]> = None;
+        let mut salt: Option<[u8; 32]> = None;
+        for v in &field.values {
+            match v {
+                vsf::VsfType::ke(b) => {
+                    leaver = <[u8; 32]>::try_from(b.as_slice()).ok();
+                    salt = None;
+                }
+                vsf::VsfType::hb(b) => salt = <[u8; 32]>::try_from(b.as_slice()).ok(),
+                vsf::VsfType::e(vsf::EtType::e6(t)) => {
+                    if let (Some(l), Some(s)) = (leaver.take(), salt.take()) {
+                        out.push((l, s, *t));
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Is this departure request refused: its salt, or its consent stamp, denied before by any device of the fleet? Reads the union of every device's denied list (fleet-synced settings).
+    pub(super) fn depart_denied(&self, leaver: &[u8; 32], salt: &[u8; 32], t: i64) -> bool {
+        let Some(fs) = self.fleet_settings.as_ref() else {
+            return false;
+        };
+        fs.global
+            .iter()
+            .filter(|e| !e.tombstone && e.key.starts_with(DEPART_DENIED_PREFIX))
+            .filter_map(|e| crate::storage::fleet_settings::as_bytes(&e.value))
+            .any(|b| Self::decode_depart_denied(&b).iter().any(|(l, s, dt)| l == leaver && (s == salt || *dt == t)))
+    }
+
+    /// Remember a denied departure request on THIS device's single-writer key, persisted and pushed at once like every setting.
+    fn record_depart_denied(&mut self, leaver: &[u8; 32], salt: &[u8; 32], t: i64) {
+        let Some(pk) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) else {
+            return;
+        };
+        let key = format!("{DEPART_DENIED_PREFIX}{}", hex::encode(&pk[..8]));
+        let mut list: Vec<([u8; 32], [u8; 32], i64)> = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective(&key))
+            .and_then(crate::storage::fleet_settings::as_bytes)
+            .map(|b| Self::decode_depart_denied(&b))
+            .unwrap_or_default();
+        if list.iter().any(|(l, s, dt)| l == leaver && s == salt && *dt == t) {
+            return;
+        }
+        list.push((*leaver, *salt, t));
+        if !self.settings_set(&key, vsf::VsfType::hR(Self::encode_depart_denied(&list))) {
+            crate::logf!("FLEET: the deny of {}'s request {} could not be written to settings", crate::fp(leaver), hex::encode(&salt[..4]));
+        }
+    }
+
+    /// A departure request from a sibling arrived, checked and not denied: tell the person. The OS notification (where the platform has one) opens the Fleet page with the request's Approve and Deny ready; the toast covers an attended window.
+    pub(super) fn notify_departure_request(&mut self, name: &str, salt: &[u8; 32]) {
+        let body = tr(Msg::DepartureApproval(name)).into_owned();
+        let title = tr(Msg::FleetTitle).into_owned();
+        #[cfg(target_os = "android")]
+        crate::platform::jni_android::notify_fleet_request(salt, &title, &body);
+        #[cfg(not(target_os = "android"))]
+        crate::platform::desktop_notify::notify_fleet_request(salt, &title, &body);
+        self.ready_toast = Some(body);
     }
 
     /// APPROVER: run the DECLARED departure path to completion — countersign, then for a new-owner intent release the brand in the same breath (the flow-completes rule: the approve tap finishes the handoff; a release failure surfaces IMMEDIATELY as the retired row's Release pill, the visible retry).
     pub(super) fn complete_departure_approval(&mut self, pk: [u8; 32], name: &str, intent: u8) {
         use fgtw::sponsor::Approved;
-        let Some((_, t, sig, _, _)) = self.pending_depart_req.clone() else {
+        let Some(PendingDeparture { t, sig, .. }) = self.pending_depart_req.clone() else {
             return;
         };
         let (Some(hp), Some(kp)) = (self.our_handle_proof(), self.device_signer()) else {
@@ -444,6 +566,8 @@ impl PhotonApp {
         }
     }
 
+    /// REQUESTER half of the bilateral removal: sign our departure request and hand it to every sibling (the mirror of a joiner posting its binding request). No chain op happens here: every fleet device that hears it asks its person, Approve or Deny; an approving device countersigns and publishes, and we complete when we observe our own key de-folded (`depart_request_t` + the member-adopt drain). `wipe_after` = Remove & shred's flavor: wipe on completion instead of the keep-vault de-attest.
+    /// `intent`: 1 = new owner (the approver countersigns AND releases the brand), 2 = desk (brand kept). Every departure wipes on completion now (fleet holds history); the old keep-vault flavor retired with the intent menu (2026-09-04).
     pub(super) fn request_fleet_departure(&mut self, intent: u8) {
         let wipe_after = true;
         let hp = self.our_handle_proof();
@@ -473,33 +597,28 @@ impl PhotonApp {
         // The consent as an egg-list blob, signed with every scheme this device holds. The fold verifies it against the bundle the chain holds for us and demands the floor; declaring runs on every attest, so by the time a device can depart its declared set IS its full set. (A device whose declare never landed gets BadConsent at approve and retries — never a silently weaker consent.)
         let mask = kp.bundle().map(|b| b.mask()).unwrap_or(fgtw::fleet::scheme::MASK_BASE);
         let sig = fgtw::pq::eggs_to_bytes(&kp.eggs(&msg, mask));
-        // Approval words: three voca words from a fresh nonce, shown on THIS screen until completion; only their blake3 rides the request. The approver types what this screen shows — live contact with the departing device, the mirror of add's ceremony.
-        let base = voca::FULL.alphabet().len() as u64;
-        let nonce = rand::random::<u64>() % base.pow(3);
-        let mut words = voca::encode(num_bigint::BigUint::from(nonce));
-        // Left-pad to exactly three words (a small nonce encodes short) — the fgtw pair idiom, capitalized zero-word.
-        while fgtw::pair::pair_word_tokens(&words) < 3 {
-            let w0 = std::str::from_utf8(voca::FULL.alphabet()[0]).expect("voca words are ASCII");
-            let mut z = String::new();
-            let mut cs = w0.chars();
-            if let Some(c) = cs.next() {
-                z.push(c.to_ascii_uppercase());
-                z.extend(cs);
-            }
-            words = format!("{z}{words}");
-        }
-        let commit: [u8; 32] = *blake3::hash(words.to_lowercase().as_bytes()).as_bytes();
-        match crate::network::fgtw::protocol::build_depart_req_vsf(t, &sig, &me, kp.keypair().secret.as_bytes(), intent, Some(&commit)) {
+        // The salt names this request (owner, 2026-11-10): 32 fresh random bytes inside the envelope our key signs. A fleet device's Deny refuses it for good, so asking again (this function again) is always a new salt, never the denied request resent.
+        let salt: [u8; 32] = {
+            use rand::RngCore;
+            let mut s = [0u8; 32];
+            rand::thread_rng().fill_bytes(&mut s);
+            s
+        };
+        match crate::network::fgtw::protocol::build_depart_req_vsf(t, &sig, &me, kp.keypair().secret.as_bytes(), intent, &salt) {
             Ok(frame) => {
                 self.dispatch_frame_to_siblings(frame);
                 self.depart_request_t = Some(t);
+                self.depart_salt = Some(salt);
+                self.depart_was_denied = false;
+                // NFC (Android HCE): serve the salt while the request stands, so a tap of an attested fleet device with its screen on approves it (the reverse of add). The previous request's guard drops here and stops its serve.
+                self.depart_nfc_serve = Some(crate::network::pairing_nfc::serve_guard(&salt));
                 self.depart_wipe_after = wipe_after;
-                self.depart_words = Some(words);
                 crate::logf!(
-                    "SECURITY: departure requested (bilateral, intent {}) — awaiting a sibling's approval; will WIPE on completion",
-                    if intent == 1 { "release the brand" } else { "brand kept (legacy)" }
+                    "SECURITY: departure requested (bilateral, intent {}, request {}): asking the fleet's devices; will WIPE on completion",
+                    if intent == 1 { "release the brand" } else { "brand kept (legacy)" },
+                    hex::encode(&salt[..4])
                 );
-                self.ready_toast = Some(tr(Msg::SignOutRequested).into_owned());
+                self.ready_toast = Some(tr(Msg::DepartWaitingLine).into_owned());
             }
             Err(e) => {
                 crate::logf!("SECURITY: departure request build failed: {}", e);
@@ -508,6 +627,7 @@ impl PhotonApp {
         }
     }
 
+    /// Ship one fleet-scoped frame to every non-locked sibling (direct legs race, relay covers the rest): the ckpt frames' transport, same targeting as the chain_sync push.
     pub(super) fn dispatch_frame_to_siblings(&self, frame: Vec<u8>) {
         self.dispatch_frame_to_sibling(frame, None);
     }
@@ -1256,6 +1376,8 @@ impl PhotonApp {
             if !members.contains(&kp.public.to_bytes()) {
                 let wipe = self.depart_wipe_after;
                 self.depart_request_t = None;
+                self.depart_salt = None;
+                self.depart_nfc_serve = None;
                 self.depart_wipe_after = false;
                 crate::logf!(
                     "SECURITY: departure approved by a sibling — we are de-folded; {}",
@@ -3114,5 +3236,21 @@ impl PhotonApp {
                 }
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PhotonApp;
+
+    /// The denied-requests list round-trips typed (ke leaver, hb salt, e6 stamp per request), and a blob that is not a `denied` field reads as empty, never as a guess.
+    #[test]
+    fn depart_denied_list_round_trips() {
+        let list = vec![([1u8; 32], [2u8; 32], 9_999i64), ([3u8; 32], [4u8; 32], -5i64)];
+        let blob = PhotonApp::encode_depart_denied(&list);
+        assert_eq!(PhotonApp::decode_depart_denied(&blob), list);
+        assert!(PhotonApp::decode_depart_denied(&[]).is_empty());
+        let other = vsf::schema::section::FieldValue::new("recent", vec![vsf::VsfType::ke(vec![1u8; 32])]).flatten();
+        assert!(PhotonApp::decode_depart_denied(&other).is_empty());
     }
 }

@@ -498,10 +498,18 @@ pub enum Msg<'a> {
     OpenLinkPill,
     /// Consent warning when the destination contains non-ASCII bytes (homograph honesty).
     LinkNonAsciiWarn,
-    /// LEAVER's Security page while its departure request is pending: the approval words the approver must type.
-    DepartWordsShow(&'a str),
-    /// LEAVER's pending line under the words.
+    /// LEAVER's Security page (and toast) while its departure request is pending: it is asking the person's devices; approve on any of them. No words, no reachability.
     DepartWaitingLine,
+    /// LEAVER: a fleet device denied the request; this device stays, and Release asks again (a new request, a new salt).
+    DepartDenied,
+    /// APPROVER's Fleet page, top: which device asks to leave.
+    DepartRequestLine(&'a str),
+    /// APPROVER: the request's Approve pill.
+    DepartApprovePill,
+    /// APPROVER: the request's Deny pill.
+    DepartDenyPill,
+    /// APPROVER: toast after Deny.
+    DepartDeniedHere(&'a str),
     /// Release armed (holdings.rs): the have-set check is running.
     HoldingsChecking,
     /// Release armed: no fleet key in RAM, so nothing could be checked.
@@ -526,10 +534,6 @@ pub enum Msg<'a> {
     DepartIntentNewOwner,
     /// APPROVER's Fleet card: the leaver declared desk (keeping-it) intent.
     DepartIntentDesk,
-    /// APPROVER's words-entry prompt above the box.
-    DepartWordsPrompt,
-    /// Typed words don't match the request's commitment.
-    DepartWordsMismatch,
     /// New-owner departure fully completed (countersigned + brand released).
     DepartCompleteNewOwner(&'a str),
     /// Countersign landed but the release half failed — the retired row's Release pill is the retry.
@@ -712,7 +716,6 @@ pub enum Msg<'a> {
     SignOutPublishFailed,
     LastDeviceCantSignOut,
     NoIdentityToRemove,
-    SignOutRequested,
     SignOutBuildFailed,
     DeviceReleased(&'a str),
     ReleaseFailed,
@@ -723,7 +726,6 @@ pub enum Msg<'a> {
     CopiedName(&'a str),
     ReleasePill { armed: bool },
     BridgePill,
-    ApproveSignOutPill { armed: bool },
     ReinstatePill { armed: bool },
     RevokePill { armed: bool },
     SingleCopyWarning,

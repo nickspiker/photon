@@ -348,6 +348,7 @@ impl PhotonApp {
                 StatusUpdate::ChainPullReceived { .. } => "ChainPullReceived",
                 StatusUpdate::ChainPullMissReceived { .. } => "ChainPullMissReceived",
                 StatusUpdate::DepartReqReceived { .. } => "DepartReqReceived",
+                StatusUpdate::DepartDenyReceived { .. } => "DepartDenyReceived",
                 StatusUpdate::FleetChainAsked { .. } => "FleetChainAsked",
                 StatusUpdate::BindReqReceived { .. } => "BindReqReceived",
                 StatusUpdate::FanoutReceived { .. } => "FanoutReceived",
@@ -465,7 +466,9 @@ impl PhotonApp {
         let mut owner_edge = false;
         let mut chain_pull_misses_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
         // Sibling departure requests (bilateral removal), deferred past the checker borrow.
-        let mut depart_reqs_after: Vec<(i64, Vec<u8>, [u8; 32], u8, Option<[u8; 32]>)> = Vec::new();
+        let mut depart_reqs_after: Vec<(i64, Vec<u8>, [u8; 32], u8, [u8; 32])> = Vec::new();
+        // Denies of departure requests from live members of our fleet: (fleet, leaver, salt, consent stamp, denier).
+        let mut depart_denies_after: Vec<([u8; 32], [u8; 32], [u8; 32], i64, [u8; 32])> = Vec::new();
         // Membership chains over the mesh (docs/peers-are-fgtw.md), deferred past the checker borrow: asks to answer (handle, asker, where), and chains handed to us (handle, bytes, sender).
         let mut fleet_asks_after: Vec<([u8; 32], [u8; 32], std::net::SocketAddr)> = Vec::new();
         let mut fleet_chains_after: Vec<([u8; 32], Vec<u8>, [u8; 32])> = Vec::new();
@@ -4360,13 +4363,27 @@ impl PhotonApp {
                     consent_sig,
                     sender_pubkey,
                     intent,
-                    words_commit,
+                    salt,
                 } => {
                     // Sibling gate: only a live member of OUR fleet may ask us to countersign its exit.
                     if self.contacts.iter().any(|c| {
                         c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
                     }) {
-                        depart_reqs_after.push((consent_t, consent_sig, sender_pubkey.key, intent, words_commit));
+                        depart_reqs_after.push((consent_t, consent_sig, sender_pubkey.key, intent, salt));
+                    }
+                }
+                StatusUpdate::DepartDenyReceived {
+                    handle_proof,
+                    leaver,
+                    salt,
+                    consent_t,
+                    sender_pubkey,
+                } => {
+                    // Sibling gate: only a live member of OUR fleet may deny a departure request.
+                    if self.contacts.iter().any(|c| {
+                        c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
+                    }) {
+                        depart_denies_after.push((handle_proof, leaver, salt, consent_t, sender_pubkey.key));
                     }
                 }
                 StatusUpdate::CkptReqReceived {
@@ -5752,27 +5769,39 @@ impl PhotonApp {
             }
         }
 
-        // Sibling departure requests (deferred): verify the leaver's signature over its own departure request, then surface the approval to THIS user (fleet page pill + toast). The countersign happens only on the human's two-tap approve — never automatically, that's the whole point of bilateral.
-        for (t, sig, leaver, intent, words_commit) in depart_reqs_after {
+        // Denies first, so a request and its deny landing in one drain end denied.
+        for (hp, leaver, salt, t, denier) in depart_denies_after {
+            if self.on_depart_deny(hp, leaver, salt, t, denier) {
+                changed = true;
+            }
+        }
+
+        // Sibling departure requests (deferred): verify the leaver's signature over its own departure request, then ask THIS person (an OS notification that opens the Fleet page on the request, and a toast). The countersign happens only on the person's Approve (or an NFC tap of the leaving device), never automatically: that is the whole point of bilateral.
+        for (t, sig, leaver, intent, salt) in depart_reqs_after {
             let Some(hp) = self.our_handle_proof() else { continue };
             // Receipt-time check, deliberately shallow (fgtw::sponsor::depart_receipt_valid): the blob parses, and its Ed25519 egg verifies against the leaver's device key — enough to drop junk before it reaches a human. The PQ eggs are verified by the FOLD when the approver publishes the consented Remove (depart_device_consented fetches the chain, which holds the leaver's declared bundle and the floor); doing that here would mean a blocking chain fetch on the status tick.
             if !fgtw::sponsor::depart_receipt_valid(&hp, &leaver, t, &sig) {
                 crate::logf!("SECURITY: depart_req from {} carries an INVALID request signature — dropped", crate::fp(&leaver));
                 continue;
             }
-            let name = self
-                .contacts
-                .iter()
-                .find(|c| c.is_sibling && c.knows_device(&leaver))
-                .map(|c| c.display_name())
-                .unwrap_or_else(|| tr(Msg::ADevice).into_owned());
+            // A denied request is never shown or approved again: its salt, or its consent stamp, refused by any device of the fleet.
+            if self.depart_denied(&leaver, &salt, t) {
+                crate::logf!("FLEET: departure request {} from {} was denied before; dropped", hex::encode(&salt[..4]), crate::fp(&leaver));
+                continue;
+            }
+            // The same request again (a resend over another leg): already pending, already asked.
+            if self.pending_depart_req.as_ref().is_some_and(|p| p.leaver == leaver && p.salt == salt) {
+                continue;
+            }
+            let name = self.departing_name(&leaver);
             crate::logf!(
-                "SECURITY: {} requests removal from the fleet (intent {}) — approve on the Fleet page",
+                "SECURITY: {} requests removal from the fleet (intent {}, request {}): Approve or Deny on the Fleet page",
                 name,
-                match intent { 1 => "new owner", 2 => "desk", _ => "unstated" }
+                match intent { 1 => "new owner", 2 => "desk", _ => "unstated" },
+                hex::encode(&salt[..4])
             );
-            self.pending_depart_req = Some((leaver, t, sig, intent, words_commit));
-            self.ready_toast = Some(tr(Msg::DepartureApproval(&name)).into_owned());
+            self.pending_depart_req = Some(PendingDeparture { leaver, t, sig, intent, salt });
+            self.notify_departure_request(&name, &salt);
             changed = true;
         }
 

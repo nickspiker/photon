@@ -552,8 +552,16 @@ pub enum StatusUpdate {
         sender_pubkey: DevicePubkey,
         /// Declared departure intent (1 = new owner, 2 = desk; 0 = pre-intent build → desk).
         intent: u8,
-        /// blake3 of the lowercased approval words the leaver's screen shows; None on pre-intent builds (no words gate).
-        words_commit: Option<[u8; 32]>,
+        /// The request's salt: 32 random bytes the leaver chose for this request, naming it. A denied salt is refused for good.
+        salt: [u8; 32],
+    },
+    /// A fleet device's person denied a departure request (`depart_deny`): the fleet, the leaving device, the request's salt and consent stamp. The UI checks the denier is a live member of our fleet, clears that request and refuses its salt and stamp from then on; on the leaving device, a deny of its own current request says so.
+    DepartDenyReceived {
+        handle_proof: [u8; 32],
+        leaver: [u8; 32],
+        salt: [u8; 32],
+        consent_t: i64,
+        sender_pubkey: DevicePubkey,
     },
     /// A sibling's whole epoch state (k ‖ epoch ‖ prev), fleet-key-sealed — the UI thread adopts it if it is ahead of the local spine.
     CkptStateReceived {
@@ -792,6 +800,9 @@ impl StatusUpdate {
                 Some(sender_pubkey.as_bytes())
             }
             StatusUpdate::DepartReqReceived { sender_pubkey, .. } => {
+                Some(sender_pubkey.as_bytes())
+            }
+            StatusUpdate::DepartDenyReceived { sender_pubkey, .. } => {
                 Some(sender_pubkey.as_bytes())
             }
             StatusUpdate::FleetChainAsked { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
@@ -2981,7 +2992,7 @@ async fn run_checker(
                                 continue;
                             }
                             // Bilateral removal: a sibling's departure request. Same mandatory packet-ack.
-                            if let Ok((consent_t, consent_sig, sender_pubkey, intent, words_commit)) =
+                            if let Ok((consent_t, consent_sig, sender_pubkey, intent, salt)) =
                                 crate::network::fgtw::protocol::parse_depart_req_vsf(msg_bytes)
                             {
                                 {
@@ -2998,7 +3009,31 @@ async fn run_checker(
                                         consent_sig,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                         intent,
-                                        words_commit,
+                                        salt,
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            // A fleet device's Deny of a departure request. Same mandatory packet-ack.
+                            if let Ok((handle_proof, leaver, salt, consent_t, sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_depart_deny_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::DepartDenyReceived {
+                                        handle_proof,
+                                        leaver,
+                                        salt,
+                                        consent_t,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                     },
                                     &event_proxy_recv,
                                 );
