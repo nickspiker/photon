@@ -124,14 +124,15 @@ pub fn publish_successor(device_key: &Keypair, record: &SuccessorRecord) -> Resu
     fgtw::client::publish_successor(&PhotonTransport, &signer_for(device_key), record)
 }
 
-/// Ensure this device is a current fleet member before an authorised write (genesis-claim if no fleet yet).
+/// Ensure this device is a current fleet member before an authorised write (genesis-claim only when no chain is held and the seed has none).
 pub fn ensure_member(
     device_key: &Keypair,
     handle_proof: &[u8; 32],
     identity_seed: &[u8; 32],
 ) -> Result<(), String> {
     let (plate, kind) = our_plate();
-    match fgtw::client::ensure_member_plated(&PhotonTransport, &signer_for(device_key), handle_proof, identity_seed, plate, kind) {
+    // The held chain first (fgtw::held::ensure_member_held): while this device holds its fleet's chain, an empty seed slot is refilled from it, never claimed with a new genesis.
+    match fgtw::held::ensure_member_held(&PhotonTransport, &HELD_CHAINS, &signer_for(device_key), handle_proof, identity_seed, plate, kind) {
         Ok(()) => Ok(()),
         // THE SEED IS A MIRROR (Nick 2026-11-02: a phone in a mine with a vault full of working addresses must not be gated on the web): membership is decided by the chain this device holds, folded here like anywhere else. Only a device the held chain does not list is sent to a sibling; only a device holding no chain at all needs the seed, and that is the first attest of a fresh identity.
         Err(e) if seed_unreachable(&e) => {
