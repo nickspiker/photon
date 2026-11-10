@@ -142,7 +142,7 @@ fn main() {
         match a.as_str() {
             "-f" | "--follow" => follow = true,
             "-p" | "--pull" => pull = true,
-            // The gripes (docs/ideas.md): list them, or set one's status. The token lives in keys/gripes.token (never in a repo).
+            // The gripes (docs/ideas.md): list them, or set one's status, signed by the release key.
             "--gripes" => gripes_list = true,
             "--gripe-status" => {
                 let id = args.next().as_deref().and_then(parse_hex32);
@@ -229,17 +229,17 @@ fn main() {
     }
     let filter = Filter { min_level, grep };
 
-    // The developer's side of the Ideas page (docs/ideas.md): the list is public, setting a status takes the token.
+    // The developer's side of the Ideas page (docs/ideas.md): the list is public, and a status is signed by the release key, which fgtw.org checks (no token, 2026-11-10).
     if gripes_list || gripe_status.is_some() {
         if let Some((id, state, note, version)) = gripe_status {
-            let token = std::fs::read("/mnt/Harbor/Code/keys/gripes.token")
-                .map(|b| b.into_iter().filter(|c| !c.is_ascii_whitespace()).collect::<Vec<u8>>())
-                .unwrap_or_default();
-            if token.is_empty() {
-                eprintln!("photonlog: no token at keys/gripes.token");
-                std::process::exit(2);
-            }
-            match photon_messenger::network::fgtw::gripe_status_blocking(&token, &id, &state, &note, &version) {
+            let key = match photon_messenger::crypto::self_verify::release_signing_key() {
+                Ok(k) => k,
+                Err(e) => {
+                    eprintln!("photonlog: {e}");
+                    std::process::exit(2);
+                }
+            };
+            match photon_messenger::network::fgtw::gripe_status_blocking(&key, &id, &state, &note, &version) {
                 Ok(()) => println!("{} → {}{}", hex::encode(&id[..8]), state, if note.is_empty() { String::new() } else { format!(" ({note})") }),
                 Err(e) => {
                     eprintln!("photonlog: gripe_status failed: {e}");

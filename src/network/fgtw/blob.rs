@@ -816,21 +816,25 @@ mod log_capability_tests {
 // ============================================================================ Gripes — anonymous ideas and fixes (ui/photon_app/ideas.rs, docs/ideas.md) ==========
 
 #[cfg(target_os = "ferros")]
-fn gripe_post(_section: vsf::file_format::VsfSection, _what: &str) -> Result<Vec<u8>, BlobError> {
+fn gripe_post(_section: vsf::file_format::VsfSection, _what: &str, _signer: Option<&[u8; 32]>) -> Result<Vec<u8>, BlobError> {
     unreachable_from_ferros()
 }
 
 #[cfg(not(target_os = "ferros"))]
-fn gripe_post(section: vsf::file_format::VsfSection, what: &str) -> Result<Vec<u8>, BlobError> {
+fn gripe_post(section: vsf::file_format::VsfSection, what: &str, signer: Option<&[u8; 32]>) -> Result<Vec<u8>, BlobError> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(30))
         .build()
         .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
-    let vsf_bytes = vsf::VsfBuilder::new()
-        .creation_time_oscillations(crate::network::time_base::now_osc())
-        .add_section_direct(section)
-        .build()
-        .map_err(|e| BlobError::Network(format!("Build VSF: {}", e)))?;
+    let mut builder = vsf::VsfBuilder::new().creation_time_oscillations(crate::network::time_base::now_osc());
+    if let Some(key) = signer {
+        builder = builder.signed_only(VsfType::ke(ed25519_dalek::SigningKey::from_bytes(key).verifying_key().to_bytes().to_vec()));
+    }
+    let unsigned = builder.add_section_direct(section).build().map_err(|e| BlobError::Network(format!("Build VSF: {}", e)))?;
+    let vsf_bytes = match signer {
+        Some(key) => vsf::verification::sign_file(unsigned, key).map_err(|e| BlobError::Network(format!("Sign {what}: {e}")))?,
+        None => unsigned,
+    };
     let response = client
         .post(FGTW_URL)
         .header("Content-Type", "application/octet-stream")
@@ -863,7 +867,7 @@ pub fn gripe_put_blocking(id: &[u8; 32], nonce: &[u8; 32], kind: &str, text: &st
     sec.add_field_multi("nonce", vec![VsfType::v(b'n', nonce.to_vec())]);
     sec.add_field_multi("kind", vec![VsfType::a(vsf::Ascii::new(kind).map_err(|e| BlobError::Network(format!("gripe kind: {e}")))?)]);
     sec.add_field_multi("text", vec![VsfType::v(b't', text.as_bytes().to_vec())]);
-    let bytes = gripe_post(sec, "gripe_put")?;
+    let bytes = gripe_post(sec, "gripe_put", None)?;
     let schema = vsf::schema::SectionSchema::new("gripe_put_ack").field("id", vsf::schema::TypeConstraint::Wrapped(b'g'));
     let ack = gripe_ack(&bytes, schema)?;
     match ack.get_value::<Vec<u8>>("id") {
@@ -876,7 +880,7 @@ pub fn gripe_put_blocking(id: &[u8; 32], nonce: &[u8; 32], kind: &str, text: &st
 pub fn gripe_get_blocking(id: &[u8; 32]) -> Result<(String, String, String), BlobError> {
     let mut sec = vsf::file_format::VsfSection::new("gripe_get");
     sec.add_field_multi("id", vec![VsfType::v(b'g', id.to_vec())]);
-    let bytes = gripe_post(sec, "gripe_get")?;
+    let bytes = gripe_post(sec, "gripe_get", None)?;
     let schema = vsf::schema::SectionSchema::new("gripe_get_ack")
         .field("state", vsf::schema::TypeConstraint::AsciiText)
         .field("note", vsf::schema::TypeConstraint::Wrapped(b't'))
@@ -900,7 +904,7 @@ pub struct PublicGripe {
 /// Every gripe, public (docs/ideas.md): one typed `idea` section per gripe behind a `gripe_list_ack` head, read thru the verified-document gate.
 pub fn gripe_list_blocking() -> Result<Vec<PublicGripe>, BlobError> {
     use crate::storage::record::Rec;
-    let bytes = gripe_post(vsf::file_format::VsfSection::new("gripe_list"), "gripe_list")?;
+    let bytes = gripe_post(vsf::file_format::VsfSection::new("gripe_list"), "gripe_list", None)?;
     let sections = crate::storage::record::verified_sections(&bytes, None).map_err(|e| BlobError::Network(format!("Parse gripe list: {e}")))?;
     let Some(count) = sections.iter().find(|s| s.name == "gripe_list_ack").and_then(|s| Rec(s).uint("count")) else {
         return Err(BlobError::ServerError("gripe_list: no gripe_list_ack count".into()));
@@ -933,15 +937,14 @@ pub fn gripe_list_blocking() -> Result<Vec<PublicGripe>, BlobError> {
     Ok(ideas)
 }
 
-/// The developer sets a gripe's status (token-gated).
-pub fn gripe_status_blocking(token: &[u8], id: &[u8; 32], state: &str, note: &str, version: &str) -> Result<(), BlobError> {
+/// The developer sets a gripe's status: the request is signed by the release key (`signing_key`, crypto::self_verify::release_signing_key), which fgtw.org checks against the release key's public half; no token (2026-11-10).
+pub fn gripe_status_blocking(signing_key: &[u8; 32], id: &[u8; 32], state: &str, note: &str, version: &str) -> Result<(), BlobError> {
     let mut sec = vsf::file_format::VsfSection::new("gripe_status");
-    sec.add_field_multi("token", vec![VsfType::v(b'k', token.to_vec())]);
     sec.add_field_multi("id", vec![VsfType::v(b'g', id.to_vec())]);
     sec.add_field_multi("state", vec![VsfType::a(vsf::Ascii::new(state).map_err(|e| BlobError::Network(format!("gripe state: {e}")))?)]);
     sec.add_field_multi("note", vec![VsfType::v(b't', note.as_bytes().to_vec())]);
     sec.add_field_multi("version", vec![VsfType::a(vsf::Ascii::new(version).map_err(|e| BlobError::Network(format!("gripe version: {e}")))?)]);
-    let bytes = gripe_post(sec, "gripe_status")?;
+    let bytes = gripe_post(sec, "gripe_status", Some(signing_key))?;
     let schema = vsf::schema::SectionSchema::new("gripe_status_ack").field("state", vsf::schema::TypeConstraint::AsciiText);
     // Only the parse matters here: a gripe_status_ack that does not validate is the error, its fields are not needed.
     gripe_ack(&bytes, schema)?;

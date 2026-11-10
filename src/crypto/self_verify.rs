@@ -86,3 +86,23 @@ pub fn verify_file(exe_path: &std::path::Path) -> Result<String, String> {
 
     Ok(hex::encode(signature.to_bytes()).to_uppercase())
 }
+
+/// The release signing key, the secret half of [`AUTHOR_PUBKEY`]: `$PHOTON_SIGNING_KEY`, else the one location photon-keygen writes to.
+/// Refused unless it is exactly 32 bytes and readable by its owner alone (a key another user on the host can read is not a secret).
+/// The maintainer's tools sign with it: the update manifest, the release notice and an Idea's status, which fgtw.org checks against [`AUTHOR_PUBKEY`] (no token, no secret on the server).
+pub fn release_signing_key() -> Result<[u8; 32], String> {
+    let key_path = std::env::var("PHOTON_SIGNING_KEY").unwrap_or_else(|_| "/mnt/Harbor/Code/keys/photon-signing-key".to_string());
+    if !std::path::Path::new(&key_path).exists() {
+        return Err(format!("release signing key not found at {key_path} — set PHOTON_SIGNING_KEY or run photon-keygen"));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = std::fs::metadata(&key_path).map(|m| m.permissions().mode() & 0o777).map_err(|e| format!("key metadata: {e}"))?;
+        if mode & 0o077 != 0 {
+            return Err(format!("{key_path} is mode {mode:o}; the release key must be 0600"));
+        }
+    }
+    let key_bytes = std::fs::read(&key_path).map_err(|e| format!("key read: {e}"))?;
+    key_bytes.as_slice().try_into().map_err(|_| "signing key file must be exactly 32 bytes".to_string())
+}

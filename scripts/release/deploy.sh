@@ -531,16 +531,18 @@ note_time "website deploy" $((SECONDS - PHASE_T0))
 # (wakes dozed Android subscribers). Advisory only — what installs is still gated by the manifest signature + stamp window — so best-effort: a failed curl just leaves everyone on the slow cadence.
 echo ""
 echo "Sending release notice (hub + FCM topic)..."
-# The admin token lives in the keys dir (keys/fgtw-admin-token, one line) and rides a header, never the URL and never this public file (security audit UPW-006: it was inline here and in the worker's source, rotated 2026-11-02).
-ADMIN_TOKEN_FILE=""
-for _d in "${TOKEN_KEYS_DIR:-}" /mnt/Harbor/Code/keys /mnt/Chiton/MEGA/Code/keys "$HOME/MEGA/code/keys" "$HOME/Code/keys"; do
-    [ -n "$_d" ] && [ -r "$_d/fgtw-admin-token" ] && { ADMIN_TOKEN_FILE="$_d/fgtw-admin-token"; break; }
-done
-if [ -n "$ADMIN_TOKEN_FILE" ]; then
-    curl -s -H "Authorization: Bearer $(tr -d ' \n' < "$ADMIN_TOKEN_FILE")" "https://fgtw.org/admin/release-notice" || echo "release notice failed (non-fatal)"
+# The notice is one VSF document signed by the release key (photon-manifest --release-notice); fgtw.org checks the signer against the release key's public half, so no secret sits on the server or rides the request (2026-11-10, replacing the admin token).
+NOTICE_FILE=$(mktemp)
+if "$MANIFEST_TOOL" --release-notice --out "$NOTICE_FILE"; then
+    if curl -s --data-binary "@$NOTICE_FILE" -H "Content-Type: application/octet-stream" "https://fgtw.org/" | grep -qa "release_notice_ack"; then
+        echo "release notice sent"
+    else
+        echo "release notice refused or unanswered (non-fatal)"
+    fi
 else
-    echo "release notice skipped (non-fatal): no keys/fgtw-admin-token on this machine"
+    echo "release notice not signed (non-fatal)"
 fi
+rm -f "$NOTICE_FILE"
 
 # OPEN THE DEV LINE (2026-07-17): main must never rest at X.Y.0 — patch 0 IS the release marker, so a dev build compiled from a .0 tree masquerades as the release ("already on latest release" on a dev build, observed live). With provenance-by-tag, main never even HOLDS the .0 commit (that lives only as the tag); it advances straight to the .1 dev line. advance_main crafts that Cargo.toml-only bump on the FRESHEST origin tip inside a throwaway worktree, so it fast-forwards no matter what moved on main during the build, and never touches the live working tree. Best-effort: the release already shipped via the tag.
 DEV_OPEN="${MAJOR}.${SHIP_VERSION}.1"

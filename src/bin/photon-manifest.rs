@@ -3,6 +3,7 @@
 //! Output is a COMPLETE VSF file signed by the release key (the same key that signs binaries): ONE SECTION PER ARTEFACT, each named `manifest.photon.<release|development>`, every field NAMED and semantically TYPED — `platform: x`, `arch: x`, `major/minor/patch: z` (native version numbers; `major` omitted while 0, `patch` omitted when 0 so its presence means "dev build"), `commit: hs` (full 20-byte git SHA-1, raw), `url: nu`, `hash: hb`. No numbered field names, no positional values, no digit strings.
 //!
 //! Usage:
+//!   photon-manifest --release-notice --out notice.vsf   (the signed "a release is out" document deploy.sh posts to fgtw.org)
 //!   photon-manifest --channel development --out manifest-dev.vsf \
 //!       [--merge existing-manifest.vsf] \
 //!       --artefact <platform> <arch> <major.minor.patch> <commit-sha1-hex40> <url> <blake3-hex64> [--artefact ...]
@@ -21,6 +22,7 @@ fn main() {
     let mut channel: Option<String> = None;
     let mut out: Option<String> = None;
     let mut merge: Option<String> = None;
+    let mut notice = false;
     let mut rows: Vec<ManifestRow> = Vec::new();
 
     let mut args = std::env::args().skip(1);
@@ -29,6 +31,7 @@ fn main() {
             "--channel" => channel = args.next(),
             "--out" => out = args.next(),
             "--merge" => merge = args.next(),
+            "--release-notice" => notice = true,
             "--artefact" => {
                 let (
                     Some(platform),
@@ -82,6 +85,23 @@ fn main() {
             other => fail(&format!("unknown arg {other}")),
         }
     }
+    // The release notice (2026-11-10): one signed VSF document saying "a release is out", posted by deploy.sh to fgtw.org, which checks the signer is the release key and wakes every device to look at the signed manifest.
+    // It replaces the admin token.
+    if notice {
+        let out = out.unwrap_or_else(|| fail("--out required"));
+        let key = photon_messenger::crypto::self_verify::release_signing_key().unwrap_or_else(|e| fail(&e));
+        let signer_pub = ed25519_dalek::SigningKey::from_bytes(&key).verifying_key().to_bytes().to_vec();
+        let unsigned = vsf::VsfBuilder::new()
+            .creation_time_oscillations(vsf::eagle_time_oscillations())
+            .signed_only(VsfType::ke(signer_pub))
+            .add_section("release_notice", vec![("channel".to_string(), VsfType::a(vsf::Ascii::lit("release")))])
+            .build()
+            .unwrap_or_else(|e| fail(&format!("build: {e}")));
+        let signed = vsf::verification::sign_file(unsigned, &key).unwrap_or_else(|e| fail(&format!("sign: {e}")));
+        std::fs::write(&out, &signed).unwrap_or_else(|e| fail(&format!("write: {e}")));
+        println!("photon-manifest: wrote the signed release notice to {out}");
+        return;
+    }
     let channel = match channel.as_deref() {
         Some("release") => Channel::Release,
         Some("development") | Some("dev") => Channel::Dev,
@@ -115,25 +135,7 @@ fn main() {
     }
     rows.sort_by(|a, b| (&a.platform, &a.arch).cmp(&(&b.platform, &b.arch)));
 
-    // Signing key: $PHOTON_SIGNING_KEY, else the ONE location photon-keygen writes to — the same rule photon-signature-signer applies, so the two tools find the one release key identically or a publish half-succeeds (binary signed, manifest not). The ladder of synced and home folders is gone (security audit NET-11).
-    let key_path = std::env::var("PHOTON_SIGNING_KEY").unwrap_or_else(|_| "/mnt/Harbor/Code/keys/photon-signing-key".to_string());
-    if !std::path::Path::new(&key_path).exists() {
-        fail(&format!("release signing key not found at {key_path} — set PHOTON_SIGNING_KEY or run photon-keygen"));
-    }
-    // A key another user on the host can read is not a secret; refuse rather than sign with it.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = std::fs::metadata(&key_path).map(|m| m.permissions().mode() & 0o777).unwrap_or_else(|e| fail(&format!("key metadata: {e}")));
-        if mode & 0o077 != 0 {
-            fail(&format!("{key_path} is mode {mode:o}; the release key must be 0600"));
-        }
-    }
-    let key_bytes = std::fs::read(&key_path).unwrap_or_else(|e| fail(&format!("key read: {e}")));
-    let key: [u8; 32] = match key_bytes.as_slice().try_into() {
-        Ok(k) => k,
-        Err(_) => fail("signing key file must be exactly 32 bytes"),
-    };
+    let key = photon_messenger::crypto::self_verify::release_signing_key().unwrap_or_else(|e| fail(&e));
     // sign_file attaches the `ge` signature to the `ke` (signer pubkey) already in the header — so declare it, same as fgtw's signed_req.
     let signer_pub = ed25519_dalek::SigningKey::from_bytes(&key)
         .verifying_key()
