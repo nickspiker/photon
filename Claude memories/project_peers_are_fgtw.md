@@ -18,3 +18,5 @@ Canonical: docs/peers-are-fgtw.md (direction set 2026-06-28).
 
 **Why:** a central server is a dependency, a failure point and a trust surface; the commons should run on its peers.
 **How to apply:** anything that would store state on fgtw.org beyond where-a-device-is needs a reason; peer-first, server-last.
+
+2026-11-10: the rule tightened (Nick): the bootstrap only for a brand-new device, everyone offline, or every address changed; every device serves a share of the phonebook by default (no off switch, sized by device state); fleet settings blobs replicate among contacts instead. Design + phases in docs/phonebook-web.md. Phase 0 built and deployed: octopus admin sign-in, held-chain genesis pin, ensure_member_held (no genesis over a held chain), blob/avatar/bell gates. Kademlia in node.rs is unused scaffolding; nothing routes yet.
