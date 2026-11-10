@@ -8,6 +8,7 @@ Supersedes the open phases of `peers-are-fgtw.md` (B, C, D); that doc's Phase A 
 Nick 2026-11-10: the bootstrap (fgtw.org) is contacted ONLY to attest a brand-new device, or when every peer is offline, or when every peer's address has changed and nobody answers.
 Everything else is FGTW: the Fractal Gradient Trust Web.
 Trust runs outward from you: your own devices, then your contacts, then theirs; a lookup weighs answers by how close the answerer is.
+Fleet traffic takes the nearest path first (Nick 2026-11-10: "Should be BLE, then LAN, then WAN, then hopefully we shouldn't need to but fgtw.org"): Bluetooth, then the local network, then the internet directly between devices, and the bootstrap last.
 
 ## What every device serves
 
