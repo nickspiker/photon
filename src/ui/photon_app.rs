@@ -1753,6 +1753,8 @@ pub struct PhotonApp {
     last_stalled_refetch: Option<Instant>,
     /// Consecutive stalled-address refetch cycles that learned nothing — the 15s base interval doubles per streak (capped ~32min). The 2026-09-02 battery log ran the full registry-resolve + multi-address punch cycle every 15s for 3.6 HOURS against a Pending contact that can never resolve (era-split debris) — a huge share of the 50%-in-4h drain. Reset on any learned address (the loop's success edge).
     stalled_refetch_streak: u32,
+    /// The last stalled-address pulse asked the peers for their phonebooks; the next one, if no gossiped record has cleared this, asks fgtw.org instead (peers first, the seed only when they do not answer).
+    stalled_gossip_asked: bool,
     /// Shared peer store (self-signed routing records), cloned from HandleQuery's. Populated by fgtw fetches AND by phonebook-gossip responses (see status.rs); the app harvests learned addresses from it for stalled contacts whose own fgtw fetch keeps failing. `None` until init.
     peer_store: Option<std::sync::Arc<std::sync::Mutex<crate::network::fgtw::PeerStore>>>,
     /// HandleQuery client — owns the UDP socket, device keypair, and FGTW peer store. Submission calls `handle_query.query(handle)`; `tick()` polls `try_recv()` for results. `None` until init.
@@ -3034,6 +3036,7 @@ impl PhotonApp {
             last_fleet_refold: None,
             last_stalled_refetch: None,
             stalled_refetch_streak: 0,
+            stalled_gossip_asked: false,
             peer_store: None,
             handle_query: None,
             status_checker: None,

@@ -985,6 +985,37 @@ impl PhotonApp {
         }), "a direct frame to the network dispatch");
     }
 
+    /// The periodic own-chain refold, PEERS FIRST (Nick 2026-11-09): every live sibling is asked for the chain it holds, and each sibling pushes every extension it makes, so a sibling's copy is as new as the fleet's.
+    /// fgtw.org is asked only when the previous ask went unanswered: an answer adopts and clears `fleet_asked`, so a standing entry here is a round no sibling answered.
+    pub(super) fn refold_own_chain(&mut self, our_hp: [u8; 32]) {
+        let standing = self.fleet_asked.contains(&our_hp);
+        if !standing && self.ask_siblings_for_chain(our_hp) {
+            self.fleet_asked.push(our_hp);
+            return;
+        }
+        if standing {
+            crate::log("FLEET: no sibling answered the last ask for our chain — asking fgtw.org");
+        }
+        self.fleet_asked.retain(|h| *h != our_hp);
+        self.spawn_contact_fleet_refresh(vec![our_hp]);
+    }
+
+    /// Ask every live sibling for OUR fleet's chain (`fleet_req`), at its proven path or else its best candidate. Returns whether any ask went out.
+    fn ask_siblings_for_chain(&self, our_hp: [u8; 32]) -> bool {
+        let Some(kp) = self.device_keypair.as_ref() else { return false };
+        let Ok(frame) = crate::network::fgtw::protocol::build_fleet_req_vsf(&our_hp, &kp.public.to_bytes(), kp.secret.as_bytes()) else { return false };
+        let mut sent = 0usize;
+        for c in self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out) {
+            let (Some(dev), Some((addr, alt))) = (c.device_key(), c.race_addrs()) else { continue };
+            self.send_frame_direct(frame.clone(), dev, addr, alt);
+            sent += 1;
+        }
+        if sent > 0 {
+            crate::logf!("FLEET: asked {} sibling(s) for our chain over the mesh", sent);
+        }
+        sent > 0
+    }
+
     /// Ask the contact holding `hp` for its membership chain: a `fleet_req` to every device of theirs we hold an address for. Returns whether any ask went out.
     fn ask_peers_for_chain(&self, hp: [u8; 32]) -> bool {
         let Some(kp) = self.device_keypair.as_ref() else { return false };

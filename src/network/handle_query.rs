@@ -1084,18 +1084,28 @@ impl HandleQuery {
         });
     }
 
-    /// Look up a handle in the local peer store; if absent, ask the registries. Existence = the membership chain (an attested handle has a fleet; garbage does not), addresses = the phonebook. This replaced the announce-echo refresh: the worker acks announces without a peer list now, so the old path merged a permanently-empty echo and always reported NotFound for anyone not already in the store.
+    /// Find a handle: existence and identity from its membership chain (an attested handle has a fleet; garbage does not), addresses from the phonebook.
+    /// PEERS FIRST (Nick 2026-11-09: "Peers first, fgtw.org never, unless peers don't answer"): the chain this device already holds answers without a byte on the wire, and the peer store (the gossiped phonebook every sibling and contact keeps) supplies the address.
+    /// fgtw.org is asked for the chain only when nothing here holds it: a first claim is first-come and self-signed, so a peer's copy of a chain we have never pinned proves nothing, and the registry's slot is the one record of who claimed the handle first.
     fn search_with_refresh(
         handle: &str,
         handle_proof: [u8; 32],
         peer_store: &Arc<Mutex<PeerStore>>,
     ) -> SearchResult {
-        // The signed fold is the AUTHORITY for which device becomes this contact's public_identity — fetch it FIRST.
-        // The old order let the local peer store answer before the chain, so a self-signed-but-non-member gossip row (a device that signed under a SCRAPED handle_proof — which a thief who knows the handle can compute) could seed public_identity with an impostor device before any fold confirmed it.
-        // The store is still consulted below, but only to speed ADDRESS resolution for a fold-confirmed member — never to choose the identity device (peers-are-fgtw.md's Phase-A mesh membership gap, tightened here).
-        let (members, _tip, _generation, existed) =
-            match crate::network::fgtw::fleet::current_members_full(&handle_proof) {
-                Ok(v) => v,
+        // The signed fold is the AUTHORITY for which device becomes this contact's public_identity, so the chain comes FIRST and the store never chooses the identity device.
+        // The old order let the local peer store answer before the chain, so a self-signed-but-non-member gossip row (a device that signed under a SCRAPED handle_proof — which a thief who knows the handle can compute) could seed public_identity.
+        let (members, held) = match Self::held_members(&handle_proof) {
+            Some(members) => {
+                crate::logf!("Network: search answered by the chain this device holds ({} live member(s)); fgtw.org not asked", members.len());
+                (members, true)
+            }
+            None => match crate::network::fgtw::fleet::current_members_full(&handle_proof) {
+                Ok((members, _tip, _generation, existed)) => {
+                    if !existed {
+                        return SearchResult::NotFound;
+                    }
+                    (members, false)
+                }
                 Err(e) => {
                     // Chain fetch failed — fall back to the store ONLY if it holds a record, but that record is unverified against the chain, so it's a last-resort routing hint, not an identity claim.
                     // NEVER log the handle string: it derives the identity seed (the honeypot doctrine).
@@ -1103,16 +1113,36 @@ impl HandleQuery {
                     return Self::lookup_in_store(handle, handle_proof, peer_store)
                         .unwrap_or(SearchResult::NotFound);
                 }
-            };
-        if !existed || members.is_empty() {
+            },
+        };
+        if members.is_empty() {
             return SearchResult::NotFound;
         }
 
-        // Found. The first device with a published registry record supplies the address; a found-but-unresolved handle is STILL found — the contact adds as Pending under the relay sentinel and the discovery pulse keeps resolving (exactly the state the punch machinery expects).
+        // The address: a fold member's record in the peer store first, the phonebook the mesh gossips.
+        let stored = peer_store
+            .lock()
+            .unwrap()
+            .get_devices_for_handle(&handle_proof)
+            .into_iter()
+            .find(|r| members.contains(r.device_pubkey.as_bytes()));
+        if let Some(rec) = stored {
+            return SearchResult::Found(FoundPeer {
+                handle: HandleText::new(handle),
+                handle_proof,
+                device_pubkey: rec.device_pubkey.clone(),
+                ip: rec.ip,
+                local_ip: rec.local_ip,
+                lan_port: rec.lan_port(),
+            });
+        }
+
+        // Found but unaddressed is STILL found: the contact adds as Pending under the relay sentinel, and the discovery pulse resolves it, peers first.
+        // A chain fgtw.org just answered means nothing here knew this person, so the registry is asked for an address in the same breath; a held chain leaves it to the pulse.
         let mut ip = crate::network::status::RELAY_ADDR;
         let mut local_ip = None;
         let mut device = members[0];
-        for dev in &members {
+        for dev in members.iter().filter(|_| !held) {
             let resolved = crate::network::http::runtime()
                 .block_on(crate::network::fgtw::phonebook_client::resolve_device_address(dev));
             if let Ok(rec) = resolved {
@@ -1134,6 +1164,17 @@ impl HandleQuery {
             local_ip,
             lan_port: crate::PHOTON_PORT, // this path has no record to state one
         })
+    }
+
+    /// The live members of the chain this device holds for `handle_proof` (folded, the locked out removed), or None when no chain is held for it or the one held claims a different slot.
+    fn held_members(handle_proof: &[u8; 32]) -> Option<Vec<[u8; 32]>> {
+        let chain = crate::network::fgtw::fleet::held_chain(handle_proof)?;
+        if chain.genesis_handle_proof() != Some(*handle_proof) {
+            return None;
+        }
+        let locked = chain.locked_out().ok()?;
+        let members: Vec<[u8; 32]> = chain.fold().ok()?.into_iter().filter(|m| !locked.contains(m)).collect();
+        Some(members)
     }
 
     fn lookup_in_store(

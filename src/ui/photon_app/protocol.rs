@@ -124,7 +124,7 @@ impl PhotonApp {
         if self.fleet_refold_due_at(now).is_some_and(|at| now >= at) {
             if let Some(our_hp) = self.our_handle_proof() {
                 self.last_fleet_refold = Some(now);
-                self.spawn_contact_fleet_refresh(vec![our_hp]);
+                self.refold_own_chain(our_hp);
                 // Roster-pull backstop (B4): an exhausted pull used to wait on "the next fleet event", which never comes with the WebSocket down — no roster until relaunch. This edge re-arms a small budget at the refold cadence; success clears the flag, failure re-exhausts and the next sweep tries again.
                 if self.roster_pull_exhausted && self.roster_pull_rx.is_none() {
                     self.roster_pull_exhausted = false;
@@ -198,6 +198,7 @@ impl PhotonApp {
                     }
                     if learned > 0 {
                         self.stalled_refetch_streak = 0;
+                        self.stalled_gossip_asked = false;
                         self.ping_contacts();
                     }
                 }
@@ -207,23 +208,40 @@ impl PhotonApp {
                     self.request_peer_persist();
                 }
             });
-            // Every 15s while blocked: ask every reachable peer for its phonebook AND resolve the stalled devices from the seed registry — peers first, seed last. This used to also fire `query_resume`, which replays the ENTIRE attest (contacts load, cloud sync, roster pull, fleet key sync — 749 full replays in one logged session, and the roster-pull storm rode it via needs_initial_roster_pull). The resume's only job here was the announce echo that learned addresses, and the per-record registry resolve below does that properly now.
+            // Every 15s while blocked (backing off): a round of phonebook gossip to the peers, and fgtw.org only after a round that taught nothing. This used to also fire `query_resume`, which replays the ENTIRE attest (contacts load, cloud sync, roster pull, fleet key sync — 749 full replays in one logged session, and the roster-pull storm rode it via needs_initial_roster_pull). The resume's only job here was the announce echo that learned addresses, and the per-record registry resolve below does that properly now.
             if blocked && due {
                 self.last_stalled_refetch = Some(now);
                 self.stalled_refetch_streak += 1; // u32, one per stalled-refetch cycle
-                crate::logf!("FGTW: a Pending contact has no address — gossiping reachable peers + resolving from the seed registry");
-                let reachable: Vec<std::net::SocketAddr> = self
-                    .contacts
-                    .iter()
-                    .filter_map(|c| c.validated_path.map(|(a, _)| a))
-                    .collect();
-                if let Some(checker) = self.status_checker.as_ref() {
-                    for addr in reachable {
-                        checker.send_phonebook_request(addr);
+                // PEERS FIRST, fgtw.org ONLY WHEN THEY DO NOT ANSWER (Nick 2026-11-09: "Peers first, fgtw.org never, unless peers don't answer").
+                // Every sibling and contact holds a phonebook, so the pulse asks them, at every address we hold for them: a proven path, else the best candidate, since a sibling on the LAN or a friend with an open mapping answers there too.
+                // fgtw.org is asked on the NEXT pulse only if this round taught nothing: the harvest above resets the streak and clears `stalled_gossip_asked` the moment a gossiped record lands, so a round that answered never reaches the seed.
+                // With no address held for anyone (a cold first start), there is no peer to ask, and the seed is the one party reachable without knowing anyone.
+                let mut targets: Vec<std::net::SocketAddr> = Vec::new();
+                for c in self.contacts.iter().filter(|c| self.has_remote(c)) {
+                    let Some((addr, alt)) = c.race_addrs() else { continue };
+                    for a in std::iter::once(addr).chain(alt) {
+                        if !targets.contains(&a) {
+                            targets.push(a);
+                        }
                     }
                 }
-                // PEERS FIRST, SEED LAST. The gossip request above asks everyone we can already reach; this asks the seed only for what that could not answer. On a cold start `reachable` is empty — no path is validated because no address is known — and the seed is the only party reachable without knowing anyone, so it is what re-enters the cycle.
-                self.resolve_stalled_addresses_from_seed();
+                if !targets.is_empty() && !self.stalled_gossip_asked {
+                    self.stalled_gossip_asked = true;
+                    crate::logf!("FGTW: a contact has no proven path — asking {} peer address(es) for their phonebooks; fgtw.org only if they teach nothing", targets.len());
+                    if let Some(checker) = self.status_checker.as_ref() {
+                        for addr in targets {
+                            checker.send_phonebook_request(addr);
+                        }
+                    }
+                } else {
+                    self.stalled_gossip_asked = false;
+                    if targets.is_empty() {
+                        crate::log("FGTW: a contact has no proven path and no peer address is held — asking fgtw.org");
+                    } else {
+                        crate::log("FGTW: the peers' phonebooks taught nothing last pulse — asking fgtw.org");
+                    }
+                    self.resolve_stalled_addresses_from_seed();
+                }
             }
             // Apply whatever the seed answered (a resolve spawned on an earlier tick).
             if self.drain_pb_resolve() {
