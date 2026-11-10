@@ -1027,6 +1027,7 @@ impl PhotonApp {
         self.ckpt_loaded = false;
         self.ckpt_last_attempt = None;
         self.roster_pull_rx = None;
+        self.chain_heads_sent.clear();
         // The Octopus page belonged to the identity that opened it.
         self.octopus_open = false;
         self.octopus_view = None;

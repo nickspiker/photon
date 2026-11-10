@@ -2554,6 +2554,8 @@ pub struct PhotonApp {
     link_consent_base: HitId,
     /// Fold-freshness tripwire pursuit: hp → the claimed tip we are currently refetching against. EDGES, not timers: inserted at spawn, cleared by the fold drain's result (or fetch-error sentinel); while standing, only a strictly newer claim re-fires. Cardinality ≤ roster size (keys come only from matched contacts).
     fleet_tip_pursuit: crate::linear_map::LinearMap<[u8; 32], i64>,
+    /// The chain head last sent over the mesh for each identity (`chain_news`): the first head seen this run is the baseline, and only a new one goes out.
+    chain_heads_sent: crate::linear_map::LinearMap<[u8; 32], [u8; 32]>,
     /// Session dedup for the no-contact presence-verdict breadcrumb (cleared wholesale at 64 — a diagnostic, not a ledger).
     unknown_verdict_logged: crate::linear_map::SortedSet<[u8; 32]>,
     /// Responders already used to refresh a stale friend fold (StatusUpdate::ForeignResponder): one refresh per unknown device per session, never a storm.
@@ -3505,6 +3507,7 @@ impl PhotonApp {
             link_consent: None,
             link_consent_base: HIT_NONE,
             fleet_tip_pursuit: crate::linear_map::LinearMap::new(),
+            chain_heads_sent: crate::linear_map::LinearMap::new(),
             unknown_verdict_logged: crate::linear_map::SortedSet::new(),
             stale_fold_refreshed: crate::linear_map::SortedSet::new(),
             era_reclutched: crate::linear_map::LinearSet::new(),

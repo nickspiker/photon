@@ -982,6 +982,10 @@ impl PhotonApp {
                 if tip_ts < 0 {
                     continue; // fetch-error sentinel: pursuit cleared above, nothing to adopt
                 }
+                // A new head for this identity goes out over the mesh now (chain_news), before anything else reads it.
+                if adopt {
+                    self.chain_news(hp);
+                }
                 if Some(hp) == our_hp {
                     // The fold-freshness tripwire's SENDER half: publish our own chain-tip eagle time to the RX worker, which stamps it into every sealed pong tail (ftip). Every chain-changing path funnels thru this drain, so one line covers attest, device add/remove, roster merge, and the 45s refold. fetch_max inside — a stale R2 self-read can't regress the claim.
                     crate::network::status::set_own_fleet_tip(tip_ts);

@@ -1261,6 +1261,47 @@ impl PhotonApp {
         crate::logf!("FLEET: pushing our chain ({} op(s), {} B) to {} contact device(s)", chain.ops.len(), bytes.len(), sent);
     }
 
+    /// CHANGES GO TO THE PEOPLE WHO CARE FIRST (Nick 2026-11-10: "broadcast to all my friends that are online, then to the bootstrap ... they update their friends ... timestamped so we know what's fresh"): when the chain this device holds for an identity gets a new head, it goes out over the mesh now, whatever brought it (our own write, a sibling's push, a friend's, a seed read).
+    /// Our own chain: to every sibling and every contact's devices. A contact's chain: to our siblings (they track the same contacts) and to that identity's own devices we can reach, so a device that missed its own fleet's change hears it from a friend.
+    /// The head is the freshness: the first head seen this run is the baseline, a head already sent is never sent again, and a receiver that holds it already adopts nothing and forwards nothing, so nothing loops.
+    pub(super) fn chain_news(&mut self, hp: [u8; 32]) {
+        let Some(chain) = crate::network::fgtw::fleet::held_chain(&hp) else { return };
+        let head = chain.head();
+        match self.chain_heads_sent.get(&hp).copied() {
+            None => {
+                self.chain_heads_sent.insert(hp, head);
+                return;
+            }
+            Some(sent) if sent == head => return,
+            Some(_) => {
+                self.chain_heads_sent.insert(hp, head);
+            }
+        }
+        if self.our_handle_proof() == Some(hp) {
+            crate::logf!("FLEET: our chain has a new head ({} op(s)) — to the siblings and every contact now", chain.ops.len());
+            self.fleet_chain_push(&[]);
+            self.fleet_chain_push_to_contacts();
+            return;
+        }
+        let Some(kp) = self.device_keypair.as_ref() else { return };
+        let Ok(bytes) = chain.to_vsf_bytes() else { return };
+        let Ok(frame) = crate::network::fgtw::protocol::build_fleet_resp_vsf(&hp, &bytes, &kp.public.to_bytes(), kp.secret.as_bytes()) else { return };
+        self.dispatch_frame_to_siblings(frame.clone());
+        let mut sent = 0usize;
+        for c in self.contacts.iter().filter(|c| c.handle_proof == hp && !c.is_sibling) {
+            for ep in c.device_endpoints.iter().filter(|e| !c.refused_devices.contains(&e.pubkey)) {
+                let (addr, alt) = match (ep.lan(), ep.public()) {
+                    (Some(l), p) => (l, p),
+                    (None, Some(p)) => (p, None),
+                    (None, None) => continue,
+                };
+                self.send_frame_direct(frame.clone(), ep.pubkey, addr, alt);
+                sent += 1;
+            }
+        }
+        crate::logf!("FLEET: {}'s chain has a new head ({} op(s)) — passed on to our siblings and {} of its own device(s)", crate::fp(&hp), chain.ops.len(), sent);
+    }
+
     /// Persist the chain we hold for OUR fleet to the vault (`fleet_chain`), so a device that cannot reach the seed still serves its fleet's chain after a relaunch.
     pub(super) fn fleet_chain_store(&self) {
         let (Some(storage), Some(session)) = (self.storage.as_ref(), self.session.as_ref()) else { return };

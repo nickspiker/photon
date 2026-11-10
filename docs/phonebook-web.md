@@ -48,6 +48,23 @@ Charging and power-saver signals are new on Android (BatteryManager / PowerManag
 - **Replication**: the owner stores to the k closest on its own change edge and when a closer node appears; holders re-replicate on the same routing edge; records expire by their own epoch.
 - **Lookup with the trust gradient**: ask your own fleet, then your contacts (they answer from chains they have pinned), then the k closest.
 
+## Changes travel to the people who care
+
+Nick 2026-11-10: "if I do any change to the phonebook, avatar, device removal, whatever, it should get broadcast to all my friends that are online, then to the bootstrap (FGTW first, fgtw.org second) because ideally they update their friends ... and it's timestamped so we know what's fresh."
+
+- **One edge.** A signed change goes out the moment it exists: to the person's own devices and to every friend online, then it is written to fgtw.org, which keeps a copy and is read only on the last rung of the ladder.
+- **Passed on, once.** A device that adopts a *newer* record (a newer signed stamp, or for a chain an extension) passes it to its own devices and to the record owner's devices it can reach; something it already had stops there, so nothing loops and nothing floods.
+- **Freshness is in the record.** Phonebook records carry their signed epoch, chains grow only by extension (the held head is the stamp), the avatar pointer and settings carry their own stamps; a receiver never needs fgtw.org to know which copy is newer.
+- **No polling.** Nothing asks on a timer what it can be told on a change.
+
+| Change | Status |
+|---|---|
+| Chains (device added, removed, locked, declared) | **Built 2026-11-10** (`chain_news`): a new held head goes to our siblings and contacts (our chain) or to our siblings and the owner's devices (a contact's chain). Our own writes still reach fgtw.org first inside the fgtw client, a moment before the mesh push. |
+| Addresses | Pushed to contacts on change; not yet passed on by friends. |
+| Avatars | Not pushed on change (friends learn of it on their next pong). |
+| Settings | Pushed to siblings; fgtw.org is still read on every change (pull, merge, push). |
+| Join requests | Local first (LAN beacon, NFC); fgtw.org's registry is still posted to and read on every join, to become a mailbox read only when someone asks. |
+
 ## First claim on a handle
 
 The one question without a server: who claimed a handle first.
