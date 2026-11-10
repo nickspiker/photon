@@ -391,6 +391,20 @@ pub fn isolate_test_storage() {
         if let Err(e) = std::fs::remove_dir_all(&root) {
             assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "clear test root {}: {}", root.display(), e);
         }
+        // A finished run leaves its root behind (nothing runs at a test binary's exit), about 647 MB each; 34 of them filled the /tmp quota on 2026-11-10 and every vault test then failed with EDQUOT.
+        // So each run removes the roots of runs whose process is gone; a root whose process still lives (a concurrent cargo test) is left alone.
+        #[cfg(unix)]
+        if let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                let Some(pid) = name.to_str().and_then(|n| n.strip_prefix("photon-tests-")).and_then(|p| p.parse::<i32>().ok()) else { continue };
+                // kill with signal 0 only asks whether the process exists; ESRCH means it is gone.
+                let gone = unsafe { libc::kill(pid, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+                if gone {
+                    crate::log_err!(std::fs::remove_dir_all(entry.path()), "remove a finished test run's root");
+                }
+            }
+        }
     });
     std::env::set_var("PHOTON_DATA_DIR", root.join("cfg"));
     kete::set_vault_dirs_override(
