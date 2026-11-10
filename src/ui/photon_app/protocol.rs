@@ -366,11 +366,13 @@ impl PhotonApp {
         }
 
         // AddDevice flow: apply off-thread match-check/bind results (drain first so the rx borrow ends before we mutate self).
+        // The Add screen's candidates and the background add's results (which outlive the screen).
         let add_updates: Vec<AddDeviceUpdate> = self
             .add_device_rx
-            .as_ref()
-            .map(|rx| rx.try_iter().collect())
-            .unwrap_or_default();
+            .iter()
+            .chain(self.adding_rx.iter())
+            .flat_map(|rx| rx.try_iter())
+            .collect();
         for update in add_updates {
             match update {
                 AddDeviceUpdate::Candidates(reqs) => {
@@ -379,41 +381,23 @@ impl PhotonApp {
                     self.rebuild_add_device_candidates();
                 }
                 AddDeviceUpdate::Bound(pk) => {
-                    self.add_device_checking = false;
-                    self.add_device_bound = Some(pk);
                     // The extended chain goes to the fleet NOW over the mesh — every sibling (so their folds take the newcomer in) and the newcomer itself at the address its LAN beacon came from (its green). The seed's copy, if it took, is the mirror.
                     let newcomer: Vec<([u8; 32], std::net::SocketAddr)> = self.lan_heard_addr.iter().filter(|(k, _)| *k == pk).copied().collect();
                     self.fleet_chain_push(&newcomer);
                     // And to every contact's devices, so their folds take the newcomer in before it ever speaks to them (field 2026-11-04).
                     self.fleet_chain_push_to_contacts();
                     self.fleet_chain_store();
-                    let name = self
-                        .session
-                        .as_ref()
-                        .map(|s| {
-                            crate::network::fgtw::fleet::device_name_default(&pk, &s.identity_seed)
-                        })
-                        .unwrap_or_default();
-                    if self.add_device_bind_ble {
-                        // BLE / list-tap select: the candidate was picked by proximity + name, NOT by typing its full 256-bit key — so a wrong pick is possible. Hold the fleet-key rotation behind the human's "did it turn green?" confirm (two-phase); a wrong bind stays a keyless ledger entry.
-                        self.add_device_status = tr(Msg::BoundDeviceConfirm(&name)).into_owned();
-                    } else {
-                        // WORDS path: the typed 256-bit match already IS the confirmation (you can only type the words shown on the one device in your hand — no wrong candidate), so release the fleet key immediately.
-                        self.add_device_status = tr(Msg::AddingDevice(&name)).into_owned();
-                        self.spawn_confirm_add();
-                    }
+                    // The person already said yes (the green, an NFC tap, or the typed words), so the key goes out at once.
+                    self.spawn_confirm_add();
                 }
                 AddDeviceUpdate::Rotated(blob) => {
-                    self.add_device_checking = false;
                     // The grown fan-out goes to the newcomer (at its LAN beacon's address — its key) and to every sibling over the mesh; the seed's copy, if the mirror took, is the fallback.
-                    let newcomer: Vec<([u8; 32], std::net::SocketAddr)> = self.add_device_bound.into_iter().flat_map(|pk| self.lan_heard_addr.iter().filter(move |(k, _)| *k == pk).copied()).collect();
+                    let newcomer: Vec<([u8; 32], std::net::SocketAddr)> = self.adding.take().into_iter().flat_map(|pk| self.lan_heard_addr.iter().filter(move |(k, _)| *k == pk).copied()).collect();
                     self.fanout_push(&blob, &newcomer);
-                    // Ceremony complete — back to the Fleet page it was launched from (the new device's row is the confirmation), instead of stranding the user on a finished words screen.
-                    self.end_add_device_flow();
                     // The add a contention shut has finished; the next one starts open again (docs/lifecycle.md P3).
                     self.add_device_contended = false;
+                    // The person is already back on the Fleet page (or wherever they went since): the new row and this toast are the confirmation.
                     self.refresh_fleet_retired();
-                    self.state = AppState::Settings(SettingsPage::Fleet);
                     self.ready_toast = Some(tr(Msg::DeviceAdded).into_owned());
                     // The confirm rotated the fleet key — recover the new epoch AND re-seal the roster under it in one ordered pass, so the just-joined device's roster pull decrypts instead of failing aead::Error until a relaunch. (Was a bare key-sync that left the roster stale-sealed forever, since the periodic re-push only fires on a non-in-app attest.)
                     self.spawn_roster_republish();
@@ -423,8 +407,9 @@ impl PhotonApp {
                     }
                 }
                 AddDeviceUpdate::Failed(e) => {
-                    self.add_device_checking = false;
-                    self.add_device_status = tr(Msg::AddDeviceError(&e)).into_owned();
+                    // The background add's failure reaches the person wherever they are.
+                    self.adding = None;
+                    self.ready_toast = Some(tr(Msg::AddDeviceError(&e)).into_owned());
                 }
             }
             { needs_redraw = true; self.note_redraw(line!()); }

@@ -1471,24 +1471,8 @@ impl PhotonApp {
                     // Word wrap (Nick 2026-09-04): greedy against the band width — a message that outgrows one line wraps at a step-smaller size instead of running off the sides.
                     let mut size = region_h * 0.5;
                     let style = |sz: f32| TextStyle::new(sz, colour).weight(500).font("Oxanium");
-                    let wrap = |text: &str, sz: f32, tx: &mut fluor::text::TextRenderer| -> Vec<String> {
-                        let max_w = region_w * 0.96;
-                        let mut lines = Vec::new();
-                        let mut cur = String::new();
-                        for word in text.split_whitespace() {
-                            let cand = if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
-                            if !cur.is_empty() && tx.measure_text(&cand, &style(sz)) > max_w {
-                                lines.push(std::mem::take(&mut cur));
-                                cur = word.to_string();
-                            } else {
-                                cur = cand;
-                            }
-                        }
-                        if !cur.is_empty() {
-                            lines.push(cur);
-                        }
-                        lines
-                    };
+                    // The shared wrapper, so a line return in the message is a line break here too.
+                    let wrap = |text: &str, sz: f32, tx: &mut fluor::text::TextRenderer| -> Vec<String> { wrap_text_lines(tx, text, &style(sz), region_w * 0.96) };
                     let mut lines = wrap(&text, size, ctx.text);
                     if lines.len() > 1 {
                         size = region_h * 0.38;
@@ -2117,17 +2101,9 @@ impl PhotonApp {
                         0.0
                     };
                     let tcy = ((hint.y0 + hint.y1) as f32 * 0.5 - scroll - lift).min(toast_floor(buf_h, region_h * 0.6));
-                    ctx.text.draw_text_center(
-                        &mut canvas,
-                        msg,
-                        tcx,
-                        tcy,
-                        &TextStyle::new(region_h * 0.6, *theme::SEARCH_FOUND_COLOUR)
-                            .weight(600)
-                            .font("Oxanium"),
-                        None,
-                        None,
-                    );
+                    let ts = region_h * 0.6;
+                    let style = TextStyle::new(ts, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium");
+                    draw_toast(&mut canvas, ctx.text, msg, tcx, (hint.x1 - hint.x0) as f32, tcy, ts, &style);
                 }
             }
 
@@ -3426,19 +3402,11 @@ impl PhotonApp {
                         // Clamp so a short window (tall header) can never invert the clip (list_top > list_bottom) — that's what made every message vanish on resize. When there's no room, list_bottom collapses to list_top and the list is simply empty rather than drawing with a negative-height (inverted) clip.
                         let list_bottom = list_bottom.max(list_top);
                         // Status toast on the CONVERSATION screen — the Ready hint slot and the Settings pane both draw `ready_toast`, but this AppState never did, which made a refused self-row persist (its toast fires while the user is right here) invisible (2026-08-21 erasure ticket). Above the compose bar, painted early so under-blend keeps it over the list; event-shown, cleared on the next interaction via clear_toast, never time-based.
+                        let mut toast_rows = 0;
                         if let Some(msg) = &self.ready_toast {
                             let ts = unit * 0.72;
-                            ctx.text.draw_text_center(
-                                &mut canvas,
-                                msg,
-                                buf_w as f32 * 0.5,
-                                (list_bottom - ts * 0.4).min(toast_floor(buf_h, ts)),
-                                &TextStyle::new(ts, *theme::SEARCH_FOUND_COLOUR)
-                                    .weight(600)
-                                    .font("Oxanium"),
-                                None,
-                                None,
-                            );
+                            let style = TextStyle::new(ts, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium");
+                            toast_rows = draw_toast(&mut canvas, ctx.text, msg, buf_w as f32 * 0.5, buf_w as f32 - ts * 2.0, (list_bottom - ts * 0.4).min(toast_floor(buf_h, ts)), ts, &style);
                         }
                         let list_clip = fluor::paint::Clip::new(
                             0,
@@ -3452,7 +3420,7 @@ impl PhotonApp {
                             let mut pane_overlays: Vec<fluor::canvas::PixelRect> = Vec::new();
                             if self.ready_toast.is_some() {
                                 let ts = unit * 0.72;
-                                pane_overlays.push(fluor::canvas::PixelRect::new(0, (list_bottom - ts * 1.4) as usize, buf_w, list_bottom as usize));
+                                pane_overlays.push(fluor::canvas::PixelRect::new(0, (list_bottom - ts * 1.4 - (toast_rows - 1) as f32 * ts * 1.25) as usize, buf_w, list_bottom as usize));
                             }
                             if let Some(orb) = orb_bbox {
                                 pane_overlays.push(orb);
@@ -5214,14 +5182,7 @@ impl PhotonApp {
                 None,
                 None,
             );
-            let subtitle = if self.add_device_bound.is_none() {
-                tr(Msg::TypeWords)
-            } else if self.add_device_checking {
-                "".into() // Words path: bound + auto-rotating; the status row below carries "Adding…".
-            } else {
-                // BLE/tap path only: load-bearing — the human must check the FAR (new) device's screen, not this one.
-                tr(Msg::AddDeviceConfirmOnce)
-            };
+            let subtitle = tr(Msg::TypeWords);
             ctx.text.draw_text_center(
                 &mut canvas,
                 &subtitle,
@@ -5233,186 +5194,156 @@ impl PhotonApp {
             );
             // Running cursor for everything BELOW the field slot (top edge of the next row).
             let mut y = tb_cy + u * 0.85;
-            if self.add_device_bound.is_none() {
-                // Words-entry field (the launch textbox instance, at its rect); it stamps its hit id so click-to-focus works.
-                if let Some(tb) = self.textbox.as_mut() {
-                    let id = tb.hit_id();
-                    tb.render_content_into(
-                        &mut canvas,
-                        0.,
-                        0.,
-                        ctx.text,
-                        None,
-                        None,
-                        Some(&mut chrome.hit_test_map),
-                        id,
-                    );
-                }
-                // Live word counter (n / 23).
-                let typed: String = self
-                    .textbox
-                    .as_ref()
-                    .map(|tb| tb.chars.iter().collect())
-                    .unwrap_or_default();
-                let count = crate::network::fgtw::fleet::pair_word_tokens(&typed);
-                let full = count == crate::network::fgtw::fleet::PAIR_WORD_COUNT;
-                let counter = format!(
-                    "{} / {}",
-                    crate::fmt_num(count as u32),
-                    crate::fmt_num(crate::network::fgtw::fleet::PAIR_WORD_COUNT as u32)
+            // Words-entry field (the launch textbox instance, at its rect); it stamps its hit id so click-to-focus works.
+            if let Some(tb) = self.textbox.as_mut() {
+                let id = tb.hit_id();
+                tb.render_content_into(
+                    &mut canvas,
+                    0.,
+                    0.,
+                    ctx.text,
+                    None,
+                    None,
+                    Some(&mut chrome.hit_test_map),
+                    id,
                 );
-                let counter_colour = if full {
-                    *theme::SEARCH_FOUND_COLOUR
-                } else {
-                    fluor::theme::HINT_COLOUR
-                };
+            }
+            // Live word counter (n / 23).
+            let typed: String = self
+                .textbox
+                .as_ref()
+                .map(|tb| tb.chars.iter().collect())
+                .unwrap_or_default();
+            let count = crate::network::fgtw::fleet::pair_word_tokens(&typed);
+            let full = count == crate::network::fgtw::fleet::PAIR_WORD_COUNT;
+            let counter = format!(
+                "{} / {}",
+                crate::fmt_num(count as u32),
+                crate::fmt_num(crate::network::fgtw::fleet::PAIR_WORD_COUNT as u32)
+            );
+            let counter_colour = if full {
+                *theme::SEARCH_FOUND_COLOUR
+            } else {
+                fluor::theme::HINT_COLOUR
+            };
+            ctx.text.draw_text_center(
+                &mut canvas,
+                &counter,
+                cx,
+                y + u * 0.25,
+                &TextStyle::new(u * 0.5, counter_colour)
+                    .weight(500)
+                    .font("Oxanium"),
+                None,
+                None,
+            );
+            y += u * 0.5 + gap;
+            // Tappable candidate list — PROXIMITY POPULATION ONLY (docs/pairing-v2.md): only devices HEARD over the BLE announce beacon (later: NFC tap) become tap targets, NEVER the raw registry — a remote attacker who holds the handle can flood the identity-gated registry, so listing registry entries as taps would fill your finger's reach with decoys. Registry = sync only (the consent a tap binds with); proximity is what a remote attacker can't fake. Not-nearby devices don't appear — you type their words (reading them off the physical screen IS the proximity check). Index i = position in the HEARD-only subset; the tap dispatch filters identically.
+            // A PICK is up (a touch on a row, owner 2026-11-10): the picked device's words to compare with its screen (its name is on the status line), then "Is your new device bright green?" with Yes and No. Nothing is bound until Yes; No does what Back does.
+            if let Some((_, _, words)) = self.add_device_selected.as_ref() {
+                let wsize = u * 0.4;
+                let spaced: String = words.chars().fold(String::with_capacity(words.len() + 24), |mut s, c| {
+                    if c.is_ascii_uppercase() && !s.is_empty() {
+                        s.push(' ');
+                    }
+                    s.push(c);
+                    s
+                });
+                ctx.text.draw_text_center(&mut canvas, &spaced, cx, y + wsize, &TextStyle::new(wsize, fluor::theme::HINT_COLOUR).font("Oxanium"), None, None);
+                y += wsize * 2. + gap * 0.5;
+                let qsize = u * 0.55;
+                let qstyle = TextStyle::new(qsize, *theme::STATUS_TEXT_COLOUR).weight(600).font("Oxanium");
+                y = centered_wrapped(&mut canvas, ctx.text, cx, buf_w as f32 * 0.84, y, &tr(Msg::IsNewDeviceGreen), &qstyle, qsize * 1.25, None) + gap * 0.5;
+                // Yes and No side by side, each sized to its label as flow_pills sizes the settings pills.
+                let size = u * 0.45;
+                let pill_h = size * 2.;
+                let (yes, no) = (tr(Msg::YesPill), tr(Msg::NoPill));
+                let measure = TextStyle::new(size, 0).weight(500).font("Oxanium");
+                let wy = ctx.text.measure_text(&yes, &measure) + size * 2.;
+                let wn = ctx.text.measure_text(&no, &measure) + size * 2.;
+                let between = size * 2.;
+                let x0 = cx - (wy + between + wn) * 0.5;
+                draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(x0, y, wy, pill_h), &yes, self.add_select_hit_id, ctx.pressed_hit, true, Some(*theme::PILL_GREEN), "Oxanium");
+                draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(x0 + wy + between, y, wn, pill_h), &no, self.add_select_no_hit_id, ctx.pressed_hit, true, Some(*theme::PILL_RED), "Oxanium");
+                y += pill_h + gap;
+            }
+            let nearby: Vec<&AddCandidate> = self
+                .add_device_candidates
+                .iter()
+                .filter(|_| self.add_device_selected.is_none())
+                .filter(|c| c.pickable(self.add_device_contended))
+                .take(7)
+                .collect();
+            if !nearby.is_empty() {
                 ctx.text.draw_text_center(
                     &mut canvas,
-                    &counter,
+                    &tr(Msg::TapNearby),
                     cx,
-                    y + u * 0.25,
-                    &TextStyle::new(u * 0.5, counter_colour)
-                        .weight(500)
-                        .font("Oxanium"),
+                    y + u * 0.2,
+                    &TextStyle::new(u * 0.4, fluor::theme::HINT_COLOUR).font("Oxanium"),
                     None,
                     None,
                 );
-                y += u * 0.5 + gap;
-                // Tappable candidate list — PROXIMITY POPULATION ONLY (docs/pairing-v2.md): only devices HEARD over the BLE announce beacon (later: NFC tap) become tap targets, NEVER the raw registry — a remote attacker who holds the handle can flood the identity-gated registry, so listing registry entries as taps would fill your finger's reach with decoys. Registry = sync only (the consent a tap binds with); proximity is what a remote attacker can't fake. Not-nearby devices don't appear — you type their words (reading them off the physical screen IS the proximity check). Index i = position in the HEARD-only subset; the tap dispatch filters identically.
-                // A PICK is up (button or NFC tap, owner 2026-11-10): the picked device's name and words to compare with its screen, the distinct green Add, and the way out. Nothing is bound until Add.
-                if let Some((_, name, words)) = self.add_device_selected.as_ref() {
-                    let wsize = u * 0.4;
-                    let spaced: String = words.chars().fold(String::with_capacity(words.len() + 24), |mut s, c| {
-                        if c.is_ascii_uppercase() && !s.is_empty() {
-                            s.push(' ');
-                        }
-                        s.push(c);
-                        s
-                    });
-                    ctx.text.draw_text_center(&mut canvas, &spaced, cx, y + wsize, &TextStyle::new(wsize, fluor::theme::HINT_COLOUR).font("Oxanium"), None, None);
-                    y += wsize * 2. + gap * 0.5;
-                    let add_h = u * 1.1;
-                    let label = tr(Msg::AddSelectedDevice(name));
-                    let held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.add_select_hit_id;
+                y += u * 0.4 + gap * 0.5;
+                let row_h = u * 0.85;
+                for (i, cand) in nearby.iter().enumerate() {
+                    let label = tr(Msg::AddDeviceNearby(&cand.name));
+                    let held = ctx.pressed_hit != HIT_NONE
+                        && ctx.pressed_hit
+                            == (self.add_candidate_hit_base + i as HitId);
                     ctx.text.draw_text_center(
                         &mut canvas,
                         &label,
                         cx,
-                        y + add_h * 0.5,
-                        &TextStyle::new(u * 0.7, *theme::SEARCH_FOUND_COLOUR).weight(if held { 800 } else { 700 }).font("Oxanium"),
+                        y + row_h * 0.5,
+                        &TextStyle::new(u * 0.55, *theme::SEARCH_FOUND_COLOUR)
+                            .weight(if held { 700 } else { 500 })
+                            .font("Oxanium"),
                         None,
                         None,
                     );
                     let half_w = buf_w as f32 * 0.42;
-                    restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, (cx - half_w) as isize, y as isize, (cx + half_w) as isize, (y + add_h) as isize, self.add_select_hit_id);
-                    y += add_h + gap * 0.5;
-                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::NotGreenPressBack), cx, y + u * 0.3, &TextStyle::new(u * 0.4, fluor::theme::HINT_COLOUR).font("Oxanium"), None, None);
-                    y += u * 0.6 + gap;
-                }
-                let nearby: Vec<&AddCandidate> = self
-                    .add_device_candidates
-                    .iter()
-                    .filter(|_| self.add_device_selected.is_none())
-                    .filter(|c| c.pickable(self.add_device_contended))
-                    .take(7)
-                    .collect();
-                if !nearby.is_empty() {
-                    ctx.text.draw_text_center(
-                        &mut canvas,
-                        &tr(Msg::TapNearby),
-                        cx,
-                        y + u * 0.2,
-                        &TextStyle::new(u * 0.4, fluor::theme::HINT_COLOUR).font("Oxanium"),
-                        None,
-                        None,
+                    restamp_hit_rect(
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        (cx - half_w) as isize,
+                        y as isize,
+                        (cx + half_w) as isize,
+                        (y + row_h) as isize,
+                        self.add_candidate_hit_base + i as HitId,
                     );
-                    y += u * 0.4 + gap * 0.5;
-                    let row_h = u * 0.85;
-                    for (i, cand) in nearby.iter().enumerate() {
-                        let label = tr(Msg::AddDeviceNearby(&cand.name));
-                        let held = ctx.pressed_hit != HIT_NONE
-                            && ctx.pressed_hit
-                                == (self.add_candidate_hit_base + i as HitId);
-                        ctx.text.draw_text_center(
-                            &mut canvas,
-                            &label,
-                            cx,
-                            y + row_h * 0.5,
-                            &TextStyle::new(u * 0.55, *theme::SEARCH_FOUND_COLOUR)
-                                .weight(if held { 700 } else { 500 })
-                                .font("Oxanium"),
-                            None,
-                            None,
-                        );
-                        let half_w = buf_w as f32 * 0.42;
-                        restamp_hit_rect(
-                            &mut chrome.hit_test_map,
-                            buf_w,
-                            buf_h,
-                            (cx - half_w) as isize,
-                            y as isize,
-                            (cx + half_w) as isize,
-                            (y + row_h) as isize,
-                            self.add_candidate_hit_base + i as HitId,
-                        );
-                        y += row_h;
-                    }
-                    y += gap;
+                    y += row_h;
                 }
-                // The fgtw.org opt-in (local first, 2026-11-10): binding requests from devices that aren't nearby are read only after this tap.
-                {
-                    let (label, colour) = if self.add_device_mailbox {
-                        (tr(Msg::AddLookingFgtw), fluor::theme::HINT_COLOUR)
-                    } else {
-                        (tr(Msg::AddLookFgtw), *theme::CONTACT_NAME_COLOUR)
-                    };
-                    let size = u * 0.45;
-                    ctx.text.draw_text_center(&mut canvas, &label, cx, y + size, &TextStyle::new(size, colour).font("Oxanium"), None, None);
-                    if !self.add_device_mailbox {
-                        let half_w = buf_w as f32 * 0.42;
-                        restamp_hit_rect(
-                            &mut chrome.hit_test_map,
-                            buf_w,
-                            buf_h,
-                            (cx - half_w) as isize,
-                            y as isize,
-                            (cx + half_w) as isize,
-                            (y + size * 2.) as isize,
-                            self.add_mailbox_hit_id,
-                        );
-                    }
-                    y += size * 2. + gap;
+                y += gap;
+            }
+            // The fgtw.org opt-in (local first, 2026-11-10): binding requests from devices that aren't nearby are read only after this tap.
+            {
+                let (label, colour) = if self.add_device_mailbox {
+                    (tr(Msg::AddLookingFgtw), fluor::theme::HINT_COLOUR)
+                } else {
+                    (tr(Msg::AddLookFgtw), *theme::CONTACT_NAME_COLOUR)
+                };
+                let size = u * 0.45;
+                ctx.text.draw_text_center(&mut canvas, &label, cx, y + size, &TextStyle::new(size, colour).font("Oxanium"), None, None);
+                if !self.add_device_mailbox {
+                    let half_w = buf_w as f32 * 0.42;
+                    restamp_hit_rect(
+                        &mut chrome.hit_test_map,
+                        buf_w,
+                        buf_h,
+                        (cx - half_w) as isize,
+                        y as isize,
+                        (cx + half_w) as isize,
+                        (y + size * 2.) as isize,
+                        self.add_mailbox_hit_id,
+                    );
                 }
-            } else if !self.add_device_checking {
-                // Green-confirm affordance (two-phase) — sits IN the field slot (tb_cy), the same place the words field would be. On the WORDS path the Bound handler auto-fires the rotation, so this never renders; it's the tap/BLE gate. Hit-stamped so Android taps land.
-                ctx.text.draw_text_center(
-                    &mut canvas,
-                    &tr(Msg::YesGreenFinish),
-                    cx,
-                    tb_cy,
-                    &TextStyle::new(u * 0.7, *theme::SEARCH_FOUND_COLOUR)
-                        .weight(600)
-                        .font("Oxanium"),
-                    None,
-                    None,
-                );
-                let half_w = buf_w as f32 * 0.4;
-                restamp_hit_rect(
-                    &mut chrome.hit_test_map,
-                    buf_w,
-                    buf_h,
-                    (cx - half_w) as isize,
-                    (tb_cy - u * 0.7) as isize,
-                    (cx + half_w) as isize,
-                    (tb_cy + u * 0.7) as isize,
-                    self.add_confirm_hit_id,
-                );
+                y += size * 2. + gap;
             }
             // Status row.
             if !self.add_device_status.is_empty() {
-                let status_colour = if self.add_device_bound.is_some() {
-                    *theme::SEARCH_FOUND_COLOUR
-                } else if self.add_device_typo.is_some() {
+                let status_colour = if self.add_device_typo.is_some() {
                     *theme::ERROR_TEXT_COLOUR // live matcher hit: names the diverging word in red
                 } else {
                     *theme::STATUS_TEXT_COLOUR
@@ -5464,17 +5395,8 @@ impl PhotonApp {
             // Status toast ("Sending log (N KiB)…", "Log sent √", "Device removed √", ...) — the Ready screen draws `ready_toast` in its hint slot, but settings is a different AppState, so without this the toasts fired FROM settings pages (log submit, device remove) were invisible. Bottom of the content pane, painted early so under-blend keeps it above the page body; event-shown, cleared on the next interaction via clear_hints, never time-based.
             if let Some(msg) = &self.ready_toast {
                 let ts = layout.unit * 0.72;
-                ctx.text.draw_text_center(
-                    &mut canvas,
-                    msg,
-                    layout.content.x + layout.content.w * 0.5,
-                    (layout.content.bottom() - ts).min(toast_floor(buf_h, ts)),
-                    &TextStyle::new(ts, *theme::SEARCH_FOUND_COLOUR)
-                        .weight(600)
-                        .font("Oxanium"),
-                    None,
-                    None,
-                );
+                let style = TextStyle::new(ts, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium");
+                draw_toast(&mut canvas, ctx.text, msg, layout.content.x + layout.content.w * 0.5, layout.content.w - ts * 2.0, (layout.content.bottom() - ts).min(toast_floor(buf_h, ts)), ts, &style);
             }
 
             // --- Header: the title LEFT-aligned beside the orb, level with its centre (Nick 2026-09-29) — the chrome title's own rule (orb right edge + a quarter button, the button being 8/9 of the orb radius), in the heading's style. Without an orb, the old place on the divider. ---
@@ -5816,7 +5738,7 @@ impl PhotonApp {
                             flow.line(
                                 &mut canvas,
                                 ctx.text,
-                                &tr(if p.intent == 1 { Msg::DepartIntentNewOwner } else { Msg::DepartIntentDesk }),
+                                &tr(if p.intent == 1 { Msg::DepartFreesHardware } else { Msg::DepartKeepsHardware }),
                                 hspan2 * 0.85,
                                 if p.intent == 1 { theme::PILL_YELLOW.1 } else { *theme::LABEL_COLOUR },
                                 600,
@@ -6962,9 +6884,9 @@ impl PhotonApp {
                     let nuke_armed = self.octopus_armed == Some(OCTOPUS_PILL_NUKE);
                     let nuke_label = match (self.octopus_who.is_some(), nuke_armed) {
                         (false, false) => "Nuke all",
-                        (false, true) => "Nuke all — sure?",
+                        (false, true) => "Really nuke all?",
                         (true, false) => "Clear this identity",
-                        (true, true) => "Clear this identity — sure?",
+                        (true, true) => "Really clear this identity?",
                     };
                     let mut top: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = vec![("Filter", btn_base + OCTOPUS_PILL_FILTER, !busy, None)];
                     if self.octopus_who.is_some() {
@@ -6978,7 +6900,7 @@ impl PhotonApp {
                         flow.line(&mut canvas, ctx.text, if self.octopus_who.is_some() { "fgtw.org buckets, this identity's objects only" } else { "fgtw.org buckets" }, hspan2 * 0.9, *theme::LABEL_COLOUR, 600);
                         let labels: Vec<(String, HitId)> = view.buckets.iter().take(OCTOPUS_BUCKET_SLOTS as usize).enumerate().map(|(i, b)| {
                             let slot = OCTOPUS_PILL_BUCKET0 + i as HitId;
-                            let label = if self.octopus_armed == Some(slot) { format!("Clear {} — sure?", b.name) } else { format!("{} · {}", b.name, crate::fmt_num64(b.count)) };
+                            let label = if self.octopus_armed == Some(slot) { format!("Really clear {}?", b.name) } else { format!("{} · {}", b.name, crate::fmt_num64(b.count)) };
                             (label, slot)
                         }).collect();
                         let pills: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = labels.iter().map(|(l, slot)| (l.as_str(), btn_base + *slot, !busy, (self.octopus_armed == Some(*slot)).then(|| *theme::PILL_RED))).collect();
@@ -8194,6 +8116,21 @@ pub(super) fn wave_fold_colours(e: &crate::wave::wave_env::WaveEnv, cols: usize)
 /// The lowest a toast's centre may sit (Nick 2026-09-30, "toast messages need to render above navbar buttons"): its text clear of the Android navigation bar. `ts` = the toast's text size.
 fn toast_floor(buf_h: usize, ts: f32) -> f32 {
     buf_h as f32 - crate::ui::safe_bottom_px() as f32 - ts
+}
+
+/// One toast, wrapped to `max_w` and centred on `cx` (owner 2026-11-10: toasts clipped on the left and right).
+/// A '\n' in the message is a line return; the last row sits at `last_cy` and earlier rows stack upward from it.
+/// Returns the row count, so a caller reserving the toast's band knows how tall it is.
+#[allow(clippy::too_many_arguments)]
+fn draw_toast(canvas: &mut Canvas, text: &mut fluor::text::TextRenderer, msg: &str, cx: f32, max_w: f32, last_cy: f32, ts: f32, style: &TextStyle) -> usize {
+    let rows = wrap_text_lines(text, msg, style, max_w);
+    let step = ts * 1.25;
+    let mut cy = last_cy - (rows.len() - 1) as f32 * step;
+    for row in &rows {
+        text.draw_text_center(canvas, row, cx, cy, style, None, None);
+        cy += step;
+    }
+    rows.len()
 }
 
 /// THE CONVERSATION BLIND (Nick 2026-09-29): the top bar's pieces are slats — the orb (top-left), Beam (right, above Wave, a little left of it), and the row of "‹ Contacts" (left) with Wave (right) — each with a rest band, and each remembering how far it is hidden (`h`, index 0 orb, 1 Beam, 2 row).

@@ -530,12 +530,12 @@ pub enum Msg<'a> {
     HoldingsCopyHint(&'a str),
     /// Hint while copy-then-release is pending: who is copying and what happens next.
     HoldingsCopyingTo(&'a str),
-    /// APPROVER's Fleet card: the leaver declared new-owner intent.
-    DepartIntentNewOwner,
-    /// APPROVER's Fleet card: the leaver declared desk (keeping-it) intent.
-    DepartIntentDesk,
-    /// New-owner departure fully completed (countersigned + brand released).
-    DepartCompleteNewOwner(&'a str),
+    /// APPROVER's Fleet card: what approving does when the leaver asked for its hardware to be freed (every Release asks this; leaving is not only a hand-off to a new owner).
+    DepartFreesHardware,
+    /// APPROVER's Fleet card: what approving does when the leaver asked to keep the hardware branded to this fleet.
+    DepartKeepsHardware,
+    /// A departure fully completed (countersigned, and the hardware freed).
+    DepartComplete(&'a str),
     /// Countersign landed but the release half failed — the retired row's Release pill is the retry.
     DepartReleasePending(&'a str),
     /// Attest refused because the hardware is still branded to another identity — the honest joiner-side message.
@@ -656,9 +656,7 @@ pub enum Msg<'a> {
     ClearHistoryNote,
     // ---- add device / pairing ----
     AddDeviceTitle,
-    AddDeviceConfirmOnce,
     TapNearby,
-    YesGreenFinish,
     TapOrbCancel,
     AddDeviceNearby(&'a str),
     TypeWords,
@@ -668,12 +666,9 @@ pub enum Msg<'a> {
     NoMatchingDevice(&'a str),
     MatchingDevice(&'a str),
     MatchingMultiple(usize),
-    WordsMatched,
-    Finishing,
     Preparing,
     NoFleetKey,
     NoDeviceKey,
-    BoundDeviceConfirm(&'a str),
     AddingDevice(&'a str),
     DeviceAdded,
     /// More than one device asks to join at once (docs/lifecycle.md P3): only a device beside this one can be added, and if the owner is adding one, someone else knows the handle.
@@ -958,10 +953,11 @@ pub enum Msg<'a> {
     /// The joining device's opt-in to the bootstrap mailbox: its binding request is posted to fgtw.org only when this is tapped (2026-11-10, local first).
     /// The adding device after a pick (button or NFC tap): nothing is bound yet, the picked device has been told and should turn green.
     SelectedDevice(&'a str),
-    /// The distinct green button that adds the picked device (the bind and the key together), pressed only after seeing it turn green.
-    AddSelectedDevice(&'a str),
-    /// The note under it: nothing happens unless Add is pressed.
-    NotGreenPressBack,
+    /// The question under a pick (owner 2026-11-10): Yes adds it (the bind and the key together), No goes back to the list.
+    IsNewDeviceGreen,
+    /// The answers to it.
+    YesPill,
+    NoPill,
     /// The joining device's green: a device of the fleet picked it; the keys follow when the person presses Add there.
     SelectedBy(&'a str),
     JoinAskFgtw,

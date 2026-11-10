@@ -1407,8 +1407,8 @@ pub(super) const CHORD_HINTS: &[(&str, &str)] = &[
     ("w", "Damage rect outline (Where)"),
     ("d", "Screen-buffer decay (fade)"),
     ("b", "Finalize copy-pass blue tint"),
-    ("n", "Nuke vault — keeps you attested (dev only)"),
-    ("u", "Un-attest — clear session, keep vault (dev only)"),
+    ("n", "Nuke vault: keeps you attested (dev only)"),
+    ("u", "Un-attest: clear session, keep vault (dev only)"),
     (
         "x",
         "Nuke vault + un-attest + wipe logs + EXIT for a clean relaunch (dev only)",
@@ -2114,14 +2114,16 @@ pub struct PhotonApp {
     add_device_status: String,
     /// AddDevice flow: the verified pending binding requests for OUR fleet — the matcher's candidate set, each with its expected word tokens + keyed display name precomputed. Refreshed by the bindreq watch thread (hub-poked + polled); the typed entry prefix-matches against these, keystroke by keystroke (docs/pairing-v2.md).
     add_device_candidates: Vec<AddCandidate>,
-    /// AddDevice flow: the device pubkey whose consent-carrying bind has PUBLISHED and now awaits the human's green confirm — the two-phase gate: the fleet-key rotation is held behind that press, so a wrong bind stays a keyless ledger entry. `Some` = the confirm affordance is live and the words entry is done.
-    add_device_bound: Option<[u8; 32]>,
+    /// The device being added in the background (owner 2026-11-10: "just go straight back to fleet"): its bind and then its key release run off the Add screen, so the screen closes the moment the person says yes.
+    /// One add at a time; cleared when the grow lands or fails.
+    adding: Option<[u8; 32]>,
+    /// The background add's results: made on the first add and kept for the session, so leaving or reopening the Add screen never drops a result in flight.
+    adding_tx: Option<std::sync::mpsc::Sender<AddDeviceUpdate>>,
+    adding_rx: Option<std::sync::mpsc::Receiver<AddDeviceUpdate>>,
     /// AddDevice flow: the entry text the live matcher last ran against (debounce — the match itself is cheap, but no point re-running it on ticks where nothing was typed).
     add_device_wordcheck_text: String,
     /// AddDevice flow: the first typed word that diverges from every candidate's expected words (or fails the voca spell-check while no candidates are in yet). Drives the red status line at the exact word the typo happens, instead of a silent no-match after all 23.
     add_device_typo: Option<String>,
-    /// AddDevice flow: a bind or rotate is in flight (debounces spawns; cleared when its result drains).
-    add_device_checking: bool,
     /// Pairing v2 shadow beacon: whether the AddDevice-screen scan is currently running (diffed against the screen state each tick — see the tick block).
     beacon_scan_active: bool,
     /// AddDevice flow: results from the off-thread candidate watch / bind / rotate (the fleet client blocks on HTTP, so it can't run on the UI thread).
@@ -2130,8 +2132,6 @@ pub struct PhotonApp {
     add_device_tx: Option<std::sync::mpsc::Sender<AddDeviceUpdate>>,
     /// AddDevice flow: stop flag for the bindreq watch thread — set on every flow exit so the registry polling dies with the screen.
     add_device_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    /// AddDevice flow: hit id for the green-confirm affordance ("It's in — finish"), stamped only while `add_device_bound` is Some.
-    add_confirm_hit_id: HitId,
     /// AddDevice flow: base hit id for the tappable candidate rows (BLE/tap select). Row `i` stamps `add_candidate_hit_base + i`; up to 8 rows.
     add_candidate_hit_base: HitId,
     /// Devices heard broadcasting LAN discovery under OUR OWN handle recently: (device pubkey, last heard). Feeds AddCandidate::heard_lan; entries older than LAN_HEARD_FRESH are pruned at read.
@@ -2142,8 +2142,6 @@ pub struct PhotonApp {
     fleet_asked: Vec<[u8; 32]>,
     /// Unknown device keys that announced a signed transfer at us (StatusUpdate::StrangerFrame), each acted on once per session: the stale-fold edge that re-asks the seed for the contacts in `fleet_asked`. Bounded at 64, oldest out.
     stranger_seen: Vec<[u8; 32]>,
-    /// AddDevice flow: the tap-to-bind (BLE/list select) path is in flight, so the Bound result shows the "did it turn green?" confirm instead of auto-rotating (that auto path is words-match only, where the typed key IS the confirmation). Reset when the flow ends.
-    add_device_bind_ble: bool,
     /// More than one device asked to join at once (docs/lifecycle.md P3): the network path is shut, words and LAN picks alike, and only a device heard over Bluetooth (or tapped by NFC) can be added. Raised on the first contended candidate set and held until an add completes, so withdrawing and reposting cannot reopen it.
     add_device_contended: bool,
     /// Diagnostics "Submit" flow: result of the off-thread log upload to FGTW (blocking HTTP over up to 16 MiB). `Ok(())` → "Log sent" toast; `Err` → the reason. Drained in tick.
@@ -2197,6 +2195,8 @@ pub struct PhotonApp {
     add_device_selected: Option<(fgtw::fleet::BindRequest, String, String)>,
     /// The green "Add <name>" under a pick.
     add_select_hit_id: HitId,
+    /// The No beside it: back to the list, nothing to undo.
+    add_select_no_hit_id: HitId,
     add_join_poke: Option<std::sync::mpsc::Sender<()>>,
     /// The joining device's binding request as a signed `bind_req` frame, re-minted on each re-post; handed to every sponsor device heard beaconing under the joined handle.
     add_join_bind_req: Option<Vec<u8>>,
@@ -3340,21 +3340,20 @@ impl PhotonApp {
             pending_input_reset: false,
             add_device_status: String::new(),
             add_device_candidates: Vec::new(),
-            add_device_bound: None,
+            adding: None,
+            adding_tx: None,
+            adding_rx: None,
             beacon_scan_active: false,
             add_device_wordcheck_text: String::new(),
             add_device_typo: None,
-            add_device_checking: false,
             add_device_rx: None,
             add_device_tx: None,
             add_device_stop: None,
-            add_confirm_hit_id: HIT_NONE,
             add_candidate_hit_base: HIT_NONE,
             lan_heard: Vec::new(),
             lan_heard_addr: Vec::new(),
             fleet_asked: Vec::new(),
             stranger_seen: Vec::new(),
-            add_device_bind_ble: false,
             add_device_contended: false,
             log_submit_rx: None,
             log_submit_tx: None,
@@ -3376,6 +3375,7 @@ impl PhotonApp {
             join_selected_by: None,
             add_device_selected: None,
             add_select_hit_id: HIT_NONE,
+            add_select_no_hit_id: HIT_NONE,
             add_join_poke: None,
             add_join_bind_req: None,
             add_join_sent: Vec::new(),
@@ -4105,11 +4105,11 @@ type AddCandidate = fgtw::sponsor::Candidate;
 enum AddDeviceUpdate {
     /// A fresh, signature-verified candidate set from the binding-request registry (the watch thread's periodic/hub-poked list).
     Candidates(Vec<crate::network::fgtw::fleet::BindRequest>),
-    /// The consent-carrying bind PUBLISHED — this device pubkey now awaits the human's green confirm (the rotation is held behind that press).
+    /// The consent-carrying bind is in the chain we hold; the grow that releases the key follows at once.
     Bound([u8; 32]),
     /// The green-confirm grow sealed and held (mirrored to the seed when it answered) — ceremony complete; carries the fan-out blob to hand the newcomer and the siblings over the mesh.
     Rotated(Vec<u8>),
-    /// An error to surface in the status line.
+    /// An error: the Add screen's status line, or a toast for the background add.
     Failed(String),
 }
 
@@ -4262,11 +4262,9 @@ impl PhotonApp {
             }
         }
         if matches!(self.state, AppState::AddDevice) {
-            // Words-entry screen (existing device): the launch textbox instance does double duty as the entry field. Hidden once the bind published (green-confirm phase) — a hidden field must not stay focusable.
-            if self.add_device_bound.is_none() {
-                if let Some(tb) = self.textbox.as_mut() {
-                    f(tb);
-                }
+            // Words-entry screen (existing device): the launch textbox instance does double duty as the entry field.
+            if let Some(tb) = self.textbox.as_mut() {
+                f(tb);
             }
         }
         if matches!(self.state, AppState::Ready) {

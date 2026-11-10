@@ -12,12 +12,9 @@ impl PhotonApp {
         self.add_device_registry_reqs.clear();
         // Requests handed to us over the LAN stay: they arrived while the screen was closed and are what this screen is for. Lapsed ones are dropped when the rows are built.
         fgtw::sponsor::retain_fresh(&mut self.add_device_lan_reqs, vsf::eagle_time_oscillations());
-        self.add_device_bound = None;
-        self.add_device_bind_ble = false;
         self.add_device_selected = None;
         self.add_device_typo = None;
         self.add_device_wordcheck_text.clear();
-        self.add_device_checking = false;
         self.add_device_status = tr(Msg::TypeWords).into_owned();
         let (tx, rx) = std::sync::mpsc::channel();
         self.add_device_rx = Some(rx);
@@ -109,10 +106,7 @@ impl PhotonApp {
     /// Re-derive the AddDevice status from the current entry + candidate set — the live matcher (fgtw::sponsor::match_words, docs/pairing-v2.md). A full 23-token exact match IS the selection and auto-binds (correct words are the confirmation — the fleet key still waits behind the green confirm).
     pub(super) fn refresh_add_device_match(&mut self) {
         use fgtw::sponsor::WordMatch;
-        if !matches!(self.state, AppState::AddDevice)
-            || self.add_device_bound.is_some()
-            || self.add_device_checking
-        {
+        if !matches!(self.state, AppState::AddDevice) || self.adding.is_some() {
             return;
         }
         self.add_device_typo = None;
@@ -139,10 +133,9 @@ impl PhotonApp {
                 };
             }
             WordMatch::Full(ci) => {
-                // Exact 23-word match against a verified request — the selection is made. Bind (phase one); the fold re-verifies the consent this request carries. WORDS path → auto-rotate (clear any stale BLE-tap flag so the Bound handler doesn't park on the confirm).
+                // Exact 23-word match against a verified request: the typed words are the confirmation, so the add starts; the fold re-verifies the consent this request carries.
                 let req = self.add_device_candidates[ci].req.clone();
-                self.add_device_bind_ble = false;
-                self.spawn_bind_device(req);
+                self.add_in_background(req);
             }
             WordMatch::NoMatch(bad) => {
                 // The entry left every candidate at this exact word — name it in red.
@@ -232,7 +225,7 @@ impl PhotonApp {
             self.rebuild_add_device_candidates();
         } else {
             // The screen is closed: say a device is asking, so the human knows to open Fleet → Add.
-            self.ready_toast = Some(format!("{} asks to join — Settings → Fleet → Add device", crate::network::fgtw::fleet::device_name_default(&dk, &seed)));
+            self.ready_toast = Some(format!("{} asks to join\nSettings → Fleet → Add device", crate::network::fgtw::fleet::device_name_default(&dk, &seed)));
         }
         true
     }
@@ -545,7 +538,7 @@ impl PhotonApp {
                             vsf::VsfType::ke(pk.to_vec()),
                         );
                         self.fleet_retired.retain(|d| d != &pk);
-                        self.ready_toast = Some(tr(Msg::DepartCompleteNewOwner(name)).into_owned());
+                        self.ready_toast = Some(tr(Msg::DepartComplete(name)).into_owned());
                     }
                     Approved::Released(Err(e)) => {
                         // The countersign LANDED; only the release half failed. The retired row appears with its Release pill — the named, visible retry — and the toast says exactly that.
@@ -2233,59 +2226,87 @@ impl PhotonApp {
         self.add_device_selected = Some((req, name, words));
     }
 
-    /// The green Add under a pick, pressed after the picked device turned green: the bind and the key release as one act (spawn_bind_device, whose Bound arm grows the fan-out at once).
+    /// Yes under a pick, pressed after the picked device turned green: the add starts.
     pub(super) fn add_selected_device(&mut self) {
-        if self.add_device_checking {
+        let Some((req, _, _)) = self.add_device_selected.take() else { return };
+        self.add_in_background(req);
+    }
+
+    /// No under a pick: back to the list, as Back would be, with nothing to undo (nothing was bound).
+    pub(super) fn unselect_candidate(&mut self) {
+        self.add_device_selected = None;
+        self.add_device_status = tr(Msg::TypeWords).into_owned();
+    }
+
+    /// The add, once the person has said yes (Yes under a pick, an NFC match, or the typed words): the bind and then the key release run in the background, and the screen goes straight back to the Fleet page (owner 2026-11-10: "just go straight back to fleet"), where the new row and a toast confirm it.
+    pub(super) fn add_in_background(&mut self, req: crate::network::fgtw::fleet::BindRequest) {
+        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else { return };
+        if let Some(busy) = self.adding {
+            crate::logf!("ADD-DEVICE: {} waits; {} is still being added", crate::fp(&req.device_pubkey), crate::fp(&busy));
+            self.add_device_status = tr(Msg::AddingDevice(&crate::network::fgtw::fleet::device_name_default(&busy, &seed))).into_owned();
             return;
         }
-        let Some((req, _, _)) = self.add_device_selected.take() else { return };
-        // The person confirmed green before pressing, so the Bound arm releases the key without a second confirm.
-        self.add_device_bind_ble = false;
-        self.add_device_selected = None;
-        self.spawn_bind_device(req);
+        let name = crate::network::fgtw::fleet::device_name_default(&req.device_pubkey, &seed);
+        if !self.spawn_bind_device(req) {
+            return;
+        }
+        self.end_add_device_flow();
+        self.refresh_fleet_retired();
+        self.state = AppState::Settings(SettingsPage::Fleet);
+        self.ready_toast = Some(tr(Msg::AddingDevice(&name)).into_owned());
+    }
+
+    /// The background add's sender, made on first use and kept for the session, so leaving or reopening the Add screen never drops a result in flight.
+    fn adding_sender(&mut self) -> std::sync::mpsc::Sender<AddDeviceUpdate> {
+        match &self.adding_tx {
+            Some(tx) => tx.clone(),
+            None => {
+                let (tx, rx) = std::sync::mpsc::channel();
+                self.adding_rx = Some(rx);
+                self.adding_tx = Some(tx.clone());
+                tx
+            }
+        }
     }
 
     /// Clear the AddDevice (existing-device) words-entry state. Sign the matched device into the fleet + rotate the fan-out, off-thread (both block on HTTP). Fires automatically when the typed words match the posted request — the deliberate act of typing 23 words on the already-trusted device IS the consent, and the new device's ready light has already flipped on the matched flag, so waiting for another tap only leaves the two screens out of step.
     /// Phase ONE of the two-phase ceremony: publish the consent-carrying Add for a fully-matched candidate. The chain entry is KEYLESS until the human confirms green — `spawn_confirm_add` holds the rotation.
-    pub(super) fn spawn_bind_device(&mut self, req: crate::network::fgtw::fleet::BindRequest) {
+    /// False when nothing was started (a locked plate, or no key yet); the reason is on the Add screen's status line.
+    pub(super) fn spawn_bind_device(&mut self, req: crate::network::fgtw::fleet::BindRequest) -> bool {
         use crate::network::fgtw::fleet;
         // The joiner's plate against this fleet's locked plates: a device the owner locked out, wiped and brought back under a fresh key is the same hardware, and the words matching does not readmit it (fleet::FleetOp::plate).
         if let (Some(plate), Some(hp)) = (req.plate, self.our_handle_proof()) {
             if fleet::plate_locked(&hp, &req) {
                 crate::logf!("ADD-DEVICE: refused — the joiner's plate {} is one this fleet locked out", hex::encode(&plate[..4]));
                 self.add_device_status = tr(Msg::AddDeviceError("this is a device you locked out; unlock it on the Fleet page first")).into_owned();
-                return;
+                return false;
             }
         }
-        self.add_device_status = tr(Msg::WordsMatched).into_owned();
-        self.add_device_checking = true;
-        if let (Some(hp), Some(kp), Some(tx)) = (
-            self.our_handle_proof(),
-            self.device_signer(),
-            self.add_device_tx.clone(),
-        ) {
-            std::thread::spawn(move || {
-                // Seed-optional: the Add lands in the chain we hold and reaches the fleet over the mesh (the Bound arm pushes it); the seed is a mirror that may be down.
-                crate::log_err!(tx.send(match fleet::bind_device_held(&kp, &hp, &req) {
-                    Ok(_) => AddDeviceUpdate::Bound(req.device_pubkey),
-                    Err(e) => AddDeviceUpdate::Failed(e),
-                }), "the bind outcome to the UI thread");
-            });
-        }
+        let (Some(hp), Some(kp)) = (self.our_handle_proof(), self.device_signer()) else {
+            crate::logf!("ADD-DEVICE: cannot bind: handle proof {}, device key {}", self.our_handle_proof().is_some(), self.device_signer().is_some());
+            self.add_device_status = tr(Msg::NoDeviceKey).into_owned();
+            return false;
+        };
+        let tx = self.adding_sender();
+        self.adding = Some(req.device_pubkey);
+        std::thread::spawn(move || {
+            // Seed-optional: the Add lands in the chain we hold and reaches the fleet over the mesh (the Bound arm pushes it); the seed is a mirror that may be down.
+            crate::log_err!(tx.send(match fleet::bind_device_held(&kp, &hp, &req) {
+                Ok(_) => AddDeviceUpdate::Bound(req.device_pubkey),
+                Err(e) => AddDeviceUpdate::Failed(e),
+            }), "the bind outcome to the UI thread");
+        });
+        true
     }
 
-    /// Phase TWO — the human pressed "It's in" after seeing the new device leave its words screen: GROW the fan-out to the member set including the newcomer, releasing the CURRENT key to it (docs/fleet-key.md — growth never mints). Held behind the press so a wrong bind stays a keyless ledger entry; this explicit edge IS the two-phase gate.
+    /// The second half of the add, at once after the bind lands: GROW the fan-out to the member set including the newcomer, releasing the CURRENT key to it (docs/fleet-key.md — growth never mints).
+    /// The person already said yes (the green, NFC, or the typed words), so nothing waits on a second press.
     pub(super) fn spawn_confirm_add(&mut self) {
         use crate::network::fgtw::fleet;
-        if self.add_device_checking || self.add_device_bound.is_none() {
-            return;
-        }
-        self.add_device_status = tr(Msg::Finishing).into_owned();
-        self.add_device_checking = true;
-        if let (Some(hp), Some(kp), Some(tx), Some(session)) = (
+        let tx = self.adding_sender();
+        if let (Some(hp), Some(kp), Some(session)) = (
             self.our_handle_proof(),
             self.device_keypair.clone(),
-            self.add_device_tx.clone(),
             self.session.as_ref(),
         ) {
             let identity_seed = session.identity_seed;
@@ -2314,10 +2335,10 @@ impl PhotonApp {
                 }), "the confirm outcome to the UI thread");
             });
         } else {
-            // A missing input used to leave `checking` set with nothing running, so every later tap returned early and the screen sat on "Finishing" forever.
-            crate::logf!("ADD-DEVICE: confirm cannot start — handle proof {}, device key {}, update channel {}, session {}", self.our_handle_proof().is_some(), self.device_keypair.is_some(), self.add_device_tx.is_some(), self.session.is_some());
-            self.add_device_checking = false;
-            self.add_device_status = tr(Msg::AddDeviceError("not ready — try again in a moment")).into_owned();
+            // A missing input must end the add, not leave it marked in flight with nothing running.
+            crate::logf!("ADD-DEVICE: confirm cannot start: handle proof {}, device key {}, session {}", self.our_handle_proof().is_some(), self.device_keypair.is_some(), self.session.is_some());
+            self.adding = None;
+            self.ready_toast = Some(tr(Msg::AddDeviceError("the new device's key was not released")).into_owned());
         }
     }
 
@@ -3043,13 +3064,10 @@ impl PhotonApp {
         self.add_device_candidates.clear();
         self.add_device_registry_reqs.clear();
         self.add_device_lan_reqs.clear();
-        self.add_device_bound = None;
-        self.add_device_bind_ble = false;
         self.add_device_selected = None;
         self.join_words_copied = false;
         self.add_device_wordcheck_text.clear();
         self.add_device_typo = None;
-        self.add_device_checking = false;
         self.add_device_status.clear();
         self.add_device_rx = None;
         self.add_device_tx = None;
@@ -3282,7 +3300,7 @@ impl PhotonApp {
                     crate::log("JOIN: ceremony ran too long without binding — stopping re-posts");
                     withdraw("timeout");
                     crate::log_err!(tx.send(JoinUpdate::Failed(
-                        "timed out waiting to be added — re-enter the handle to try again".into(),
+                        "timed out waiting to be added\nre-enter the handle to try again".into(),
                     )), "the join timeout to the UI thread");
                     return;
                 }
@@ -3346,7 +3364,7 @@ impl PhotonApp {
                         );
                         withdraw("wrong-fleet");
                         crate::log_err!(tx.send(JoinUpdate::Failed(
-                            "this handle's fleet is not ours — the chain changed hands mid-join"
+                            "this handle's fleet is not ours\nthe chain changed hands mid-join"
                                 .into(),
                         )), "the join abort to the UI thread");
                         return;

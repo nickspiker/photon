@@ -103,8 +103,8 @@ READY → orb → PANEL(Fleet) → SPONSOR ADD
    ├─ joiner has no papers             → proximity only (P2)
    ├─ two or more requests             → proximity only until this add ends + amber "someone else knows your handle" (P3)
    ├─ NFC tap (physical proximity, the Fleet page open) → bind + key release as one act, like typed words (owner 2026-11-10)
-   └─ touch on a BLE / local-network row → the joiner is told (bind_select), NOTHING bound → joiner lights green → distinct green "Add <name>" (bind + key release as one act); not green → Back, nothing to undo (owner 2026-11-10)
-        └─ Add → bind + fleet-key rotation together; a same-plate ghost retired in the same act (P5) → "Device added √"
+   └─ touch on a BLE / local-network row → the joiner is told (bind_select), NOTHING bound → joiner lights green → "Is your new device bright green?" Yes / No; No = Back, nothing to undo (owner 2026-11-10)
+        └─ Yes, NFC, or typed words → straight back to the Fleet page; the bind + fleet-key grow run in the background (no Adding / Finishing pages); a same-plate ghost retired in the same act (P5) → "Device added √" toast
 
 EVENTS on a bound device
 ├─ reboot                    → signed-out (every app) → re-enter the handle in any app (+ the tag, if it gates sessions)

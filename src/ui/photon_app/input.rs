@@ -1095,10 +1095,12 @@ impl PhotonApp {
         }
         self.add_device_status.clear();
         self.add_device_candidates.clear();
-        self.add_device_bound = None;
+        // An add of the old identity's fleet must not land in the new session: its results go with its channel.
+        self.adding = None;
+        self.adding_tx = None;
+        self.adding_rx = None;
         self.add_device_wordcheck_text.clear();
         self.add_device_typo = None;
-        self.add_device_checking = false;
         self.beacon_scan_active = false;
         // Departure state, both sides: no request of ours stands on a wiped device, and none of the old fleet's is ours to answer.
         self.depart_request_t = None;

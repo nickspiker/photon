@@ -304,13 +304,11 @@ impl FluorApp<Px> for PhotonApp {
         self.join_mailbox_hit_id = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 1);
         self.add_mailbox_hit_id = self.hit_counter;
-        // The green "Add <name>" under a pick on the Add-device screen.
+        // Yes and No under a pick on the Add-device screen.
         reserve_hits(&mut self.hit_counter, 1);
         self.add_select_hit_id = self.hit_counter;
-
-        // Green-confirm tappable on the AddDevice screen ("It's in — finish"): the two-phase press that releases the fleet-key rotation after the human sees the new device enrolled.
         reserve_hits(&mut self.hit_counter, 1);
-        self.add_confirm_hit_id = self.hit_counter;
+        self.add_select_no_hit_id = self.hit_counter;
 
         // Tappable candidate rows on the AddDevice screen (BLE/list select): 8-id block, row i stamps base + i.
         reserve_hits(&mut self.hit_counter, 1);
@@ -785,9 +783,15 @@ impl FluorApp<Px> for PhotonApp {
             return EventResponse::Handled;
         }
 
-        // The green Add under a pick: pressed after the picked device turned green, it binds and releases the key as one act.
+        // Yes under a pick ("Is your new device bright green?"): the add starts in the background and the screen returns to the Fleet page.
         if hit_id == self.add_select_hit_id && self.add_select_hit_id != HIT_NONE && matches!(self.state, AppState::AddDevice) {
             self.add_selected_device();
+            ctx.window.request_redraw();
+            return EventResponse::Handled;
+        }
+        // No under it: back to the list, as Back would be.
+        if hit_id == self.add_select_no_hit_id && self.add_select_no_hit_id != HIT_NONE && matches!(self.state, AppState::AddDevice) {
+            self.unselect_candidate();
             ctx.window.request_redraw();
             return EventResponse::Handled;
         }
@@ -842,22 +846,10 @@ impl FluorApp<Px> for PhotonApp {
             return EventResponse::Handled;
         }
 
-        // Green-confirm on the AddDevice screen: the two-phase press that releases the fleet-key rotation (only live while a bind awaits it).
-        if hit_id == self.add_confirm_hit_id
-            && self.add_confirm_hit_id != HIT_NONE
-            && matches!(self.state, AppState::AddDevice)
-        {
-            self.spawn_confirm_add();
-            ctx.window.request_redraw();
-            return EventResponse::Handled;
-        }
-
-        // Candidate-row tap on the AddDevice screen (BLE / list select): bind the tapped device by its registry request (consent), then wait for the human's "did it turn green?" confirm (two-phase — a list pick isn't a typed-key match, so the key waits on visual confirmation).
+        // Candidate-row tap on the AddDevice screen (BLE / list select): a pick, not an add; the picked device is told and should turn green, and Yes under it adds.
         if self.add_candidate_hit_base != HIT_NONE
             && matches!(self.state, AppState::AddDevice)
             && self.add_device_selected.is_none()
-            && self.add_device_bound.is_none()
-            && !self.add_device_checking
             && hit_id >= self.add_candidate_hit_base
             && hit_id < (self.add_candidate_hit_base + 7)
         {
@@ -3499,23 +3491,21 @@ impl FluorApp<Px> for PhotonApp {
                 { needs_redraw = true; self.note_redraw(line!() + 100_000); }
             }
         }
-        // NFC instant add: a tapped secret matching a candidate's published commitment IS the proximity + intent proof — bind it now, no words typed. The green-confirm rotation gate still stands (two-phase), so "instant" = tap phones, press confirm.
+        // NFC instant add: a tapped secret matching a candidate's published commitment IS the proximity and intent proof, so the add starts with no words typed and no press.
         if want_scan {
             if let Some(s) = tapped {
                 let matched = fgtw::sponsor::nfc_match(&s, &self.add_device_candidates).map(|i| self.add_device_candidates[i].req.clone());
                 match matched {
-                    Some(req) if !self.add_device_checking => {
+                    Some(req) => {
                         crate::logf!(
                             "NFC: tap matched candidate {} — adding (bind + key, one act)",
                             crate::fp(&req.device_pubkey)
                         );
                         // Physical proximity is the confirmation (owner 2026-11-10: "Touch on screen ... required for BLE OR no touch on screen, just physical proximity (NFC). Both of which need the fleet page open"): an NFC match adds at once, the bind and the key release as one act, like typed words; a touch on a row only picks.
                         self.add_device_selected = None;
-                        self.add_device_bind_ble = false;
-                        self.spawn_bind_device(req);
+                        self.add_in_background(req);
                         { needs_redraw = true; self.note_redraw(line!() + 100_000); }
                     }
-                    Some(_) => {}
                     None => crate::log(
                         "NFC: tapped secret matched no candidate (stale request or foreign tag)",
                     ),
