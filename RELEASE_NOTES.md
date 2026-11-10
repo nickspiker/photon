@@ -6,9 +6,13 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v149
 - **Signing in is quick and says what it is doing.** A device your own records already list opens straight away without waiting on fgtw.org, and the sign-in screen now tells you each step (proving your handle, checking this device, opening your vault) instead of a bare wait.
 - **Your devices and friends are asked before fgtw.org.** Finding a contact you already know, catching up on where your friends are, and checking your own list of devices now ask your other devices and your friends first; fgtw.org is asked only when none of them can answer, or for someone nobody you know has met yet.
 - **Typing a friend's handle finds them.** Typing a handle exactly in the people list now shows that friend whatever name you have given them, instead of showing nobody.
+
+Built from photon 2fddddd6 · chirp b01db995 · fgtw a40b7eac · fluor 02c209c2 · kete 05552740 · limbus 30ab5cc3 · manifestus e440f725 · nunc b518ad11 · opsin 8b438307 · rarangi 4b910968 · spirix b12187fb · tapuwae 5c462e1d · tohu f109d653 · voca 04dcf2df · vsf 18e12c14
 
 ## v148
 - **Your devices keep each other up to date again.** Settings, device names and the list of your devices are handed straight from one of your devices to the others, but anything too big for a single packet was being thrown away on arrival, so since the last update those changes only crept across through fgtw.org; they now arrive directly.
