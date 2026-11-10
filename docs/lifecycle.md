@@ -102,7 +102,8 @@ READY → orb → PANEL(Fleet) → SPONSOR ADD
    ├─ one request, joiner has papers   → the network list; an owned device's own plate shows as "your <device> is back"
    ├─ joiner has no papers             → proximity only (P2)
    ├─ two or more requests             → proximity only until this add ends + amber "someone else knows your handle" (P3)
-   └─ pick (the button or an NFC tap) → the joiner is told (bind_select), NOTHING bound → joiner lights green → distinct green "Add <name>" (bind + key release as one act); not green → Back, nothing to undo (owner 2026-11-10)
+   ├─ NFC tap (physical proximity, the Fleet page open) → bind + key release as one act, like typed words (owner 2026-11-10)
+   └─ touch on a BLE / local-network row → the joiner is told (bind_select), NOTHING bound → joiner lights green → distinct green "Add <name>" (bind + key release as one act); not green → Back, nothing to undo (owner 2026-11-10)
         └─ Add → bind + fleet-key rotation together; a same-plate ghost retired in the same act (P5) → "Device added √"
 
 EVENTS on a bound device

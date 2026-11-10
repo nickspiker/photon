@@ -3506,11 +3506,13 @@ impl FluorApp<Px> for PhotonApp {
                 match matched {
                     Some(req) if !self.add_device_checking => {
                         crate::logf!(
-                            "NFC: tap matched candidate {} — picked (the Add binds)",
+                            "NFC: tap matched candidate {} — adding (bind + key, one act)",
                             crate::fp(&req.device_pubkey)
                         );
-                        // An NFC tap is a pick like the button (owner 2026-11-10: "so tap, literally the button or NFC tap"): the device turns green, the Add binds.
-                        self.select_candidate(req);
+                        // Physical proximity is the confirmation (owner 2026-11-10: "Touch on screen ... required for BLE OR no touch on screen, just physical proximity (NFC). Both of which need the fleet page open"): an NFC match adds at once, the bind and the key release as one act, like typed words; a touch on a row only picks.
+                        self.add_device_selected = None;
+                        self.add_device_bind_ble = false;
+                        self.spawn_bind_device(req);
                         { needs_redraw = true; self.note_redraw(line!() + 100_000); }
                     }
                     Some(_) => {}
