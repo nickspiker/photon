@@ -5805,12 +5805,11 @@ impl PhotonApp {
                     flow.gap(hspan2 * 0.8);
                     // THE DEPARTURE REQUEST, first on the page (owner, 2026-11-10: "go right to the fleet page and have the unbind request 'Approve' or 'Deny' screen ready to go"): which device asks to leave, what it declared, and the two answers. Slots 1 and 2.
                     if let Some(p) = self.pending_depart_req.as_ref() {
-                        // `departing_name`, spelled on the field: `self` is mutably borrowed thru `chrome` here.
+                        // `departing_name`, spelled on the fields (`self` is mutably borrowed thru `chrome` here): the name every fleet surface gives the device (machine_name), never a contact row's pseudonym.
                         let name = self
-                            .contacts
-                            .iter()
-                            .find(|c| c.is_sibling && c.knows_device(&p.leaver))
-                            .map(|c| c.display_name())
+                            .session
+                            .as_ref()
+                            .map(|s| super::machine_name(&p.leaver, &s.identity_seed, self.fleet_settings.as_ref()))
                             .unwrap_or_else(|| tr(Msg::ADevice).into_owned());
                         flow.line(&mut canvas, ctx.text, &tr(Msg::DepartRequestLine(&name)), hspan2 * 1.1, *theme::CONTACT_NAME_COLOUR, 600);
                         if p.intent != 0 {

@@ -368,10 +368,10 @@ impl PhotonApp {
 
     /// The name a departing sibling goes by on the Fleet page (its fleet name), or "a device".
     pub(super) fn departing_name(&self, pk: &[u8; 32]) -> String {
-        self.contacts
-            .iter()
-            .find(|c| c.is_sibling && c.knows_device(pk))
-            .map(|c| c.display_name())
+        // The name every fleet surface gives the device (machine_name: its fleet.name.<pk>, else device_name_default under the identity seed), never a contact row's handle-hash pseudonym (field 2026-11-10: the Pro showed as "JewelryView" here and "ProsperityVisionary" everywhere else).
+        self.session
+            .as_ref()
+            .map(|s| super::machine_name(pk, &s.identity_seed, self.fleet_settings.as_ref()))
             .unwrap_or_else(|| tr(Msg::ADevice).into_owned())
     }
 
