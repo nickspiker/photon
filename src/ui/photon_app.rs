@@ -1444,6 +1444,8 @@ enum TextboxRole {
     IdeaText,
     /// The Diagnostics optional-note field — in the registry so click-to-focus raises the Android IME + blinkie like every other box.
     SettingsNote,
+    /// The Octopus page's handle box: a handle typed here filters the page to that identity (its proof is computed on the device; the handle never leaves it).
+    OctopusSearch,
     /// Any You-page profile field (display name, first, email, a custom one, …) or the add-a-field entry — same registry so click-to-focus raises the IME + blinkie. The form treats them all alike; the `field_id` that distinguishes them lives on [`ProfileField`], not here.
     ProfileField,
     /// The unattended-confirm modal's handle-entry box — in the registry so it takes keys / IME / blink like every other box (without this it rendered but couldn't be typed into).
@@ -2783,6 +2785,10 @@ pub struct PhotonApp {
     octopus_rx: Option<std::sync::mpsc::Receiver<octopus::OctopusEvent>>,
     /// The Octopus pill asked once (Nuke all, or a bucket's Clear), by its slot; the second press on the same pill does it.
     octopus_armed: Option<HitId>,
+    /// The Octopus page's handle box.
+    octopus_search_textbox: Option<Textbox>,
+    /// The identity (handle proof) the Octopus page is filtered to; None shows everything.
+    octopus_who: Option<[u8; 32]>,
     /// Everyone's gripes (the list is public — docs/ideas.md), as last fetched; the Ideas page shows them, ranked by likeness to what is in the box.
     public_gripes: Vec<crate::network::fgtw::PublicGripe>,
     /// The public list has been fetched once this session: the baseline the ticker compares against, so an idea is announced only when it is new since then.
@@ -3605,6 +3611,8 @@ impl PhotonApp {
             octopus_status: None,
             octopus_rx: None,
             octopus_armed: None,
+            octopus_search_textbox: None,
+            octopus_who: None,
             public_gripes: Vec::new(),
             public_gripes_known: false,
             ideas_ticker: false,
@@ -4346,6 +4354,11 @@ impl PhotonApp {
                 }
                 SettingsPage::Fleet => {
                     if let Some((_, tb)) = self.fleet_rename.as_mut() {
+                        f(tb);
+                    }
+                }
+                SettingsPage::Octopus => {
+                    if let Some(tb) = self.octopus_search_textbox.as_mut() {
                         f(tb);
                     }
                 }

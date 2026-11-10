@@ -600,6 +600,7 @@ impl FluorApp<Px> for PhotonApp {
             Self::unattended_enabled(),
         ));
         self.settings_note_textbox = Some(Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+        self.octopus_search_textbox = Some(Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         self.ideas_textbox = Some(Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         self.you_add_textbox = Some(Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         self.molecule_title_textbox = Some(Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.));
@@ -1261,8 +1262,16 @@ impl FluorApp<Px> for PhotonApp {
                         ctx.window.request_redraw();
                     }
                 } else if page == SettingsPage::Octopus {
-                    use super::render::{OCTOPUS_PILL_BUCKET0, OCTOPUS_PILL_NUKE, OCTOPUS_PILL_REFRESH};
-                    if slot == OCTOPUS_PILL_REFRESH {
+                    use super::render::{OCTOPUS_PILL_ALL, OCTOPUS_PILL_BUCKET0, OCTOPUS_PILL_FILTER, OCTOPUS_PILL_NUKE, OCTOPUS_PILL_REFRESH};
+                    if slot == OCTOPUS_PILL_FILTER {
+                        self.change_focus(None);
+                        self.octopus_filter();
+                    } else if slot == OCTOPUS_PILL_ALL {
+                        if let Some(tb) = self.octopus_search_textbox.as_mut() {
+                            tb.clear();
+                        }
+                        self.octopus_filter();
+                    } else if slot == OCTOPUS_PILL_REFRESH {
                         self.octopus_armed = None;
                         self.octopus_refresh();
                     } else if slot == OCTOPUS_PILL_NUKE || slot >= OCTOPUS_PILL_BUCKET0 {

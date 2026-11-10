@@ -595,6 +595,9 @@ impl PhotonApp {
             self.settings_note_textbox
                 .as_mut()
                 .map(|t| (TextboxRole::SettingsNote, t)),
+            self.octopus_search_textbox
+                .as_mut()
+                .map(|t| (TextboxRole::OctopusSearch, t)),
             self.ideas_textbox
                 .as_mut()
                 .map(|t| (TextboxRole::IdeaText, t)),
@@ -1030,6 +1033,10 @@ impl PhotonApp {
         self.octopus_peers.clear();
         self.octopus_status = None;
         self.octopus_rx = None;
+        self.octopus_who = None;
+        if let Some(tb) = self.octopus_search_textbox.as_mut() {
+            tb.clear();
+        }
         self.octopus_armed = None;
         self.roster_push_rx = None;
         self.roster_push_queued = false;

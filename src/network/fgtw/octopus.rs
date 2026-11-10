@@ -65,6 +65,11 @@ fn post_signed(device: &Keypair, hp: &[u8; 32], op: &str, mut fields: Vec<(Strin
     crate::storage::record::verified_sections(&bytes, None).map_err(|e| format!("{op}: answer: {e}"))
 }
 
+/// The optional `who` field: the identity a request filters to.
+fn who_field(who: Option<[u8; 32]>) -> Vec<(String, VsfType)> {
+    who.map(|w| vec![("who".to_string(), VsfType::hP(w.to_vec()))]).unwrap_or_default()
+}
+
 /// The first value of field `name`.
 fn first<'a>(s: &'a VsfSection, name: &str) -> Option<&'a VsfType> {
     s.get_field(name).and_then(|f| f.values.first())
@@ -86,9 +91,9 @@ fn bytes32(s: &VsfSection, name: &str) -> Option<[u8; 32]> {
     }
 }
 
-/// Every bucket's count and the activity log, for identity `hp`'s device.
-pub fn view_blocking(device: &Keypair, hp: &[u8; 32]) -> Result<OctopusView, String> {
-    let sections = post_signed(device, hp, "octopus_view", Vec::new())?;
+/// Every bucket's count and the activity log, signed by this device for its identity `hp`; with `who`, only what belongs to that identity.
+pub fn view_blocking(device: &Keypair, hp: &[u8; 32], who: Option<[u8; 32]>) -> Result<OctopusView, String> {
+    let sections = post_signed(device, hp, "octopus_view", who_field(who))?;
     let mut view = OctopusView::default();
     for s in &sections {
         match s.name.as_str() {
@@ -125,15 +130,16 @@ pub fn view_blocking(device: &Keypair, hp: &[u8; 32]) -> Result<OctopusView, Str
     Ok(view)
 }
 
-/// Empty one bucket (`Some(name)`) or everything but the landing page (`None`), repeating while the worker says more remain. Returns how many objects went.
-pub fn clear_blocking(device: &Keypair, hp: &[u8; 32], bucket: Option<&str>) -> Result<u64, String> {
-    let (op, fields) = match bucket {
+/// Empty one bucket (`Some(name)`) or everything but the landing page (`None`), or with `who` only that identity's part of it, repeating while the worker says more remain. Returns how many objects went.
+pub fn clear_blocking(device: &Keypair, hp: &[u8; 32], bucket: Option<&str>, who: Option<[u8; 32]>) -> Result<u64, String> {
+    let (op, mut fields) = match bucket {
         Some(name) => {
             let ascii = vsf::types::Ascii::new(name).map_err(|_| "octopus_clear: a bucket name is ASCII".to_string())?;
             ("octopus_clear", vec![("bucket".to_string(), VsfType::a(ascii))])
         }
         None => ("octopus_nuke", Vec::new()),
     };
+    fields.extend(who_field(who));
     let mut total = 0u64;
     loop {
         let sections = post_signed(device, hp, op, fields.clone())?;

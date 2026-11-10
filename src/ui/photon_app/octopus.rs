@@ -1,5 +1,5 @@
 //! The Octopus page (Nick 2026-11-10): typing exactly "Octopus" in the Diagnostics note opens it for this run of Photon, and nothing about it is saved.
-//! It shows fgtw.org's buckets with a Clear each, Nuke all, the worker's activity log and this device's phonebook.
+//! It shows fgtw.org's buckets with a Clear each, Nuke all, the worker's activity log and this device's phonebook; a handle typed in its box filters all of it to that identity.
 //! fgtw.org only counts, hands over its log and clears (`network::fgtw::octopus`); the page is drawn here, on the device.
 
 use super::PhotonApp;
@@ -7,7 +7,8 @@ use crate::network::fgtw::octopus::{self as op, OctopusView};
 
 /// An Octopus request's answer.
 pub(super) enum OctopusEvent {
-    View(Result<OctopusView, String>),
+    /// The view, and the identity it was filtered to.
+    View(Option<[u8; 32]>, Result<OctopusView, String>),
     /// What was cleared, and how many objects went.
     Cleared(String, Result<u64, String>),
 }
@@ -44,7 +45,7 @@ impl PhotonApp {
         }
     }
 
-    /// Copy this device's phonebook and ask fgtw.org for its buckets and log; one request at a time.
+    /// Copy this device's phonebook and ask fgtw.org for its buckets and log, filtered to the identity the page shows; one request at a time.
     pub(super) fn octopus_refresh(&mut self) {
         self.octopus_peers = self.peer_store.as_ref().map(|s| s.lock().unwrap().get_all_peers()).unwrap_or_default();
         self.scene_dirty = true;
@@ -52,27 +53,57 @@ impl PhotonApp {
             return;
         }
         let Some((kp, hp)) = self.octopus_signer() else { return };
+        let who = self.octopus_who;
         let (tx, rx) = std::sync::mpsc::channel();
         self.octopus_rx = Some(rx);
         std::thread::spawn(move || {
-            crate::log_err!(tx.send(OctopusEvent::View(op::view_blocking(&kp, &hp))), "the Octopus view to the UI thread");
+            crate::log_err!(tx.send(OctopusEvent::View(who, op::view_blocking(&kp, &hp, who))), "the Octopus view to the UI thread");
         });
     }
 
-    /// Empty one bucket (`Some`) or everything but fgtw.org's landing page (`None`), then refresh.
+    /// Filter the page to the handle in its box, or show everything when the box is empty.
+    /// The handle is taken byte for byte and turned into its proof off the UI thread (a memory-hard second); only the proof is sent, and the handle is never logged.
+    pub(super) fn octopus_filter(&mut self) {
+        let handle: String = self.octopus_search_textbox.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
+        self.octopus_armed = None;
+        if handle.is_empty() {
+            self.octopus_who = None;
+            self.octopus_status = None;
+            self.octopus_refresh();
+            return;
+        }
+        if self.octopus_rx.is_some() {
+            return;
+        }
+        let Some((kp, hp)) = self.octopus_signer() else { return };
+        self.octopus_status = Some("Finding that identity…".to_string());
+        self.scene_dirty = true;
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.octopus_rx = Some(rx);
+        std::thread::spawn(move || {
+            let who = crate::types::Handle::username_to_handle_proof(&handle);
+            crate::log_err!(tx.send(OctopusEvent::View(Some(who), op::view_blocking(&kp, &hp, Some(who)))), "the filtered Octopus view to the UI thread");
+        });
+    }
+
+    /// Empty one bucket (`Some`) or everything but fgtw.org's landing page (`None`), only the filtered identity's part while the page is filtered, then refresh.
     pub(super) fn octopus_clear(&mut self, bucket: Option<String>) {
         if self.octopus_rx.is_some() {
             return;
         }
         let Some((kp, hp)) = self.octopus_signer() else { return };
-        let label = bucket.clone().unwrap_or_else(|| "everything".to_string());
+        let who = self.octopus_who;
+        let mut label = bucket.clone().unwrap_or_else(|| "everything".to_string());
+        if let Some(w) = who {
+            label.push_str(&format!(" of identity {}", crate::fp(&w)));
+        }
         crate::logf!("OCTOPUS: clearing {}", label);
         self.octopus_status = Some(format!("Clearing {label}…"));
         self.scene_dirty = true;
         let (tx, rx) = std::sync::mpsc::channel();
         self.octopus_rx = Some(rx);
         std::thread::spawn(move || {
-            let result = op::clear_blocking(&kp, &hp, bucket.as_deref());
+            let result = op::clear_blocking(&kp, &hp, bucket.as_deref(), who);
             crate::log_err!(tx.send(OctopusEvent::Cleared(label, result)), "an Octopus clear to the UI thread");
         });
     }
@@ -91,8 +122,14 @@ impl PhotonApp {
         };
         self.octopus_rx = None;
         match event {
-            OctopusEvent::View(Ok(view)) => self.octopus_view = Some(view),
-            OctopusEvent::View(Err(e)) => self.octopus_status = Some(format!("fgtw.org: {e}")),
+            OctopusEvent::View(who, Ok(view)) => {
+                if who != self.octopus_who {
+                    self.octopus_status = who.map(|w| format!("Showing identity {} only", crate::fp(&w)));
+                }
+                self.octopus_who = who;
+                self.octopus_view = Some(view);
+            }
+            OctopusEvent::View(_, Err(e)) => self.octopus_status = Some(format!("fgtw.org: {e}")),
             OctopusEvent::Cleared(label, Ok(n)) => {
                 crate::logf!("OCTOPUS: cleared {} object(s) from {}", n, label);
                 self.octopus_status = Some(format!("Cleared {n} object(s) from {label}"));

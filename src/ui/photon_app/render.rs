@@ -8,9 +8,11 @@ pub(super) const DEBUG_PILL_SLOT0: HitId = 10;
 /// The Ideas page's two pills in the settings pill block.
 pub(super) const IDEAS_PILL_IDEA: HitId = 20;
 pub(super) const IDEAS_PILL_FIX: HitId = 21;
-/// The Octopus page's pills in the settings pill block: Refresh, Nuke all, then one per fgtw.org bucket from slot 8 up to the block's end.
+/// The Octopus page's pills in the settings pill block: Refresh, Nuke all, Filter, All, then one per fgtw.org bucket from slot 8 up to the block's end.
 pub(super) const OCTOPUS_PILL_REFRESH: HitId = 0;
 pub(super) const OCTOPUS_PILL_NUKE: HitId = 1;
+pub(super) const OCTOPUS_PILL_FILTER: HitId = 2;
+pub(super) const OCTOPUS_PILL_ALL: HitId = 3;
 pub(super) const OCTOPUS_PILL_BUCKET0: HitId = 8;
 pub(super) const OCTOPUS_BUCKET_SLOTS: HitId = super::driver::SETTINGS_PILL_SLOTS - OCTOPUS_PILL_BUCKET0;
 
@@ -6855,14 +6857,32 @@ impl PhotonApp {
                     if let Some(status) = self.octopus_status.as_deref() {
                         flow.prose(&mut canvas, ctx.text, status, hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
                     }
+                    // The handle box: Filter turns what is typed into its proof on this device and narrows everything below to that identity; All lifts the filter.
+                    flow.prose(&mut canvas, ctx.text, "A handle here filters everything below to that identity", hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                    let tb_band = flow.band(hspan2 * 2.2);
+                    if let Some(tb) = self.octopus_search_textbox.as_mut() {
+                        tb.set_font_size(hspan2, ctx.text);
+                        tb.set_rect(tb_band.center_x(), tb_band.center_y(), tb_band.w * 0.95, tb_band.h * 0.85);
+                        let id = tb.hit_id();
+                        tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
+                    }
                     let nuke_armed = self.octopus_armed == Some(OCTOPUS_PILL_NUKE);
-                    flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
-                        ("Refresh", btn_base + OCTOPUS_PILL_REFRESH, !busy, None),
-                        (if nuke_armed { "Nuke all — sure?" } else { "Nuke all" }, btn_base + OCTOPUS_PILL_NUKE, !busy, Some(*theme::PILL_RED)),
-                    ], "Open Sans");
+                    let nuke_label = match (self.octopus_who.is_some(), nuke_armed) {
+                        (false, false) => "Nuke all",
+                        (false, true) => "Nuke all — sure?",
+                        (true, false) => "Clear this identity",
+                        (true, true) => "Clear this identity — sure?",
+                    };
+                    let mut top: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = vec![("Filter", btn_base + OCTOPUS_PILL_FILTER, !busy, None)];
+                    if self.octopus_who.is_some() {
+                        top.push(("All", btn_base + OCTOPUS_PILL_ALL, !busy, None));
+                    }
+                    top.push(("Refresh", btn_base + OCTOPUS_PILL_REFRESH, !busy, None));
+                    top.push((nuke_label, btn_base + OCTOPUS_PILL_NUKE, !busy, Some(*theme::PILL_RED)));
+                    flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &top, "Open Sans");
                     if let Some(view) = self.octopus_view.as_ref() {
                         flow.gap(hspan2 * 0.6);
-                        flow.line(&mut canvas, ctx.text, "fgtw.org buckets", hspan2 * 0.9, *theme::LABEL_COLOUR, 600);
+                        flow.line(&mut canvas, ctx.text, if self.octopus_who.is_some() { "fgtw.org buckets, this identity's objects only" } else { "fgtw.org buckets" }, hspan2 * 0.9, *theme::LABEL_COLOUR, 600);
                         let labels: Vec<(String, HitId)> = view.buckets.iter().take(OCTOPUS_BUCKET_SLOTS as usize).enumerate().map(|(i, b)| {
                             let slot = OCTOPUS_PILL_BUCKET0 + i as HitId;
                             let label = if self.octopus_armed == Some(slot) { format!("Clear {} — sure?", b.name) } else { format!("{} · {}", b.name, crate::fmt_num64(b.count)) };
@@ -6888,7 +6908,7 @@ impl PhotonApp {
                     }
                     flow.gap(hspan2 * 0.6);
                     flow.line(&mut canvas, ctx.text, "This device's phonebook", hspan2 * 0.9, *theme::LABEL_COLOUR, 600);
-                    for p in &self.octopus_peers {
+                    for p in self.octopus_peers.iter().filter(|p| self.octopus_who.is_none_or(|w| p.handle_proof == w)) {
                         let line = format!("id {}  dev {}  {}  seen {}", crate::fp(&p.handle_proof), crate::fp(p.device_pubkey.as_bytes()), p.ip, crate::fmt_when(p.local_seen));
                         flow.prose(&mut canvas, ctx.text, &line, hspan2 * 0.75, *theme::LABEL_COLOUR, 400);
                     }
