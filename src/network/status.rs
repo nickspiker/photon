@@ -518,6 +518,8 @@ pub enum StatusUpdate {
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
     },
+    /// A friend's device pushed us its own new address record and it was news: the UI passes it on to our siblings, once (docs/phonebook-web.md "Changes travel to the people who care").
+    AddressPushed { record: crate::network::fgtw::PeerRecord },
     /// A membership chain handed to us by a peer (`fleet_resp`): the answer to our ask, or a sponsor's push after it extended its fleet's chain. Opaque bytes here — the UI thread folds, checks the slot and the genesis pin, and adopts only a newer tip (fleet::adopt_chain_bytes).
     FleetChainReceived {
         handle_proof: [u8; 32],
@@ -810,6 +812,7 @@ impl StatusUpdate {
             StatusUpdate::FanoutReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FleetStatePushed { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FleetChainReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::AddressPushed { record } => Some(record.device_pubkey.as_bytes()),
             StatusUpdate::FocusClaimReceived { sender_pubkey, .. } => {
                 Some(sender_pubkey.as_bytes())
             }
@@ -3701,9 +3704,10 @@ async fn run_checker(
                                                             crate::network::fgtw::protocol::open_pong_sensitive(blob, &k).ok()
                                                         })
                                                     })
-                                                    .map(|t| (t.sync_records, t.about, t.fleet_tip, t.braid))
+                                                    .map(|t| (t.sync_records, t.about, t.fleet_tip, t.braid, t.display_name, t.avatar_pin))
                                                     .unwrap_or_default();
-                                                let (salvaged, about, fleet_tip, braid) = salvaged;
+                                                // The name and avatar pin ride the salvage too (2026-11-10): an announce pong is how a profile change reaches a friend now rather than at its next ping, and the tail is sealed to this device pair and stamp-bounded above.
+                                                let (salvaged, about, fleet_tip, braid, salvaged_name, salvaged_pin) = salvaged;
                                                 crate::logf!("Status: unmatched pong from {} ({}) — liveness + {} sync record(s) (late/twin/announce; no addr adoption)", crate::fp(responder_pubkey.as_bytes()), src_addr, salvaged.len());
                                                 send_status_update(
                                                     &status_tx_recv,
@@ -3713,8 +3717,8 @@ async fn run_checker(
                                                         // No addr ADOPTION — but the relay SENTINEL must survive, or the UI reads this positive report as direct and clears reached_via_relay: a relay-alive contact then rings green "direct via WAN" (field 2026-09-08, Jon on Leviathan). RELAY_ADDR is already the UI's skip-learning sentinel, so passing it adopts nothing.
                                                         peer_addr: (src_addr == RELAY_ADDR).then_some(RELAY_ADDR),
                                                         sync_records: salvaged,
-                                                        display_name: None,
-                                                        avatar_pin: None,
+                                                        display_name: salvaged_name,
+                                                        avatar_pin: salvaged_pin,
                                                         locked_reports: None,
                                                         // The About IS adopted here (unlike name/pin/locked, which wait for a matched pong): it's the responder's own sealed self-description, and the boot ANNOUNCE (an unsolicited pong) is exactly how a fresh build reaches the fleet page without waiting out ping backoff (2026-08-31).
                                                         about,
@@ -4439,7 +4443,9 @@ async fn run_checker(
                                     if !verify_provenance_signature(&provenance_hash, &responder_pubkey, &signature) {
                                         continue;
                                     }
-                                    if !solicited && !own_push {
+                                    // A record passed on by one of our own devices (docs/phonebook-web.md "Changes travel to the people who care"): a friend told our sibling where it moved, and our sibling tells us. Each record still verifies by its owner's own signature in merge_peer.
+                                    let sibling_pass = !solicited && !own_push && is_sibling_device(responder_pubkey.as_bytes());
+                                    if !solicited && !own_push && !sibling_pass {
                                         continue;
                                     }
                                     // A friend answered our phonebook request. Gate on contact (only merge gossip from a friend); each record is self-signed, and `merge_peer` rejects anything that doesn't verify, so a lying responder can't inject forged rows — it can only fail to help. The app harvests the shared store on its next stalled-contact tick.
@@ -4454,6 +4460,7 @@ async fn run_checker(
                                     }
                                     // An unsolicited PUSH (one record, the sender's own) rather than an answer to our request.
                                     let is_push = peers.len() == 1 && peers[0].device_pubkey.as_bytes() == responder_pubkey.as_bytes();
+                                    let pushed = (is_push && is_contact).then(|| peers[0].clone());
                                     let mut merged = 0usize;
                                     // PUSH ECHOES DON'T RE-AIM, COUNTER-PUSH, OR GET ANSWERED (field 2026-09-13 22:08, the re-aim storm: one real drought push entered the reciprocity pair — re-aim + request-back on receive, answer-with-ourselves on push — and with no damping the two phones ping-ponged pushes at 1 Hz for the rest of the wave, re-aiming at the SAME address every second while the transport drowned). A push naming the address media already aims at changes nothing: it is the reflection of our own push, and every reciprocal action stops at it.
                                     let mut push_echo = false;
@@ -4489,6 +4496,10 @@ async fn run_checker(
                                             merged,
                                             src_addr
                                         );
+                                    }
+                                    // A friend's own fresh address goes on to our siblings, once: the UI passes it, and a record our sibling passes to us goes no further.
+                                    if let (Some(record), true) = (pushed, merged > 0) {
+                                        send_status_update(&status_tx_recv, StatusUpdate::AddressPushed { record }, &event_proxy_recv);
                                     }
                                     // ANSWER A PUSH WITH OURSELVES (push reroute, step two, 2026-09-11): the device that just told us where it moved is the one most likely to hold nothing for us. Reply with our own signed record over the relay — only when the push was NEW to us, so the exchange settles after one round each way (our reply is not new to them a second time).
                                     if is_push && merged > 0 && !push_echo {

@@ -305,6 +305,12 @@ impl PhotonApp {
                         announce = self.announced_devices.insert(*dev.as_bytes());
                     }
                 }
+                // A profile change owed to this contact (announce_profile): one announce pong carries the new name and avatar pin.
+                if let Some(dev) = c.public_identity.as_ref() {
+                    if self.profile_announce.remove(dev.as_bytes()) {
+                        announce = true;
+                    }
+                }
             }
             announce_flags.push(announce);
         }

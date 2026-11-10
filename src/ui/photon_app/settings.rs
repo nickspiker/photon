@@ -387,6 +387,10 @@ impl PhotonApp {
         // READONLY, deliberately: publishing must never mint. The minting variant ran inside ensure_fleet_settings' lazy load — 4ms BEFORE the fstate merge delivered the slot's real pin, which then lost LWW to the mint it had just enabled. Every wiped boot re-minted, the wall copy stayed one pin behind, and the avatar never recovered (caught by the FSTATE fingerprints, 2026-08-02). A pin now exists ONLY when an avatar set rotates one in — a pin with no image behind it was never worth announcing.
         if let Some(pin) = self.ensure_avatar_pin_readonly() {
             crate::network::status::set_avatar_pin(&pin);
+            // A new pin is a new avatar: every contact hears it now, not at its next ping (docs/phonebook-web.md "Changes travel to the people who care").
+            if self.published_pin.replace(pin).is_some_and(|old| old != pin) {
+                self.announce_profile();
+            }
         }
     }
 
@@ -459,7 +463,7 @@ impl PhotonApp {
     }
 
     /// Push our `profile.name` into the status thread's pong slot, so every friend's next ping cycle carries the current name (the always-granted slot). Called on settings load, on Update, and when a sibling's merged edit lands.
-    pub(super) fn publish_profile_name(&self) {
+    pub(super) fn publish_profile_name(&mut self) {
         let name = self
             .fleet_settings
             .as_ref()
@@ -467,6 +471,19 @@ impl PhotonApp {
             .and_then(crate::storage::fleet_settings::as_text)
             .unwrap_or_default();
         crate::network::status::set_profile_name(&name);
+        if self.published_name.replace(name.clone()).is_some_and(|old| old != name) {
+            self.announce_profile();
+        }
+    }
+
+    /// A profile change (avatar or name) goes to every contact now: each contact device is owed one announce pong, the unsolicited pong whose sealed tail carries the name and the avatar pin, and a ping round goes out at once to deliver it.
+    pub(super) fn announce_profile(&mut self) {
+        let devices: Vec<[u8; 32]> = self.contacts.iter().filter_map(|c| c.public_identity.as_ref().map(|d| *d.as_bytes())).collect();
+        crate::logf!("PROFILE: changed — announcing to {} contact device(s)", devices.len());
+        for d in devices {
+            self.profile_announce.insert(d);
+        }
+        self.ping_contacts();
     }
 
     /// Read the notification preferences from the settings layer into their checkboxes and the process-wide flags the notifiers read (absent = ON).
@@ -1742,18 +1759,9 @@ impl PhotonApp {
             return;
         };
         std::thread::spawn(move || {
-            // A FAILED pull must not become a destructive push (same rule as fleet::push_roster). The comment below — empty ours.roster leaves the slot's roster untouched — holds ONLY when the slot actually pulled: rebasing on `default()` after an error unions an empty roster with an empty base, so a SETTINGS push would silently wipe the fleet's ROSTER. `Ok(None)` is different and safe: nothing is published yet, so there is nothing to lose.
-            let slot = match fleet::pull_fstate(&hp, &fleet_key) {
-                Ok(Some(s)) => s,
-                Ok(None) => fgtw::fstate::FleetState::default(),
-                Err(e) => {
-                    crate::logf!("SETTINGS: push skipped — pull failed ({}), so the merge base is unknown; pushing now would overwrite the fleet's roster", e);
-                    return;
-                }
-            };
-            // Empty ours.roster merges to the slot's roster untouched (union) — settings pushes never disturb the roster.
-            let merged = fgtw::fstate::merge_fstate(slot, ours);
-            match fleet::push_fstate(&hp, &kp, &fleet_key, &merged) {
+            // Merged into the slot as last seen and written by compare-and-set; fgtw.org is read only when it answers that the slot moved (fleet::merge_into_slot).
+            // Empty ours.roster merges to the slot's roster untouched (union), so settings pushes never disturb the roster.
+            match fleet::merge_into_slot(&hp, &kp, &fleet_key, ours) {
                 Ok(()) => crate::log("SETTINGS: pushed to the fleet slot"),
                 Err(e) => crate::logf!("SETTINGS: push failed: {}", e),
             }

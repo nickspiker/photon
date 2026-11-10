@@ -155,6 +155,33 @@ impl PhotonApp {
     }
 
     /// Push our signed record to exactly these devices over the relay. With no reflexive learned yet the record carries our LAN address — one-sided is enough to open a wave: the side holding a public address for the other sends, its packets open its own NAT, and the other engine follows the first authenticated packet (field 2026-09-11 20:47, the first WAN wave to carry media both ways).
+    /// A friend's device told us where it moved and it was news: pass its own signed record on to our siblings, once (docs/phonebook-web.md "Changes travel to the people who care").
+    /// Our siblings track the same friends and may not reach that friend right now; the record verifies by its owner's signature wherever it lands, and a record a sibling passes to us goes no further.
+    pub(super) fn pass_address_on(&self, rec: crate::network::fgtw::PeerRecord) {
+        let Some(kp) = self.device_keypair.as_ref() else { return };
+        if !self.contacts.iter().any(|c| c.handle_proof == rec.handle_proof && !c.is_sibling) {
+            return;
+        }
+        let device: [u8; 32] = *rec.device_pubkey.as_bytes();
+        let provenance = *blake3::hash(&device).as_bytes();
+        let mut sig_bytes = [0u8; 64];
+        sig_bytes.copy_from_slice(&kp.sign(&provenance).to_bytes());
+        let who = crate::fp(&rec.handle_proof);
+        let msg = crate::network::fgtw::protocol::FgtwMessage::PhonebookResponse {
+            timestamp: vsf::eagle_time_oscillations(),
+            responder_pubkey: crate::types::DevicePubkey::from_bytes(*kp.public.as_bytes()),
+            provenance_hash: provenance,
+            signature: sig_bytes,
+            peers: vec![rec],
+        };
+        let bytes = msg.to_vsf_bytes();
+        if bytes.is_empty() {
+            return;
+        }
+        crate::logf!("PHONEBOOK: {}'s new address passed on to our siblings", who);
+        self.dispatch_frame_to_siblings(bytes);
+    }
+
     pub(super) fn push_address_record_to(&mut self, targets: Vec<[u8; 32]>) {
         let (Some(kp), Some(hp)) = (self.device_keypair.as_ref(), self.our_handle_proof()) else {
             return;

@@ -2882,6 +2882,11 @@ pub struct PhotonApp {
     update_available: Option<(usize, usize, usize)>,
     /// Devices already sent the boot ANNOUNCE (the unsolicited pong whose sealed tail carries our About — see PingRequest::announce). Runtime-only, so every launch announces once per sibling: the peers' fleet pages read the new build within seconds instead of a ping-backoff cycle later (field 2026-08-31: 71.0 shown for a host running 71.1).
     announced_devices: crate::linear_map::SortedSet<[u8; 32]>,
+    /// Contacts' devices owed one announce pong for a profile change (avatar or name), consumed by the ping loop (docs/phonebook-web.md "Changes travel to the people who care").
+    profile_announce: crate::linear_map::SortedSet<[u8; 32]>,
+    /// The avatar pin and the name last put in the pong slot this run: the first is the baseline, a different one is a change to announce.
+    published_pin: Option<[u8; 64]>,
+    published_name: Option<String>,
     /// Android: a hash-verified APK is staged — the JNI poll hands this path to Kotlin, which fires the system installer (the second click).
     #[cfg(target_os = "android")]
     pub pending_apk_install: Option<String>,
@@ -3664,6 +3669,9 @@ impl PhotonApp {
             update_toasted: None,
             update_available: None,
             announced_devices: crate::linear_map::SortedSet::new(),
+            profile_announce: crate::linear_map::SortedSet::new(),
+            published_pin: None,
+            published_name: None,
             #[cfg(target_os = "android")]
             pending_apk_install: None,
             #[cfg(target_os = "android")]

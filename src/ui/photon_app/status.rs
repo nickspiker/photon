@@ -354,6 +354,7 @@ impl PhotonApp {
                 StatusUpdate::FanoutReceived { .. } => "FanoutReceived",
                 StatusUpdate::FleetStatePushed { .. } => "FleetStatePushed",
                 StatusUpdate::FleetChainReceived { .. } => "FleetChainReceived",
+                StatusUpdate::AddressPushed { .. } => "AddressPushed",
                 StatusUpdate::StrangerFrame { .. } => "StrangerFrame",
                 StatusUpdate::FocusClaimReceived { .. } => "FocusClaimReceived",
                 StatusUpdate::FriendKnockReceived { .. } => "FriendKnockReceived",
@@ -472,6 +473,7 @@ impl PhotonApp {
         // Membership chains over the mesh (docs/peers-are-fgtw.md), deferred past the checker borrow: asks to answer (handle, asker, where), and chains handed to us (handle, bytes, sender).
         let mut fleet_asks_after: Vec<([u8; 32], [u8; 32], std::net::SocketAddr)> = Vec::new();
         let mut fleet_chains_after: Vec<([u8; 32], Vec<u8>, [u8; 32])> = Vec::new();
+        let mut addresses_after: Vec<crate::network::fgtw::PeerRecord> = Vec::new();
         // The join over the mesh, deferred likewise: binding requests handed to this sponsor (while its AddDevice screen is up), and fan-outs handed to this device.
         let mut bind_reqs_after: Vec<(crate::network::fgtw::fleet::BindRequest, std::net::SocketAddr)> = Vec::new();
         let mut fanouts_after: Vec<([u8; 32], Vec<u8>, [u8; 32])> = Vec::new();
@@ -4332,6 +4334,7 @@ impl PhotonApp {
                         fleet_chains_after.push((handle_proof, chain, sender_pubkey.key));
                     }
                 }
+                StatusUpdate::AddressPushed { record } => addresses_after.push(record),
                 StatusUpdate::StrangerFrame { sender_pubkey } => {
                     if !self.stranger_seen.contains(&sender_pubkey.key) && !strangers_after.contains(&sender_pubkey.key) {
                         strangers_after.push(sender_pubkey.key);
@@ -5738,6 +5741,9 @@ impl PhotonApp {
             if self.adopt_peer_chain(hp, &chain, sender) {
                 changed = true;
             }
+        }
+        for record in addresses_after {
+            self.pass_address_on(record);
         }
         for (req, addr) in bind_reqs_after {
             if self.on_bind_req(req, addr) {

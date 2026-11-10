@@ -840,16 +840,31 @@ pub fn open_fstate(sealed: &[u8], fleet_key: &[u8; 32]) -> Result<fgtw::fstate::
     fgtw::fstate::fstate_from_bytes(&PhotonSealer.open(sealed, fleet_key)?)
 }
 
-/// Publish the FULL fleet-shared state (roster + settings layers): seal under the fleet key (kete) and PUT to the membership-gated slot. The settings sync layer calls this with its cached state.
-pub fn push_fstate(
+/// The fleet-state slot as this device last saw it, by its own write or a read: (identity, BLAKE3 of the slot body, the state).
+/// The merge base for a compare-and-set write, so a change goes to fgtw.org without reading it first (docs/phonebook-web.md "Changes travel to the people who care"); process memory only, and a wrong guess costs one `stale` answer and a read.
+static FSTATE_SEEN: std::sync::Mutex<Option<([u8; 32], [u8; 32], fgtw::fstate::FleetState)>> = std::sync::Mutex::new(None);
+
+fn seen_slot(handle_proof: &[u8; 32]) -> Option<([u8; 32], fgtw::fstate::FleetState)> {
+    FSTATE_SEEN.lock().ok()?.as_ref().filter(|(hp, _, _)| hp == handle_proof).map(|(_, h, s)| (*h, s.clone()))
+}
+
+fn note_slot(handle_proof: &[u8; 32], body_hash: [u8; 32], state: fgtw::fstate::FleetState) {
+    if let Ok(mut seen) = FSTATE_SEEN.lock() {
+        *seen = Some((*handle_proof, body_hash, state));
+    }
+}
+
+/// Seal and write the full fleet-shared state (roster + settings layers) to the membership-gated slot, replacing exactly the slot body `prev` names when given (compare-and-set). Returns the stored body's BLAKE3.
+fn push_fstate_cas(
     handle_proof: &[u8; 32],
     device_key: &Keypair,
     fleet_key: &[u8; 32],
     state: &fgtw::fstate::FleetState,
-) -> Result<(), String> {
+    prev: Option<[u8; 32]>,
+) -> Result<[u8; 32], String> {
     // Fingerprint every write: the vanishing-avatar-pin hunt (2026-08-02) burned three sessions inferring what a push carried. Key NAMES are internal labels, not secrets; values never log.
     crate::logf!(
-        "FSTATE→ push: {} roster, globals [{}], {} device map(s), key {}",
+        "FSTATE→ push: {} roster, globals [{}], {} device map(s), key {}{}",
         state.roster.len(),
         state
             .global_settings
@@ -858,26 +873,28 @@ pub fn push_fstate(
             .collect::<Vec<_>>()
             .join(" "),
         state.device_settings.len(),
-        crate::fp(fleet_key).as_str()
+        crate::fp(fleet_key).as_str(),
+        if prev.is_some() { ", replacing the slot as last seen" } else { "" }
     );
-    fgtw::client::push_fstate(
-        &PhotonTransport,
-        &PhotonSealer,
-        handle_proof,
-        &signer_for(device_key),
-        fleet_key,
-        state,
-    )
+    fgtw::client::push_fstate_cas(&PhotonTransport, &PhotonSealer, handle_proof, &signer_for(device_key), fleet_key, state, prev)
 }
 
-/// Fetch + open the fleet-shared state (None if none published yet; a pre-settings roster-only blob reads as settings-empty).
+/// Fetch + open the fleet-shared state (None if none published yet; a pre-settings roster-only blob reads as settings-empty), noting it as the slot last seen.
 pub fn pull_fstate(
     handle_proof: &[u8; 32],
     fleet_key: &[u8; 32],
 ) -> Result<Option<fgtw::fstate::FleetState>, String> {
-    let r = fgtw::client::pull_fstate(&PhotonTransport, &PhotonSealer, handle_proof, fleet_key);
+    Ok(pull_fstate_seen(handle_proof, fleet_key)?.map(|(state, _)| state))
+}
+
+/// [`pull_fstate`] with the slot body's BLAKE3.
+fn pull_fstate_seen(
+    handle_proof: &[u8; 32],
+    fleet_key: &[u8; 32],
+) -> Result<Option<(fgtw::fstate::FleetState, [u8; 32])>, String> {
+    let r = fgtw::client::pull_fstate_seen(&PhotonTransport, &PhotonSealer, handle_proof, fleet_key)?;
     // The pull side of the write fingerprint above — reading both lines in one log answers "did the slot keep what we sent" without inference.
-    if let Ok(Some(s)) = &r {
+    if let Some((s, h)) = &r {
         crate::logf!(
             "FSTATE← pull: {} roster, globals [{}], {} device map(s), key {}",
             s.roster.len(),
@@ -889,11 +906,64 @@ pub fn pull_fstate(
             s.device_settings.len(),
             crate::fp(fleet_key).as_str()
         );
+        note_slot(handle_proof, *h, s.clone());
     }
-    r
+    Ok(r)
 }
 
-/// Publish the fleet roster. Roster-shaped wrapper over [`push_fstate`]: pulls the current slot first so the settings layers ride along untouched AND the roster converges by CRDT — union by handle_proof, per-entry LWW on `updated`, sticky tombstones — instead of last-pusher-wins clobbering a sibling's concurrent add (or resurrecting a removal we never held locally). A pull failure falls back to our-entries-only (nothing preservable: not_found = empty slot, AEAD failure = stale-epoch blob that this push is re-sealing anyway).
+/// Merge `ours` into the fleet-state slot and write it (2026-11-10, fgtw.org read only when needed): against the slot as last seen, by compare-and-set, and only when fgtw.org answers that the slot moved, or nothing has been seen, is it read first.
+/// The change itself has already gone to the siblings directly (fleet_state_push); this is the backup copy.
+/// A read that fails is never followed by a write: an unknown merge base would overwrite the fleet's roster and settings with this device's view alone.
+/// A slot no device can open (sealed under a superseded key) is re-sealed from local state, since its bytes are already lost.
+pub fn merge_into_slot(
+    handle_proof: &[u8; 32],
+    device_key: &Keypair,
+    fleet_key: &[u8; 32],
+    ours: fgtw::fstate::FleetState,
+) -> Result<(), String> {
+    if let Some((prev, base)) = seen_slot(handle_proof) {
+        let merged = fgtw::fstate::merge_fstate(base, ours.clone());
+        match push_fstate_cas(handle_proof, device_key, fleet_key, &merged, Some(prev)) {
+            Ok(stored) => {
+                note_slot(handle_proof, stored, merged);
+                return Ok(());
+            }
+            Err(e) if e.contains("stale") => crate::log("FSTATE: the slot moved since we last saw it — reading it before writing"),
+            Err(e) => return Err(e),
+        }
+    }
+    let (base, prev) = match pull_fstate_seen(handle_proof, fleet_key) {
+        Ok(Some((s, h))) => (s, Some(h)),
+        Ok(None) => (fgtw::fstate::FleetState::default(), None),
+        Err(e) if e.contains("aead") || e.contains("decrypt") => {
+            crate::logf!("FLEET: slot is sealed under a superseded key ({}) — re-sealing from local state, since bytes no device can open are already lost", e);
+            (fgtw::fstate::FleetState::default(), None)
+        }
+        Err(e) => {
+            return Err(format!(
+                "refusing to push fleet state: the pull failed ({e}), so the merge base is unknown — pushing now would overwrite the fleet's roster and settings with this device's view alone"
+            ))
+        }
+    };
+    let merged = fgtw::fstate::merge_fstate(base, ours);
+    let stored = push_fstate_cas(handle_proof, device_key, fleet_key, &merged, prev)?;
+    note_slot(handle_proof, stored, merged);
+    Ok(())
+}
+
+/// Publish the full fleet-shared state as given, replacing whatever the slot holds (the key-rotation re-seal and other whole-state writes).
+pub fn push_fstate(
+    handle_proof: &[u8; 32],
+    device_key: &Keypair,
+    fleet_key: &[u8; 32],
+    state: &fgtw::fstate::FleetState,
+) -> Result<(), String> {
+    let stored = push_fstate_cas(handle_proof, device_key, fleet_key, state, None)?;
+    note_slot(handle_proof, stored, state.clone());
+    Ok(())
+}
+
+/// Publish the fleet roster: merged into the slot (CRDT union by entry) with the settings layers riding along untouched ([`merge_into_slot`]).
 pub fn push_roster(
     handle_proof: &[u8; 32],
     device_key: &Keypair,
@@ -903,7 +973,7 @@ pub fn push_roster(
     push_roster_with_settings(handle_proof, device_key, fleet_key, entries, None)
 }
 
-/// [`push_roster`] carrying this device's LIVE settings layers alongside. Two concurrent pull-merge-push writers race: the loser's pulled base predates the winner's write, so a roster push that carried only stale pulled settings REVERTED them — a freshly-minted avatar pin lost the race to the boot reconcile push on every single launch, and the slot sat pinless forever ("avatar still sticks", 2026-08-02). A pusher that includes every layer it holds can never revert a value it already knows.
+/// [`push_roster`] carrying this device's LIVE settings layers alongside, so a write that loses a race can revert nothing it knows (the boot pin-mint vs reconcile race).
 pub fn push_roster_with_settings(
     handle_proof: &[u8; 32],
     device_key: &Keypair,
@@ -914,38 +984,8 @@ pub fn push_roster_with_settings(
         Vec<fgtw::fstate::DeviceSettings>,
     )>,
 ) -> Result<(), String> {
-    // A FAILED pull must never become a destructive push. This is pull-merge-push, so the pulled state is the merge base for BOTH layers — and `Err` (network blip, AEAD failure across a key rotation, a tag bump the reader doesn't know) is not the same fact as `Ok(None)` (nothing published yet). Collapsing them into `default()` meant any transient error rebased the fleet on EMPTY and the push overwrote everyone's settings and roster with this device's local view.
-    // Observed live on the PRST2→PRST3 roster bump: "state pulled — 8 roster entries, 0 global settings, 0 device maps" — the settings layer was gone from FGTW.
-    // Ok(None) still starts from empty: that is a genuine first publish, and there is nothing to lose.
-    let mut state = match pull_fstate(handle_proof, fleet_key) {
-        Ok(Some(s)) => s,
-        Ok(None) => fgtw::fstate::FleetState::default(),
-        // A slot we cannot DECRYPT is not the same fact as a pull we could not COMPLETE. The guard below exists to stop an empty merge base clobbering good data after a transient failure — but bytes sealed under a superseded fleet key are already unreadable to every device in the fleet, including the ones that wrote them. Refusing there is not caution; it is a permanent deadlock, and it is the one Nick's log shows: 29 aead failures against 26 refused pushes, the roster never loading on any device. Re-sealing our local view is the only way the slot ever becomes readable again, and local state is strictly better than state nobody can open.
-        Err(e) if e.contains("aead") || e.contains("decrypt") => {
-            crate::logf!(
-                "FLEET: slot is sealed under a superseded key ({}) — re-sealing from local state, since bytes no device can open are already lost",
-                e
-            );
-            fgtw::fstate::FleetState::default()
-        }
-        Err(e) => {
-            return Err(format!(
-                "refusing to push fleet state: the pull failed ({e}), so the merge base is unknown — pushing now would overwrite the fleet's roster and settings with this device's view alone"
-            ))
-        }
-    };
-    state.roster = fgtw::fstate::merge_rosters(std::mem::take(&mut state.roster), entries.to_vec());
-    if let Some((global, devices)) = live_settings {
-        state = fgtw::fstate::merge_fstate(
-            state,
-            fgtw::fstate::FleetState {
-                roster: Vec::new(),
-                global_settings: global,
-                device_settings: devices,
-            },
-        );
-    }
-    push_fstate(handle_proof, device_key, fleet_key, &state)
+    let (global_settings, device_settings) = live_settings.unwrap_or_default();
+    merge_into_slot(handle_proof, device_key, fleet_key, fgtw::fstate::FleetState { roster: entries.to_vec(), global_settings, device_settings })
 }
 
 /// Fetch + open the fleet roster (None if none published yet).
