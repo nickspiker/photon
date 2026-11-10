@@ -121,6 +121,13 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlreadyInContacts => "Zaten kişilerinde".into(),
         Msg::ThatsYou => "Bu sensin".into(),
         Msg::Attesting => "Tasdikleniyor\u{2026}".into(),
+        Msg::AttestStage(n) => match n {
+            0 => "Handle’ın kanıtlanıyor…".into(),
+            1 => "Bu cihazın senin olduğu kontrol ediliyor…".into(),
+            2 => "fgtw.org’a handle’ın soruluyor…".into(),
+            3 => "Bu cihazın mühürlü deposu açılıyor…".into(),
+            _ => "Sohbetlerin yükleniyor…".into(),
+        },
         Msg::RevokedByFleet => "filon bu cihazı YASAKLADI \u{2014} artık senin adına hareket edemez. Tekrar kullanmak için başka bir cihazından yasağı kaldır.".into(),
         Msg::IdentityCarriedHint => "bu cihaz zaten bir kimlik taşıyor".into(),
         Msg::PermanenceWarning => "Bu, kalıcı bir kimlik basar.\nParola yok. Sıfırlama yok. Kurtarma yok.\nTasdikleyen ilk insan onun sahibidir.\nCihazlar değiştirilebilir. Kimlik değiştirilemez.\nAdı tekrar yaz, ciddiysen bas.".into(),

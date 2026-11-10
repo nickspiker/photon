@@ -120,6 +120,13 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlreadyInContacts => "Đã có trong danh bạ của bạn".into(),
         Msg::ThatsYou => "Đó là bạn".into(),
         Msg::Attesting => "Đang chứng thực\u{2026}".into(),
+        Msg::AttestStage(n) => match n {
+            0 => "Đang chứng minh handle của bạn…".into(),
+            1 => "Đang kiểm tra thiết bị này có phải của bạn…".into(),
+            2 => "Đang hỏi fgtw.org về handle của bạn…".into(),
+            3 => "Đang mở két niêm phong của thiết bị này…".into(),
+            _ => "Đang tải các cuộc trò chuyện của bạn…".into(),
+        },
         Msg::RevokedByFleet => "đội của bạn đã THU HỒI thiết bị này \u{2014} nó không còn hành động thay bạn được nữa. Hãy khôi phục nó từ một thiết bị khác của bạn để dùng lại.".into(),
         Msg::IdentityCarriedHint => "thiết bị này đã mang sẵn một danh tính".into(),
         Msg::PermanenceWarning => "Việc này đúc ra một danh tính vĩnh viễn.\nKhông mật khẩu. Không đặt lại. Không khôi phục.\nNgười đầu tiên chứng thực là chủ của nó.\nThiết bị thì thay được. Danh tính thì không.\nGõ lại cái tên, rồi nhấn nếu bạn thật sự muốn.".into(),

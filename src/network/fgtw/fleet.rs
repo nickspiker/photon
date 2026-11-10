@@ -178,6 +178,17 @@ pub fn hold_vault_chain(identity_seed: &[u8; 32], vault_seed: &[u8; 32], handle_
     }
 }
 
+/// This device is a member by the chain it holds itself (Nick 2026-11-09: "No reliance on fgtw.org whatsoever"): the held chain sits at this handle's slot, folds, lists `device` and has not locked it out.
+/// No network: the attest of a device its own vault vouches for never waits on fgtw.org; the announce (and the worker's lockout refusal) follows once the session is open.
+pub fn held_lists(handle_proof: &[u8; 32], device: &[u8; 32]) -> bool {
+    let Some(chain) = held_chain(handle_proof) else {
+        return false;
+    };
+    chain.genesis_handle_proof() == Some(*handle_proof)
+        && chain.fold().is_ok_and(|m| m.contains(device))
+        && chain.locked_out().is_ok_and(|l| !l.contains(device))
+}
+
 /// The current device-pubkey member set (empty if no fleet yet).
 /// The scheme set the chain knows `device` can sign with — Ed25519 alone before its Declare, its declared bundle after. What a device passes as the mask when it signs anything a verifier will hold to its declared bundle (phonebook records); an egg for an undeclared scheme fails closed there. Ed25519 alone when the chain cannot be fetched.
 pub fn declared_mask(handle_proof: &[u8; 32], device: &[u8; 32]) -> scheme::Mask {

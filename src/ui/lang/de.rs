@@ -119,6 +119,13 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlreadyInContacts => "Steht schon in deinen Kontakten".into(),
         Msg::ThatsYou => "Das bist du".into(),
         Msg::Attesting => "Bezeuge\u{2026}".into(),
+        Msg::AttestStage(n) => match n {
+            0 => "Dein Handle wird bewiesen…".into(),
+            1 => "Wir prüfen, ob dieses Gerät eines deiner Geräte ist…".into(),
+            2 => "Wir fragen fgtw.org nach deinem Handle…".into(),
+            3 => "Der versiegelte Speicher dieses Geräts wird geöffnet…".into(),
+            _ => "Deine Unterhaltungen werden geladen…".into(),
+        },
         Msg::RevokedByFleet => "deine Flotte hat dieses Gerät WIDERRUFEN \u{2014} es kann nicht mehr als du handeln. Lass es von einem anderen deiner Geräte wieder zu, um es erneut zu nutzen.".into(),
         Msg::IdentityCarriedHint => "dieses Gerät trägt bereits eine Identität".into(),
         Msg::PermanenceWarning => "Das prägt eine dauerhafte Identität.\nKein Passwort. Kein Zurücksetzen. Keine Wiederherstellung.\nDer erste Mensch, der sie bezeugt, besitzt sie.\nGeräte lassen sich ersetzen. Die Identität nicht.\nTippe den Namen noch einmal, dann drücke, wenn du es ernst meinst.".into(),

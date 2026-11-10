@@ -119,6 +119,13 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlreadyInContacts => "Kei roto kē i ō hoa".into(),
         Msg::ThatsYou => "Ko koe tēnā".into(),
         Msg::Attesting => "E whakaū ana\u{2026}".into(),
+        Msg::AttestStage(n) => match n {
+            0 => "E whakamana ana i tō handle…".into(),
+            1 => "E taki ana mēnā ko tēnei pūrere tētahi o ōu…".into(),
+            2 => "E pātai ana ki a fgtw.org mō tō handle…".into(),
+            3 => "E huaki ana i te pātaka hiri o tēnei pūrere…".into(),
+            _ => "E uta ana i ō kōrero…".into(),
+        },
         Msg::RevokedByFleet => "kua TANGOHIA e tō kāhui te mana o tēnei pūrere \u{2014} kāore e taea e ia te mahi hei a koe. Whakahokia mai i tētahi atu o ō pūrere kia whakamahia anō.".into(),
         Msg::IdentityCarriedHint => "kei tēnei pūrere kē tētahi tuakiri".into(),
         Msg::PermanenceWarning => "Ka whānau mai i konei he tuakiri pūmau.\nKāore he kupuhipa. Kāore he tautuhi anō. Kāore he whakaoranga.\nMā te tangata tuatahi ka whakaū, ka riro.\nKa taea ngā pūrere te whakakapi. Kāore te tuakiri.\nPatohia anō te ingoa, kātahi ka pāwhiri mehemea e tino hiahia ana koe.".into(),

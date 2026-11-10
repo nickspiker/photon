@@ -21,6 +21,27 @@ use crate::ui::PhotonEvent;
 #[cfg(not(target_os = "android"))]
 use fluor::host::WakeSender;
 
+/// What the attest is doing right now, for the launch screen's status line (Nick 2026-11-09: "the toast doesn't even tell you what the fuck is going on"): the query worker sets it at each step, the screen reads it while it shows Attesting.
+pub static ATTEST_STAGE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// The steps [`ATTEST_STAGE`] names, in the order an attest walks them.
+pub mod attest_stage {
+    /// The ~1 s memory-hard handle proof.
+    pub const PROVING: u8 = 0;
+    /// This device's own vault chain, read for membership.
+    pub const CHECKING: u8 = 1;
+    /// fgtw.org, asked only when this device's vault cannot vouch for it.
+    pub const ASKING_SEED: u8 = 2;
+    /// The session's vault opening.
+    pub const OPENING: u8 = 3;
+    /// Contacts, chains and conversations loading from the vault.
+    pub const LOADING: u8 = 4;
+}
+
+fn set_attest_stage(stage: u8) {
+    ATTEST_STAGE.store(stage, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Data loaded during attestation (all blocking work done in background)
 #[derive(Debug, Clone)]
 pub struct AttestationData {
@@ -476,6 +497,7 @@ impl HandleQuery {
                 // Probe: classify the handle against the network and report the branch — no announce. Computes the roots (the ~1s proof) once; the UI hands them back on the chosen follow-up so the proof is never paid twice.
                 if let QueryRequest::Probe(handle) = &req {
                     let identity_seed = crate::storage::contacts::derive_identity_seed(handle);
+                    set_attest_stage(attest_stage::PROVING);
                     let handle_proof = Handle::username_to_handle_proof(handle); // ~1s
                     let session = tohu::SessionIdentity {
                         identity_seed,
@@ -496,9 +518,17 @@ impl HandleQuery {
                     }
                     // THE ATTEST VERDICT is fgtw's one pure function (fgtw::attest), so Photon and ferros's bare-metal client decide identically from the same evidence. Photon hands it the seed's answer alone for now — no held or peer chains — which is exactly the decision this probe made by hand before.
                     // THE VAULT'S CHAIN FIRST (2026-11-02): what this device holds is folded before anyone asks the seed, so a seed that cannot be reached is a mirror that is down, not a gate on the attest.
+                    set_attest_stage(attest_stage::CHECKING);
                     crate::network::fgtw::fleet::hold_vault_chain(&identity_seed, &session.vault_seed, &handle_proof, keypair.secret.as_bytes());
-                    let fetched = crate::network::fgtw::fleet::fetch(&handle_proof);
                     let me = keypair.public.to_bytes();
+                    // THE DEVICE'S OWN WORD FIRST (Nick 2026-11-09: "No reliance on fgtw.org whatsoever"): a vault chain that lists this device is Member, so fgtw.org is never asked and an offline phone attests as fast as an online one.
+                    if crate::network::fgtw::fleet::held_lists(&handle_proof, &me) {
+                        crate::log("Network: probe → Member (this device's own vault chain lists it; fgtw.org not asked)");
+                        crate::log_err!(tx.send(QueryResult::Probe { outcome: ProbeOutcome::Member, session }), "attest: probe result to the UI");
+                        continue;
+                    }
+                    set_attest_stage(attest_stage::ASKING_SEED);
+                    let fetched = crate::network::fgtw::fleet::fetch(&handle_proof);
                     let seed = match &fetched {
                         Ok(None) => fgtw::attest::SeedAnswer::NotFound,
                         Ok(Some(blob)) => fgtw::attest::SeedAnswer::Chain(blob),
@@ -547,6 +577,7 @@ impl HandleQuery {
                     QueryRequest::FirstAttest(handle) => {
                         let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
                         let vault_seed = identity_seed;
+                        set_attest_stage(attest_stage::PROVING);
                         let handle_proof = Handle::username_to_handle_proof(&handle); // ~1s
                                                                                       // Defer persistence until FGTW confirms ownership (below) — a rejected attest must NOT leave session roots that would auto-resume into the same rejection next launch.
                         (identity_seed, vault_seed, handle_proof, true)
@@ -564,6 +595,7 @@ impl HandleQuery {
                     }
                 };
                 // The vault's chain into the held set before the seed is asked (a resume after a reboot has not loaded it yet): membership can then be proven with no network at all.
+                set_attest_stage(attest_stage::CHECKING);
                 crate::network::fgtw::fleet::hold_vault_chain(&identity_seed, &vault_seed, &handle_proof, keypair.secret.as_bytes());
                 crate::log("Network: Querying handle...");
 
@@ -580,13 +612,17 @@ impl HandleQuery {
                     thread::sleep(Duration::from_millis(100));
                 };
 
-                // Query FGTW
-                let result = crate::network::http::runtime().block_on(load_bootstrap_peers(
-                    &keypair,
-                    handle_proof,
-                    current_port,
-                    &identity_seed,
-                ));
+                // A device its own vault vouches for opens without fgtw.org (Nick 2026-11-09: "No reliance on fgtw.org whatsoever"): the announce, and the worker's lockout refusal it carries, run after the session is open (announce_after_open).
+                let local_member = crate::network::fgtw::fleet::held_lists(&handle_proof, &keypair.public.to_bytes());
+                if !local_member {
+                    set_attest_stage(attest_stage::ASKING_SEED);
+                }
+                let result = if local_member {
+                    crate::log("Network: this device's own vault chain lists it — opening now, fgtw.org after");
+                    crate::network::fgtw::bootstrap::BootstrapResult { peers: Vec::new(), error: None, observed_addr: None, identity_count: 0 }
+                } else {
+                    crate::network::http::runtime().block_on(load_bootstrap_peers(&keypair, handle_proof, current_port, &identity_seed))
+                };
 
                 // Add peers to store (skip our own device)
                 let our_pubkey = keypair.public.as_bytes();
@@ -597,7 +633,7 @@ impl HandleQuery {
                     .cloned()
                     .collect();
                 if !other_peers.is_empty() {
-                    let peer_store = transport_arc;
+                    let peer_store = transport_arc.clone();
                     let mut store = peer_store.lock().unwrap();
                     for peer in &other_peers {
                         store.add_peer(peer.clone());
@@ -606,6 +642,8 @@ impl HandleQuery {
                 }
 
                 // Check result
+                // What a local member hands to the work after the session opens: the contacts for the backup and the fleet key that seals it.
+                let mut after_open: Option<(Vec<crate::types::Contact>, Option<[u8; 32]>)> = None;
                 let query_result = if let Some(error) = result.error {
                     crate::logf!("Network: ERROR - {}", error);
                     // The worker refused the announce because this device is fleet-locked — a terminal brick, not a retryable error (reason_error tags it with a stable `device_locked` prefix).
@@ -622,7 +660,8 @@ impl HandleQuery {
                     // "Taken" now comes ONLY from a fold-verified chain naming a DIFFERENT identity, computed exactly like the probe: fetch → fold. Since ensure_member just proved membership, this normally confirms ours; a fold/parse/transport error is INDETERMINATE → QueryResult::Error, NEVER taken, never clear the session.
                     // A resume retries on the next ~30s cycle; a first attest surfaces the error on the launch screen for a manual re-submit (there is no auto-retry loop for FirstAttest).
                     let me = keypair.public.to_bytes();
-                    let verdict = match crate::network::fgtw::fleet::fetch(&handle_proof) {
+                    // The vault's own chain already proved this device a member at this slot; the seed's copy is asked only when it did not.
+                    let verdict = if local_member { Ok(true) } else { match crate::network::fgtw::fleet::fetch(&handle_proof) {
                         // No chain despite a successful membership-gated announce: treat as ours (indeterminate the other way — we were just admitted). Proceed to load.
                         Ok(None) => Ok(true),
                         Ok(Some(blob)) => match blob.fold() {
@@ -648,7 +687,7 @@ impl HandleQuery {
                             }
                         },
                         Err(e) => Err(e),
-                    };
+                    } };
 
                     let is_ours = match verdict {
                         Ok(ours) => ours,
@@ -684,6 +723,7 @@ impl HandleQuery {
                         let device_secret_bytes = *keypair.secret.as_bytes();
 
                         // Initialize FlatStorage for this session. A bare `return` here would silently strand the UI on the Attesting spinner because the result channel never gets a verdict — the worker has already proven FGTW says the handle is ours, but with no local vault we can't reach Ready. Surface the failure as a QueryResult::Error so the Launch screen flips to its error state and the user sees what happened. open_session_vault, NEVER a bare constructor: on a resume the UI thread already holds this vault's engine and is writing to it (CLUTCH chains, avatars, presence state). A second independent engine here is two in-RAM states racing one file — the exact corruption that bricks a live vault ("seal verification failed" on every open after the stale engine's commit).
+                        set_attest_stage(attest_stage::OPENING);
                         let storage = match crate::storage::open_session_vault(
                             identity_seed,
                             vault_seed,
@@ -700,6 +740,7 @@ impl HandleQuery {
                         let vault_degraded = storage.degraded();
 
                         // Load contacts from disk
+                        set_attest_stage(attest_stage::LOADING);
                         crate::log("Network: Loading contacts from disk...");
                         let mut contacts = crate::storage::contacts::load_all_contacts(&storage);
 
@@ -791,7 +832,8 @@ impl HandleQuery {
                                 "Cloud: no fleet key yet — skipping the contacts backup this round",
                             );
                         }
-                        if let Some(Ok(Some(cloud_contacts))) = fleet_key.map(|fk| {
+                        // A local member does not wait on the backup: its vault is the authority, and the backup is refreshed after the session opens (after_open).
+                        if let Some(Ok(Some(cloud_contacts))) = fleet_key.filter(|_| !local_member).map(|fk| {
                             crate::log("Network: Syncing with cloud...");
                             crate::storage::cloud::load_contacts_from_cloud(&identity_seed, &fk)
                         }) {
@@ -839,7 +881,7 @@ impl HandleQuery {
                             had.len() == ours.len()
                                 && ours.iter().all(|o| had.iter().any(|h| h == o))
                         });
-                        if let Some(fk) = fleet_key {
+                        if let Some(fk) = fleet_key.filter(|_| !local_member) {
                             if !contacts.is_empty() && !unchanged {
                                 crate::log_err!(crate::storage::cloud::sync_contacts_to_cloud(
                                     &contacts,
@@ -854,6 +896,9 @@ impl HandleQuery {
                                     ours.len()
                                 );
                             }
+                        }
+                        if local_member {
+                            after_open = Some((contacts.clone(), fleet_key));
                         }
                         // Conversations, one per contact row: messages plus the durable bits (unread, history cursor), keyed by the participant set so every device derives the same table.
                         let our_pid = crate::crypto::clutch::identity_party_id(&identity_seed);
@@ -963,6 +1008,47 @@ impl HandleQuery {
                 };
 
                 crate::log_err!(tx.send(query_result), "attest: query result to the UI");
+
+                // The session is open; now fgtw.org, off the attest's path. The announce first: it registers this device's address, hands back peers, and carries the worker's lockout refusal, which ends the session the moment it lands.
+                // Then the contacts backup, refreshed only when it differs, after the announce so the worker knows the device (the upload raced it before and was refused "not a registered peer", 2026-11-09).
+                if let Some((contacts, fleet_key)) = after_open {
+                    let (kp, tx_after, peer_store) = (keypair.clone(), tx.clone(), transport_arc.clone());
+                    let spawned = thread::Builder::new().name("attest-after-open".into()).spawn(move || {
+                        let result = crate::network::http::runtime().block_on(load_bootstrap_peers(&kp, handle_proof, current_port, &identity_seed));
+                        match result.error {
+                            Some(e) if e.starts_with("device_locked") => {
+                                crate::log("Network: fgtw.org refused this device as fleet-locked — the session ends");
+                                crate::log_err!(tx_after.send(QueryResult::Locked), "attest: after-open lockout to the UI");
+                                return;
+                            }
+                            Some(e) => crate::logf!("Network: the after-open announce did not land ({}); the session stays open and peers come from the mesh", e),
+                            None => {
+                                let ours = kp.public.as_bytes();
+                                let others: Vec<_> = result.peers.iter().filter(|p| &p.device_pubkey.key != ours).cloned().collect();
+                                if !others.is_empty() {
+                                    let mut store = peer_store.lock().unwrap();
+                                    for peer in &others {
+                                        store.add_peer(peer.clone());
+                                    }
+                                }
+                                crate::logf!("Network: announced after open — {} peer(s) from fgtw.org", others.len());
+                            }
+                        }
+                        let Some(fk) = fleet_key else {
+                            return;
+                        };
+                        let ours: Vec<crate::storage::cloud::CloudContact> = contacts.iter().map(crate::storage::cloud::CloudContact::from).collect();
+                        let unchanged = matches!(crate::storage::cloud::load_contacts_from_cloud(&identity_seed, &fk), Ok(Some(ref had)) if had.len() == ours.len() && ours.iter().all(|o| had.iter().any(|h| h == o)));
+                        if unchanged {
+                            crate::logf!("Cloud: {} contacts unchanged — skipping upload", ours.len());
+                        } else if !contacts.is_empty() {
+                            crate::log_err!(crate::storage::cloud::sync_contacts_to_cloud(&contacts, &identity_seed, &fk, &kp, &handle_proof), "Cloud: contacts backup upload (after open)");
+                        }
+                    });
+                    if let Err(e) = spawned {
+                        crate::logf!("Network: the after-open announce could not start ({}); the next attest announces", e);
+                    }
+                }
             }
         });
     }

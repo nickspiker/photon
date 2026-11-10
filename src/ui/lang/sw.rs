@@ -121,6 +121,13 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlreadyInContacts => "Tayari yupo kwenye marafiki zako".into(),
         Msg::ThatsYou => "Huyo ni wewe".into(),
         Msg::Attesting => "Inathibitisha\u{2026}".into(),
+        Msg::AttestStage(n) => match n {
+            0 => "Inathibitisha handle yako…".into(),
+            1 => "Inahakikisha kifaa hiki ni chako…".into(),
+            2 => "Inauliza fgtw.org kuhusu handle yako…".into(),
+            3 => "Inafungua hazina iliyotiwa lakiri ya kifaa hiki…".into(),
+            _ => "Inapakia mazungumzo yako…".into(),
+        },
         Msg::RevokedByFleet => "kundi lako LIMEBATILISHA kifaa hiki \u{2014} hakiwezi tena kutenda kwa niaba yako. Kirejeshe kutoka kifaa kingine chako ili kukitumia tena.".into(),
         Msg::IdentityCarriedHint => "kifaa hiki tayari kina utambulisho".into(),
         Msg::PermanenceWarning => "Hii huzalisha utambulisho wa kudumu.\nHakuna nywila. Hakuna kuanza upya. Hakuna urejeshaji.\nMtu wa kwanza kuthibitisha ndiye mwenyewe.\nVifaa vinaweza kubadilishwa. Utambulisho hauwezi.\nAndika jina tena, kisha bonyeza kama unamaanisha.".into(),

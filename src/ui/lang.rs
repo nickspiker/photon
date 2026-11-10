@@ -320,6 +320,8 @@ pub enum Msg<'a> {
     /// The add box was given our own handle: we are no contact of ours.
     ThatsYou,
     Attesting,
+    /// What the attest is doing now (handle_query::ATTEST_STAGE): 0 proving the handle, 1 checking this device is ours, 2 asking fgtw.org, 3 opening the vault, 4 loading conversations.
+    AttestStage(u8),
     RevokedByFleet,
     IdentityCarriedHint,
     // '\n'-joined passage; the call site iterates .lines() and gives the FIRST line the headline (error) colour.

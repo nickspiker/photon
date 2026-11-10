@@ -119,6 +119,13 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlreadyInContacts => "Sudah ada di kontakmu".into(),
         Msg::ThatsYou => "Itu kamu".into(),
         Msg::Attesting => "Mengesahkan\u{2026}".into(),
+        Msg::AttestStage(n) => match n {
+            0 => "Membuktikan handle-mu…".into(),
+            1 => "Memastikan perangkat ini salah satu milikmu…".into(),
+            2 => "Menanyakan handle-mu ke fgtw.org…".into(),
+            3 => "Membuka simpanan tersegel perangkat ini…".into(),
+            _ => "Memuat percakapanmu…".into(),
+        },
         Msg::RevokedByFleet => "armadamu telah MENCABUT perangkat ini \u{2014} ia tidak bisa lagi bertindak sebagai kamu. Pulihkan dari perangkatmu yang lain untuk memakainya kembali.".into(),
         Msg::IdentityCarriedHint => "perangkat ini sudah membawa sebuah identitas".into(),
         Msg::PermanenceWarning => "Ini mencetak identitas yang permanen.\nTanpa kata sandi. Tanpa reset. Tanpa pemulihan.\nManusia pertama yang mengesahkannya adalah pemiliknya.\nPerangkat bisa diganti. Identitas tidak.\nKetik namanya sekali lagi, lalu tekan kalau kamu sungguh-sungguh.".into(),

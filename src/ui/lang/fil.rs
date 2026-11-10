@@ -120,6 +120,13 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlreadyInContacts => "Nasa mga kontak mo na".into(),
         Msg::ThatsYou => "Ikaw iyan".into(),
         Msg::Attesting => "Nagpapatotoo\u{2026}".into(),
+        Msg::AttestStage(n) => match n {
+            0 => "Pinapatunayan ang handle mo…".into(),
+            1 => "Tinitiyak na isa ito sa mga device mo…".into(),
+            2 => "Tinatanong ang fgtw.org tungkol sa handle mo…".into(),
+            3 => "Binubuksan ang selyadong imbakan ng device na ito…".into(),
+            _ => "Nilo-load ang mga usapan mo…".into(),
+        },
         Msg::RevokedByFleet => "BINAWI ng armada mo ang device na ito \u{2014} hindi na ito puwedeng kumilos bilang ikaw. Ibalik ito mula sa isa pang device mo para magamit ulit.".into(),
         Msg::IdentityCarriedHint => "may dala nang pagkakakilanlan ang device na ito".into(),
         Msg::PermanenceWarning => "Bumubuo ito ng permanenteng pagkakakilanlan.\nWalang password. Walang reset. Walang pagbabalik.\nSa unang taong magpapatotoo ito mapupunta.\nMapapalitan ang mga device. Ang pagkakakilanlan, hindi.\nI-type ulit ang pangalan, saka pindutin kung totoo ang loob mo.".into(),

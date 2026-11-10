@@ -1431,9 +1431,11 @@ impl PhotonApp {
                 Some((self.add_join_status.as_str().into(), (*theme::STATUS_TEXT_COLOUR)))
             } else {
                 match launch_state {
-                        LaunchState::Attesting => {
-                            Some((tr(Msg::Attesting), (*theme::STATUS_TEXT_COLOUR)))
-                        }
+                        // The step the attest is on, in plain words (handle_query::ATTEST_STAGE), so a slow one shows what it waits on.
+                        LaunchState::Attesting => Some((
+                            tr(Msg::AttestStage(crate::network::handle_query::ATTEST_STAGE.load(std::sync::atomic::Ordering::Relaxed))),
+                            (*theme::STATUS_TEXT_COLOUR),
+                        )),
                         LaunchState::Error(msg) if !msg.is_empty() => {
                             Some((msg.as_str().into(), (*theme::ERROR_TEXT_COLOUR)))
                         }

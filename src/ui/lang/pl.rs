@@ -121,6 +121,13 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlreadyInContacts => "Już jest w twoich kontaktach".into(),
         Msg::ThatsYou => "To ty".into(),
         Msg::Attesting => "Poświadczanie\u{2026}".into(),
+        Msg::AttestStage(n) => match n {
+            0 => "Dowodzimy twojego handle…".into(),
+            1 => "Sprawdzamy, czy to urządzenie jest twoje…".into(),
+            2 => "Pytamy fgtw.org o twój handle…".into(),
+            3 => "Otwieramy zapieczętowany skarbiec tego urządzenia…".into(),
+            _ => "Wczytujemy twoje rozmowy…".into(),
+        },
         Msg::RevokedByFleet => "twoja flota UNIEWAŻNIŁA to urządzenie \u{2014} nie może już działać w twoim imieniu. Przywróć je z innego swojego urządzenia, by znów z niego korzystać.".into(),
         Msg::IdentityCarriedHint => "to urządzenie nosi już tożsamość".into(),
         Msg::PermanenceWarning => "To powołuje trwałą tożsamość.\nBez hasła. Bez resetu. Bez odzyskiwania.\nPierwszy człowiek, który ją poświadczy, jest jej właścicielem.\nUrządzenia można wymienić. Tożsamości nie.\nWpisz nazwę jeszcze raz, potem naciśnij, jeśli mówisz serio.".into(),

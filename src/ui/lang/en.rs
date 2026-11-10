@@ -105,6 +105,13 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlreadyInContacts => "Already in your contacts".into(),
         Msg::ThatsYou => "That's you".into(),
         Msg::Attesting => "Attesting\u{2026}".into(),
+        Msg::AttestStage(n) => match n {
+            0 => "Proving your handle…".into(),
+            1 => "Checking this device is one of yours…".into(),
+            2 => "Asking fgtw.org about your handle…".into(),
+            3 => "Opening this device’s sealed store…".into(),
+            _ => "Loading your conversations…".into(),
+        },
         Msg::RevokedByFleet => "your fleet has REVOKED this device \u{2014} it can no longer act as you. Reinstate it from another of your devices to use it again.".into(),
         Msg::IdentityCarriedHint => "this device already carries an identity".into(),
         Msg::PermanenceWarning => "This mints a permanent identity.\nNo password. No reset. No recovery.\nThe first human to attest owns it.\nDevices can be replaced. The identity can't.\nType the name again, then press if you mean it.".into(),

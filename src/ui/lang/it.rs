@@ -122,6 +122,13 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlreadyInContacts => "È già nei tuoi contatti".into(),
         Msg::ThatsYou => "Sei tu".into(),
         Msg::Attesting => "Attestazione\u{2026}".into(),
+        Msg::AttestStage(n) => match n {
+            0 => "Prova del tuo handle…".into(),
+            1 => "Verifichiamo che questo dispositivo sia uno dei tuoi…".into(),
+            2 => "Chiediamo a fgtw.org del tuo handle…".into(),
+            3 => "Apertura della cassaforte sigillata di questo dispositivo…".into(),
+            _ => "Caricamento delle tue conversazioni…".into(),
+        },
         Msg::RevokedByFleet => "la tua flotta ha REVOCATO questo dispositivo \u{2014} non può più agire come te. Ripristinalo da un altro dei tuoi dispositivi per tornare a usarlo.".into(),
         Msg::IdentityCarriedHint => "questo dispositivo porta già un’identità".into(),
         Msg::PermanenceWarning => "Questo conia un’identità permanente.\nNessuna password. Nessun reset. Nessun recupero.\nLa prima persona che la attesta ne è il proprietario.\nI dispositivi si possono sostituire. L’identità no.\nRiscrivi il nome, poi premi se lo intendi davvero.".into(),
