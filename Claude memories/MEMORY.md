@@ -22,6 +22,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [edges, not timers](edges-not-timers.md) · [no time-based UI](feedback_no_time_based_ui.md)
 - [direct pixel only](feedback_direct_pixel_no_floaters.md) · [smoothness](feedback_smoothness_for_humans.md) — C¹+ GUI math
 - [spelling](feedback_spelling.md) — thru/altho; colour British; rest US
+- [no em dashes in UI](feedback_no_em_dashes_ui.md) — HARD: line return where it wraps, punctuation where it is one line
 - [photons are messages](feedback_photons_are_messages.md) · [atoms, not notes](feedback_atoms_not_notes.md) · [self is a contact](feedback_self_is_a_contact.md)
 - [wave/beam, never call](project_wave_beam_transition.md) — HARD: wave = audio, beam = video
 - [stops not dB](feedback_stops_not_db.md) · [voca camelCase](feedback_voca_camelcase.md) · [orb = settings panel](feedback_orb_settings_panel.md)
