@@ -241,6 +241,19 @@ pub fn parse_manifest_stamped(
     bytes: &[u8],
     channel: Channel,
 ) -> Result<(i64, Vec<ManifestRow>), String> {
+    // Every release egg (2026-11-10, "no single eggs"): the manifest is signed by the release key with Ed25519, Falcon-512 and SPHINCS+, and each must verify against the pinned bundle (fgtw::release); an older Photon reading the same file checks its Ed25519 egg alone.
+    fgtw::release::verify_release(bytes).map_err(|e| format!("manifest verification: {e}"))?;
+    parse_manifest_rows(bytes, channel)
+}
+
+/// A manifest signed before the release eggs, read only to MERGE its rows into a new, fully signed one (photon-manifest --merge on the dev channel): the live dev manifest is single-signed until each platform republishes, and refusing it would drop every other platform's row. Never used to install anything.
+/// MIGRATION-EXPIRES: 2027-02-01
+pub fn parse_legacy_manifest(bytes: &[u8], channel: Channel) -> Result<Vec<ManifestRow>, String> {
+    parse_manifest_rows(bytes, channel).map(|(_, rows)| rows)
+}
+
+/// The rows and stamp of a manifest whose Ed25519 signature by the release key verifies; the egg rule is the caller's.
+fn parse_manifest_rows(bytes: &[u8], channel: Channel) -> Result<(i64, Vec<ManifestRow>), String> {
     let (header, header_end) =
         vsf::verification::read_verified(bytes, Some(crate::crypto::self_verify::AUTHOR_PUBKEY))
             .map_err(|e| format!("manifest verification: {e}"))?;

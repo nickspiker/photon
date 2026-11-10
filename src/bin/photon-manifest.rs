@@ -4,6 +4,7 @@
 //!
 //! Usage:
 //!   photon-manifest --release-notice --out notice.vsf   (the signed "a release is out" document deploy.sh posts to fgtw.org)
+//!   photon-manifest --print-release-bundle   (the release key's public bundle, every scheme, as hex: what fgtw::release pins)
 //!   photon-manifest --channel development --out manifest-dev.vsf \
 //!       [--merge existing-manifest.vsf] \
 //!       --artefact <platform> <arch> <major.minor.patch> <commit-sha1-hex40> <url> <blake3-hex64> [--artefact ...]
@@ -23,6 +24,7 @@ fn main() {
     let mut out: Option<String> = None;
     let mut merge: Option<String> = None;
     let mut notice = false;
+    let mut print_bundle = false;
     let mut rows: Vec<ManifestRow> = Vec::new();
 
     let mut args = std::env::args().skip(1);
@@ -32,6 +34,7 @@ fn main() {
             "--out" => out = args.next(),
             "--merge" => merge = args.next(),
             "--release-notice" => notice = true,
+            "--print-release-bundle" => print_bundle = true,
             "--artefact" => {
                 let (
                     Some(platform),
@@ -85,6 +88,13 @@ fn main() {
             other => fail(&format!("unknown arg {other}")),
         }
     }
+    // The release key's PUBLIC bundle (2026-11-10): every scheme's public key derived from the release seed, printed as hex for fgtw's pin (fgtw::release); nothing secret is printed.
+    if print_bundle {
+        let key = photon_messenger::crypto::self_verify::release_signing_key().unwrap_or_else(|e| fail(&e));
+        let bundle = fgtw::pq::SigningBundle::release(&key).public();
+        println!("{}", hex::encode(bundle.to_bytes()));
+        return;
+    }
     // The release notice (2026-11-10): one signed VSF document saying "a release is out", posted by deploy.sh to fgtw.org, which checks the signer is the release key and wakes every device to look at the signed manifest.
     // It replaces the admin token.
     if notice {
@@ -93,11 +103,11 @@ fn main() {
         let signer_pub = ed25519_dalek::SigningKey::from_bytes(&key).verifying_key().to_bytes().to_vec();
         let unsigned = vsf::VsfBuilder::new()
             .creation_time_oscillations(vsf::eagle_time_oscillations())
-            .signed_only(VsfType::ke(signer_pub))
+            .signed_only_eggs(VsfType::ke(signer_pub), &fgtw::release::release_slots())
             .add_section("release_notice", vec![("channel".to_string(), VsfType::a(vsf::Ascii::lit("release")))])
             .build()
             .unwrap_or_else(|e| fail(&format!("build: {e}")));
-        let signed = vsf::verification::sign_file(unsigned, &key).unwrap_or_else(|e| fail(&format!("sign: {e}")));
+        let signed = fgtw::release::sign_release(unsigned, &fgtw::pq::SigningBundle::release(&key)).unwrap_or_else(|e| fail(&format!("sign: {e}")));
         std::fs::write(&out, &signed).unwrap_or_else(|e| fail(&format!("write: {e}")));
         println!("photon-manifest: wrote the signed release notice to {out}");
         return;
@@ -115,7 +125,7 @@ fn main() {
     // Merge: carry forward every existing section whose (platform, arch) isn't being re-supplied. The existing file must verify (same trust gate as the client) — a corrupt/tampered current manifest is dropped, not merged.
     if let Some(path) = merge {
         match std::fs::read(&path) {
-            Ok(bytes) => match parse_manifest(&bytes, channel) {
+            Ok(bytes) => match parse_manifest(&bytes, channel).or_else(|_| photon_messenger::network::updates::parse_legacy_manifest(&bytes, channel)) {
                 Ok(existing) => {
                     for row in existing {
                         if !rows
@@ -136,7 +146,7 @@ fn main() {
     rows.sort_by(|a, b| (&a.platform, &a.arch).cmp(&(&b.platform, &b.arch)));
 
     let key = photon_messenger::crypto::self_verify::release_signing_key().unwrap_or_else(|e| fail(&e));
-    // sign_file attaches the `ge` signature to the `ke` (signer pubkey) already in the header — so declare it, same as fgtw's signed_req.
+    // Every release egg (2026-11-10, "no single eggs"): the header reserves one slot per scheme for the release key, and sign_release fills each (fgtw::release).
     let signer_pub = ed25519_dalek::SigningKey::from_bytes(&key)
         .verifying_key()
         .to_bytes()
@@ -144,7 +154,7 @@ fn main() {
 
     let mut builder = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signed_only(VsfType::ke(signer_pub));
+        .signed_only_eggs(VsfType::ke(signer_pub), &fgtw::release::release_slots());
     for r in &rows {
         // One section per artefact; absent-when-zero for major (uncounted) and patch (presence = dev build).
         let mut section = vsf::VsfSection::new(channel.section_name());
@@ -168,7 +178,7 @@ fn main() {
     let unsigned = builder
         .build()
         .unwrap_or_else(|e| fail(&format!("build: {e}")));
-    let signed = vsf::verification::sign_file(unsigned, &key)
+    let signed = fgtw::release::sign_release(unsigned, &fgtw::pq::SigningBundle::release(&key))
         .unwrap_or_else(|e| fail(&format!("sign: {e}")));
 
     // Round-trip gate before publish: what we just wrote must pass the exact client-side check.

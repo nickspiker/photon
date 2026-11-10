@@ -828,11 +828,11 @@ fn gripe_post(section: vsf::file_format::VsfSection, what: &str, signer: Option<
         .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
     let mut builder = vsf::VsfBuilder::new().creation_time_oscillations(crate::network::time_base::now_osc());
     if let Some(key) = signer {
-        builder = builder.signed_only(VsfType::ke(ed25519_dalek::SigningKey::from_bytes(key).verifying_key().to_bytes().to_vec()));
+        builder = builder.signed_only_eggs(VsfType::ke(ed25519_dalek::SigningKey::from_bytes(key).verifying_key().to_bytes().to_vec()), &fgtw::release::release_slots());
     }
     let unsigned = builder.add_section_direct(section).build().map_err(|e| BlobError::Network(format!("Build VSF: {}", e)))?;
     let vsf_bytes = match signer {
-        Some(key) => vsf::verification::sign_file(unsigned, key).map_err(|e| BlobError::Network(format!("Sign {what}: {e}")))?,
+        Some(key) => fgtw::release::sign_release(unsigned, &fgtw::pq::SigningBundle::release(key)).map_err(|e| BlobError::Network(format!("Sign {what}: {e}")))?,
         None => unsigned,
     };
     let response = client

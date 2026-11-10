@@ -10,7 +10,7 @@
 //! Source builds: `cargo install photon-messenger` from crates.io will NOT work out of the box, because crates.io ships no signing scripts or keys. To build from source you must clone the full repo, generate your own signing keys (`cargo run --bin photon-keygen`), replace `AUTHOR_PUBKEY` below with your generated public key, then build and sign (`cargo build && ./sign-after-build.sh debug`). This friction is intentional: if you build from source you should understand what you're signing and why.
 //!
 //! Official binaries are signed by Nick Spiker <fractaldecoder@proton.me>, public key dff3af0c127c0bebe539c421da37993a517bfd78d2f5ee491d52fbf616444747 — a software commitment that binaries bearing this signature were built and released by the original author.
-use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use vsf::VsfType;
 
 /// Embedded public key for signature verification and system messages. This is Nick Spiker's (fractaldecoder) signing key - used for:
 /// - Binary signature verification
@@ -46,45 +46,68 @@ pub fn verify_binary_hash() -> Result<String, String> {
     result
 }
 
-/// Verify an arbitrary ON-DISK binary's appended Ed25519 signature WITHOUT executing it — the update path's gate (docs/updates.md: verify before exec; running a downloaded file to "self-verify" would be executing the very thing being checked).
+/// Verify an arbitrary ON-DISK binary's release signature WITHOUT executing it — the update path's gate (docs/updates.md: verify before exec; running a downloaded file to "self-verify" would run unverified code).
 pub fn verify_file(exe_path: &std::path::Path) -> Result<String, String> {
-    let mut exe_data =
-        std::fs::read(exe_path).map_err(|e| format!("Failed to read executable: {}", e))?;
+    let data = std::fs::read(exe_path).map_err(|e| format!("Failed to read executable: {}", e))?;
+    verify_signed_binary(&data)
+}
 
-    // Check if binary has signature appended (last 64 bytes)
-    if exe_data.len() < 64 {
-        return Err("Binary too small - signature verification failed!".to_string());
+/// The fixed-width field that ends a signed binary's egg document and says how long the document is, so a reader finds it from the end (the `gH` trailer's shape).
+fn length_field(doc_len: u64) -> Vec<u8> {
+    VsfType::u6(doc_len).flatten()
+}
+
+/// The 64-byte Ed25519 tail older Photons check: a signature by the release key over BLAKE3 of everything before it.
+/// MIGRATION-EXPIRES: 2027-02-01
+const LEGACY_TAIL: usize = 64;
+
+/// Sign a release binary (2026-11-10, "no single eggs"): `binary ‖ egg document ‖ length field ‖ legacy tail`.
+/// The egg document is a complete VSF file signed by the release key with every scheme (fgtw::release), naming the binary's BLAKE3 in its `binary` section; the length field locates it from the end; the legacy tail keeps older Photons updating until the pin date.
+pub fn sign_binary(binary: &[u8], release_seed: &[u8; 32]) -> Result<Vec<u8>, String> {
+    use ed25519_dalek::Signer;
+    let key = fgtw::pq::SigningBundle::release(release_seed);
+    let unsigned = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signed_only_eggs(VsfType::ke(ed25519_dalek::SigningKey::from_bytes(release_seed).verifying_key().to_bytes().to_vec()), &fgtw::release::release_slots())
+        .add_section("binary", vec![("hash".to_string(), VsfType::hb(blake3::hash(binary).as_bytes().to_vec()))])
+        .build()
+        .map_err(|e| format!("binary signature build: {e}"))?;
+    let doc = fgtw::release::sign_release(unsigned, &key)?;
+    let mut out = binary.to_vec();
+    out.extend_from_slice(&doc);
+    out.extend_from_slice(&length_field(doc.len() as u64));
+    let legacy = ed25519_dalek::SigningKey::from_bytes(release_seed).sign(blake3::hash(&out).as_bytes());
+    out.extend_from_slice(&legacy.to_bytes());
+    Ok(out)
+}
+
+/// Check a signed release binary: the egg document at its end is signed by the release key with every egg, and names exactly the bytes before it. Returns the binary's BLAKE3 as hex.
+/// The legacy tail is stripped and never relied on: the eggs are the check.
+pub fn verify_signed_binary(data: &[u8]) -> Result<String, String> {
+    let field_len = length_field(0).len();
+    // WHY/PROOF: `data` is a file read from disk or a download, of any length; every split below is checked, because a short or truncated file would otherwise slice out of bounds and panic the self-check.
+    let body = data.len().checked_sub(LEGACY_TAIL).map(|n| &data[..n]).ok_or("binary too short for its signature")?;
+    let doc_end = body.len().checked_sub(field_len).ok_or("binary too short for its signature")?;
+    let mut ptr = 0usize;
+    let doc_len = match vsf::decoding::parse::parse(&body[doc_end..], &mut ptr) {
+        Ok(VsfType::u6(n)) => usize::try_from(n).map_err(|_| "signature length out of range")?,
+        _ => return Err("binary signature missing - executable must be signed with the release eggs".to_string()),
+    };
+    let doc_start = doc_end.checked_sub(doc_len).ok_or("signature length runs past the start of the file")?;
+    let (binary, doc) = (&body[..doc_start], &body[doc_start..doc_end]);
+    fgtw::release::verify_release(doc)?;
+    let (header, header_end) = vsf::verification::read_verified(doc, Some(fgtw::release::RELEASE_ED25519)).map_err(|e| format!("binary signature header: {e}"))?;
+    let named = header
+        .sections(doc, header_end)
+        .map_err(|e| format!("binary signature body: {e}"))?
+        .into_iter()
+        .find(|s| s.name == "binary")
+        .and_then(|s| s.get_field("hash").and_then(|f| f.values.first().cloned()));
+    let hash = blake3::hash(binary);
+    match named {
+        Some(VsfType::hb(h)) if h.as_slice() == hash.as_bytes() => Ok(hex::encode(hash.as_bytes()).to_uppercase()),
+        _ => Err("Signature verification failed - binary corrupted or modified".to_string()),
     }
-
-    // Extract appended signature (last 64 bytes)
-    let signature_bytes = exe_data.split_off(exe_data.len() - 64);
-
-    // Check if it looks like zeros (signature was stripped or never added)
-    if signature_bytes.iter().all(|&b| b == 0) {
-        return Err("Binary signature missing - executable must be signed!".to_string());
-    }
-
-    // Parse signature
-    let signature = Signature::from_bytes(
-        signature_bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| "Invalid signature format".to_string())?,
-    );
-
-    // Hash the binary (without the appended signature)
-    let hash = blake3::hash(&exe_data);
-
-    // Load public key
-    let verifying_key = VerifyingKey::from_bytes(&AUTHOR_PUBKEY)
-        .map_err(|e| format!("Invalid public key: {}", e))?;
-
-    // Verify signature
-    verifying_key
-        .verify(hash.as_bytes(), &signature)
-        .map_err(|_| "Signature verification failed - binary corrupted or modified".to_string())?;
-
-    Ok(hex::encode(signature.to_bytes()).to_uppercase())
 }
 
 /// The release signing key, the secret half of [`AUTHOR_PUBKEY`]: `$PHOTON_SIGNING_KEY`, else the one location photon-keygen writes to.
@@ -105,4 +128,35 @@ pub fn release_signing_key() -> Result<[u8; 32], String> {
     }
     let key_bytes = std::fs::read(&key_path).map_err(|e| format!("key read: {e}"))?;
     key_bytes.as_slice().try_into().map_err(|_| "signing key file must be exactly 32 bytes".to_string())
+}
+
+#[cfg(test)]
+mod release_binary_tests {
+    use super::*;
+
+    /// The legacy tail checks the way an older Photon checks it: Ed25519 by the signing key over BLAKE3 of everything before the last 64 bytes.
+    #[test]
+    fn the_legacy_tail_verifies_like_an_older_photon() {
+        use ed25519_dalek::Verifier;
+        let seed = [9u8; 32];
+        let signed = sign_binary(b"a binary", &seed).unwrap();
+        let (rest, tail) = signed.split_at(signed.len() - LEGACY_TAIL);
+        let sig = ed25519_dalek::Signature::from_bytes(tail.try_into().unwrap());
+        let vk = ed25519_dalek::SigningKey::from_bytes(&seed).verifying_key();
+        assert!(vk.verify(blake3::hash(rest).as_bytes(), &sig).is_ok());
+        assert!(rest.starts_with(b"a binary"));
+    }
+
+    /// Signed by any key but the release key, the eggs are refused; short and unsigned files are refused without a panic.
+    #[test]
+    fn only_the_release_eggs_pass() {
+        let signed = sign_binary(b"a binary", &[9u8; 32]).unwrap();
+        assert!(verify_signed_binary(&signed).unwrap_err().contains("release key"));
+        assert!(verify_signed_binary(&[]).is_err());
+        assert!(verify_signed_binary(&[0u8; 70]).is_err());
+        assert!(verify_signed_binary(b"an unsigned binary with no signature at its end, long enough to split").is_err());
+        let mut cut = signed.clone();
+        cut.truncate(signed.len() / 2);
+        assert!(verify_signed_binary(&cut).is_err());
+    }
 }

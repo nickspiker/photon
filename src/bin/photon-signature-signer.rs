@@ -1,132 +1,49 @@
-//! Sign photon-messenger binary with Ed25519 cryptographic signature
+//! Sign a photon-messenger binary with the release key, every egg (2026-11-10, "no single eggs").
 //!
-//! This utility signs binaries for distribution.
+//! The binary gets `egg document ‖ length field ‖ legacy tail` appended (crypto::self_verify::sign_binary): a VSF document signed by the release key with Ed25519, Falcon-512 and SPHINCS+, naming the binary's BLAKE3, then the 64-byte Ed25519 tail older Photons check until the pin date.
 //!
 //! Usage: photon-signature-signer <binary-path>
 
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier};
+use photon_messenger::crypto::self_verify::{release_signing_key, sign_binary, verify_signed_binary};
 use sha2::{Digest, Sha256};
-use std::{env, fs, path::PathBuf};
+use std::{env, fs};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
-
     if args.len() != 2 {
         eprintln!("Usage: {} <binary-path>", args[0]);
-        eprintln!("\nExample:");
-        eprintln!("  {} ~/.cargo/bin/photon-messenger", args[0]);
         std::process::exit(1);
     }
-
     let binary_path = &args[1];
-
     println!("Signing binary: {}", binary_path);
+    let binary = fs::read(binary_path)?;
+    println!("  Binary size: {} bytes", binary.len());
 
-    // Read the binary
-    let mut binary_data = fs::read(binary_path)?;
-    println!("  Binary size: {} bytes", binary_data.len());
-
-    // The release key: $PHOTON_SIGNING_KEY, else the ONE location photon-keygen writes to. The ladder of synced and home folders this once walked is gone (security audit NET-11): the first file found on a ladder is whichever copy leaked last.
-    let private_key_path = match std::env::var("PHOTON_SIGNING_KEY") {
-        Ok(env_path) => PathBuf::from(env_path),
-        Err(_) => PathBuf::from("/mnt/Harbor/Code/keys/photon-signing-key"),
+    // An already-signed binary is left alone: signing it again would sign the old signature into the new one.
+    let signed = match verify_signed_binary(&binary) {
+        Ok(hash) => {
+            println!("\n⚠ Binary is already signed with every release egg (BLAKE3 {hash}); skipping. Rebuild it to re-sign.");
+            binary
+        }
+        Err(_) => {
+            let seed = release_signing_key().map_err(|e| format!("release key: {e}"))?;
+            let signed = sign_binary(&binary, &seed)?;
+            // The round trip is the gate: what was written must pass the exact check every Photon runs.
+            let hash = verify_signed_binary(&signed).map_err(|e| format!("the signed binary does not verify: {e}"))?;
+            fs::write(binary_path, &signed)?;
+            println!("\n✓ Signed with every release egg (BLAKE3 {hash})");
+            println!("  New size: {} bytes (+{} for the signature)", signed.len(), signed.len() - binary.len());
+            signed
+        }
     };
-    if !private_key_path.exists() {
-        eprintln!("\nERROR: release signing key not found at {} — set PHOTON_SIGNING_KEY or run photon-keygen.", private_key_path.display());
-        std::process::exit(1);
-    }
-    // A key another user on the host can read is not a secret; refuse to sign with it rather than sign quietly with a key that may already be someone else's too.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let mode = fs::metadata(&private_key_path)?.permissions().mode() & 0o777;
-        if mode & 0o077 != 0 {
-            eprintln!("\nERROR: {} is mode {:o}; the release key must be 0600 (chmod 600 it, and check who had it).", private_key_path.display(), mode);
-            std::process::exit(1);
-        }
-    }
 
-    let private_key_bytes = fs::read(&private_key_path)?;
-    let signing_key = SigningKey::from_bytes(
-        private_key_bytes
-            .as_slice()
-            .try_into()
-            .map_err(|_| "Invalid private key length")?,
-    );
-    let verifying_key = signing_key.verifying_key();
-
-    // Check if already signed by attempting to verify the signature
-    if binary_data.len() >= 64 {
-        let signature_bytes = binary_data.split_off(binary_data.len() - 64);
-        let signature =
-            Signature::from_bytes(signature_bytes.as_slice().try_into().unwrap_or(&[0u8; 64]));
-
-        let hash = blake3::hash(&binary_data);
-
-        if verifying_key.verify(hash.as_bytes(), &signature).is_ok() {
-            println!("\n⚠ Binary is already signed with your key!");
-            println!("  Signature verification passed");
-            println!("  Skipping to avoid double-signing");
-            println!("  Rebuild the binary first if you need to re-sign");
-
-            // Still output SHA256 for Windows binaries
-            if binary_path.ends_with(".exe") {
-                // Restore full binary for SHA256
-                binary_data.extend_from_slice(&signature_bytes);
-                let mut hasher = Sha256::new();
-                hasher.update(&binary_data);
-                let sha256_hash = hex::encode(hasher.finalize()).to_uppercase();
-
-                let sha256_path = format!("{}.sha256", binary_path);
-                fs::write(&sha256_path, &sha256_hash)?;
-                println!("  SHA256 hash: {}", sha256_hash);
-                println!("  Written to: {}", sha256_path);
-            }
-            return Ok(());
-        }
-
-        // Not signed with our key, restore the data
-        binary_data.extend_from_slice(&signature_bytes);
-    }
-
-    // Hash it with BLAKE3
-    let hash = blake3::hash(&binary_data);
-    println!(
-        "  BLAKE3 hash: {}",
-        hex::encode(hash.as_bytes()).to_uppercase()
-    );
-
-    // Sign the hash
-    let signature: Signature = signing_key.sign(hash.as_bytes());
-    println!(
-        "  Ed25519 signature: {}",
-        hex::encode(signature.to_bytes()).to_uppercase()
-    );
-
-    // Append signature to binary (64 bytes)
-    let mut signed_binary = binary_data;
-    signed_binary.extend_from_slice(&signature.to_bytes());
-
-    // Overwrite original file with signed version
-    fs::write(binary_path, &signed_binary)?;
-
-    println!("\n✓ Signature appended to binary!");
-    println!(
-        "  New size: {} bytes (+64 for signature)",
-        signed_binary.len()
-    );
-
-    // For Windows binaries, also compute SHA256 and write to .sha256 file (PowerShell uses SHA256 for verification since Defender blocks execution)
+    // Windows installers check SHA-256 (PowerShell's hash; Defender blocks executing to self-verify), so the signed file's SHA-256 is written beside it.
     if binary_path.ends_with(".exe") {
-        let mut hasher = Sha256::new();
-        hasher.update(&signed_binary);
-        let sha256_hash = hex::encode(hasher.finalize()).to_uppercase();
-
+        let sha256_hash = hex::encode(Sha256::digest(&signed)).to_uppercase();
         let sha256_path = format!("{}.sha256", binary_path);
         fs::write(&sha256_path, &sha256_hash)?;
         println!("  SHA256 hash: {}", sha256_hash);
         println!("  Written to: {}", sha256_path);
     }
-
     Ok(())
 }
