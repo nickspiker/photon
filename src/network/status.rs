@@ -190,7 +190,7 @@ fn is_sibling_device(pk: &[u8; 32]) -> bool {
 }
 
 /// The frames a signer we do not know may send (security audit NET-09): each is the opening move of a relationship the UI thread decides on, so the key cannot be known yet — the CLUTCH proof (the reconciled-sibling race documented at the ladder), a friend knock, the fleet chain ask and answer, the join's binding request and fan-out.
-const STRANGER_SECTIONS: [&str; 6] = ["clutch_complete", "friend_knock", "fleet_req", "fleet_resp", "bind_req", "fanout_resp"];
+const STRANGER_SECTIONS: [&str; 7] = ["clutch_complete", "friend_knock", "fleet_req", "fleet_resp", "bind_req", "fanout_resp", "bind_select"];
 
 /// NET-09: `Some(section)` when `bytes` is a VSF frame signed by a key that is no contact, sibling, group member or ourselves AND whose primary section is not one a stranger may send; `None` admits it to the parse ladder.
 /// A frame with no readable signer is admitted as before: every parser refuses it itself, and nothing a stranger gains from an unsigned frame is worth a second grammar here.
@@ -518,6 +518,8 @@ pub enum StatusUpdate {
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
     },
+    /// A sponsor picked this joining device (`bind_select`): the join thread checks the sender against the fleet's chain and lights green; nothing is bound by it.
+    BindSelectReceived { handle_proof: [u8; 32], joiner: [u8; 32], sender_pubkey: DevicePubkey },
     /// A friend's device pushed us its own new address record and it was news: the UI passes it on to our siblings, once (docs/phonebook-web.md "Changes travel to the people who care").
     AddressPushed { record: crate::network::fgtw::PeerRecord },
     /// A membership chain handed to us by a peer (`fleet_resp`): the answer to our ask, or a sponsor's push after it extended its fleet's chain. Opaque bytes here — the UI thread folds, checks the slot and the genesis pin, and adopts only a newer tip (fleet::adopt_chain_bytes).
@@ -813,6 +815,7 @@ impl StatusUpdate {
             StatusUpdate::FleetStatePushed { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FleetChainReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::AddressPushed { record } => Some(record.device_pubkey.as_bytes()),
+            StatusUpdate::BindSelectReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FocusClaimReceived { sender_pubkey, .. } => {
                 Some(sender_pubkey.as_bytes())
             }
@@ -2899,6 +2902,22 @@ async fn run_checker(
                                 continue;
                             }
                             // The membership chain over the mesh (fleet_req / fleet_resp): an ask, or a chain handed to us. Same mandatory packet-ack; who may ask and what is adopted is decided on the UI thread, which holds the chains.
+                            // A sponsor picked this joining device (bind_select): acked like the others; the UI and the join thread decide whether it means anything.
+                            if let Ok((handle_proof, joiner, sender_pubkey)) = crate::network::fgtw::protocol::parse_bind_select_vsf(msg_bytes) {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::BindSelectReceived { handle_proof, joiner, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
                             if let Ok((handle_proof, sender_pubkey)) = crate::network::fgtw::protocol::parse_fleet_req_vsf(msg_bytes) {
                                 {
                                     let ack_bytes = {

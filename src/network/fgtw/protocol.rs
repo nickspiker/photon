@@ -2371,6 +2371,16 @@ pub fn parse_fleet_req_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32]), Str
     fgtw::protocol::parse_fleet_req(vsf_bytes)
 }
 
+/// Build a `bind_select` — "the person picked you to join fleet `hp`", from this sponsor to the joining device `joiner`; it binds nothing (fgtw::protocol::bind_select).
+pub fn build_bind_select_vsf(handle_proof: &[u8; 32], joiner: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
+    fgtw::protocol::bind_select(handle_proof, joiner, &envelope_signer(device_secret), vsf::eagle_time_oscillations())
+}
+
+/// Parse + verify a `bind_select`. Returns (the fleet's handle proof, the selected joiner, the selecting sponsor).
+pub fn parse_bind_select_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32], [u8; 32]), String> {
+    fgtw::protocol::parse_bind_select(vsf_bytes)
+}
+
 /// Build a `fleet_resp` — the membership chain of handle `hp` (`MembershipBlob::to_vsf_bytes`): the answer to a `fleet_req`, and the push a sponsor sends after extending the chain. The chain is self-verifying; the carrier earns no trust.
 pub fn build_fleet_resp_vsf(handle_proof: &[u8; 32], chain: &[u8], _device_pubkey: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
     fgtw::protocol::fleet_resp(handle_proof, chain, &envelope_signer(device_secret), vsf::eagle_time_oscillations())

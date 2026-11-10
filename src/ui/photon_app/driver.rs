@@ -304,6 +304,9 @@ impl FluorApp<Px> for PhotonApp {
         self.join_mailbox_hit_id = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 1);
         self.add_mailbox_hit_id = self.hit_counter;
+        // The green "Add <name>" under a pick on the Add-device screen.
+        reserve_hits(&mut self.hit_counter, 1);
+        self.add_select_hit_id = self.hit_counter;
 
         // Green-confirm tappable on the AddDevice screen ("It's in — finish"): the two-phase press that releases the fleet-key rotation after the human sees the new device enrolled.
         reserve_hits(&mut self.hit_counter, 1);
@@ -782,6 +785,13 @@ impl FluorApp<Px> for PhotonApp {
             return EventResponse::Handled;
         }
 
+        // The green Add under a pick: pressed after the picked device turned green, it binds and releases the key as one act.
+        if hit_id == self.add_select_hit_id && self.add_select_hit_id != HIT_NONE && matches!(self.state, AppState::AddDevice) {
+            self.add_selected_device();
+            ctx.window.request_redraw();
+            return EventResponse::Handled;
+        }
+
         // The JOIN screen's opt-in: the person's devices aren't nearby, so the request is posted to fgtw.org's mailbox (the join thread reads the flag; the poke wakes it now).
         if hit_id == self.join_mailbox_hit_id && self.join_mailbox_hit_id != HIT_NONE {
             if let Some(flag) = self.join_mailbox.as_ref() {
@@ -845,6 +855,7 @@ impl FluorApp<Px> for PhotonApp {
         // Candidate-row tap on the AddDevice screen (BLE / list select): bind the tapped device by its registry request (consent), then wait for the human's "did it turn green?" confirm (two-phase — a list pick isn't a typed-key match, so the key waits on visual confirmation).
         if self.add_candidate_hit_base != HIT_NONE
             && matches!(self.state, AppState::AddDevice)
+            && self.add_device_selected.is_none()
             && self.add_device_bound.is_none()
             && !self.add_device_checking
             && hit_id >= self.add_candidate_hit_base
@@ -859,8 +870,8 @@ impl FluorApp<Px> for PhotonApp {
                 .nth(idx)
             {
                 let req = cand.req.clone();
-                self.add_device_bind_ble = true;
-                self.spawn_bind_device(req);
+                // A pick, not a bind (owner 2026-11-10): the device is told and should turn green; the Add under it binds.
+                self.select_candidate(req);
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
@@ -3495,10 +3506,11 @@ impl FluorApp<Px> for PhotonApp {
                 match matched {
                     Some(req) if !self.add_device_checking => {
                         crate::logf!(
-                            "NFC: tap matched candidate {} — binding",
+                            "NFC: tap matched candidate {} — picked (the Add binds)",
                             crate::fp(&req.device_pubkey)
                         );
-                        self.spawn_bind_device(req);
+                        // An NFC tap is a pick like the button (owner 2026-11-10: "so tap, literally the button or NFC tap"): the device turns green, the Add binds.
+                        self.select_candidate(req);
                         { needs_redraw = true; self.note_redraw(line!() + 100_000); }
                     }
                     Some(_) => {}

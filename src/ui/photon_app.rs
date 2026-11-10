@@ -2189,6 +2189,14 @@ pub struct PhotonApp {
     add_join_hp: Option<[u8; 32]>,
     /// A membership chain handed to the JOINING device over the mesh (a sponsor's push after binding it), waiting for the join thread to check it against the identity it derived: shared slot + poke, since the thread owns the roots and the UI thread receives the frame.
     add_join_chain: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+    /// A sponsor's `bind_select` for this joining device, parked for the join thread, which checks the sender against the fleet's chain before lighting green.
+    add_join_select: std::sync::Arc<std::sync::Mutex<Option<[u8; 32]>>>,
+    /// The joining device was picked: the sponsor's device name for the green ("Selected by …").
+    join_selected_by: Option<String>,
+    /// The adding device's pick (button or NFC tap): (the request, the device's name, its words). Nothing is bound until Add is pressed; Back clears it.
+    add_device_selected: Option<(fgtw::fleet::BindRequest, String, String)>,
+    /// The green "Add <name>" under a pick.
+    add_select_hit_id: HitId,
     add_join_poke: Option<std::sync::mpsc::Sender<()>>,
     /// The joining device's binding request as a signed `bind_req` frame, re-minted on each re-post; handed to every sponsor device heard beaconing under the joined handle.
     add_join_bind_req: Option<Vec<u8>>,
@@ -3364,6 +3372,10 @@ impl PhotonApp {
             add_join_handle: None,
             add_join_hp: None,
             add_join_chain: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            add_join_select: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            join_selected_by: None,
+            add_device_selected: None,
+            add_select_hit_id: HIT_NONE,
             add_join_poke: None,
             add_join_bind_req: None,
             add_join_sent: Vec::new(),
@@ -4124,6 +4136,8 @@ enum JoinUpdate {
     Aimed { hp: [u8; 32], bind_req: Vec<u8>, poke: std::sync::mpsc::Sender<()> },
     /// This device is now in the fleet — hand off to the normal attest. Carries the fleet key recovered from the fan-out (None = bound but the green-confirm rotation hasn't landed yet; the post-attest sync retries) plus the session roots derived ONCE at join start, so the attest skips the second ~1s memory-hard proof.
     Joined(Option<[u8; 32]>, tohu::SessionIdentity),
+    /// A device of the fleet picked this one (`bind_select`, its sender checked against the fleet's chain): the green, carrying that device's name. Nothing is bound yet; the keys follow the person's Add.
+    Selected(String),
     /// An error to surface in the status line.
     Failed(String),
 }

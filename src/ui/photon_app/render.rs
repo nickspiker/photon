@@ -1617,6 +1617,12 @@ impl PhotonApp {
                     let line_h = (tb_h * 0.45).min(buf_w as f32 / 18.0);
                     let lines: Vec<String> = tokens.chunks(4).map(|c| c.join(" ")).collect();
                     let mut y = attest.error.y1 as f32 + line_h * 1.0;
+                    // THE GREEN (owner 2026-11-10): a device of this fleet picked this one (bind_select, its sender checked against the chain). Nothing is bound yet; the keys follow the Add the person presses there.
+                    if let Some(by) = self.join_selected_by.as_ref() {
+                        let gsize = line_h * 1.3;
+                        ctx.text.draw_text_center(&mut canvas, &tr(Msg::SelectedBy(by)), cx, y + gsize * 0.5, &TextStyle::new(gsize, *theme::SEARCH_FOUND_COLOUR).weight(800).font("Oxanium"), None, None);
+                        y += gsize * 1.6;
+                    }
                     // Guidance FIRST (Nick 2026-09-06): say what to do, then hand over the payload — the instructions end with a colon pointing at the words below. Nearby-tap and far-away-words are the user's two experiences; LAN vs BLE is our plumbing, never their decision.
                     {
                         let gsize = line_h * 0.62;
@@ -5273,9 +5279,40 @@ impl PhotonApp {
                 );
                 y += u * 0.5 + gap;
                 // Tappable candidate list — PROXIMITY POPULATION ONLY (docs/pairing-v2.md): only devices HEARD over the BLE announce beacon (later: NFC tap) become tap targets, NEVER the raw registry — a remote attacker who holds the handle can flood the identity-gated registry, so listing registry entries as taps would fill your finger's reach with decoys. Registry = sync only (the consent a tap binds with); proximity is what a remote attacker can't fake. Not-nearby devices don't appear — you type their words (reading them off the physical screen IS the proximity check). Index i = position in the HEARD-only subset; the tap dispatch filters identically.
+                // A PICK is up (button or NFC tap, owner 2026-11-10): the picked device's name and words to compare with its screen, the distinct green Add, and the way out. Nothing is bound until Add.
+                if let Some((_, name, words)) = self.add_device_selected.as_ref() {
+                    let wsize = u * 0.4;
+                    let spaced: String = words.chars().fold(String::with_capacity(words.len() + 24), |mut s, c| {
+                        if c.is_ascii_uppercase() && !s.is_empty() {
+                            s.push(' ');
+                        }
+                        s.push(c);
+                        s
+                    });
+                    ctx.text.draw_text_center(&mut canvas, &spaced, cx, y + wsize, &TextStyle::new(wsize, fluor::theme::HINT_COLOUR).font("Oxanium"), None, None);
+                    y += wsize * 2. + gap * 0.5;
+                    let add_h = u * 1.1;
+                    let label = tr(Msg::AddSelectedDevice(name));
+                    let held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.add_select_hit_id;
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        &label,
+                        cx,
+                        y + add_h * 0.5,
+                        &TextStyle::new(u * 0.7, *theme::SEARCH_FOUND_COLOUR).weight(if held { 800 } else { 700 }).font("Oxanium"),
+                        None,
+                        None,
+                    );
+                    let half_w = buf_w as f32 * 0.42;
+                    restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, (cx - half_w) as isize, y as isize, (cx + half_w) as isize, (y + add_h) as isize, self.add_select_hit_id);
+                    y += add_h + gap * 0.5;
+                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::NotGreenPressBack), cx, y + u * 0.3, &TextStyle::new(u * 0.4, fluor::theme::HINT_COLOUR).font("Oxanium"), None, None);
+                    y += u * 0.6 + gap;
+                }
                 let nearby: Vec<&AddCandidate> = self
                     .add_device_candidates
                     .iter()
+                    .filter(|_| self.add_device_selected.is_none())
                     .filter(|c| c.pickable(self.add_device_contended))
                     .take(7)
                     .collect();

@@ -355,6 +355,7 @@ impl PhotonApp {
                 StatusUpdate::FleetStatePushed { .. } => "FleetStatePushed",
                 StatusUpdate::FleetChainReceived { .. } => "FleetChainReceived",
                 StatusUpdate::AddressPushed { .. } => "AddressPushed",
+                StatusUpdate::BindSelectReceived { .. } => "BindSelectReceived",
                 StatusUpdate::StrangerFrame { .. } => "StrangerFrame",
                 StatusUpdate::FocusClaimReceived { .. } => "FocusClaimReceived",
                 StatusUpdate::FriendKnockReceived { .. } => "FriendKnockReceived",
@@ -4335,6 +4336,18 @@ impl PhotonApp {
                     }
                 }
                 StatusUpdate::AddressPushed { record } => addresses_after.push(record),
+                // A sponsor picked this joining device: parked for the join thread, which lights green only if the sender folds as a member of the fleet we are joining.
+                StatusUpdate::BindSelectReceived { handle_proof, joiner, sender_pubkey } => {
+                    let ours = self.device_keypair.as_ref().map(|k| *k.public.as_bytes()) == Some(joiner);
+                    if self.session.is_none() && self.add_join_hp == Some(handle_proof) && ours {
+                        if let Ok(mut slot) = self.add_join_select.lock() {
+                            *slot = Some(*sender_pubkey.as_bytes());
+                        }
+                        if let Some(poke) = self.add_join_poke.as_ref() {
+                            crate::log_err!(poke.send(()), "the select poke to the join thread");
+                        }
+                    }
+                }
                 StatusUpdate::StrangerFrame { sender_pubkey } => {
                     if !self.stranger_seen.contains(&sender_pubkey.key) && !strangers_after.contains(&sender_pubkey.key) {
                         strangers_after.push(sender_pubkey.key);

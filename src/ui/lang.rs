@@ -956,6 +956,14 @@ pub enum Msg<'a> {
     DiagView,
     /// Ideas page: the explainer.
     /// The joining device's opt-in to the bootstrap mailbox: its binding request is posted to fgtw.org only when this is tapped (2026-11-10, local first).
+    /// The adding device after a pick (button or NFC tap): nothing is bound yet, the picked device has been told and should turn green.
+    SelectedDevice(&'a str),
+    /// The distinct green button that adds the picked device (the bind and the key together), pressed only after seeing it turn green.
+    AddSelectedDevice(&'a str),
+    /// The note under it: nothing happens unless Add is pressed.
+    NotGreenPressBack,
+    /// The joining device's green: a device of the fleet picked it; the keys follow when the person presses Add there.
+    SelectedBy(&'a str),
     JoinAskFgtw,
     /// After the tap: the request waits on fgtw.org for the person's other device.
     JoinAskedFgtw,

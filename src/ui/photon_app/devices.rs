@@ -14,6 +14,7 @@ impl PhotonApp {
         fgtw::sponsor::retain_fresh(&mut self.add_device_lan_reqs, vsf::eagle_time_oscillations());
         self.add_device_bound = None;
         self.add_device_bind_ble = false;
+        self.add_device_selected = None;
         self.add_device_typo = None;
         self.add_device_wordcheck_text.clear();
         self.add_device_checking = false;
@@ -2197,6 +2198,53 @@ impl PhotonApp {
         true
     }
 
+    /// A PICK, by the candidate button or an NFC tap (owner 2026-11-10: "if you tap, it shouldn't become part of the fleet, it should just get notified it was selected"): the picked device is sent our chain and a `bind_select`, so it can check we are of its fleet and turn green, and this screen shows its name, its words and a distinct green Add.
+    /// Nothing is bound: the Add (the bind and the key together) happens only when the person presses Add after seeing the device in their hand turn green; Back leaves nothing to undo.
+    pub(super) fn select_candidate(&mut self, req: crate::network::fgtw::fleet::BindRequest) {
+        let (Some(hp), Some(kp), Some(seed)) = (self.our_handle_proof(), self.device_keypair.clone(), self.session.as_ref().map(|s| s.identity_seed)) else { return };
+        let dev = req.device_pubkey;
+        let name = crate::network::fgtw::fleet::device_name_default(&dev, &seed);
+        let words = crate::network::fgtw::fleet::masked_device_words(&dev, &seed);
+        let chain = crate::network::fgtw::fleet::held_chain(&hp)
+            .and_then(|c| c.to_vsf_bytes().ok())
+            .and_then(|bytes| crate::network::fgtw::protocol::build_fleet_resp_vsf(&hp, &bytes, &kp.public.to_bytes(), kp.secret.as_bytes()).ok());
+        let select = crate::network::fgtw::protocol::build_bind_select_vsf(&hp, &dev, kp.secret.as_bytes()).ok();
+        let addr = self.lan_heard_addr.iter().find(|(k, _)| *k == dev).map(|(_, a)| *a);
+        crate::logf!("ADD-DEVICE: picked {} ({}) — telling it, nothing bound until Add", crate::fp(&dev), if addr.is_some() { "LAN" } else { "relay" });
+        // The chain first, so the joiner can check the select against it when the select lands.
+        let frames: Vec<Vec<u8>> = chain.into_iter().chain(select).collect();
+        match addr {
+            Some(a) => {
+                for f in frames {
+                    self.send_frame_direct(f, dev, a, None);
+                }
+            }
+            None => {
+                crate::network::http::runtime().spawn(async move {
+                    for f in frames {
+                        if let Err(e) = crate::network::fgtw::relay::send_via_relay_always(&kp, &dev, &f).await {
+                            crate::logf!("ADD-DEVICE: telling the picked device over the relay failed: {}", e);
+                        }
+                    }
+                });
+            }
+        }
+        self.add_device_status = tr(Msg::SelectedDevice(&name)).into_owned();
+        self.add_device_selected = Some((req, name, words));
+    }
+
+    /// The green Add under a pick, pressed after the picked device turned green: the bind and the key release as one act (spawn_bind_device, whose Bound arm grows the fan-out at once).
+    pub(super) fn add_selected_device(&mut self) {
+        if self.add_device_checking {
+            return;
+        }
+        let Some((req, _, _)) = self.add_device_selected.take() else { return };
+        // The person confirmed green before pressing, so the Bound arm releases the key without a second confirm.
+        self.add_device_bind_ble = false;
+        self.add_device_selected = None;
+        self.spawn_bind_device(req);
+    }
+
     /// Clear the AddDevice (existing-device) words-entry state. Sign the matched device into the fleet + rotate the fan-out, off-thread (both block on HTTP). Fires automatically when the typed words match the posted request — the deliberate act of typing 23 words on the already-trusted device IS the consent, and the new device's ready light has already flipped on the matched flag, so waiting for another tap only leaves the two screens out of step.
     /// Phase ONE of the two-phase ceremony: publish the consent-carrying Add for a fully-matched candidate. The chain entry is KEYLESS until the human confirms green — `spawn_confirm_add` holds the rotation.
     pub(super) fn spawn_bind_device(&mut self, req: crate::network::fgtw::fleet::BindRequest) {
@@ -2997,6 +3045,7 @@ impl PhotonApp {
         self.add_device_lan_reqs.clear();
         self.add_device_bound = None;
         self.add_device_bind_ble = false;
+        self.add_device_selected = None;
         self.join_words_copied = false;
         self.add_device_wordcheck_text.clear();
         self.add_device_typo = None;
@@ -3063,6 +3112,12 @@ impl PhotonApp {
             .map(|h| h.port())
             .unwrap_or(crate::PHOTON_PORT);
         // The mailbox opt-in (local first): the join posts to fgtw.org only after the person taps "My devices aren't nearby" (join_mailbox).
+        // A sponsor's pick lands here (bind_select), checked by the thread against the fleet's chain before the green.
+        let select_slot = self.add_join_select.clone();
+        if let Ok(mut s) = select_slot.lock() {
+            *s = None;
+        }
+        self.join_selected_by = None;
         let mailbox = std::sync::Arc::new(AtomicBool::new(false));
         self.join_mailbox = Some(mailbox.clone());
         self.join_mailbox_asked = false;
@@ -3202,6 +3257,8 @@ impl PhotonApp {
                 crate::log_err!(tx.send(JoinUpdate::Joined(fleet_key, session)), "the join success to the UI thread");
             };
             let mut last_repost = std::time::Instant::now();
+            let mut known_chain: Option<fleet::MembershipBlob> = None;
+            let mut pending_select: Option<[u8; 32]> = None;
             let ceremony_start = std::time::Instant::now();
             // Give-up backstop: a real ceremony binds in seconds-to-a-minute. Past this it's a forgotten or backgrounded screen — and Android keeps this raw thread alive after the Activity pauses (onPause emits no focus event), so without a cap it re-posts the registry every 3.5 min forever (observed: a backgrounded phone re-posting for 1.6h). Generous enough that a live pairing never hits it.
             const MAX_CEREMONY: std::time::Duration = std::time::Duration::from_secs(15 * 60);
@@ -3248,11 +3305,29 @@ impl PhotonApp {
                                     return;
                                 }
                                 crate::log("JOIN: a chain for our fleet arrived over the mesh — not bound yet");
+                                // Kept: a sponsor's pick is checked against it.
+                                known_chain = Some(blob.clone());
                             }
                             Err(e) => crate::logf!("SECURITY: a chain pushed to this joiner does not fold ({}) — ignored", format!("{:?}", e)),
                         },
                         Ok(_) => crate::log("SECURITY: a chain pushed to this joiner is not this identity's fleet — ignored"),
                         Err(e) => crate::logf!("JOIN: a chain pushed to this joiner did not parse ({}) — ignored", e),
+                    }
+                }
+                // A sponsor's pick (bind_select): green only when the sender folds as a live member of this identity's chain (the one pushed to us, or one held for this slot whose genesis is this identity's); held until a chain arrives to check it against.
+                if let Some(s) = select_slot.lock().ok().and_then(|mut g| g.take()) {
+                    pending_select = Some(s);
+                }
+                if let Some(sender) = pending_select {
+                    let chain = known_chain.clone().or_else(|| fleet::held_chain(&hp).filter(|c| c.genesis_handle_proof() == Some(hp) && c.genesis_identity_matches(&identity_seed)));
+                    if let Some(c) = chain {
+                        pending_select = None;
+                        let live = c.fold().ok().zip(c.locked_out().ok()).is_some_and(|(m, l)| m.contains(&sender) && !l.contains(&sender));
+                        if live {
+                            crate::log_err!(tx.send(JoinUpdate::Selected(fleet::device_name_default(&sender, &identity_seed))), "the green to the UI thread");
+                        } else {
+                            crate::logf!("SECURITY: a pick from {} is not from a live member of this fleet — ignored", crate::fp(&sender));
+                        }
                     }
                 }
                 // Genesis re-checked on EVERY fetch, not just the probe: a relay that served the real chain once must not be able to swap in a structurally-valid foreign chain mid-ceremony and have this loop adopt its members (the probe-time-only TOCTOU — docs/pairing-v2.md).

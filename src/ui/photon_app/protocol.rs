@@ -780,6 +780,10 @@ impl PhotonApp {
             .unwrap_or_default();
         for update in join_updates {
             match update {
+                JoinUpdate::Selected(name) => {
+                    crate::logf!("JOIN: selected by {} — green; the keys follow the Add there", name);
+                    self.join_selected_by = Some(name);
+                }
                 JoinUpdate::ShowWords(words) => {
                     self.add_join_words = Some(words);
                     self.add_join_status = tr(Msg::AddFromSignedIn).into_owned();
