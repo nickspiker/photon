@@ -526,7 +526,7 @@ mod tests {
                 "announce_ok",
                 vec![
                     ("count".to_string(), VsfType::u(count as usize, false)),
-                    ("ip".to_string(), VsfType::a(ip.to_string())),
+                    ("ip".to_string(), VsfType::a(vsf::Ascii::checked("ip", ip))),
                     ("port".to_string(), VsfType::u(port as usize, false)),
                 ],
             )

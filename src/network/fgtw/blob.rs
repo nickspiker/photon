@@ -96,7 +96,7 @@ pub async fn put_blob(
         device_keypair,
         "blob_put",
         vec![
-            ("key".to_string(), VsfType::d(storage_key.to_string())),
+            ("key".to_string(), VsfType::d(vsf::Ascii::new(storage_key).map_err(|e| BlobError::Network(format!("key: {e}")))?)),
             (
                 "signature".to_string(),
                 VsfType::ge(key_signature.to_bytes().to_vec()),
@@ -158,7 +158,7 @@ pub async fn get_blob(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError> {
         .creation_time_oscillations(crate::network::time_base::now_osc())
         .add_section(
             "blob_get",
-            vec![("key".to_string(), VsfType::d(storage_key.to_string()))],
+            vec![("key".to_string(), VsfType::d(vsf::Ascii::new(storage_key).map_err(|e| BlobError::Network(format!("key: {e}")))?))],
         )
         .build()
         .map_err(|e| BlobError::Network(format!("Build VSF: {}", e)))?;
@@ -248,7 +248,7 @@ pub fn put_blob_blocking(
         device_keypair,
         "blob_put",
         vec![
-            ("key".to_string(), VsfType::d(storage_key.to_string())),
+            ("key".to_string(), VsfType::d(vsf::Ascii::new(storage_key).map_err(|e| BlobError::Network(format!("key: {e}")))?)),
             (
                 "signature".to_string(),
                 VsfType::ge(key_signature.to_bytes().to_vec()),
@@ -482,7 +482,7 @@ pub fn log_get_blocking(key: &str) -> Result<Vec<u8>, BlobError> {
         .creation_time_oscillations(crate::network::time_base::now_osc())
         .add_section(
             "log_get",
-            vec![("key".to_string(), VsfType::d(key.to_string()))],
+            vec![("key".to_string(), VsfType::d(vsf::Ascii::new(key).map_err(|e| BlobError::Network(format!("key: {e}")))?))],
         )
         .build()
         .map_err(|e| BlobError::Network(format!("Build VSF: {}", e)))?;
@@ -613,7 +613,7 @@ pub fn get_blob_blocking(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError
         .creation_time_oscillations(crate::network::time_base::now_osc())
         .add_section(
             "blob_get",
-            vec![("key".to_string(), VsfType::d(storage_key.to_string()))],
+            vec![("key".to_string(), VsfType::d(vsf::Ascii::new(storage_key).map_err(|e| BlobError::Network(format!("key: {e}")))?))],
         )
         .build()
         .map_err(|e| BlobError::Network(format!("Build VSF: {}", e)))?;
@@ -691,7 +691,7 @@ pub fn delete_blob_blocking(storage_key: &str, device_keypair: &Keypair) -> Resu
         device_keypair,
         "blob_delete",
         vec![
-            ("key".to_string(), VsfType::d(storage_key.to_string())),
+            ("key".to_string(), VsfType::d(vsf::Ascii::new(storage_key).map_err(|e| BlobError::Network(format!("key: {e}")))?)),
             (
                 "signature".to_string(),
                 VsfType::ge(key_signature.to_bytes().to_vec()),
@@ -746,7 +746,7 @@ pub async fn delete_blob(storage_key: &str, device_keypair: &Keypair) -> Result<
         device_keypair,
         "blob_delete",
         vec![
-            ("key".to_string(), VsfType::d(storage_key.to_string())),
+            ("key".to_string(), VsfType::d(vsf::Ascii::new(storage_key).map_err(|e| BlobError::Network(format!("key: {e}")))?)),
             (
                 "signature".to_string(),
                 VsfType::ge(key_signature.to_bytes().to_vec()),
@@ -861,7 +861,7 @@ pub fn gripe_put_blocking(id: &[u8; 32], nonce: &[u8; 32], kind: &str, text: &st
     let mut sec = vsf::file_format::VsfSection::new("gripe_put");
     sec.add_field_multi("id", vec![VsfType::v(b'g', id.to_vec())]);
     sec.add_field_multi("nonce", vec![VsfType::v(b'n', nonce.to_vec())]);
-    sec.add_field_multi("kind", vec![VsfType::a(kind.to_string())]);
+    sec.add_field_multi("kind", vec![VsfType::a(vsf::Ascii::new(kind).map_err(|e| BlobError::Network(format!("gripe kind: {e}")))?)]);
     sec.add_field_multi("text", vec![VsfType::v(b't', text.as_bytes().to_vec())]);
     let bytes = gripe_post(sec, "gripe_put")?;
     let schema = vsf::schema::SectionSchema::new("gripe_put_ack").field("id", vsf::schema::TypeConstraint::Wrapped(b'g'));
@@ -906,7 +906,7 @@ pub fn gripe_list_blocking() -> Result<Vec<PublicGripe>, BlobError> {
         return Err(BlobError::ServerError("gripe_list: no gripe_list_ack count".into()));
     };
     let ascii = |r: &Rec, name: &str| match r.all(name).first() {
-        Some(VsfType::a(s)) | Some(VsfType::d(s)) => s.clone(),
+        Some(VsfType::a(s)) | Some(VsfType::d(s)) => s.to_string(),
         _ => String::new(),
     };
     let words = |r: &Rec, name: &str| r.wrapped(name, b't').map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
@@ -938,9 +938,9 @@ pub fn gripe_status_blocking(token: &[u8], id: &[u8; 32], state: &str, note: &st
     let mut sec = vsf::file_format::VsfSection::new("gripe_status");
     sec.add_field_multi("token", vec![VsfType::v(b'k', token.to_vec())]);
     sec.add_field_multi("id", vec![VsfType::v(b'g', id.to_vec())]);
-    sec.add_field_multi("state", vec![VsfType::a(state.to_string())]);
+    sec.add_field_multi("state", vec![VsfType::a(vsf::Ascii::new(state).map_err(|e| BlobError::Network(format!("gripe state: {e}")))?)]);
     sec.add_field_multi("note", vec![VsfType::v(b't', note.as_bytes().to_vec())]);
-    sec.add_field_multi("version", vec![VsfType::a(version.to_string())]);
+    sec.add_field_multi("version", vec![VsfType::a(vsf::Ascii::new(version).map_err(|e| BlobError::Network(format!("gripe version: {e}")))?)]);
     let bytes = gripe_post(sec, "gripe_status")?;
     let schema = vsf::schema::SectionSchema::new("gripe_status_ack").field("state", vsf::schema::TypeConstraint::AsciiText);
     // Only the parse matters here: a gripe_status_ack that does not validate is the error, its fields are not needed.

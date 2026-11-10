@@ -991,7 +991,7 @@ pub fn download_avatar_pinned(
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .add_section(
             "avatar_get",
-            vec![("key".to_string(), VsfType::d(storage_key.clone()))],
+            vec![("key".to_string(), VsfType::d(vsf::Ascii::new(storage_key.as_str()).ok()?))],
         )
         .build()
         .ok()?;
@@ -1055,7 +1055,7 @@ pub fn recover_own_avatar_from_wall(
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .add_section(
             "avatar_get",
-            vec![("key".to_string(), VsfType::d(storage_key))],
+            vec![("key".to_string(), VsfType::d(vsf::Ascii::new(storage_key).ok()?))],
         )
         .build()
         .ok()?;
@@ -1806,7 +1806,7 @@ pub fn upload_avatar_from_seed(
     // Go thru the ONE VSF conduit (POST / with a named section), same as blob_put / contacts.
     // The put carries the signed avatar VSF and is itself device-signed at the header (ke/ge); FGTW checks that signing device against the folded fleet chain.
     let mut section = vsf::VsfSection::new("avatar_put");
-    section.add_field("key", VsfType::d(storage_key.clone()));
+    section.add_field("key", VsfType::d(vsf::Ascii::new(storage_key.as_str()).map_err(|e| format!("avatar key: {e}"))?));
     section.add_field("handle_proof", VsfType::hP(handle_proof.to_vec()));
     section.add_field("avatar_vsf", VsfType::v(b'e', signed_vsf));
     let unsigned_put = vsf::VsfBuilder::new()
@@ -1895,7 +1895,7 @@ pub fn delete_avatar_blocking(
         .add_section(
             "avatar_delete",
             vec![
-                ("key".to_string(), VsfType::d(key)),
+                ("key".to_string(), VsfType::d(vsf::Ascii::new(key).map_err(|e| format!("avatar key: {e}"))?)),
                 (
                     "signature".to_string(),
                     VsfType::ge(sig.to_bytes().to_vec()),
@@ -1940,7 +1940,7 @@ fn fetch_avatar_tail(
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .add_section(
             "avatar_get",
-            vec![("key".to_string(), VsfType::d(storage_key.clone()))],
+            vec![("key".to_string(), VsfType::d(vsf::Ascii::new(storage_key.as_str()).ok()?))],
         )
         .build()
         .ok()?;
@@ -2013,7 +2013,7 @@ pub fn download_avatar_from_seed(
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .add_section(
             "avatar_get",
-            vec![("key".to_string(), VsfType::d(storage_key.clone()))],
+            vec![("key".to_string(), VsfType::d(vsf::Ascii::new(storage_key.as_str()).ok()?))],
         )
         .build()
         .ok()?;
@@ -2125,11 +2125,15 @@ pub fn sync_avatar_bidirectional_from_seed(
     };
 
     // Pull the server copy over the VSF conduit (same avatar_get section as download_avatar_from_seed, but here we always hit the network — a sync must see the server to compare timestamps).
+    let ascii_key = match vsf::Ascii::new(storage_key.as_str()) {
+        Ok(k) => k,
+        Err(e) => return AvatarSyncResult::Error(format!("avatar key: {e}")),
+    };
     let get_vsf = match vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .add_section(
             "avatar_get",
-            vec![("key".to_string(), VsfType::d(storage_key.clone()))],
+            vec![("key".to_string(), VsfType::d(ascii_key))],
         )
         .build()
     {

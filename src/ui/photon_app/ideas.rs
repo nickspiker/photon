@@ -48,7 +48,7 @@ fn words_of(text: &str) -> Vec<String> {
 fn encode_mine(mine: &[Gripe]) -> Option<Vec<u8>> {
     let mut sec = vsf::file_format::VsfSection::new("mine");
     sec.add_field_multi("id", mine.iter().map(|g| vsf::VsfType::v(b'g', g.id.to_vec())).collect());
-    sec.add_field_multi("kind", mine.iter().map(|g| vsf::VsfType::a(g.kind.clone())).collect());
+    sec.add_field_multi("kind", mine.iter().map(|g| vsf::Ascii::new(g.kind.as_str()).ok().map(vsf::VsfType::a)).collect::<Option<Vec<_>>>()?);
     sec.add_field_multi("text", mine.iter().map(|g| vsf::VsfType::v(b't', g.text.as_bytes().to_vec())).collect());
     sec.add_field_multi("osc", mine.iter().map(|g| vsf::VsfType::e(vsf::types::EtType::e6(g.osc))).collect());
     vsf::VsfBuilder::new()
@@ -79,7 +79,7 @@ fn decode_mine(bytes: &[u8]) -> Vec<Gripe> {
             _ => continue,
         };
         let kind = match kinds.get(i) {
-            Some(vsf::VsfType::a(s)) | Some(vsf::VsfType::d(s)) => s.clone(),
+            Some(vsf::VsfType::a(s)) | Some(vsf::VsfType::d(s)) => s.to_string(),
             _ => "idea".to_string(),
         };
         let text = match texts.get(i) {

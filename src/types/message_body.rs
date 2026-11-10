@@ -153,7 +153,8 @@ impl MessageBody {
     pub fn decode(bytes: &[u8]) -> Option<MessageBody> {
         let mut ptr = 0usize;
         let plaintext = match vsf::parse(bytes, &mut ptr).ok()? {
-            VsfType::x(s) | VsfType::a(s) => s,
+            VsfType::x(s) => s,
+            VsfType::a(s) => s.into_string(),
             _ => return None, // the body MUST lead with its plaintext
         };
         if ptr == bytes.len() {
@@ -203,7 +204,8 @@ impl MessageBody {
 /// Parse one VSF element and require it to be text (`x`/`a`).
 fn parse_x(bytes: &[u8], ptr: &mut usize) -> Option<String> {
     match vsf::parse(bytes, ptr).ok()? {
-        VsfType::x(s) | VsfType::a(s) => Some(s),
+        VsfType::x(s) => Some(s),
+        VsfType::a(s) => Some(s.into_string()),
         _ => None,
     }
 }
@@ -286,7 +288,8 @@ mod tests {
         // And a rich body's plaintext element is still the FIRST thing on the wire — a legacy x-reader gets it.
         let mut ptr = 0;
         let lead = match vsf::parse(&wire, &mut ptr).unwrap() {
-            VsfType::x(s) | VsfType::a(s) => s,
+            VsfType::x(s) => s,
+            VsfType::a(s) => s.into_string(),
             _ => panic!("body must lead with its plaintext"),
         };
         assert_eq!(lead, "learn more at passless today");
@@ -312,7 +315,8 @@ mod tests {
         // And the plaintext still leads the wire for a legacy reader.
         let mut ptr = 0;
         let lead = match vsf::parse(&wire, &mut ptr).unwrap() {
-            VsfType::x(s) | VsfType::a(s) => s,
+            VsfType::x(s) => s,
+            VsfType::a(s) => s.into_string(),
             _ => panic!("body must lead with its plaintext"),
         };
         assert_eq!(lead, "here's the deck slides.pdf and a link passless");

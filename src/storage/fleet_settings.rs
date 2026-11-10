@@ -39,7 +39,8 @@ pub fn as_osc(v: &VsfType) -> Option<i64> {
 /// UTF-8 text (x, or ascii a).
 pub fn as_text(v: &VsfType) -> Option<String> {
     match v {
-        VsfType::x(s) | VsfType::a(s) => Some(s.clone()),
+        VsfType::x(s) => Some(s.clone()),
+        VsfType::a(s) => Some(s.to_string()),
         _ => None,
     }
 }
