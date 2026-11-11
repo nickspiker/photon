@@ -174,3 +174,29 @@ mod tests {
         assert_eq!(proof, proof2, "nem handle proof should be deterministic");
     }
 }
+
+/// ASCII identities across vsf `x` codebook changes (owner 2026-11-10: "All handles are valid ASCII at the moment").
+/// The 2026-11 re-issue of the codebook moves only rare characters' codewords; every code of 20 bits or fewer, all of ASCII among them, stays byte-identical.
+/// These pin that: every printable ASCII character and the control characters through the seed, and one ASCII handle through the memory-hard proof.
+/// If a vsf bump fails this test, an ASCII identity moved: revert the bump.
+/// Never update these constants.
+#[cfg(test)]
+mod ascii_identity_kats {
+    use super::*;
+
+    const SEED_ALL_PRINTABLE: &str = "7ba1796a0bd61125786f47b5a542cf492817fb45d41c84ef906a9adb4013d9cb";
+    const SEED_CONTROLS: &str = "425fb9608b0deab7c7d07a095792359cb10c40509b056917a40828bd62e382d7";
+    const PROOF_KEA: &str = "8227e79d4ad8977864668831df60e94d4b796d3c9ef733e83a0d747129563e1c";
+
+    #[test]
+    fn every_ascii_character_keeps_its_identity_seed() {
+        let printable: String = (0x20u8..0x7f).map(|b| b as char).collect();
+        assert_eq!(hex::encode(Handle::to_identity_seed(&printable)), SEED_ALL_PRINTABLE, "an ASCII character's x encoding moved");
+        assert_eq!(hex::encode(Handle::to_identity_seed("\t\n\r\u{1}\u{7f}")), SEED_CONTROLS, "an ASCII control character's x encoding moved");
+    }
+
+    #[test]
+    fn an_ascii_handle_keeps_its_proof() {
+        assert_eq!(hex::encode(Handle::username_to_handle_proof("kea")), PROOF_KEA, "an ASCII handle proof moved");
+    }
+}
