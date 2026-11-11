@@ -200,3 +200,23 @@ mod ascii_identity_kats {
         assert_eq!(hex::encode(Handle::username_to_handle_proof("kea")), PROOF_KEA, "an ASCII handle proof moved");
     }
 }
+
+/// The seven characters a person can type whose `x` codewords moved in vsf 0.11's reissued codebook (2026-11-10): £ ¥ § ° • … €.
+/// Identity hashing stays on ihi's frozen vsf 0.6 lane, so these keep the seed they always had; vsf main's encoder now gives a different hash for them, so any identity path that hashed `VsfType::x(handle)` itself would split from ihi's.
+/// Every Photon identity path (seed, proof, avatar keys) goes through `Handle::to_identity_seed`, and this pins that path to the frozen value.
+#[cfg(test)]
+mod moved_character_identity_kats {
+    use super::*;
+
+    const MOVED: &str = "\u{a3}\u{a5}\u{a7}\u{b0}\u{2022}\u{2026}\u{20ac}";
+    const SEED_MOVED: &str = "c65a7385ccfda0e61f609e28e239eef059cd9a7c5aa32339754325879f748d2b";
+
+    #[test]
+    fn moved_characters_keep_their_identity_on_every_path() {
+        let seed = Handle::to_identity_seed(MOVED);
+        assert_eq!(hex::encode(seed), SEED_MOVED, "the identity seed left ihi's frozen lane");
+        assert_eq!(Handle::username_to_handle_proof(MOVED), *ihi::handle_proof(&blake3::Hash::from(seed)).as_bytes(), "the proof is not the seed's proof");
+        assert_eq!(crate::ui::avatar::avatar_storage_key(MOVED), crate::ui::avatar::avatar_storage_key_from_seed(&seed), "the avatar key did not come from the seed");
+        assert_eq!(crate::ui::avatar::derive_avatar_encryption_key(MOVED), crate::ui::avatar::derive_avatar_encryption_key_from_seed(&seed), "the avatar encryption key did not come from the seed");
+    }
+}
