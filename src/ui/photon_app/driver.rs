@@ -1093,7 +1093,7 @@ impl FluorApp<Px> for PhotonApp {
                                                 vsf::VsfType::ke(pk.to_vec()),
                                             );
                                             self.fleet_retired.retain(|d| d != &pk);
-                                            self.ready_toast = Some(tr(Msg::DeviceReleased(&name)).into_owned());
+                                            self.ready_toast = Some(tr(fgtw::text::Msg::DeviceReleased(&name)).into_owned());
                                         }
                                         Err(e) => {
                                             crate::logf!(

@@ -42,7 +42,7 @@ impl PhotonApp {
             } else {
                 crate::log("attest: the retyped handle does not match the first entry — back to it");
                 self.launch_refill = first;
-                self.state = AppState::Launch(LaunchState::Error(tr(Msg::HandlesDontMatch).into_owned()));
+                self.state = AppState::Launch(LaunchState::Error(tr(fgtw::text::Msg::HandlesDontMatch).into_owned()));
                 let field = self.textbox.as_ref().map(|t| t.hit_id());
                 self.change_focus(field);
                 return;
@@ -414,7 +414,7 @@ impl PhotonApp {
                 } else if e.contains("device_owned") || e.contains("another identity's fleet") {
                     // JOINER-SIDE HONESTY (the 2026-09-04 retire/Release incident): the new user staring at branded hardware gets the truth — who can free it and where — instead of a mystery brick. The fgtw fallback string stays for logs; the screen speaks the catalog.
                     crate::logf!("attest: refused — hardware branded to another identity ({})", e);
-                    self.state = AppState::Launch(LaunchState::Error(tr(Msg::DeviceBrandedHint).into_owned()));
+                    self.state = AppState::Launch(LaunchState::Error(tr(fgtw::text::Msg::DeviceBrandedHint).into_owned()));
                     self.refocus_handle_select_all();
                 } else {
                     self.state = AppState::Launch(LaunchState::Error(e));

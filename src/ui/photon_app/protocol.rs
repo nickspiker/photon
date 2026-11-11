@@ -398,7 +398,7 @@ impl PhotonApp {
                     self.add_device_contended = false;
                     // The person is already back on the Fleet page (or wherever they went since): the new row and this toast are the confirmation.
                     self.refresh_fleet_retired();
-                    self.ready_toast = Some(tr(Msg::DeviceAdded).into_owned());
+                    self.ready_toast = Some(tr(fgtw::text::Msg::DeviceAdded).into_owned());
                     // The confirm rotated the fleet key — recover the new epoch AND re-seal the roster under it in one ordered pass, so the just-joined device's roster pull decrypts instead of failing aead::Error until a relaunch. (Was a bare key-sync that left the roster stale-sealed forever, since the periodic re-push only fires on a non-in-app attest.)
                     self.spawn_roster_republish();
                     // And re-fold our own chain immediately so the freshly-bound device gets its sibling contact (fleet weave kickoff) without waiting for the next fleet event.
@@ -771,7 +771,7 @@ impl PhotonApp {
                 }
                 JoinUpdate::ShowWords(words) => {
                     self.add_join_words = Some(words);
-                    self.add_join_status = tr(Msg::AddFromSignedIn).into_owned();
+                    self.add_join_status = tr(fgtw::text::Msg::AddFromSignedIn).into_owned();
                 }
                 JoinUpdate::Aimed { hp, bind_req, poke } => {
                     // A fresh request stamp: every sponsor heard so far gets it now, and the LAN arm hands it to each sponsor heard from here on.

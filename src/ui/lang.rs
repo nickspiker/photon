@@ -26,169 +26,24 @@ pub mod tr;
 pub mod uk;
 pub mod vi;
 
-/// The UI language — a device-local typed setting (display.lang, x-string code), seeded once from the OS locale at first launch, the user's after that.
-/// Variants are declared in ADDITION ORDER, and `index()` follows it: the index is the session atomic's storage form, so a shipped index never moves. Picker order is `ALL`, which is free to re-sort (see the note there).
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Lang {
-    En,
-    Es,
-    Mi,
-    Pt,
-    Fr,
-    Id,
-    De,
-    Sw,
-    Vi,
-    Tr,
-    Ru,
-    Hi,
-    Uk,
-    It,
-    Pl,
-    Fil,
-}
-
-impl Lang {
-    pub fn code(self) -> &'static str {
-        match self {
-            Lang::En => "en",
-            Lang::Es => "es",
-            Lang::Mi => "mi",
-            Lang::Pt => "pt",
-            Lang::Fr => "fr",
-            Lang::Id => "id",
-            Lang::De => "de",
-            Lang::Sw => "sw",
-            Lang::Vi => "vi",
-            Lang::Tr => "tr",
-            Lang::Ru => "ru",
-            Lang::Hi => "hi",
-            Lang::Uk => "uk",
-            Lang::It => "it",
-            Lang::Pl => "pl",
-            Lang::Fil => "fil",
-        }
-    }
-    /// The ONE seam the OS-locale seeding reads (platform::locale::os_language), so a language is discoverable from the host the moment its code lands here.
-    pub fn from_code(c: &str) -> Option<Lang> {
-        match c {
-            "en" => Some(Lang::En),
-            "es" => Some(Lang::Es),
-            "mi" => Some(Lang::Mi),
-            "pt" => Some(Lang::Pt),
-            "fr" => Some(Lang::Fr),
-            "id" => Some(Lang::Id),
-            "de" => Some(Lang::De),
-            "sw" => Some(Lang::Sw),
-            "vi" => Some(Lang::Vi),
-            "tr" => Some(Lang::Tr),
-            "ru" => Some(Lang::Ru),
-            "hi" => Some(Lang::Hi),
-            "uk" => Some(Lang::Uk),
-            "it" => Some(Lang::It),
-            "pl" => Some(Lang::Pl),
-            // Filipino answers to both its ISO 639-3 code and Tagalog's older two-letter one, which is what most hosts still report.
-            "fil" | "tl" => Some(Lang::Fil),
-            _ => None,
-        }
-    }
-    // Autonyms are invariant across languages by design — a lost user must always recognise their own tongue in the picker. Bare language names, parallel form (Nick 2026-09-03: "Māori" not "Te Reo Māori" — te reo just means "the language").
-    /// The form a speaker would use saying "I speak ___" in that language — so Tiếng Việt and Bahasa Indonesia keep their language word, which is NOT a contradiction of the bare-name rule: te reo detaches from Māori, tiếng and bahasa do not, and "Việt"/"Indonesia" alone name a people and a country rather than a language (Nick 2026-09-15).
-    pub fn autonym(self) -> &'static str {
-        match self {
-            Lang::En => "English",
-            Lang::Es => "Espa\u{f1}ol",
-            Lang::Mi => "M\u{101}ori",
-            Lang::Pt => "Portugu\u{EA}s",
-            Lang::Fr => "Fran\u{E7}ais",
-            Lang::Id => "Bahasa Indonesia",
-            Lang::De => "Deutsch",
-            Lang::Sw => "Kiswahili",
-            Lang::Vi => "Ti\u{1EBF}ng Vi\u{1EC7}t",
-            Lang::Tr => "T\u{FC}rk\u{E7}e",
-            Lang::Ru => "\u{420}\u{443}\u{441}\u{441}\u{43A}\u{438}\u{439}",
-            Lang::Hi => "\u{939}\u{93F}\u{928}\u{94D}\u{926}\u{940}",
-            Lang::Uk => "\u{423}\u{43A}\u{440}\u{430}\u{457}\u{43D}\u{441}\u{44C}\u{43A}\u{430}",
-            Lang::It => "Italiano",
-            Lang::Pl => "Polski",
-            Lang::Fil => "Filipino",
-        }
-    }
-    /// STORAGE order — the session atomic's form. A shipped index NEVER moves; new languages append. (The picker uses ALL, not this.)
-    pub fn index(self) -> usize {
-        match self {
-            Lang::En => 0,
-            Lang::Es => 1,
-            Lang::Mi => 2,
-            Lang::Pt => 3,
-            Lang::Fr => 4,
-            Lang::Id => 5,
-            Lang::De => 6,
-            Lang::Sw => 7,
-            Lang::Vi => 8,
-            Lang::Tr => 9,
-            Lang::Ru => 10,
-            Lang::Hi => 11,
-            Lang::Uk => 12,
-            Lang::It => 13,
-            Lang::Pl => 14,
-            Lang::Fil => 15,
-        }
-    }
-    pub fn from_index(i: usize) -> Lang {
-        match i {
-            1 => Lang::Es,
-            2 => Lang::Mi,
-            3 => Lang::Pt,
-            4 => Lang::Fr,
-            5 => Lang::Id,
-            6 => Lang::De,
-            7 => Lang::Sw,
-            8 => Lang::Vi,
-            9 => Lang::Tr,
-            10 => Lang::Ru,
-            11 => Lang::Hi,
-            12 => Lang::Uk,
-            13 => Lang::It,
-            14 => Lang::Pl,
-            15 => Lang::Fil,
-            _ => Lang::En,
-        }
-    }
-    /// DISPLAY order — sorted by autonym, because a user who cannot read the current UI language finds their own tongue by scanning, not by knowing where it was added. Latin-script names sort first and the Cyrillic/Devanagari names follow, which is simply codepoint order and stays deterministic.
-    /// Safe to re-sort freely: the picker resolves a tap thru this array, never thru `index()`.
-    pub const ALL: [Lang; 16] = [
-        Lang::Id,
-        Lang::De,
-        Lang::En,
-        Lang::Es,
-        Lang::Fil,
-        Lang::Fr,
-        Lang::It,
-        Lang::Sw,
-        Lang::Mi,
-        Lang::Pl,
-        Lang::Pt,
-        Lang::Vi,
-        Lang::Tr,
-        Lang::Ru,
-        Lang::Uk,
-        Lang::Hi,
-    ];
-}
+/// The UI language: fgtw's one list (fgtw::text::Lang), shared with ferros. A device-local typed setting (display.lang, x-string code), seeded once from the OS locale at first launch, the user's after that.
+/// Its `index()` is the storage form of the session atomic below and never moves; `ALL` is the picker order.
+pub use fgtw::text::Lang;
 
 // Session mirror of the language setting — a static so tr() reads the language without threading &self thru every draw call (same shape as DOZENAL_UI).
 static CURRENT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
 pub fn lang() -> Lang {
-    Lang::from_index(CURRENT.load(std::sync::atomic::Ordering::Relaxed) as usize)
+    Lang::from_index(CURRENT.load(std::sync::atomic::Ordering::Relaxed))
 }
 
 pub fn set_lang(l: Lang) {
-    CURRENT.store(l.index() as u8, std::sync::atomic::Ordering::Relaxed);
+    CURRENT.store(l.index(), std::sync::atomic::Ordering::Relaxed);
 }
 
-pub fn tr(msg: Msg) -> Cow<'static, str> {
+/// A message in the current language: Photon's own, or a fleet message from fgtw (`tr(fgtw::text::Msg::...)` converts).
+pub fn tr<'a>(msg: impl Into<Msg<'a>>) -> Cow<'static, str> {
+    let msg = msg.into();
     match lang() {
         Lang::En => en::text(msg),
         Lang::Es => es::text(msg),
@@ -209,7 +64,22 @@ pub fn tr(msg: Msg) -> Cow<'static, str> {
     }
 }
 
+/// A fleet or identity message in fgtw's words (fgtw::text, the one copy Photon and ferros share), in language `l`.
+pub fn fleet_text(l: Lang, m: fgtw::text::Msg) -> Cow<'static, str> {
+    let mut s = String::new();
+    crate::log_err!(fgtw::text::tr(l, m, &mut s), "write a fleet message");
+    s.into()
+}
+
+impl<'a> From<fgtw::text::Msg<'a>> for Msg<'a> {
+    fn from(m: fgtw::text::Msg<'a>) -> Self {
+        Msg::Fleet(m)
+    }
+}
+
 pub enum Msg<'a> {
+    /// A fleet or identity message: its words live in fgtw::text, so ferros and Photon never drift.
+    Fleet(fgtw::text::Msg<'a>),
     // ---- shared verbs / small buttons ----
     Answer,
     Decline,
@@ -295,8 +165,6 @@ pub enum Msg<'a> {
     // ---- launch / handle / join ----
     YesForever,
     HandleTaken,
-    /// Minting: the retyped handle differs from the first entry (the first comes back to fix).
-    HandlesDontMatch,
     HandleAttestedElsewhere(&'a str),
     IdentityResumeHint,
     IdentityOccupied,
@@ -306,11 +174,8 @@ pub enum Msg<'a> {
     CopyWords,
     WordsCopied,
     LaunchJoinInstructions,
-    LaunchJoinConfirmNote,
     StartFreshIdle,
     StartFreshArmed,
-    JoinerSelected,
-    JoinerConfirmOther,
     OffGridListening,
     AddedHandle(&'a str),
     AlreadyAdded(&'a str),
@@ -498,18 +363,6 @@ pub enum Msg<'a> {
     OpenLinkPill,
     /// Consent warning when the destination contains non-ASCII bytes (homograph honesty).
     LinkNonAsciiWarn,
-    /// LEAVER's Security page (and toast) while its departure request is pending: it is asking the person's devices; approve on any of them. No words, no reachability.
-    DepartWaitingLine,
-    /// LEAVER: a fleet device denied the request; this device stays, and Release asks again (a new request, a new salt).
-    DepartDenied,
-    /// APPROVER's Fleet page, top: which device asks to leave.
-    DepartRequestLine(&'a str),
-    /// APPROVER: the request's Approve pill.
-    DepartApprovePill,
-    /// APPROVER: the request's Deny pill.
-    DepartDenyPill,
-    /// APPROVER: toast after Deny.
-    DepartDeniedHere(&'a str),
     /// Release armed (holdings.rs): the have-set check is running.
     HoldingsChecking,
     /// Release armed: no fleet key in RAM, so nothing could be checked.
@@ -530,16 +383,6 @@ pub enum Msg<'a> {
     HoldingsCopyHint(&'a str),
     /// Hint while copy-then-release is pending: who is copying and what happens next.
     HoldingsCopyingTo(&'a str),
-    /// APPROVER's Fleet card: what approving does when the leaver asked for its hardware to be freed (every Release asks this; leaving is not only a hand-off to a new owner).
-    DepartFreesHardware,
-    /// APPROVER's Fleet card: what approving does when the leaver asked to keep the hardware branded to this fleet.
-    DepartKeepsHardware,
-    /// A departure fully completed (countersigned, and the hardware freed).
-    DepartComplete(&'a str),
-    /// Countersign landed but the release half failed — the retired row's Release pill is the retry.
-    DepartReleasePending(&'a str),
-    /// Attest refused because the hardware is still branded to another identity — the honest joiner-side message.
-    DeviceBrandedHint,
     CopiedPill,
     ResendPill,
     FetchPill,
@@ -655,26 +498,8 @@ pub enum Msg<'a> {
     ClearHistoryPill { armed: bool },
     ClearHistoryNote,
     // ---- add device / pairing ----
-    AddDeviceTitle,
-    TapNearby,
     TapOrbCancel,
-    AddDeviceNearby(&'a str),
-    TypeWords,
-    InvalidWord(&'a str),
-    WaitingForDevice,
-    DevicesAskingToJoin(usize),
-    NoMatchingDevice(&'a str),
-    MatchingDevice(&'a str),
-    MatchingMultiple(usize),
-    Preparing,
-    NoFleetKey,
-    NoDeviceKey,
-    AddingDevice(&'a str),
-    DeviceAdded,
-    /// More than one device asks to join at once (docs/lifecycle.md P3): only a device beside this one can be added, and if the owner is adding one, someone else knows the handle.
-    JoinContended,
     AddDeviceError(&'a str),
-    AddFromSignedIn,
     JoinFailed(&'a str),
     RequestFailed(&'a str),
     // ---- fleet page ----
@@ -690,7 +515,6 @@ pub enum Msg<'a> {
     DeviceLevelUnstated,
     /// Chain lock-out badge on a device card.
     ChainLocked,
-    ThisDevice,
     RetiredStillYours,
     RevokedBadge,
     Online,
@@ -704,15 +528,11 @@ pub enum Msg<'a> {
     Offline,
     OnlineVia(&'a str),
     NotEggedYet(&'a str),
-    ADevice,
     FoundNearby(&'a str),
-    DepartureApproval(&'a str),
-    FleetSignedOut(&'a str),
     SignOutPublishFailed,
     LastDeviceCantSignOut,
     NoIdentityToRemove,
     SignOutBuildFailed,
-    DeviceReleased(&'a str),
     ReleaseFailed,
     DeviceReinstatedToast(&'a str),
     RevokedNotice(&'a str),
@@ -725,7 +545,6 @@ pub enum Msg<'a> {
     RevokePill { armed: bool },
     SingleCopyWarning,
     DeviceSignsItselfOut,
-    AddDevicePill,
     RenamePill,
     // ---- security page ----
     SecurityLock,
@@ -949,24 +768,6 @@ pub enum Msg<'a> {
     DiagClear,
     DiagSubmit,
     DiagView,
-    /// Ideas page: the explainer.
-    /// The joining device's opt-in to the bootstrap mailbox: its binding request is posted to fgtw.org only when this is tapped (2026-11-10, local first).
-    /// The adding device after a pick (button or NFC tap): nothing is bound yet, the picked device has been told and should turn green.
-    SelectedDevice(&'a str),
-    /// The question under a pick (owner 2026-11-10): Yes adds it (the bind and the key together), No goes back to the list.
-    IsNewDeviceGreen,
-    /// The answers to it.
-    YesPill,
-    NoPill,
-    /// The joining device's green: a device of the fleet picked it; the keys follow when the person presses Add there.
-    SelectedBy(&'a str),
-    JoinAskFgtw,
-    /// After the tap: the request waits on fgtw.org for the person's other device.
-    JoinAskedFgtw,
-    /// The Add-device screen's opt-in to read fgtw.org's binding requests (devices that are not nearby).
-    AddLookFgtw,
-    /// After the tap: fgtw.org's requests are being read too.
-    AddLookingFgtw,
     IdeasIntro,
     IdeasSendIdea,
     IdeasSendFix,

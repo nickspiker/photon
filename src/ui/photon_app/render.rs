@@ -1604,7 +1604,7 @@ impl PhotonApp {
                     // THE GREEN (owner 2026-11-10): a device of this fleet picked this one (bind_select, its sender checked against the chain). Nothing is bound yet; the keys follow the Add the person presses there.
                     if let Some(by) = self.join_selected_by.as_ref() {
                         let gsize = line_h * 1.3;
-                        ctx.text.draw_text_center(&mut canvas, &tr(Msg::SelectedBy(by)), cx, y + gsize * 0.5, &TextStyle::new(gsize, *theme::SEARCH_FOUND_COLOUR).weight(800).font("Oxanium"), None, None);
+                        ctx.text.draw_text_center(&mut canvas, &tr(fgtw::text::Msg::SelectedBy(by)), cx, y + gsize * 0.5, &TextStyle::new(gsize, *theme::SEARCH_FOUND_COLOUR).weight(800).font("Oxanium"), None, None);
                         y += gsize * 1.6;
                     }
                     // Guidance FIRST (Nick 2026-09-06): say what to do, then hand over the payload — the instructions end with a colon pointing at the words below. Nearby-tap and far-away-words are the user's two experiences; LAN vs BLE is our plumbing, never their decision.
@@ -1697,9 +1697,9 @@ impl PhotonApp {
                         y += line_h * 0.6;
                         let msize = line_h * 0.6;
                         let (mlabel, mcolour) = if self.join_mailbox_asked {
-                            (tr(Msg::JoinAskedFgtw), *theme::STATUS_TEXT_COLOUR)
+                            (tr(fgtw::text::Msg::JoinAskedFgtw), *theme::STATUS_TEXT_COLOUR)
                         } else {
-                            (tr(Msg::JoinAskFgtw), *theme::CONTACT_NAME_COLOUR)
+                            (tr(fgtw::text::Msg::JoinAskFgtw), *theme::CONTACT_NAME_COLOUR)
                         };
                         ctx.text.draw_text_center(
                             &mut canvas,
@@ -1731,7 +1731,7 @@ impl PhotonApp {
                         let gsize = line_h * 0.62;
                         ctx.text.draw_text_center(
                             &mut canvas,
-                            &tr(Msg::LaunchJoinConfirmNote),
+                            &tr(fgtw::text::Msg::LaunchJoinConfirmNote),
                             cx,
                             y,
                             &TextStyle::new(gsize, fluor::theme::HINT_COLOUR).font("Oxanium"),
@@ -5173,7 +5173,7 @@ impl PhotonApp {
             // Two header rows above the field.
             ctx.text.draw_text_center(
                 &mut canvas,
-                &tr(Msg::AddDeviceTitle),
+                &tr(fgtw::text::Msg::AddDeviceTitle),
                 cx,
                 tb_cy - u * 2.5,
                 &TextStyle::new(u * 0.85, *theme::STATUS_TEXT_COLOUR)
@@ -5182,7 +5182,7 @@ impl PhotonApp {
                 None,
                 None,
             );
-            let subtitle = tr(Msg::TypeWords);
+            let subtitle = tr(fgtw::text::Msg::TypeWords);
             ctx.text.draw_text_center(
                 &mut canvas,
                 &subtitle,
@@ -5253,11 +5253,11 @@ impl PhotonApp {
                 y += wsize * 2. + gap * 0.5;
                 let qsize = u * 0.55;
                 let qstyle = TextStyle::new(qsize, *theme::STATUS_TEXT_COLOUR).weight(600).font("Oxanium");
-                y = centered_wrapped(&mut canvas, ctx.text, cx, buf_w as f32 * 0.84, y, &tr(Msg::IsNewDeviceGreen), &qstyle, qsize * 1.25, None) + gap * 0.5;
+                y = centered_wrapped(&mut canvas, ctx.text, cx, buf_w as f32 * 0.84, y, &tr(fgtw::text::Msg::IsNewDeviceGreen), &qstyle, qsize * 1.25, None) + gap * 0.5;
                 // Yes and No side by side, each sized to its label as flow_pills sizes the settings pills.
                 let size = u * 0.45;
                 let pill_h = size * 2.;
-                let (yes, no) = (tr(Msg::YesPill), tr(Msg::NoPill));
+                let (yes, no) = (tr(fgtw::text::Msg::YesPill), tr(fgtw::text::Msg::NoPill));
                 let measure = TextStyle::new(size, 0).weight(500).font("Oxanium");
                 let wy = ctx.text.measure_text(&yes, &measure) + size * 2.;
                 let wn = ctx.text.measure_text(&no, &measure) + size * 2.;
@@ -5277,7 +5277,7 @@ impl PhotonApp {
             if !nearby.is_empty() {
                 ctx.text.draw_text_center(
                     &mut canvas,
-                    &tr(Msg::TapNearby),
+                    &tr(fgtw::text::Msg::TapNearby),
                     cx,
                     y + u * 0.2,
                     &TextStyle::new(u * 0.4, fluor::theme::HINT_COLOUR).font("Oxanium"),
@@ -5287,7 +5287,7 @@ impl PhotonApp {
                 y += u * 0.4 + gap * 0.5;
                 let row_h = u * 0.85;
                 for (i, cand) in nearby.iter().enumerate() {
-                    let label = tr(Msg::AddDeviceNearby(&cand.name));
+                    let label = tr(fgtw::text::Msg::AddDeviceNearby(&cand.name));
                     let held = ctx.pressed_hit != HIT_NONE
                         && ctx.pressed_hit
                             == (self.add_candidate_hit_base + i as HitId);
@@ -5320,9 +5320,9 @@ impl PhotonApp {
             // The fgtw.org opt-in (local first, 2026-11-10): binding requests from devices that aren't nearby are read only after this tap.
             {
                 let (label, colour) = if self.add_device_mailbox {
-                    (tr(Msg::AddLookingFgtw), fluor::theme::HINT_COLOUR)
+                    (tr(fgtw::text::Msg::AddLookingFgtw), fluor::theme::HINT_COLOUR)
                 } else {
-                    (tr(Msg::AddLookFgtw), *theme::CONTACT_NAME_COLOUR)
+                    (tr(fgtw::text::Msg::AddLookFgtw), *theme::CONTACT_NAME_COLOUR)
                 };
                 let size = u * 0.45;
                 ctx.text.draw_text_center(&mut canvas, &label, cx, y + size, &TextStyle::new(size, colour).font("Oxanium"), None, None);
@@ -5732,19 +5732,19 @@ impl PhotonApp {
                             .session
                             .as_ref()
                             .map(|s| super::machine_name(&p.leaver, &s.identity_seed, self.fleet_settings.as_ref()))
-                            .unwrap_or_else(|| tr(Msg::ADevice).into_owned());
-                        flow.line(&mut canvas, ctx.text, &tr(Msg::DepartRequestLine(&name)), hspan2 * 1.1, *theme::CONTACT_NAME_COLOUR, 600);
+                            .unwrap_or_else(|| tr(fgtw::text::Msg::ADevice).into_owned());
+                        flow.line(&mut canvas, ctx.text, &tr(fgtw::text::Msg::DepartRequestLine(&name)), hspan2 * 1.1, *theme::CONTACT_NAME_COLOUR, 600);
                         if p.intent != 0 {
                             flow.line(
                                 &mut canvas,
                                 ctx.text,
-                                &tr(if p.intent == 1 { Msg::DepartFreesHardware } else { Msg::DepartKeepsHardware }),
+                                &tr(if p.intent == 1 { fgtw::text::Msg::DepartFreesHardware } else { fgtw::text::Msg::DepartKeepsHardware }),
                                 hspan2 * 0.85,
                                 if p.intent == 1 { theme::PILL_YELLOW.1 } else { *theme::LABEL_COLOUR },
                                 600,
                             );
                         }
-                        let (approve, deny) = (tr(Msg::DepartApprovePill), tr(Msg::DepartDenyPill));
+                        let (approve, deny) = (tr(fgtw::text::Msg::DepartApprovePill), tr(fgtw::text::Msg::DepartDenyPill));
                         flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2, &[
                             (approve.as_ref(), btn_base + 1, true, Some(*theme::PILL_GREEN)),
                             (deny.as_ref(), btn_base + 2, true, Some(*theme::PILL_RED)),
@@ -5803,7 +5803,7 @@ impl PhotonApp {
                         flow.gap(hspan2 * 0.35);
                         // STATUS line: state + the PATH NAMED, not merely coloured — the dot's colour and this word come from the same resolution (path_tier_shown), so they can't drift apart.
                         let (status, status_colour) = if *is_self {
-                            (tr(Msg::ThisDevice), *theme::LABEL_COLOUR)
+                            (tr(fgtw::text::Msg::ThisDevice), *theme::LABEL_COLOUR)
                         } else if *retired {
                             (tr(Msg::RetiredStillYours), *theme::LABEL_COLOUR)
                         } else if row_locked {
@@ -5896,7 +5896,7 @@ impl PhotonApp {
                     }
                     flow.gap(hspan2 * 0.5);
                     // Rename is per-card now (band 56+i) — the page-level stub pill retired with it.
-                    let add_device_label = tr(Msg::AddDevicePill);
+                    let add_device_label = tr(fgtw::text::Msg::AddDevicePill);
                     flow_pills(
                         &mut flow,
                         &mut canvas,
@@ -6054,10 +6054,10 @@ impl PhotonApp {
                         flow.gap(hspan2 * 0.4);
                         // LEAVER's pending departure (owner, 2026-11-10): it is asking the person's devices, approve on any of them. No words, and nothing about which devices answered or how they are reached. A denied request says so; asking again (Release) makes a new request.
                         if self.depart_request_t.is_some() {
-                            flow.prose(&mut canvas, ctx.text, &tr(Msg::DepartWaitingLine), hspan2 * 1.1, *theme::SEARCH_FOUND_COLOUR, 600);
+                            flow.prose(&mut canvas, ctx.text, &tr(fgtw::text::Msg::DepartWaitingLine), hspan2 * 1.1, *theme::SEARCH_FOUND_COLOUR, 600);
                             flow.gap(hspan2 * 0.6);
                         } else if self.depart_was_denied {
-                            flow.prose(&mut canvas, ctx.text, &tr(Msg::DepartDenied), hspan2 * 1.1, *theme::ERROR_TEXT_COLOUR, 600);
+                            flow.prose(&mut canvas, ctx.text, &tr(fgtw::text::Msg::DepartDenied), hspan2 * 1.1, *theme::ERROR_TEXT_COLOUR, 600);
                             flow.gap(hspan2 * 0.6);
                         }
                         flow.line(&mut canvas, ctx.text, &tr(Msg::SecurityStatusLine), hspan2, *theme::LABEL_COLOUR, 400);
@@ -7711,7 +7711,7 @@ impl PhotonApp {
             let cx = buf_w as f32 * 0.5;
             ctx.text.draw_text_center(
                 &mut canvas,
-                &tr(Msg::JoinerSelected),
+                &tr(fgtw::text::Msg::JoinerSelected),
                 cx,
                 buf_h as f32 * 0.4,
                 &TextStyle::new(span / 8., *theme::CONTACT_NAME_COLOUR)
@@ -7722,7 +7722,7 @@ impl PhotonApp {
             );
             ctx.text.draw_text_center(
                 &mut canvas,
-                &tr(Msg::JoinerConfirmOther),
+                &tr(fgtw::text::Msg::JoinerConfirmOther),
                 cx,
                 buf_h as f32 * 0.58,
                 &TextStyle::new(span / 24., *theme::CONTACT_NAME_COLOUR)

@@ -20,6 +20,7 @@ fn fmt_i(n: i64) -> String {
 
 pub fn text(msg: Msg) -> Cow<'static, str> {
     match msg {
+        Msg::Fleet(m) => super::fleet_text(super::Lang::Ru, m),
         // ---- shared verbs / small buttons ----
         Msg::Answer => "Ответить".into(),
         Msg::Decline => "Отклонить".into(),
@@ -101,7 +102,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- launch / handle / join ----
         Msg::YesForever => "Да, навсегда".into(),
         Msg::HandleTaken => "на это имя уже кто-то отзывается\nвыбери другое".into(),
-        Msg::HandlesDontMatch => "они не совпадают\nисправь имя и попробуй снова".into(),
         Msg::HandleAttestedElsewhere(words) => format!("этот handle уже аттестован другим устройством (открытый ключ {words})").into(),
         Msg::IdentityResumeHint => "это устройство уже несёт личность".into(),
         Msg::IdentityOccupied => "это устройство уже несёт личность".into(),
@@ -111,11 +111,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::CopyWords => "скопировать слова".into(),
         Msg::WordsCopied => "скопировано: вставь на другом своём устройстве".into(),
         Msg::LaunchJoinInstructions => "На другом своём устройстве: Настройки \u{2192} Флот \u{2192} Добавить\nОно рядом? Просто коснись имени этого устройства.\nДалеко? Введи там эти слова:".into(),
-        Msg::LaunchJoinConfirmNote => "Добавление ты подтвердишь на том устройстве.".into(),
         Msg::StartFreshIdle => "Не то устройство? Начать с нуля (стереть это устройство)".into(),
         Msg::StartFreshArmed => "Начать с нуля: коснись ещё раз, чтобы стереть это устройство".into(),
-        Msg::JoinerSelected => "Выбрано!".into(),
-        Msg::JoinerConfirmOther => "Подтверди на другом своём устройстве, чтобы закончить.".into(),
         Msg::OffGridListening => "вне сети: слушаем рядом...".into(),
         // Безличное «добавлено» вместо согласованного причастия: род подставляемого handle неизвестен.
         Msg::AddedHandle(h) => format!("добавлено: {h}").into(),
@@ -350,10 +347,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             format!("{} {word} \u{00b7} отправлено {} \u{00b7} получено {}", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into()
         }
         Msg::RowsShouldMatch => "эти строки должны совпадать на каждом твоём устройстве".into(),
-        Msg::IsNewDeviceGreen => "Твоё новое устройство светится ярко-зелёным?".into(),
-        Msg::YesPill => "Да".into(),
-        Msg::NoPill => "Нет".into(),
-        Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::InCallMode | Msg::DevicesOnline(_) | Msg::PausePill | Msg::ReplayVoice(_) | Msg::BeamSaveHead | Msg::BeamSaveVideo | Msg::IdeasIntro | Msg::SelectedDevice(_) | Msg::SelectedBy(_) | Msg::JoinAskFgtw | Msg::JoinAskedFgtw | Msg::AddLookFgtw | Msg::AddLookingFgtw | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) | Msg::IdeasTicker | Msg::IdeasTickerNewIdea | Msg::IdeasTickerNewFix | Msg::IdeasLikeYours | Msg::IdeasNothingLikeIt | Msg::IdeasEveryone | Msg::IdeasEveryoneNone | Msg::IdeaState(_) | Msg::MessagePill | Msg::GroupAvatarDropHint | Msg::RemoveGroupAvatarPill | Msg::DeviceLevel(..) | Msg::DeviceLevelUnstated => super::en::text(msg),
+        Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::InCallMode | Msg::DevicesOnline(_) | Msg::PausePill | Msg::ReplayVoice(_) | Msg::BeamSaveHead | Msg::BeamSaveVideo | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) | Msg::IdeasTicker | Msg::IdeasTickerNewIdea | Msg::IdeasTickerNewFix | Msg::IdeasLikeYours | Msg::IdeasNothingLikeIt | Msg::IdeasEveryone | Msg::IdeasEveryoneNone | Msg::IdeaState(_) | Msg::MessagePill | Msg::GroupAvatarDropHint | Msg::RemoveGroupAvatarPill | Msg::DeviceLevel(..) | Msg::DeviceLevelUnstated => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "устройство флота уходит по собственному запросу (см. Настройки \u{2192} Флот)".into(),
         Msg::BootPill { armed } => if armed { "Коснись ещё раз, чтобы выгнать" } else { "Выгнать" }.into(),
         Msg::FilterAll => "Всё".into(),
@@ -407,32 +401,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ClearHistoryPill { armed } => if armed { "Нажмите ещё раз, чтобы очистить всё" } else { "Очистить историю" }.into(),
         Msg::ClearHistoryNote => "скрывает её на каждом вашем устройстве и отбрасывает записи; их копия остаётся у них".into(),
         // ---- add device / pairing ----
-        Msg::AddDeviceTitle => "Добавить устройство".into(),
-        Msg::TapNearby => "или коснись ближнего устройства, которое просится во флот:".into(),
         Msg::TapOrbCancel => "коснись шара, чтобы отменить".into(),
-        Msg::AddDeviceNearby(name) => format!("{name}   \u{00b7} рядом").into(),
-        Msg::TypeWords => "Введи слова, показанные на новом устройстве".into(),
-        Msg::InvalidWord(w) => format!("'{w}': не одно из слов").into(),
-        Msg::WaitingForDevice => "Ждём новое устройство\u{2026} оно должно показывать свои слова".into(),
-        Msg::DevicesAskingToJoin(n) => {
-            let (noun, verb) = match (n % 10, n % 100) { (1, 11) => ("устройств", "просятся"), (1, _) => ("устройство", "просится"), (2..=4, 12..=14) => ("устройств", "просятся"), (2..=4, _) => ("устройства", "просятся"), _ => ("устройств", "просятся") };
-            format!("{} {noun} {verb} во флот: введи слова того, что у тебя в руках", fmt_mag(n as u64)).into()
-        }
-        Msg::NoMatchingDevice(bad) => format!("'{bad}' не совпадает ни с одним устройством, которое просится во флот").into(),
-        Msg::MatchingDevice(name) => format!("сверяем {name}\u{2026}").into(),
-        Msg::MatchingMultiple(n) => {
-            let word = match (n % 10, n % 100) { (1, 11) => "устройств", (1, _) => "устройство", (2..=4, 12..=14) => "устройств", (2..=4, _) => "устройства", _ => "устройств" };
-            format!("сверяем\u{2026} ({} {word})", fmt_mag(n as u64)).into()
-        }
-        Msg::Preparing => "Готовим\u{2026}".into(),
-        Msg::NoFleetKey => "У этого устройства пока нет ключа флота.\nСделай это с другого своего устройства.".into(),
-        Msg::NoDeviceKey => "Ключ этого устройства пока не готов. Попробуй через мгновение.".into(),
-        // Слово «устройство» стоит перед подставленным именем, чтобы причастие согласовалось с ним, а не с именем неизвестного рода.
-        Msg::AddingDevice(name) => format!("Добавляем {name}\u{2026}").into(),
-        Msg::DeviceAdded => "Устройство добавлено \u{221a}".into(),
-        Msg::JoinContended => "Присоединиться просят несколько устройств, поэтому сейчас можно добавить только устройство рядом с этим, по Bluetooth или NFC. Если ты добавляешь только одно, кто-то ещё знает твой handle.".into(),
         Msg::AddDeviceError(e) => format!("Ошибка: {e}").into(),
-        Msg::AddFromSignedIn => "Добавь это устройство с того, которое уже твоё:".into(),
         Msg::JoinFailed(e) => format!("Вступить не удалось: {e}").into(),
         Msg::RequestFailed(e) => format!("запрос не удался: {e}").into(),
         // ---- fleet page ----
@@ -441,7 +411,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FleetSigFloor(floor, n, total) => format!("Signatures: fleet floor {floor}\n{n} of {total} devices declared the full basket").into(),
         Msg::DeviceSigns(s) => format!("signs with {s}").into(),
         Msg::ChainLocked => "locked out on the chain".into(),
-        Msg::ThisDevice => "это устройство".into(),
         Msg::RetiredStillYours => "на покое, всё ещё твоё".into(),
         Msg::RevokedBadge => "отозвано".into(),
         Msg::TierLan => "LAN".into(),
@@ -453,15 +422,11 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Offline => "не в сети".into(),
         Msg::OnlineVia(link) => format!("в сети \u{00b7} {link}").into(),
         Msg::NotEggedYet(status) => format!("{status} \u{00b7} защищённый канал ожидается").into(),
-        Msg::ADevice => "устройство".into(),
         Msg::FoundNearby(h) => format!("рядом найдено: {h}").into(),
-        Msg::DepartureApproval(name) => format!("Устройство {name} просит уйти из твоего флота. Одобри это в Настройках → Флот.").into(),
-        Msg::FleetSignedOut(name) => format!("Устройство {name} покинуло флот.").into(),
         Msg::SignOutPublishFailed => "Не удалось опубликовать уход.\nПроверь связь и попробуй снова.".into(),
         Msg::LastDeviceCantSignOut => "Это последнее устройство твоей личности.\nЕму нельзя уйти. Сначала добавь другое устройство, а потом отправь это на покой.".into(),
         Msg::NoIdentityToRemove => "Нет аттестованной личности, которую можно убрать.".into(),
         Msg::SignOutBuildFailed => "Не удалось собрать запрос на уход.\nПопробуй снова.".into(),
-        Msg::DeviceReleased(name) => format!("Устройство {name} освобождено.\nТеперь оно может войти в любой флот.").into(),
         Msg::ReleaseFailed => "Не удалось освободить.\nПроверь связь и попробуй снова.".into(),
         Msg::DeviceReinstatedToast(name) => format!("Устройство {name} восстановлено.\nОно вернётся во флот при следующей аттестации.").into(),
         Msg::RevokedNotice(name) => format!("Устройство {name} отозвано.\nОно больше не может действовать в этом флоте.").into(),
@@ -478,7 +443,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::RevokePill { armed } => if armed { "Точно отозвать?" } else { "Отозвать" }.into(),
         Msg::SingleCopyWarning => "Твоя история сообщений живёт только на этом устройстве.\nДобавь устройство, чтобы её реплицировать.".into(),
         Msg::DeviceSignsItselfOut => "Попросить об уходе может только само устройство, а его железо остаётся твоим, пока ты его не освободишь.".into(),
-        Msg::AddDevicePill => "Добавить устройство".into(),
         Msg::RenamePill => "Переименовать".into(),
         // ---- security page ----
         Msg::SecurityLock => "Заблокировать".into(),
@@ -487,12 +451,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SecurityShell { on } => if on { "Shell: вкл" } else { "Shell: выкл" }.into(),
         Msg::SecurityShellHint => "Позволяет вашим другим устройствам выполнять команды на этом устройстве через мост. Выключено, пока вы не включите здесь, только на этом устройстве, никогда не синхронизируется: потерянный телефон или телефон с чужим кодом не должен быть оболочкой на каждом вашем компьютере.".into(),
         Msg::BridgeShellOff => "Это устройство не принимает команды. Включите Shell в Настройки → Безопасность на том устройстве.".into(),
-        Msg::DepartWaitingLine => "Спрашиваем твои другие устройства, отпустить ли это. Одобри на любом из них.".into(),
-        Msg::DepartDenied => "Одно из твоих устройств отклонило этот запрос, так что это устройство остаётся во флоте. Чтобы спросить снова, нажми Освободить.".into(),
-        Msg::DepartRequestLine(name) => format!("Устройство {name} просит уйти из твоего флота.").into(),
-        Msg::DepartApprovePill => "Одобрить".into(),
-        Msg::DepartDenyPill => "Отклонить".into(),
-        Msg::DepartDeniedHere(name) => format!("Отклонено. Устройство {name} остаётся в твоём флоте.").into(),
         Msg::HoldingsChecking => "Проверяем, какие твои файлы и записи есть только на этом устройстве\u{2026}".into(),
         Msg::HoldingsNoKey => "Не получается проверить, что есть только здесь: у этого устройства ещё нет ключа флота. Освобождение может потерять файлы и записи, которых нет ни на одном другом устройстве.".into(),
         Msg::HoldingsAllSafe => "Каждый файл и запись с этого устройства есть и на другом твоём устройстве.".into(),
@@ -503,11 +461,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::HoldingsStopWaiting => "Больше не ждать".into(),
         Msg::HoldingsCopyHint(name) => format!("Копирует на {name} то, что есть только здесь, а затем просит освободить это устройство, когда у каждого файла будет второй дом.").into(),
         Msg::HoldingsCopyingTo(name) => format!("Копируем на {name}. Держи оба устройства включёнными и на связи; когда у каждого файла будет второй дом, это устройство само попросит освобождения, и слова одобрения появятся здесь.").into(),
-        Msg::DepartFreesHardware => "Одобрение стирает устройство и освобождает его железо, чтобы оно могло войти в любой флот.".into(),
-        Msg::DepartKeepsHardware => "Одобрение стирает устройство.\nЕго железо остаётся зарегистрированным в твоём флоте.".into(),
-        Msg::DepartComplete(n) => format!("Устройство {n} покинуло твой флот.\nЕго железо свободно.").into(),
-        Msg::DepartReleasePending(n) => format!("Устройство {n} покинуло твой флот, но его железо не освободилось.\nНажми Освободить в его строке на покое, чтобы повторить.").into(),
-        Msg::DeviceBrandedHint => "Это железо всё ещё зарегистрировано в другом флоте.\nВладелец того флота может освободить его кнопкой Освободить на своей странице Флота.".into(),
         Msg::SecurityRevoke { armed } => if armed { "Точно отозвать?" } else { "Отозвать" }.into(),
         Msg::SecurityRevokeHint => "Не даёт этому устройству действовать как ты: твой флот его отвергает, ключ флота проворачивается мимо него, и оно гаснет. Даже стирание и повторная аттестация его не вернут. Здесь ничего не удаляется, и оно остаётся в цепочке твоего флота. Восстанови его с другого своего устройства. Это для ящика стола или для случая, когда железо уже не у тебя в руках.".into(),
         Msg::RevokeNeedsAnotherDevice => "Сначала добавь другое устройство.\nВосстановить это может только другое твоё устройство.".into(),

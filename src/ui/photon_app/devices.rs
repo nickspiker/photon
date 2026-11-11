@@ -15,7 +15,7 @@ impl PhotonApp {
         self.add_device_selected = None;
         self.add_device_typo = None;
         self.add_device_wordcheck_text.clear();
-        self.add_device_status = tr(Msg::TypeWords).into_owned();
+        self.add_device_status = tr(fgtw::text::Msg::TypeWords).into_owned();
         let (tx, rx) = std::sync::mpsc::channel();
         self.add_device_rx = Some(rx);
         self.add_device_tx = Some(tx);
@@ -112,7 +112,7 @@ impl PhotonApp {
         self.add_device_typo = None;
         if self.add_device_contended {
             // The words pick a request out of the network's list, the path contention shuts (docs/lifecycle.md P3): the only adds left are a Bluetooth-heard row's tap and an NFC tap.
-            self.add_device_status = tr(Msg::JoinContended).into_owned();
+            self.add_device_status = tr(fgtw::text::Msg::JoinContended).into_owned();
             return;
         }
         let text = self.add_device_wordcheck_text.clone();
@@ -120,16 +120,16 @@ impl PhotonApp {
             WordMatch::NoCandidates { typo } => {
                 // Nothing to match against yet — the voca spell-check still catches finger trouble while the registry answers.
                 self.add_device_status = match &typo {
-                    Some(w) => tr(Msg::InvalidWord(w)).into_owned(),
-                    None => tr(Msg::WaitingForDevice).into_owned(),
+                    Some(w) => tr(fgtw::text::Msg::InvalidWord(w)).into_owned(),
+                    None => tr(fgtw::text::Msg::WaitingForDevice).into_owned(),
                 };
                 self.add_device_typo = typo;
             }
             WordMatch::Nothing { asking } => {
                 self.add_device_status = if asking == 1 {
-                    tr(Msg::TypeWords).into_owned()
+                    tr(fgtw::text::Msg::TypeWords).into_owned()
                 } else {
-                    tr(Msg::DevicesAskingToJoin(asking)).into_owned()
+                    tr(fgtw::text::Msg::DevicesAskingToJoin { count: asking as u64, shown: &crate::fmt_mag(asking as u64) }).into_owned()
                 };
             }
             WordMatch::Full(ci) => {
@@ -139,15 +139,15 @@ impl PhotonApp {
             }
             WordMatch::NoMatch(bad) => {
                 // The entry left every candidate at this exact word — name it in red.
-                self.add_device_status = tr(Msg::NoMatchingDevice(&bad)).into_owned();
+                self.add_device_status = tr(fgtw::text::Msg::NoMatchingDevice(&bad)).into_owned();
                 self.add_device_typo = Some(bad);
             }
             WordMatch::One(ci) => {
                 let name = &self.add_device_candidates[ci].name;
-                self.add_device_status = tr(Msg::MatchingDevice(name)).into_owned();
+                self.add_device_status = tr(fgtw::text::Msg::MatchingDevice(name)).into_owned();
             }
             WordMatch::Many(k) => {
-                self.add_device_status = tr(Msg::MatchingMultiple(k)).into_owned();
+                self.add_device_status = tr(fgtw::text::Msg::MatchingMultiple { count: k as u64, shown: &crate::fmt_mag(k as u64) }).into_owned();
             }
         }
     }
@@ -365,7 +365,7 @@ impl PhotonApp {
         self.session
             .as_ref()
             .map(|s| super::machine_name(pk, &s.identity_seed, self.fleet_settings.as_ref()))
-            .unwrap_or_else(|| tr(Msg::ADevice).into_owned())
+            .unwrap_or_else(|| tr(fgtw::text::Msg::ADevice).into_owned())
     }
 
     /// APPROVER: Approve the pending departure request (owner, 2026-11-10: one press, no words; the request is a current member's signature, checked on receipt and again by the fold). Pressed on the Fleet page's request, or an NFC tap of the leaving device (Android).
@@ -398,7 +398,7 @@ impl PhotonApp {
             }
             _ => crate::logf!("FLEET: denied {}'s departure here; no session or key to tell the fleet with", name),
         }
-        self.ready_toast = Some(tr(Msg::DepartDeniedHere(&name)).into_owned());
+        self.ready_toast = Some(tr(fgtw::text::Msg::DepartDeniedHere(&name)).into_owned());
     }
 
     /// A `depart_deny` from a live member of our fleet. On the leaving device it ends our own request when it names our current salt; elsewhere the request is refused from now on and cleared if it is the one pending here. True when anything changed.
@@ -417,7 +417,7 @@ impl PhotonApp {
             self.depart_salt = None;
             self.depart_nfc_serve = None;
             self.depart_was_denied = true;
-            self.ready_toast = Some(tr(Msg::DepartDenied).into_owned());
+            self.ready_toast = Some(tr(fgtw::text::Msg::DepartDenied).into_owned());
             return true;
         }
         self.record_depart_denied(&leaver, &salt, t);
@@ -507,7 +507,7 @@ impl PhotonApp {
 
     /// A departure request from a sibling arrived, checked and not denied: tell the person. The OS notification (where the platform has one) opens the Fleet page with the request's Approve and Deny ready; the toast covers an attended window.
     pub(super) fn notify_departure_request(&mut self, name: &str, salt: &[u8; 32]) {
-        let body = tr(Msg::DepartureApproval(name)).into_owned();
+        let body = tr(fgtw::text::Msg::DepartureApproval(name)).into_owned();
         let title = tr(Msg::FleetTitle).into_owned();
         #[cfg(target_os = "android")]
         crate::platform::jni_android::notify_fleet_request(salt, &title, &body);
@@ -538,15 +538,15 @@ impl PhotonApp {
                             vsf::VsfType::ke(pk.to_vec()),
                         );
                         self.fleet_retired.retain(|d| d != &pk);
-                        self.ready_toast = Some(tr(Msg::DepartComplete(name)).into_owned());
+                        self.ready_toast = Some(tr(fgtw::text::Msg::DepartComplete(name)).into_owned());
                     }
                     Approved::Released(Err(e)) => {
                         // The countersign LANDED; only the release half failed. The retired row appears with its Release pill — the named, visible retry — and the toast says exactly that.
                         crate::logf!("FLEET: release after countersign failed ({}) — retired row holds the retry", e);
-                        self.ready_toast = Some(tr(Msg::DepartReleasePending(name)).into_owned());
+                        self.ready_toast = Some(tr(fgtw::text::Msg::DepartReleasePending(name)).into_owned());
                     }
                     Approved::BrandKept => {
-                        self.ready_toast = Some(tr(Msg::FleetSignedOut(name)).into_owned());
+                        self.ready_toast = Some(tr(fgtw::text::Msg::FleetSignedOut(name)).into_owned());
                     }
                 }
                 // Adopt the shrink immediately (rotation sentinel + row drop) instead of waiting for the next poll.
@@ -613,7 +613,7 @@ impl PhotonApp {
                     if intent == 1 { "release the brand" } else { "brand kept (legacy)" },
                     hex::encode(&salt[..4])
                 );
-                self.ready_toast = Some(tr(Msg::DepartWaitingLine).into_owned());
+                self.ready_toast = Some(tr(fgtw::text::Msg::DepartWaitingLine).into_owned());
             }
             Err(e) => {
                 crate::logf!("SECURITY: departure request build failed: {}", e);
@@ -2222,7 +2222,7 @@ impl PhotonApp {
                 });
             }
         }
-        self.add_device_status = tr(Msg::SelectedDevice(&name)).into_owned();
+        self.add_device_status = tr(fgtw::text::Msg::SelectedDevice(&name)).into_owned();
         self.add_device_selected = Some((req, name, words));
     }
 
@@ -2235,7 +2235,7 @@ impl PhotonApp {
     /// No under a pick: back to the list, as Back would be, with nothing to undo (nothing was bound).
     pub(super) fn unselect_candidate(&mut self) {
         self.add_device_selected = None;
-        self.add_device_status = tr(Msg::TypeWords).into_owned();
+        self.add_device_status = tr(fgtw::text::Msg::TypeWords).into_owned();
     }
 
     /// The add, once the person has said yes (Yes under a pick, an NFC match, or the typed words): the bind and then the key release run in the background, and the screen goes straight back to the Fleet page (owner 2026-11-10: "just go straight back to fleet"), where the new row and a toast confirm it.
@@ -2243,7 +2243,7 @@ impl PhotonApp {
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else { return };
         if let Some(busy) = self.adding {
             crate::logf!("ADD-DEVICE: {} waits; {} is still being added", crate::fp(&req.device_pubkey), crate::fp(&busy));
-            self.add_device_status = tr(Msg::AddingDevice(&crate::network::fgtw::fleet::device_name_default(&busy, &seed))).into_owned();
+            self.add_device_status = tr(fgtw::text::Msg::AddingDevice(&crate::network::fgtw::fleet::device_name_default(&busy, &seed))).into_owned();
             return;
         }
         let name = crate::network::fgtw::fleet::device_name_default(&req.device_pubkey, &seed);
@@ -2253,7 +2253,7 @@ impl PhotonApp {
         self.end_add_device_flow();
         self.refresh_fleet_retired();
         self.state = AppState::Settings(SettingsPage::Fleet);
-        self.ready_toast = Some(tr(Msg::AddingDevice(&name)).into_owned());
+        self.ready_toast = Some(tr(fgtw::text::Msg::AddingDevice(&name)).into_owned());
     }
 
     /// The background add's sender, made on first use and kept for the session, so leaving or reopening the Add screen never drops a result in flight.
@@ -2284,7 +2284,7 @@ impl PhotonApp {
         }
         let (Some(hp), Some(kp)) = (self.our_handle_proof(), self.device_signer()) else {
             crate::logf!("ADD-DEVICE: cannot bind: handle proof {}, device key {}", self.our_handle_proof().is_some(), self.device_signer().is_some());
-            self.add_device_status = tr(Msg::NoDeviceKey).into_owned();
+            self.add_device_status = tr(fgtw::text::Msg::NoDeviceKey).into_owned();
             return false;
         };
         let tx = self.adding_sender();
@@ -2316,7 +2316,7 @@ impl PhotonApp {
             crate::logf!("ADD-DEVICE: confirm — growing the fan-out (fleet key held = {}, {} locked device(s) excluded)", held.is_some(), locked.len());
             std::thread::spawn(move || {
                 let r = (|| {
-                    let held = held.ok_or_else(|| tr(Msg::NoFleetKey).into_owned())?;
+                    let held = held.ok_or_else(|| tr(fgtw::text::Msg::NoFleetKey).into_owned())?;
                     let members: Vec<[u8; 32]> = fleet::current_members(&hp)?
                         .into_iter()
                         .filter(|m| !locked.contains(m))
@@ -3094,12 +3094,12 @@ impl PhotonApp {
             return;
         }
         let Some(device_key) = self.device_signer() else {
-            self.add_join_status = tr(Msg::NoDeviceKey).into_owned();
+            self.add_join_status = tr(fgtw::text::Msg::NoDeviceKey).into_owned();
             return;
         };
         // ONE IDENTITY PER DEVICE at the join door (docs/lifecycle.md D2) is gated INSIDE the join thread now, after the proof — the cheap pre-proof compare that used to sit here was the same offline handle oracle as the attest gate (2026-08-23 ticket). The words still show first (they're inert without the bind request), and the gate fires before the request, the NFC serve, or any beacon.
         self.add_join_handle = Some(handle.clone());
-        self.add_join_status = tr(Msg::Preparing).into_owned();
+        self.add_join_status = tr(fgtw::text::Msg::Preparing).into_owned();
         self.change_focus(None);
         if let Some(tb) = self.textbox.as_mut() {
             tb.clear();

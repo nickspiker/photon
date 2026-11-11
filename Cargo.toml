@@ -110,7 +110,7 @@ rayon = "1.11.0"
 # arboard specified per-platform below (pulls x11rb on Linux)
 vsf = { path = "../vsf", features = ["crypto", "inspect", "text-encode", "derive"] }
 # FGTW client substrate — device keypair + fleet membership chain, shared with the calendar and the FGTW worker. Path dep during the migration; the client HTTP oracle / fan-out / fstate lift into it in later steps (see docs plan + fgtw/MIGRATION.md).
-fgtw = { path = "../fgtw" }
+fgtw = { path = "../fgtw", features = ["text"] }
 # The default avatar and the dev-build orb: a tapuwae mark (sibling crate).
 tapuwae = { path = "../tapuwae" }
 # fluor: CPU softbuffer compositor. Hosts the desktop event loop, owns chrome / paint primitives / text rendering / widget dispatch.

@@ -15,6 +15,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [push after landing](push-after-landing.md) — memories live in 'Claude memories/'; commit+push with photon
 - [no private handles](no-private-handles.md) — handles never in any repo; petnames · [doctrine](project_humanitys_code.md) · [never on disk](feedback_never_store_handles.md)
 - [photon + deps only](feedback_scope_photon_and_deps.md) — HARD: never edit another project
+- [FGTW out of Photon](feedback_fgtw_out_of_photon.md) — HARD: fleet/identity flows + wording live in fgtw; Photon becomes just a messenger; never add fleet logic to photon_app
 - [stage own files](feedback_stage_only_own_files.md) — HARD: explicit paths; never git add -u/-A
 - [commit + push, always](feedback_commit_all.md) · [source map](feedback_source_map.md) — keep src/lib.rs map current
 - [no Python](feedback_no_python.md) — HARD; tools are Rust · [launcher is photon](feedback_launcher_named_photon.md)

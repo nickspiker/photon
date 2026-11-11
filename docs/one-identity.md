@@ -33,7 +33,8 @@ The verdict that tells Unbound from Locked is fgtw's one pure function (`fgtw::a
 
 1. **The attest network path** (`network/handle_query.rs`: the seed query, LAN `fleet_req` / `fleet_resp`, the verdict, mint, join and pairing) into fgtw, beside `fgtw::attest`, so Mahere and Lumis call the same code.
 2. **The screens** (handle entry, the lamps, the permanence warning and retype, pairing words) into one shared fluor component, so every app looks and behaves alike. Its crate is to be named.
-3. **Photon keeps** everything after Live: conversations, fleet, the rest.
+3. **The fleet flows too** (owner 2026-11-10): add, join, depart, lock, chain news, fleet state, as machines in `fgtw::flow` (fgtw FLOWS.md), so ferros inherits the behaviour instead of re-implementing it.
+4. **Photon keeps** the messenger: conversations, CLUTCH, history, waves and beams. On ferros it has no fleet page; elsewhere it draws the fleet screens from fgtw's machines.
 
 ## The About page and dashboard
 
