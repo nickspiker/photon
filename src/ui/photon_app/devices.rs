@@ -368,65 +368,218 @@ impl PhotonApp {
             .unwrap_or_else(|| tr(fgtw::text::Msg::ADevice).into_owned())
     }
 
-    /// APPROVER: Approve the pending departure request (owner, 2026-11-10: one press, no words; the request is a current member's signature, checked on receipt and again by the fold). Pressed on the Fleet page's request, or an NFC tap of the leaving device (Android).
+    /// APPROVER: Approve the request shown (one press on the Fleet page, or an NFC tap of the leaving device): the Depart machine runs the approve publish off this thread.
     pub(super) fn approve_pending_departure(&mut self) {
-        let Some(p) = self.pending_depart_req.clone() else {
-            return;
-        };
-        let name = self.departing_name(&p.leaver);
-        // Release frees the brand (intent 1). A request declaring desk (2) completes brand-kept, and a pre-intent 0 takes that same conservative path.
-        let intent = if p.intent == 1 { 1 } else { 2 };
-        self.complete_departure_approval(p.leaver, &name, intent);
+        self.depart_step(fgtw::flow::Event::User(fgtw::flow::UserOp::Approve));
     }
 
-    /// APPROVER: Deny the pending departure request. The request goes, its salt and stamp are refused here from now on (persisted, `record_depart_denied`), and a signed `depart_deny` goes to every fleet device the request went to, the leaver among them, so each clears it and the leaver says so. Asking again takes a new salt.
+    /// APPROVER: Deny the request shown: refused here and in the fleet-shared settings, and a signed deny goes to every live member, the leaver among them.
     pub(super) fn deny_pending_departure(&mut self) {
-        let Some(p) = self.pending_depart_req.take() else {
-            return;
-        };
-        let name = self.departing_name(&p.leaver);
-        self.record_depart_denied(&p.leaver, &p.salt, p.t);
-        match (self.our_handle_proof(), self.device_signer()) {
-            (Some(hp), Some(kp)) => {
-                match crate::network::fgtw::protocol::build_depart_deny_vsf(&hp, &p.leaver, &p.salt, p.t, kp.keypair().secret.as_bytes()) {
-                    Ok(frame) => {
-                        self.dispatch_frame_to_siblings(frame);
-                        crate::logf!("FLEET: denied {}'s departure request {}; the fleet is told", name, hex::encode(&p.salt[..4]));
-                    }
-                    Err(e) => crate::logf!("FLEET: denied {}'s departure here, but the deny did not build ({}); the other devices still show it", name, e),
-                }
-            }
-            _ => crate::logf!("FLEET: denied {}'s departure here; no session or key to tell the fleet with", name),
-        }
-        self.ready_toast = Some(tr(fgtw::text::Msg::DepartDeniedHere(&name)).into_owned());
+        self.depart_step(fgtw::flow::Event::User(fgtw::flow::UserOp::Deny));
     }
 
-    /// A `depart_deny` from a live member of our fleet. On the leaving device it ends our own request when it names our current salt; elsewhere the request is refused from now on and cleared if it is the one pending here. True when anything changed.
-    pub(super) fn on_depart_deny(&mut self, hp: [u8; 32], leaver: [u8; 32], salt: [u8; 32], t: i64, denier: [u8; 32]) -> bool {
-        if self.our_handle_proof() != Some(hp) {
-            return false;
-        }
-        let me = self.device_keypair.as_ref().map(|kp| kp.public.to_bytes());
-        if me == Some(leaver) {
-            if self.depart_salt != Some(salt) {
-                crate::logf!("FLEET: a deny from {} names a departure request of ours that is no longer current; ignored", crate::fp(&denier));
-                return false;
-            }
-            crate::logf!("SECURITY: our departure request {} was denied by {}; this device stays", hex::encode(&salt[..4]), crate::fp(&denier));
-            self.depart_request_t = None;
-            self.depart_salt = None;
-            self.depart_nfc_serve = None;
-            self.depart_was_denied = true;
-            self.ready_toast = Some(tr(fgtw::text::Msg::DepartDenied).into_owned());
+    /// The departure request this person is asked about: (leaving device, intent, salt).
+    pub(super) fn depart_asked(&self) -> Option<([u8; 32], u8, [u8; 32])> {
+        self.depart.as_ref().and_then(|m| m.asked())
+    }
+
+    /// Our own departure request stands.
+    pub(super) fn depart_asking(&self) -> bool {
+        self.depart.as_ref().is_some_and(|m| m.asking())
+    }
+
+    /// The Depart machine (fgtw::flow::depart), made once per session: from its state in the vault when there is one, else fresh. False with no session or device key.
+    fn depart_machine_make(&mut self) -> bool {
+        if self.depart.is_some() {
             return true;
         }
-        self.record_depart_denied(&leaver, &salt, t);
-        let clears = self.pending_depart_req.as_ref().is_some_and(|p| p.leaver == leaver && (p.salt == salt || p.t == t));
-        if clears {
-            crate::logf!("FLEET: {}'s departure request was denied on {}; cleared here", self.departing_name(&leaver), crate::fp(&denier));
-            self.pending_depart_req = None;
+        let (Some(hp), Some(me)) = (self.our_handle_proof(), self.device_keypair.as_ref().map(|kp| kp.public.to_bytes())) else {
+            return false;
+        };
+        let saved = match (self.storage.as_ref(), self.session.as_ref()) {
+            (Some(storage), Some(session)) => match storage.read_addr(&crate::storage::vault_key("depart_state", &session.vault_seed)) {
+                Ok(b) => b,
+                Err(e) => {
+                    crate::logf!("FLEET: the saved departure state could not be read ({}); starting fresh", e);
+                    None
+                }
+            },
+            _ => None,
+        };
+        self.depart = Some(match saved.map(|b| fgtw::flow::depart::Depart::from_vsf(&b)) {
+            Some(Ok(m)) => m,
+            Some(Err(e)) => {
+                crate::logf!("FLEET: the saved departure state did not verify ({}); starting fresh", e);
+                fgtw::flow::depart::Depart::new(hp, me)
+            }
+            None => fgtw::flow::depart::Depart::new(hp, me),
+        });
+        true
+    }
+
+    /// Our chain's fold, as just adopted: the Depart machine learns the members (and completes our own departure when we are no longer among them). The first fold of a session also resumes whatever the saved state holds.
+    pub(super) fn depart_members(&mut self, members: &[[u8; 32]]) {
+        let first = self.depart.is_none();
+        if !self.depart_machine_make() {
+            return;
         }
-        clears
+        let locked = self.locked_devices();
+        self.depart_step(fgtw::flow::Event::Members { members, locked: &locked });
+        if first {
+            if let Some(step) = self.depart.as_mut().map(|m| m.resume()) {
+                self.depart_carry(step.actions);
+            }
+        }
+    }
+
+    /// One event to the Depart machine, and its actions carried out.
+    pub(super) fn depart_step(&mut self, ev: fgtw::flow::Event) {
+        let Some(m) = self.depart.as_mut() else {
+            crate::log("FLEET: no departure machine yet (our chain has not folded this session)");
+            return;
+        };
+        let step = m.step(ev, vsf::eagle_time_oscillations());
+        self.depart_carry(step.actions);
+    }
+
+    /// Carry out the Depart machine's actions with Photon's transport, vault, settings and screen.
+    fn depart_carry(&mut self, actions: Vec<fgtw::flow::Action>) {
+        use fgtw::flow::{Action, Job, To};
+        for a in actions {
+            match a {
+                Action::Send { to: To::Device(k), frame } => self.dispatch_frame_to_sibling(frame, Some(k)),
+                // Departure frames go to members by key; Photon reaches a member by its sibling row's addresses and the relay.
+                Action::Send { to: To::Addr(addr), .. } => crate::logf!("FLEET: a departure frame for the bare address {} was not sent (members are reached by key)", addr),
+                // Photon learns a sibling's addresses on its own frame path (the sibling row's race addresses).
+                Action::Seen { .. } => {}
+                Action::Build { id, frame } => {
+                    let tx = self.flow_tx.clone();
+                    match self.device_signer() {
+                        Some(kp) => {
+                            // Signing takes every egg this device holds (SLH-DSA among them), so it runs off the UI thread.
+                            std::thread::spawn(move || {
+                                let result = fgtw::flow::build(&frame, &kp, vsf::eagle_time_oscillations());
+                                crate::log_err!(tx.send(FlowDone::Built { id, result }), "a signed departure frame to the UI thread");
+                            });
+                        }
+                        None => {
+                            crate::log_err!(tx.send(FlowDone::Built { id, result: Err("no device key to sign with".to_string()) }), "a departure build failure to the UI thread");
+                        }
+                    }
+                }
+                Action::Job(Job::Approve { leaver, t, consent_sig, intent }) => {
+                    let tx = self.flow_tx.clone();
+                    match (self.our_handle_proof(), self.device_signer()) {
+                        (Some(hp), Some(kp)) => {
+                            // The countersign and publish (and the release for a hand-off) block on the chain write, so off the UI thread.
+                            std::thread::spawn(move || {
+                                let result = crate::network::fgtw::fleet::approve_departure(&kp, &hp, &leaver, t, &consent_sig, intent);
+                                crate::log_err!(tx.send(FlowDone::Approved { leaver, result }), "a departure approval to the UI thread");
+                            });
+                        }
+                        _ => {
+                            crate::log_err!(tx.send(FlowDone::Approved { leaver, result: Err("no session or device key".to_string()) }), "a departure approval failure to the UI thread");
+                        }
+                    }
+                }
+                Action::NfcServe(salt) => self.depart_nfc_serve = salt.map(|s| crate::network::pairing_nfc::serve_guard(&s)),
+                Action::Persist => self.depart_persist(),
+                Action::RecordDenied { leaver, salt, t } => self.record_depart_denied(&leaver, &salt, t),
+                Action::RecordReleased { device } => {
+                    self.settings_set(&format!("fleet.released.{}", hex::encode(device)), vsf::VsfType::ke(device.to_vec()));
+                    self.fleet_retired.retain(|d| d != &device);
+                }
+                Action::RefreshChain => {
+                    if let Some(hp) = self.our_handle_proof() {
+                        self.spawn_contact_fleet_refresh(vec![hp]);
+                    }
+                }
+                Action::Note(n) => self.depart_note(n),
+                Action::Wipe => {
+                    crate::log("SECURITY: departure approved by a sibling; the fold no longer lists us; wiping");
+                    self.depart = None;
+                    self.depart_nfc_serve = None;
+                    self.clean_device_for_reuse();
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Keep the Depart machine's state in the vault, so a departure under way survives a restart.
+    fn depart_persist(&self) {
+        let (Some(m), Some(storage), Some(session)) = (self.depart.as_ref(), self.storage.as_ref(), self.session.as_ref()) else {
+            return;
+        };
+        match m.to_vsf(vsf::eagle_time_oscillations()) {
+            Ok(doc) => {
+                if let Err(e) = storage.write_addr(&crate::storage::vault_key("depart_state", &session.vault_seed), &doc) {
+                    crate::logf!("FLEET: the departure state was not saved: {}", e);
+                }
+            }
+            Err(e) => crate::logf!("FLEET: the departure state did not encode: {}", e),
+        }
+    }
+
+    /// What the Depart machine says the person should be told.
+    fn depart_note(&mut self, n: fgtw::flow::Note) {
+        use fgtw::flow::Note;
+        use fgtw::sponsor::Approved;
+        match n {
+            Note::LastDevice => {
+                crate::log("SECURITY: last member (or our chain not folded yet): the departure request is refused (an identity must live somewhere)");
+                self.ready_toast = Some(tr(Msg::LastDeviceCantSignOut).into_owned());
+            }
+            Note::DepartAsking => {
+                crate::log("SECURITY: departure requested: the fleet's devices are asked; this device wipes on completion");
+                self.depart_was_denied = false;
+                self.ready_toast = Some(tr(fgtw::text::Msg::DepartWaitingLine).into_owned());
+            }
+            Note::DepartNotSent(e) => {
+                crate::logf!("SECURITY: the departure request did not build: {}", e);
+                self.ready_toast = Some(tr(Msg::SignOutBuildFailed).into_owned());
+            }
+            Note::DepartDenied { by } => {
+                crate::logf!("SECURITY: our departure request was denied by {}; this device stays", crate::fp(&by));
+                self.depart_was_denied = true;
+                self.ready_toast = Some(tr(fgtw::text::Msg::DepartDenied).into_owned());
+            }
+            Note::DepartDone => crate::log("SECURITY: our departure is complete"),
+            Note::DepartAsked { leaver } => {
+                let name = self.departing_name(&leaver);
+                crate::logf!("SECURITY: {} requests removal from the fleet: Approve or Deny on the Fleet page", name);
+                if let Some((_, _, salt)) = self.depart_asked() {
+                    self.notify_departure_request(&name, &salt);
+                }
+            }
+            Note::DepartDeniedHere { leaver } => {
+                let name = self.departing_name(&leaver);
+                crate::logf!("FLEET: denied {}'s departure request; the fleet is told", name);
+                self.ready_toast = Some(tr(fgtw::text::Msg::DepartDeniedHere(&name)).into_owned());
+            }
+            Note::DepartDeniedElsewhere { leaver, by } => crate::logf!("FLEET: {}'s departure request was denied on {}; cleared here", self.departing_name(&leaver), crate::fp(&by)),
+            Note::DepartSettled { leaver } => crate::logf!("FLEET: {}'s departure was settled on another device; cleared here", self.departing_name(&leaver)),
+            Note::DepartApproved { leaver, outcome } => {
+                let name = self.departing_name(&leaver);
+                crate::logf!("FLEET: countersigned {}'s departure; the consented Remove is published", name);
+                self.ready_toast = Some(
+                    match outcome {
+                        Approved::Released(Ok(())) => tr(fgtw::text::Msg::DepartComplete(&name)),
+                        Approved::Released(Err(e)) => {
+                            // The countersign landed; only the release failed. The retired row's Release pill is the retry.
+                            crate::logf!("FLEET: the release after the countersign failed ({}); the retired row holds the retry", e);
+                            tr(fgtw::text::Msg::DepartReleasePending(&name))
+                        }
+                        Approved::BrandKept => tr(fgtw::text::Msg::FleetSignedOut(&name)),
+                    }
+                    .into_owned(),
+                );
+            }
+            Note::DepartApproveFailed { leaver, reason } => {
+                crate::logf!("FLEET: the approval of {}'s departure did not publish ({}); the request stays", self.departing_name(&leaver), reason);
+                self.ready_toast = Some(tr(Msg::SignOutPublishFailed).into_owned());
+            }
+        }
     }
 
     /// Encode a list of denied departure requests as one TYPED VSF field: (ke leaver, hb salt, e6 consent stamp) per request, the `encode_react_recent` discipline.
@@ -471,16 +624,17 @@ impl PhotonApp {
         out
     }
 
-    /// Is this departure request refused: its salt, or its consent stamp, denied before by any device of the fleet? Reads the union of every device's denied list (fleet-synced settings).
-    pub(super) fn depart_denied(&self, leaver: &[u8; 32], salt: &[u8; 32], t: i64) -> bool {
+    /// Every departure request refused anywhere in the fleet: the union of every device's denied list (fleet-synced settings), for the Depart machine.
+    pub(super) fn depart_denied_union(&self) -> Vec<([u8; 32], [u8; 32], i64)> {
         let Some(fs) = self.fleet_settings.as_ref() else {
-            return false;
+            return Vec::new();
         };
         fs.global
             .iter()
             .filter(|e| !e.tombstone && e.key.starts_with(DEPART_DENIED_PREFIX))
             .filter_map(|e| crate::storage::fleet_settings::as_bytes(&e.value))
-            .any(|b| Self::decode_depart_denied(&b).iter().any(|(l, s, dt)| l == leaver && (s == salt || *dt == t)))
+            .flat_map(|b| Self::decode_depart_denied(&b))
+            .collect()
     }
 
     /// Remember a denied departure request on THIS device's single-writer key, persisted and pushed at once like every setting.
@@ -516,110 +670,22 @@ impl PhotonApp {
         self.ready_toast = Some(body);
     }
 
-    /// APPROVER: run the DECLARED departure path to completion — countersign, then for a new-owner intent release the brand in the same breath (the flow-completes rule: the approve tap finishes the handoff; a release failure surfaces IMMEDIATELY as the retired row's Release pill, the visible retry).
-    pub(super) fn complete_departure_approval(&mut self, pk: [u8; 32], name: &str, intent: u8) {
-        use fgtw::sponsor::Approved;
-        let Some(PendingDeparture { t, sig, .. }) = self.pending_depart_req.clone() else {
-            return;
-        };
-        let (Some(hp), Some(kp)) = (self.our_handle_proof(), self.device_signer()) else {
-            return;
-        };
-        // New owner: the release rides the same approval (fgtw::sponsor::approve_departure) — the hardware walks out the door attestable.
-        match crate::network::fgtw::fleet::approve_departure(&kp, &hp, &pk, t, &sig, intent) {
-            Ok(approved) => {
-                crate::logf!("FLEET: countersigned {}'s departure — consented Remove published (intent {})", name, intent);
-                self.pending_depart_req = None;
-                match approved {
-                    Approved::Released(Ok(())) => {
-                        crate::logf!("FLEET: released the brand on {} — hardware free for its new owner", name);
-                        self.settings_set(
-                            &format!("fleet.released.{}", hex::encode(pk)),
-                            vsf::VsfType::ke(pk.to_vec()),
-                        );
-                        self.fleet_retired.retain(|d| d != &pk);
-                        self.ready_toast = Some(tr(fgtw::text::Msg::DepartComplete(name)).into_owned());
-                    }
-                    Approved::Released(Err(e)) => {
-                        // The countersign LANDED; only the release half failed. The retired row appears with its Release pill — the named, visible retry — and the toast says exactly that.
-                        crate::logf!("FLEET: release after countersign failed ({}) — retired row holds the retry", e);
-                        self.ready_toast = Some(tr(fgtw::text::Msg::DepartReleasePending(name)).into_owned());
-                    }
-                    Approved::BrandKept => {
-                        self.ready_toast = Some(tr(fgtw::text::Msg::FleetSignedOut(name)).into_owned());
-                    }
-                }
-                // Adopt the shrink immediately (rotation sentinel + row drop) instead of waiting for the next poll.
-                if let Some(our_hp) = self.our_handle_proof() {
-                    self.spawn_contact_fleet_refresh(vec![our_hp]);
-                }
-            }
-            Err(e) => {
-                crate::logf!("FLEET: consented remove failed ({}) — request kept", e);
-                self.ready_toast = Some(tr(Msg::SignOutPublishFailed).into_owned());
-            }
-        }
-    }
-
-    /// REQUESTER half of the bilateral removal: sign our departure request and hand it to every sibling (the mirror of a joiner posting its binding request). No chain op happens here: every fleet device that hears it asks its person, Approve or Deny; an approving device countersigns and publishes, and we complete when we observe our own key de-folded (`depart_request_t` + the member-adopt drain). `wipe_after` = Remove & shred's flavor: wipe on completion instead of the keep-vault de-attest.
-    /// `intent`: 1 = new owner (the approver countersigns AND releases the brand), 2 = desk (brand kept). Every departure wipes on completion now (fleet holds history); the old keep-vault flavor retired with the intent menu (2026-09-04).
+    /// REQUESTER: ask the fleet to let this device go (the Security page's Release). The Depart machine (fgtw::flow) refuses on the last device, has the request signed off this thread, and hands it to every live member until each has it; this device wipes when the fold no longer lists it.
+    /// `intent` 1: approving frees the hardware too (every Release asks this).
     pub(super) fn request_fleet_departure(&mut self, intent: u8) {
-        let wipe_after = true;
-        let hp = self.our_handle_proof();
-        // LAST-MEMBER GATE (identity never dies): the final member cannot sign out — and structurally, a consented removal needs a SECOND device to approve, so a one-device fleet could never complete anyway. Fail toward refusal on a fetch error.
-        if let Some(ref hp_v) = hp {
-            let last = match crate::network::fgtw::fleet::current_members(hp_v) {
-                Ok(m) => m.len() <= 1,
-                Err(e) => {
-                    crate::logf!("SECURITY: member count fetch failed ({}) — treating as last device", e);
-                    true
-                }
-            };
-            if last {
-                crate::log("SECURITY: last member — sign-out refused (an identity must live somewhere)");
-                self.ready_toast = Some(tr(Msg::LastDeviceCantSignOut).into_owned());
-                return;
-            }
-        }
-        let (Some(hp), Some(kp)) = (hp, self.device_signer()) else {
-            crate::log("SECURITY: no session/keypair to request departure with");
+        if !self.depart_machine_make() {
+            crate::log("SECURITY: no session or device key to request a departure with");
             self.ready_toast = Some(tr(Msg::NoIdentityToRemove).into_owned());
             return;
-        };
-        let t = vsf::eagle_time_oscillations();
-        let me = kp.keypair().public.to_bytes();
-        let msg = fgtw::fleet::departreq_signing_bytes(&hp, &me, t);
-        // The consent as an egg-list blob, signed with every scheme this device holds. The fold verifies it against the bundle the chain holds for us and demands the floor; declaring runs on every attest, so by the time a device can depart its declared set IS its full set. (A device whose declare never landed gets BadConsent at approve and retries — never a silently weaker consent.)
-        let mask = kp.bundle().map(|b| b.mask()).unwrap_or(fgtw::fleet::scheme::MASK_BASE);
-        let sig = fgtw::pq::eggs_to_bytes(&kp.eggs(&msg, mask));
-        // The salt names this request (owner, 2026-11-10): 32 fresh random bytes inside the envelope our key signs. A fleet device's Deny refuses it for good, so asking again (this function again) is always a new salt, never the denied request resent.
+        }
+        // The salt names this request (owner, 2026-11-10): 32 fresh random bytes inside the envelope our key signs. A Deny refuses it for good, so asking again is always a new salt.
         let salt: [u8; 32] = {
             use rand::RngCore;
             let mut s = [0u8; 32];
             rand::thread_rng().fill_bytes(&mut s);
             s
         };
-        match crate::network::fgtw::protocol::build_depart_req_vsf(t, &sig, &me, kp.keypair().secret.as_bytes(), intent, &salt) {
-            Ok(frame) => {
-                self.dispatch_frame_to_siblings(frame);
-                self.depart_request_t = Some(t);
-                self.depart_salt = Some(salt);
-                self.depart_was_denied = false;
-                // NFC (Android HCE): serve the salt while the request stands, so a tap of an attested fleet device with its screen on approves it (the reverse of add). The previous request's guard drops here and stops its serve.
-                self.depart_nfc_serve = Some(crate::network::pairing_nfc::serve_guard(&salt));
-                self.depart_wipe_after = wipe_after;
-                crate::logf!(
-                    "SECURITY: departure requested (bilateral, intent {}, request {}): asking the fleet's devices; will WIPE on completion",
-                    if intent == 1 { "release the brand" } else { "brand kept (legacy)" },
-                    hex::encode(&salt[..4])
-                );
-                self.ready_toast = Some(tr(fgtw::text::Msg::DepartWaitingLine).into_owned());
-            }
-            Err(e) => {
-                crate::logf!("SECURITY: departure request build failed: {}", e);
-                self.ready_toast = Some(tr(Msg::SignOutBuildFailed).into_owned());
-            }
-        }
+        self.depart_step(fgtw::flow::Event::User(fgtw::flow::UserOp::Leave { intent, salt }));
     }
 
     /// Ship one fleet-scoped frame to every non-locked sibling (direct legs race, relay covers the rest): the ckpt frames' transport, same targeting as the chain_sync push.
@@ -1407,30 +1473,10 @@ impl PhotonApp {
             added_sibling = true;
         }
 
-        // BILATERAL DEPARTURE COMPLETION: our own request was approved — a sibling countersigned and published, and this fold no longer contains us. Finish the local half now: wipe (Remove & shred) or keep-vault de-attest (Remove). Gated on depart_request_t so a removal we never asked for (impossible today — expulsion doesn't exist) can't trigger a silent wipe.
-        if let (Some(kp), Some(_t)) = (self.device_keypair.as_ref(), self.depart_request_t) {
-            if !members.contains(&kp.public.to_bytes()) {
-                let wipe = self.depart_wipe_after;
-                self.depart_request_t = None;
-                self.depart_salt = None;
-                self.depart_nfc_serve = None;
-                self.depart_wipe_after = false;
-                crate::logf!(
-                    "SECURITY: departure approved by a sibling — we are de-folded; {}",
-                    if wipe { "wiping" } else { "de-attesting, vault kept" }
-                );
-                if wipe {
-                    self.clean_device_for_reuse();
-                } else {
-                    tohu::clear_session();
-                    self.session = None;
-                    self.private_s = crate::crypto::blind::PrivateS::None;
-                    self.pending_broadcast_signal = -1;
-                    self.state = AppState::Launch(LaunchState::Fresh);
-                    self.clear_handle_for_reproof();
-                }
-                return;
-            }
+        // The Depart machine (fgtw::flow) learns the fold: when our own request stands and this fold no longer lists us, it completes the local half, the wipe.
+        self.depart_members(members);
+        if self.session.is_none() {
+            return;
         }
 
         // Drop de-folded members (device removed from OUR chain) — AND keyless sibling rows (2026-09-01, the ocean-phone ghost): a sibling contact whose device key is None (or stale-era) can never be pinged, never earns a presence verdict, and the old is_some_and kept it forever — where it wedged the fleet-first keygen gate for every friend ceremony. The fold is the authority; a sibling row it can't vouch for is debris.

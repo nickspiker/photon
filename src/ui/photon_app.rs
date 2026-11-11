@@ -571,18 +571,10 @@ fn party_colour(digest: &[u8; 32]) -> u32 {
     vsf_rgb_to_stored(rgb_vsf)
 }
 
-/// A fleet device's departure request awaiting this person's Approve or Deny (owner, 2026-11-10: no words; the request is a member's signature, checked on receipt and again by the fold). `salt` names the request: a Deny refuses it, and the leaver's stamp `t`, for good.
-#[derive(Clone)]
-struct PendingDeparture {
-    /// The leaving device.
-    leaver: [u8; 32],
-    /// The consent stamp its signature covers.
-    t: i64,
-    /// Its consent eggs (the Remove op's consent_sig).
-    sig: Vec<u8>,
-    /// 1 new owner, 2 desk, 0 a pre-intent build (approved as desk).
-    intent: u8,
-    salt: [u8; 32],
+/// A departure job's answer from its worker thread, for the Depart machine (fgtw::flow): a signed frame, or the approve publish.
+enum FlowDone {
+    Built { id: u32, result: Result<Vec<u8>, String> },
+    Approved { leaver: [u8; 32], result: Result<fgtw::sponsor::Approved, String> },
 }
 
 /// A history page opened OFF the UI thread, posted back for the drain to merge. The kete open of an up-to-MAX_PAGE_BYTES page ran inline on the render thread — 210-485ms per page in the field (2026-08-08), the single largest status-arm stall. Only the frame's identity travels; the drain re-derives contact/rid/sibling state fresh, because the indexes and in-flight cursor it would have captured at dispatch can shift while the worker runs.
@@ -2934,18 +2926,15 @@ pub struct PhotonApp {
     contacts_scroll_extent: isize,
     settings_shred_armed: bool,
     /// Two-tap confirm armed for the Security page's SELF-revoke (this device revoking itself — the desk case). Mutually exclusive with the other destructive pills; cleared on any page switch.
-    /// Our outstanding departure request's consent stamp (bilateral removal): Some = we asked the fleet to sign us out and await a sibling's approval. Completion = observing our own key de-folded from the adopted member set. RAM-only; a relaunch just re-requests.
-    depart_request_t: Option<i64>,
-    /// LEAVER side: the salt naming our outstanding departure request (32 fresh random bytes per request, inside what our key signs). A `depart_deny` naming it ends the request; asking again makes a new one with a new salt. Lives and dies with `depart_request_t`.
-    depart_salt: Option<[u8; 32]>,
+    /// A device leaving its fleet, both halves (fgtw::flow::depart, shared with ferros): our own request and a sibling's request awaiting this person. Made at the first fold of our chain; its state rests in the vault (`depart_state`).
+    depart: Option<fgtw::flow::depart::Depart>,
+    /// The Depart machine's jobs (signing a frame, the approve publish) answer here from their threads.
+    flow_tx: std::sync::mpsc::Sender<FlowDone>,
+    flow_rx: std::sync::mpsc::Receiver<FlowDone>,
     /// LEAVER side: our outstanding request is served over NFC (Android HCE) while it stands, so a tap of a fleet device approves it. Dropping the guard stops serving.
     depart_nfc_serve: Option<crate::network::pairing_nfc::ServeGuard>,
     /// LEAVER side: a fleet device denied our last request. The Security page says so until a new request is made. RAM only.
     depart_was_denied: bool,
-    /// The pending departure completes as a WIPE (Remove & shred) instead of the keep-vault de-attest. Dies with the process — a relaunch mid-ceremony safely degrades to keep-vault (the user can Shred manually).
-    depart_wipe_after: bool,
-    /// A sibling's inbound departure request awaiting THIS person's Approve or Deny. One at a time: a second request overwrites (latest wins).
-    pending_depart_req: Option<PendingDeparture>,
     /// APPROVER side: the NFC reader is running because a departure request is pending here (Android; diffed per tick like the beacon scan): a tap of the leaving device, which serves its request salt, approves it.
     depart_nfc_reader: bool,
     /// Two-tap confirm armed for the Security page's "Remove & shred" (self-departure from the fleet chain, then crypto-wipe). Mutually exclusive with `settings_shred_armed`; cleared on any page switch, like every destructive arm.
@@ -3016,6 +3005,7 @@ impl PhotonApp {
         let (start_in_background, resident_mode) = (false, false);
         let (holdings_tx, holdings_rx) = std::sync::mpsc::channel();
         let (group_face_tx, group_face_rx) = std::sync::mpsc::channel();
+        let (flow_tx, flow_rx) = std::sync::mpsc::channel();
         // The fleet key's RAM copy sits inside this Arc for the life of the process, so its address never moves: pinned out of swap once, here (CSTV-08).
         let fleet_key_ram = std::sync::Arc::new(std::sync::Mutex::new(None));
         crate::crypto::pin_in_ram("the fleet key", &*fleet_key_ram);
@@ -3716,12 +3706,11 @@ impl PhotonApp {
             msg_max_scroll: 0.0,
             contacts_scroll_extent: 0,
             settings_shred_armed: false,
-            depart_request_t: None,
-            depart_salt: None,
+            depart: None,
+            flow_tx,
+            flow_rx,
             depart_nfc_serve: None,
             depart_was_denied: false,
-            depart_wipe_after: false,
-            pending_depart_req: None,
             depart_nfc_reader: false,
             settings_removeshred_armed: false,
             holdings_check: None,

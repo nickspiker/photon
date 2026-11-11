@@ -3211,7 +3211,7 @@ impl FluorApp<Px> for PhotonApp {
                 self.settings_content_scroll = 0.0;
                 self.refresh_fleet_retired();
                 self.state = AppState::Settings(SettingsPage::Fleet);
-                crate::log(if self.pending_depart_req.is_some() {
+                crate::log(if self.depart_asked().is_some() {
                     "NOTIFY: tap opened the Fleet page on the departure request"
                 } else {
                     "NOTIFY: tap opened the Fleet page; the departure request was settled meanwhile"
@@ -3471,7 +3471,7 @@ impl FluorApp<Px> for PhotonApp {
             }
         }
         // The NFC reader: while the AddDevice screen is up (a joiner's tap), and while a departure request is pending on an attested device (owner, 2026-11-10: a tap of the leaving device, which serves its request's salt, is Approve; the reverse of add). Android reader mode runs only with the app in front, so the screen is on. Diffed per tick like the scan, so every exit path stops the radio.
-        let want_depart_reader = self.pending_depart_req.is_some() && self.session.is_some();
+        let want_depart_reader = self.depart_asked().is_some() && self.session.is_some();
         let want_reader = want_scan || want_depart_reader;
         if want_reader != self.depart_nfc_reader {
             if want_reader {
@@ -3484,10 +3484,10 @@ impl FluorApp<Px> for PhotonApp {
         // A tap that read the pending departure request's salt approves it.
         let mut tapped = if want_reader { crate::network::pairing_nfc::take_secret() } else { None };
         if want_depart_reader {
-            if let Some(s) = tapped.filter(|s| self.pending_depart_req.as_ref().is_some_and(|p| p.salt == *s)) {
+            if let Some(s) = tapped.filter(|s| self.depart_asked().is_some_and(|(_, _, salt)| salt == *s)) {
                 crate::logf!("NFC: tap read departure request {}: approving", hex::encode(&s[..4]));
                 tapped = None;
-                self.approve_pending_departure();
+                self.depart_step(fgtw::flow::Event::NfcRead { secret: s });
                 { needs_redraw = true; self.note_redraw(line!() + 100_000); }
             }
         }

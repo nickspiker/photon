@@ -551,22 +551,10 @@ pub enum StatusUpdate {
         sealed: Vec<u8>,
         sender_pubkey: DevicePubkey,
     },
-    /// A sibling requesting its own removal from the fleet (bilateral removal): consent stamp + its signature over the departure request. This device's user approves; then this device countersigns and publishes the consented Remove.
-    DepartReqReceived {
-        consent_t: i64,
-        consent_sig: Vec<u8>,
-        sender_pubkey: DevicePubkey,
-        /// Declared departure intent (1 = new owner, 2 = desk; 0 = pre-intent build → desk).
-        intent: u8,
-        /// The request's salt: 32 random bytes the leaver chose for this request, naming it. A denied salt is refused for good.
-        salt: [u8; 32],
-    },
-    /// A fleet device's person denied a departure request (`depart_deny`): the fleet, the leaving device, the request's salt and consent stamp. The UI checks the denier is a live member of our fleet, clears that request and refuses its salt and stamp from then on; on the leaving device, a deny of its own current request says so.
-    DepartDenyReceived {
-        handle_proof: [u8; 32],
-        leaver: [u8; 32],
-        salt: [u8; 32],
-        consent_t: i64,
+    /// A departure frame (`depart_req` or `depart_deny`), whole, for the Depart machine (fgtw::flow) to open and check: the bytes, where they came from, and the signer the cheap parse read.
+    DepartFrame {
+        bytes: Vec<u8>,
+        from: SocketAddr,
         sender_pubkey: DevicePubkey,
     },
     /// A sibling's whole epoch state (k ‖ epoch ‖ prev), fleet-key-sealed — the UI thread adopts it if it is ahead of the local spine.
@@ -805,12 +793,7 @@ impl StatusUpdate {
             StatusUpdate::ChainPullMissReceived { sender_pubkey, .. } => {
                 Some(sender_pubkey.as_bytes())
             }
-            StatusUpdate::DepartReqReceived { sender_pubkey, .. } => {
-                Some(sender_pubkey.as_bytes())
-            }
-            StatusUpdate::DepartDenyReceived { sender_pubkey, .. } => {
-                Some(sender_pubkey.as_bytes())
-            }
+            StatusUpdate::DepartFrame { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FleetChainAsked { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::BindReqReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FanoutReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
@@ -3022,7 +3005,7 @@ async fn run_checker(
                                 continue;
                             }
                             // Bilateral removal: a sibling's departure request. Same mandatory packet-ack.
-                            if let Ok((consent_t, consent_sig, sender_pubkey, intent, salt)) =
+                            if let Ok((_, _, sender_pubkey, _, _)) =
                                 crate::network::fgtw::protocol::parse_depart_req_vsf(msg_bytes)
                             {
                                 {
@@ -3034,19 +3017,17 @@ async fn run_checker(
                                 }
                                 send_status_update(
                                     &status_tx_recv,
-                                    StatusUpdate::DepartReqReceived {
-                                        consent_t,
-                                        consent_sig,
+                                    StatusUpdate::DepartFrame {
+                                        bytes: msg_bytes.to_vec(),
+                                        from: src_addr,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
-                                        intent,
-                                        salt,
                                     },
                                     &event_proxy_recv,
                                 );
                                 continue;
                             }
                             // A fleet device's Deny of a departure request. Same mandatory packet-ack.
-                            if let Ok((handle_proof, leaver, salt, consent_t, sender_pubkey)) =
+                            if let Ok((_, _, _, _, sender_pubkey)) =
                                 crate::network::fgtw::protocol::parse_depart_deny_vsf(msg_bytes)
                             {
                                 {
@@ -3058,11 +3039,9 @@ async fn run_checker(
                                 }
                                 send_status_update(
                                     &status_tx_recv,
-                                    StatusUpdate::DepartDenyReceived {
-                                        handle_proof,
-                                        leaver,
-                                        salt,
-                                        consent_t,
+                                    StatusUpdate::DepartFrame {
+                                        bytes: msg_bytes.to_vec(),
+                                        from: src_addr,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                     },
                                     &event_proxy_recv,

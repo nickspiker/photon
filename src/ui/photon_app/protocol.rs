@@ -415,6 +415,16 @@ impl PhotonApp {
             { needs_redraw = true; self.note_redraw(line!()); }
         }
 
+        // The Depart machine's jobs (fgtw::flow): signed frames and approve publishes, back from their threads.
+        let flow_done: Vec<FlowDone> = self.flow_rx.try_iter().collect();
+        for done in flow_done {
+            match done {
+                FlowDone::Built { id, result } => self.depart_step(fgtw::flow::Event::Built { id, result: result.as_deref().map_err(|e| e.as_str()) }),
+                FlowDone::Approved { leaver, result } => self.depart_step(fgtw::flow::Event::Approved { leaver, result: result.as_ref().map_err(|e| e.as_str()) }),
+            }
+            { needs_redraw = true; self.note_redraw(line!()); }
+        }
+
         // Ideas page: acks and statuses from the gripe threads (ideas.rs).
         if self.drain_gripe_events() {
             { needs_redraw = true; self.note_redraw(line!()); }

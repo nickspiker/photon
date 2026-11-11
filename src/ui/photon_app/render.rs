@@ -5726,21 +5726,21 @@ impl PhotonApp {
                     }
                     flow.gap(hspan2 * 0.8);
                     // THE DEPARTURE REQUEST, first on the page (owner, 2026-11-10: "go right to the fleet page and have the unbind request 'Approve' or 'Deny' screen ready to go"): which device asks to leave, what it declared, and the two answers. Slots 1 and 2.
-                    if let Some(p) = self.pending_depart_req.as_ref() {
+                    if let Some((leaver, intent, _)) = self.depart.as_ref().and_then(|m| m.asked()) {
                         // `departing_name`, spelled on the fields (`self` is mutably borrowed thru `chrome` here): the name every fleet surface gives the device (machine_name), never a contact row's pseudonym.
                         let name = self
                             .session
                             .as_ref()
-                            .map(|s| super::machine_name(&p.leaver, &s.identity_seed, self.fleet_settings.as_ref()))
+                            .map(|s| super::machine_name(&leaver, &s.identity_seed, self.fleet_settings.as_ref()))
                             .unwrap_or_else(|| tr(fgtw::text::Msg::ADevice).into_owned());
                         flow.line(&mut canvas, ctx.text, &tr(fgtw::text::Msg::DepartRequestLine(&name)), hspan2 * 1.1, *theme::CONTACT_NAME_COLOUR, 600);
-                        if p.intent != 0 {
+                        if intent != 0 {
                             flow.line(
                                 &mut canvas,
                                 ctx.text,
-                                &tr(if p.intent == 1 { fgtw::text::Msg::DepartFreesHardware } else { fgtw::text::Msg::DepartKeepsHardware }),
+                                &tr(if intent == 1 { fgtw::text::Msg::DepartFreesHardware } else { fgtw::text::Msg::DepartKeepsHardware }),
                                 hspan2 * 0.85,
-                                if p.intent == 1 { theme::PILL_YELLOW.1 } else { *theme::LABEL_COLOUR },
+                                if intent == 1 { theme::PILL_YELLOW.1 } else { *theme::LABEL_COLOUR },
                                 600,
                             );
                         }
@@ -6053,7 +6053,7 @@ impl PhotonApp {
                         }
                         flow.gap(hspan2 * 0.4);
                         // LEAVER's pending departure (owner, 2026-11-10): it is asking the person's devices, approve on any of them. No words, and nothing about which devices answered or how they are reached. A denied request says so; asking again (Release) makes a new request.
-                        if self.depart_request_t.is_some() {
+                        if self.depart.as_ref().is_some_and(|m| m.asking()) {
                             flow.prose(&mut canvas, ctx.text, &tr(fgtw::text::Msg::DepartWaitingLine), hspan2 * 1.1, *theme::SEARCH_FOUND_COLOUR, 600);
                             flow.gap(hspan2 * 0.6);
                         } else if self.depart_was_denied {

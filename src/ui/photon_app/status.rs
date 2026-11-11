@@ -347,8 +347,7 @@ impl PhotonApp {
                 StatusUpdate::CkptReqReceived { .. } => "CkptReqReceived",
                 StatusUpdate::ChainPullReceived { .. } => "ChainPullReceived",
                 StatusUpdate::ChainPullMissReceived { .. } => "ChainPullMissReceived",
-                StatusUpdate::DepartReqReceived { .. } => "DepartReqReceived",
-                StatusUpdate::DepartDenyReceived { .. } => "DepartDenyReceived",
+                StatusUpdate::DepartFrame { .. } => "DepartFrame",
                 StatusUpdate::FleetChainAsked { .. } => "FleetChainAsked",
                 StatusUpdate::BindReqReceived { .. } => "BindReqReceived",
                 StatusUpdate::FanoutReceived { .. } => "FanoutReceived",
@@ -468,10 +467,8 @@ impl PhotonApp {
         // A sibling's presence VERDICT changed (first probe, or online↔offline): the computed ceremony owner may have moved — recomputed after the drain (era.rs).
         let mut owner_edge = false;
         let mut chain_pull_misses_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
-        // Sibling departure requests (bilateral removal), deferred past the checker borrow.
-        let mut depart_reqs_after: Vec<(i64, Vec<u8>, [u8; 32], u8, [u8; 32])> = Vec::new();
-        // Denies of departure requests from live members of our fleet: (fleet, leaver, salt, consent stamp, denier).
-        let mut depart_denies_after: Vec<([u8; 32], [u8; 32], [u8; 32], i64, [u8; 32])> = Vec::new();
+        // Departure frames (requests and denies) from live members of our fleet, deferred past the checker borrow: (the frame, where it came from).
+        let mut depart_frames_after: Vec<(Vec<u8>, std::net::SocketAddr)> = Vec::new();
         // Membership chains over the mesh (docs/peers-are-fgtw.md), deferred past the checker borrow: asks to answer (handle, asker, where), and chains handed to us (handle, bytes, sender).
         let mut fleet_asks_after: Vec<([u8; 32], [u8; 32], std::net::SocketAddr)> = Vec::new();
         let mut fleet_chains_after: Vec<([u8; 32], Vec<u8>, [u8; 32])> = Vec::new();
@@ -483,6 +480,8 @@ impl PhotonApp {
         let mut fstate_pushes_after: Vec<(Vec<u8>, [u8; 32])> = Vec::new();
         // Siblings that just came online, owed our fleet state.
         let mut fstate_to_siblings_after: Vec<[u8; 32]> = Vec::new();
+        // Siblings that answered a ping this drain: the Depart machine hands them a departure frame they have not taken (fgtw::flow Reachable).
+        let mut reachable_after: Vec<[u8; 32]> = Vec::new();
         // Departure have-set frames (holdings.rs), handled after the drain: (kind, nonce, sealed, sender device, sender addr).
         let mut holdings_after: Vec<(crate::network::fgtw::protocol::HoldingsKind, [u8; 32], Vec<u8>, [u8; 32], std::net::SocketAddr)> = Vec::new();
         // Fetch edges (attach_none, an unreachable peer) wait for the loop to end: the fetch state is &mut self, and the loop holds the checker.
@@ -1041,6 +1040,9 @@ impl PhotonApp {
                                 fold_unanswered.push(contact.handle_proof);
                             }
                             // A sibling coming online is the fleet-history catch-up trigger: it may hold conversation rows written while we were apart. Deferred — the sweep needs &mut contacts. Also the heal edge: re-announce our STORED attention/claim so the reconnecting sibling sheds any stale holder beliefs.
+                            if is_online && contact.is_sibling {
+                                reachable_after.push(peer_pubkey.key);
+                            }
                             if came_online && contact.is_sibling {
                                 fleet_sweep_due = true;
                                 // Our state goes to it the moment it is back: it does the same to us, and the two converge without the slot.
@@ -4386,32 +4388,10 @@ impl PhotonApp {
                         fanouts_after.push((handle_proof, blob, sender_pubkey.key));
                     }
                 }
-                StatusUpdate::DepartReqReceived {
-                    consent_t,
-                    consent_sig,
-                    sender_pubkey,
-                    intent,
-                    salt,
-                } => {
-                    // Sibling gate: only a live member of OUR fleet may ask us to countersign its exit.
-                    if self.contacts.iter().any(|c| {
-                        c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
-                    }) {
-                        depart_reqs_after.push((consent_t, consent_sig, sender_pubkey.key, intent, salt));
-                    }
-                }
-                StatusUpdate::DepartDenyReceived {
-                    handle_proof,
-                    leaver,
-                    salt,
-                    consent_t,
-                    sender_pubkey,
-                } => {
-                    // Sibling gate: only a live member of OUR fleet may deny a departure request.
-                    if self.contacts.iter().any(|c| {
-                        c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
-                    }) {
-                        depart_denies_after.push((handle_proof, leaver, salt, consent_t, sender_pubkey.key));
+                StatusUpdate::DepartFrame { bytes, from, sender_pubkey } => {
+                    // Sibling gate: only a live member of OUR fleet may ask to leave it or deny a request (the machine checks the fold again).
+                    if self.contacts.iter().any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)) {
+                        depart_frames_after.push((bytes, from));
                     }
                 }
                 StatusUpdate::CkptReqReceived {
@@ -5778,6 +5758,11 @@ impl PhotonApp {
         for dev in fstate_to_siblings_after {
             self.fleet_state_push(Some(dev));
         }
+        for dev in reachable_after {
+            if self.depart_asking() || self.depart_asked().is_some() {
+                self.depart_step(fgtw::flow::Event::Reachable { from: dev });
+            }
+        }
         // A sibling's state, opened under the fleet key we hold and merged exactly as a slot read would be; one we cannot open waits for the key sync, and the next push or online edge carries it again.
         for (sealed, sender) in fstate_pushes_after {
             let Some(key) = self.fleet_key_cached() else {
@@ -5800,39 +5785,14 @@ impl PhotonApp {
             }
         }
 
-        // Denies first, so a request and its deny landing in one drain end denied.
-        for (hp, leaver, salt, t, denier) in depart_denies_after {
-            if self.on_depart_deny(hp, leaver, salt, t, denier) {
-                changed = true;
+        // Departure frames (deferred): the Depart machine (fgtw::flow) opens each, checks its signer against the fold and the request against the fleet-wide denied list, and asks this person (an OS notification and a toast) only for a request it accepts. Denies first, so a request and its deny landing in one drain end denied.
+        if !depart_frames_after.is_empty() {
+            let denied = self.depart_denied_union();
+            self.depart_step(fgtw::flow::Event::DeniedKnown { denied: &denied });
+            depart_frames_after.sort_by_key(|(bytes, _)| fgtw::protocol::parse_depart_deny(bytes).is_err());
+            for (bytes, from) in depart_frames_after {
+                self.depart_step(fgtw::flow::Event::Frame { bytes: &bytes, from: Some(from) });
             }
-        }
-
-        // Sibling departure requests (deferred): verify the leaver's signature over its own departure request, then ask THIS person (an OS notification that opens the Fleet page on the request, and a toast). The countersign happens only on the person's Approve (or an NFC tap of the leaving device), never automatically: that is the whole point of bilateral.
-        for (t, sig, leaver, intent, salt) in depart_reqs_after {
-            let Some(hp) = self.our_handle_proof() else { continue };
-            // Receipt-time check, deliberately shallow (fgtw::sponsor::depart_receipt_valid): the blob parses, and its Ed25519 egg verifies against the leaver's device key — enough to drop junk before it reaches a human. The PQ eggs are verified by the FOLD when the approver publishes the consented Remove (depart_device_consented fetches the chain, which holds the leaver's declared bundle and the floor); doing that here would mean a blocking chain fetch on the status tick.
-            if !fgtw::sponsor::depart_receipt_valid(&hp, &leaver, t, &sig) {
-                crate::logf!("SECURITY: depart_req from {} carries an INVALID request signature — dropped", crate::fp(&leaver));
-                continue;
-            }
-            // A denied request is never shown or approved again: its salt, or its consent stamp, refused by any device of the fleet.
-            if self.depart_denied(&leaver, &salt, t) {
-                crate::logf!("FLEET: departure request {} from {} was denied before; dropped", hex::encode(&salt[..4]), crate::fp(&leaver));
-                continue;
-            }
-            // The same request again (a resend over another leg): already pending, already asked.
-            if self.pending_depart_req.as_ref().is_some_and(|p| p.leaver == leaver && p.salt == salt) {
-                continue;
-            }
-            let name = self.departing_name(&leaver);
-            crate::logf!(
-                "SECURITY: {} requests removal from the fleet (intent {}, request {}): Approve or Deny on the Fleet page",
-                name,
-                match intent { 1 => "new owner", 2 => "desk", _ => "unstated" },
-                hex::encode(&salt[..4])
-            );
-            self.pending_depart_req = Some(PendingDeparture { leaver, t, sig, intent, salt });
-            self.notify_departure_request(&name, &salt);
             changed = true;
         }
 

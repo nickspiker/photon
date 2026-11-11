@@ -192,7 +192,7 @@ impl PhotonApp {
         let mut changed = false;
         if self.release_when_copied
             && self.holdings_check.is_none()
-            && self.depart_request_t.is_none()
+            && !self.depart_asking()
             && self.session.is_some()
             && self.device_keypair.is_some()
             && self.fleet_key_ram_only().is_some()
@@ -447,7 +447,7 @@ impl PhotonApp {
 
     /// LEAVER: with copy-then-release pending and nothing at risk any more, clear the flag and send the departure request. True when it released.
     fn holdings_release_if_safe(&mut self) -> bool {
-        if !self.release_when_copied || self.depart_request_t.is_some() {
+        if !self.release_when_copied || self.depart_asking() {
             return false;
         }
         let safe = view(self.holdings_check.as_ref(), &self.contacts).is_some_and(|s| matches!(s.view, HoldingsView::Safe));

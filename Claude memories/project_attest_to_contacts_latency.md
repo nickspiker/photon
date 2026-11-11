@@ -5,6 +5,7 @@ metadata:
   type: project
 ---
 Nick 2026-11-10: "18 seconds from attest to contacts. That's not a good number. (shelf that until the rest is complete but that NEEDS improved!)"
+Measured on ANDROID; Nick submitted a log for it on 2026-11-10 (pull it with photonlog --pull, see [[reference_log_pull]], when this is picked up).
 
 **Why:** first paint of the contact list after attest is the app's front door; 18 s is unacceptable.
 
