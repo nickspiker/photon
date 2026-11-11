@@ -1,0 +1,18 @@
+---
+name: project_profile_pending
+description: 2026-11-10 why set names/avatars show "Pending…": no owner-signed revision, last-heard wins, nobody asks; findings reported, fix = fgtw Profile record (FLOWS.md stage 7)
+metadata:
+  type: project
+---
+Owner rule (2026-11-10): a profile field (name, avatar) is a record signed by its owner with a revision; any holder of a newer signed copy passes it on (owner's devices when older/missing, anyone showing Pending); a device with none asks people/devices it knows (BLE, LAN, WAN, fgtw.org last). "Pending" = no copy anywhere it asked.
+
+Findings (traced, nothing fixed yet; no (b) store loss or (c) verify refusal proven):
+0. Group name grants frozen/empty: molecules.rs own_name_grant reads profile.name only at join/found, avatar always [0;32]; never re-signed on change; render.rs:184/3302 don't fall back to the contact's name.
+1. Roster merges whole entries on one `updated` clock that consent/ceremony/era/weave bumps too (fgtw fstate::merge_rosters, devices.rs ~1832): a blank/old name wins fleet-wide; fresh-device stubs copy blanks.
+2. No revision anywhere: PongTail.display_name is a bare String; status.rs ~972 adopts any different name stamped now; avatar-blob decode overwrites published_name (conversation.rs ~3324) incl. cached copy each boot.
+3. Nobody asks or forwards: only the person's own device's pong carries it; pongs answered by another device drop name/pin (status.rs ~3814; 1,345 such in one desktop log); no profile_req op exists; announce reaches one public_identity device; non-contact group members never pinged.
+4. Friend avatars resolve only on the device that ran CLUTCH with that friend (scoped_avatar_readers + fanout_pairs per device); network fallback removed; failed fetch latched per session.
+5. Own avatar re-stamped with write time on adopt (avatar.rs ~1239/1257): adopt/publish ping-pong (15+15 in one log).
+6. Cloud contacts backup overwritten whole; restore fills only missing contacts, never blank names.
+
+**How to apply:** the fix is the Profile machine/record in fgtw (FLOWS.md stage 7, owner-approved direction [[feedback_fgtw_out_of_photon]]): ProfileRecord (party, field, value, revision, signer, sig verified vs fold), newest-per-field merge, per-field roster, ask/answer ops, reader grant per folded device; Photon carries it (pong tail, member record, backup), forwards, asks, falls back. Wait for the owner's go after the findings.
