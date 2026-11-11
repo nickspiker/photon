@@ -116,7 +116,8 @@ tapuwae = { path = "../tapuwae" }
 # fluor: CPU softbuffer compositor. Hosts the desktop event loop, owns chrome / paint primitives / text rendering / widget dispatch.
 # Path dep during the migration so Photon picks up local fluor changes without a republish cycle; flip to `version = "0.0.3+"` once the migration stabilizes (note: 0.0.2 was yanked).
 # Global = algorithm/geometry core only (no windowing backend). The desktop target block below adds `host-winit` so Cargo unions to {std, text, simd, rayon, host-winit} for desktop builds; the Android target stays at the default set so its dep graph excludes softbuffer/arboard/winit. This is the first step of the `host-android` plan — Android stays on the legacy compositor for now, but the fluor algorithm code is shared by both targets going forward.
-ihi = "0.0.48"
+# Path dep: handles hash with the local vsf's fixed-order x codebook (vsf 0.11), the same one every other x in the build uses; the published 0.0.48 still rode vsf 0.6's random-order table (owner 2026-11-10).
+ihi = { version = "0.0.48", path = "../ihi" }
 # spirix: Nick's two's-complement float. THE numeral engine for Dozenal Metric Scaling — `lb` is the doubling count, and its formatter renders any base 2-16 straight into photon's own glyph block via the `{:#}` flag, so no ASCII transliteration pass stands between the maths and the screen.
 # Zero arrives answered: log2(0) is negative infinity, which spirix classes as an escape rather than a digit, so a count of none needs no per-scale word and no branch of ours.
 # Already in the tree under fluor and vsf; the direct path dep costs no build time.
