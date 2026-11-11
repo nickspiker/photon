@@ -406,7 +406,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotEggedYet(status) => format!("{status} \u{00b7} muunganisho salama unasubiri").into(),
         Msg::FoundNearby(h) => format!("{h} amepatikana karibu").into(),
         Msg::SignOutPublishFailed => "Haikuwezekana kuchapisha kuondoka.\nAngalia muunganisho na ujaribu tena.".into(),
-        Msg::LastDeviceCantSignOut => "Hiki ndicho kifaa cha mwisho cha utambulisho wako.\nHakiwezi kuondoka. Ongeza kifaa kingine kwanza, kisha ukistaafishe hiki.".into(),
         Msg::NoIdentityToRemove => "Hakuna utambulisho uliothibitishwa wa kuondoa.".into(),
         Msg::SignOutBuildFailed => "Haikuwezekana kuunda ombi la kuondoka.\nJaribu tena.".into(),
         Msg::ReleaseFailed => "Haikuwezekana kuachia.\nAngalia muunganisho na ujaribu tena.".into(),

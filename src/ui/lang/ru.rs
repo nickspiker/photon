@@ -424,7 +424,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotEggedYet(status) => format!("{status} \u{00b7} защищённый канал ожидается").into(),
         Msg::FoundNearby(h) => format!("рядом найдено: {h}").into(),
         Msg::SignOutPublishFailed => "Не удалось опубликовать уход.\nПроверь связь и попробуй снова.".into(),
-        Msg::LastDeviceCantSignOut => "Это последнее устройство твоей личности.\nЕму нельзя уйти. Сначала добавь другое устройство, а потом отправь это на покой.".into(),
         Msg::NoIdentityToRemove => "Нет аттестованной личности, которую можно убрать.".into(),
         Msg::SignOutBuildFailed => "Не удалось собрать запрос на уход.\nПопробуй снова.".into(),
         Msg::ReleaseFailed => "Не удалось освободить.\nПроверь связь и попробуй снова.".into(),

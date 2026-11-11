@@ -5,6 +5,8 @@ use super::*;
 
 /// Where each device keeps the departure requests it denied or heard denied: its own single-writer settings key (`fleet.depart_denied.<device>`, the `react.recent.` shape: the settings layer is LWW per key, so one shared key would drop concurrent denies). Fleet-synced like every setting; the refusal reads the union of every device's list.
 const DEPART_DENIED_PREFIX: &str = "fleet.depart_denied.";
+/// Photon reports no per-frame send outcome to the Depart machine yet, so a frame with no word back is handed again whenever its device answers a ping (fgtw::flow::deliver).
+const DEPART_REPORTS_SENT: bool = false;
 
 impl PhotonApp {
     pub(super) fn open_add_device_flow(&mut self) {
@@ -406,13 +408,14 @@ impl PhotonApp {
             },
             _ => None,
         };
-        self.depart = Some(match saved.map(|b| fgtw::flow::depart::Depart::from_vsf(&b)) {
+        // The handle proof is not in the saved state (a root); it comes back from the session.
+        self.depart = Some(match saved.map(|b| fgtw::flow::depart::Depart::from_vsf(&b, hp, DEPART_REPORTS_SENT)) {
             Some(Ok(m)) => m,
             Some(Err(e)) => {
                 crate::logf!("FLEET: the saved departure state did not verify ({}); starting fresh", e);
-                fgtw::flow::depart::Depart::new(hp, me)
+                fgtw::flow::depart::Depart::new(hp, me, DEPART_REPORTS_SENT)
             }
-            None => fgtw::flow::depart::Depart::new(hp, me),
+            None => fgtw::flow::depart::Depart::new(hp, me, DEPART_REPORTS_SENT),
         });
         true
     }
@@ -489,6 +492,7 @@ impl PhotonApp {
                     self.settings_set(&format!("fleet.released.{}", hex::encode(device)), vsf::VsfType::ke(device.to_vec()));
                     self.fleet_retired.retain(|d| d != &device);
                 }
+                Action::PushChain { to } => self.push_own_chain_to(to),
                 Action::RefreshChain => {
                     if let Some(hp) = self.our_handle_proof() {
                         self.spawn_contact_fleet_refresh(vec![hp]);
@@ -503,6 +507,17 @@ impl PhotonApp {
                     return;
                 }
             }
+        }
+    }
+
+    /// Hand our fleet chain as it stands now to one of our devices (the leaver after an approval, so it learns it is out from the chain, not a poll).
+    fn push_own_chain_to(&self, to: [u8; 32]) {
+        let (Some(hp), Some(kp)) = (self.our_handle_proof(), self.device_keypair.as_ref()) else { return };
+        let Some(chain) = crate::network::fgtw::fleet::held_chain(&hp) else { return };
+        let Ok(bytes) = chain.to_vsf_bytes() else { return };
+        match crate::network::fgtw::protocol::build_fleet_resp_vsf(&hp, &bytes, &kp.public.to_bytes(), kp.secret.as_bytes()) {
+            Ok(frame) => self.dispatch_frame_to_sibling(frame, Some(to)),
+            Err(e) => crate::logf!("FLEET: fleet_resp build failed: {}", e),
         }
     }
 
@@ -528,7 +543,7 @@ impl PhotonApp {
         match n {
             Note::LastDevice => {
                 crate::log("SECURITY: last member (or our chain not folded yet): the departure request is refused (an identity must live somewhere)");
-                self.ready_toast = Some(tr(Msg::LastDeviceCantSignOut).into_owned());
+                self.ready_toast = Some(tr(fgtw::text::Msg::LastDevice).into_owned());
             }
             Note::DepartAsking => {
                 crate::log("SECURITY: departure requested: the fleet's devices are asked; this device wipes on completion");
@@ -559,6 +574,7 @@ impl PhotonApp {
             }
             Note::DepartDeniedElsewhere { leaver, by } => crate::logf!("FLEET: {}'s departure request was denied on {}; cleared here", self.departing_name(&leaver), crate::fp(&by)),
             Note::DepartSettled { leaver } => crate::logf!("FLEET: {}'s departure was settled on another device; cleared here", self.departing_name(&leaver)),
+            Note::DepartWithdrawn { leaver } => crate::logf!("FLEET: {} withdrew its departure request; cleared here", self.departing_name(&leaver)),
             Note::DepartApproved { leaver, outcome } => {
                 let name = self.departing_name(&leaver);
                 crate::logf!("FLEET: countersigned {}'s departure; the consented Remove is published", name);

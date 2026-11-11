@@ -400,7 +400,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotEggedYet(status) => format!("{status} \u{00b7} hinihintay ang ligtas na koneksyon").into(),
         Msg::FoundNearby(h) => format!("may nakitang {h} sa malapit").into(),
         Msg::SignOutPublishFailed => "Hindi nailathala ang pag-alis.\nTingnan ang koneksyon at subukan ulit.".into(),
-        Msg::LastDeviceCantSignOut => "Ito na ang huling device ng pagkakakilanlan mo.\nHindi ito puwedeng umalis. Magdagdag muna ng ibang device, saka iretiro ito.".into(),
         Msg::NoIdentityToRemove => "Walang pinatotohanang pagkakakilanlan na maaalis.".into(),
         Msg::SignOutBuildFailed => "Hindi nabuo ang kahilingang umalis.\nSubukan ulit.".into(),
         Msg::ReleaseFailed => "Hindi napakawalan.\nTingnan ang koneksyon at subukan ulit.".into(),

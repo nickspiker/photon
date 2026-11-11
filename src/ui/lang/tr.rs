@@ -402,7 +402,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotEggedYet(status) => format!("{status} \u{00b7} güvenli bağlantı bekleniyor").into(),
         Msg::FoundNearby(h) => format!("{h} yakınlarda bulundu").into(),
         Msg::SignOutPublishFailed => "Ayrılma yayımlanamadı.\nBağlantını kontrol edip tekrar dene.".into(),
-        Msg::LastDeviceCantSignOut => "Bu, kimliğinin son cihazı.\nAyrılamaz. Önce başka bir cihaz ekle, sonra bunu emekliye ayır.".into(),
         Msg::NoIdentityToRemove => "Kaldırılacak tasdikli bir kimlik yok.".into(),
         Msg::SignOutBuildFailed => "Ayrılma isteği oluşturulamadı.\nTekrar dene.".into(),
         Msg::ReleaseFailed => "Serbest bırakılamadı.\nBağlantını kontrol edip tekrar dene.".into(),

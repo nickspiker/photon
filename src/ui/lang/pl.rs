@@ -406,7 +406,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotEggedYet(status) => format!("{status} \u{00b7} bezpieczne łącze w toku").into(),
         Msg::FoundNearby(h) => format!("znaleziono w pobliżu: {h}").into(),
         Msg::SignOutPublishFailed => "Nie udało się opublikować odejścia.\nSprawdź połączenie i spróbuj ponownie.".into(),
-        Msg::LastDeviceCantSignOut => "To ostatnie urządzenie twojej tożsamości.\nNie może odejść. Najpierw dodaj inne, potem wycofaj to.".into(),
         Msg::NoIdentityToRemove => "Nie ma poświadczonej tożsamości do usunięcia.".into(),
         Msg::SignOutBuildFailed => "Nie udało się zbudować prośby o odejście.\nSpróbuj ponownie.".into(),
         Msg::ReleaseFailed => "Nie udało się zwolnić.\nSprawdź połączenie i spróbuj ponownie.".into(),

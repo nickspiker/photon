@@ -402,7 +402,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotEggedYet(status) => format!("{status} \u{00b7} kei te tatari te hononga haumaru").into(),
         Msg::FoundNearby(h) => format!("kua kitea a {h} i te takiwā").into(),
         Msg::SignOutPublishFailed => "Kāore i taea te whakaputa i te wehenga.\nTirohia te hononga, ka ngana anō.".into(),
-        Msg::LastDeviceCantSignOut => "Ko te pūrere whakamutunga tēnei o tō tuakiri.\nKāore e taea te wehe. Tāpirihia he pūrere kē i te tuatahi, kātahi ka whakatā i tēnei.".into(),
         Msg::NoIdentityToRemove => "Kāore he tuakiri kua whakamanahia hei tango.".into(),
         Msg::SignOutBuildFailed => "Kāore i taea te hanga i te tono wehenga.\nNgana anō.".into(),
         Msg::ReleaseFailed => "Kāore i taea te tuku.\nTirohia te hononga, ka ngana anō.".into(),

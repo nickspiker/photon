@@ -411,7 +411,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotEggedYet(status) => format!("{status} \u{00b7} lien sécurisé en attente").into(),
         Msg::FoundNearby(h) => format!("{h} trouvé à proximité").into(),
         Msg::SignOutPublishFailed => "Impossible de publier le départ.\nVérifie la connexion et réessaie.".into(),
-        Msg::LastDeviceCantSignOut => "C\u{2019}est le dernier appareil de ton identité.\nIl ne peut pas partir. Ajoute d\u{2019}abord un autre appareil, puis retire celui-ci.".into(),
         Msg::NoIdentityToRemove => "Aucune identité attestée à retirer.".into(),
         Msg::SignOutBuildFailed => "Impossible de construire la demande de départ.\nRéessaie.".into(),
         Msg::ReleaseFailed => "Impossible de libérer.\nVérifie la connexion et réessaie.".into(),

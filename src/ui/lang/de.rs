@@ -401,7 +401,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotEggedYet(status) => format!("{status} \u{00b7} sichere Verbindung steht aus").into(),
         Msg::FoundNearby(h) => format!("{h} in der Nähe gefunden").into(),
         Msg::SignOutPublishFailed => "Der Austritt ließ sich nicht veröffentlichen.\nPrüf die Verbindung und versuch es nochmal.".into(),
-        Msg::LastDeviceCantSignOut => "Das ist das letzte Gerät deiner Identität.\nEs kann nicht gehen. Füge erst ein weiteres Gerät hinzu und leg dieses dann still.".into(),
         Msg::NoIdentityToRemove => "Keine bezeugte Identität zum Entfernen.".into(),
         Msg::SignOutBuildFailed => "Der Antrag auf Austritt ließ sich nicht bauen.\nVersuch es nochmal.".into(),
         Msg::ReleaseFailed => "Freigeben ging nicht.\nPrüf die Verbindung und versuch es nochmal.".into(),

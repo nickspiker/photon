@@ -408,7 +408,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotEggedYet(status) => format!("{status} \u{00b7} ligação segura pendente").into(),
         Msg::FoundNearby(h) => format!("{h} encontrado por perto").into(),
         Msg::SignOutPublishFailed => "Não deu para publicar a saída.\nVerifique a conexão e tente de novo.".into(),
-        Msg::LastDeviceCantSignOut => "Este é o último dispositivo da sua identidade.\nEle não pode sair. Adicione outro dispositivo primeiro e só então aposente este.".into(),
         Msg::NoIdentityToRemove => "Não há identidade atestada para remover.".into(),
         Msg::SignOutBuildFailed => "Não deu para montar o pedido de saída.\nTente de novo.".into(),
         Msg::ReleaseFailed => "Não deu para liberar.\nVerifique a conexão e tente de novo.".into(),

@@ -530,7 +530,6 @@ pub enum Msg<'a> {
     NotEggedYet(&'a str),
     FoundNearby(&'a str),
     SignOutPublishFailed,
-    LastDeviceCantSignOut,
     NoIdentityToRemove,
     SignOutBuildFailed,
     ReleaseFailed,

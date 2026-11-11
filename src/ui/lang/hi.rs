@@ -407,7 +407,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotEggedYet(status) => format!("{status} \u{00b7} सुरक्षित लिंक बाक़ी").into(),
         Msg::FoundNearby(h) => format!("{h} को पास में पाया").into(),
         Msg::SignOutPublishFailed => "जाने की ख़बर प्रकाशित नहीं हो सकी।\nकनेक्शन देखकर फिर कोशिश करो।".into(),
-        Msg::LastDeviceCantSignOut => "यह तुम्हारी पहचान का आख़िरी डिवाइस है।\nयह नहीं जा सकता। पहले कोई और डिवाइस जोड़ो, फिर इसे रिटायर करो।".into(),
         Msg::NoIdentityToRemove => "हटाने के लिए कोई अटेस्ट की हुई पहचान नहीं है।".into(),
         Msg::SignOutBuildFailed => "जाने की दरख़्वास्त बन नहीं सकी।\nफिर कोशिश करो।".into(),
         Msg::ReleaseFailed => "आज़ाद नहीं किया जा सका।\nकनेक्शन देखकर फिर कोशिश करो।".into(),

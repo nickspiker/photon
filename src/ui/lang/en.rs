@@ -509,7 +509,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotEggedYet(status) => format!("{status} \u{00b7} secure link pending").into(),
         Msg::FoundNearby(h) => format!("found {h} nearby").into(),
         Msg::SignOutPublishFailed => "Couldn't publish the departure.\nCheck connection and retry.".into(),
-        Msg::LastDeviceCantSignOut => "This is your identity's last device.\nIt can't leave. Add another device first, then retire this one.".into(),
         Msg::NoIdentityToRemove => "No attested identity to remove.".into(),
         Msg::SignOutBuildFailed => "Couldn't build the departure request.\nRetry.".into(),
         Msg::ReleaseFailed => "Couldn't release.\nCheck connection and retry.".into(),

@@ -413,7 +413,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotEggedYet(status) => format!("{status} \u{00b7} захищений канал у дорозі").into(),
         Msg::FoundNearby(h) => format!("знайдено поруч: {h}").into(),
         Msg::SignOutPublishFailed => "Не вдалося опублікувати вихід.\nПеревір зв'язок і спробуй ще.".into(),
-        Msg::LastDeviceCantSignOut => "Це останній пристрій твоєї ідентичності.\nВін не може піти. Спершу додай інший пристрій, а тоді відправ цей на спочинок.".into(),
         Msg::NoIdentityToRemove => "Немає засвідченої ідентичності, яку можна прибрати.".into(),
         Msg::SignOutBuildFailed => "Не вдалося скласти запит на вихід.\nСпробуй ще.".into(),
         Msg::ReleaseFailed => "Звільнити не вдалося.\nПеревір зв'язок і спробуй ще.".into(),

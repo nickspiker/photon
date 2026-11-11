@@ -399,7 +399,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotEggedYet(status) => format!("{status} \u{00b7} đang chờ liên kết bảo mật").into(),
         Msg::FoundNearby(h) => format!("tìm thấy {h} ở gần").into(),
         Msg::SignOutPublishFailed => "Không công bố được việc rời đi.\nKiểm tra kết nối rồi thử lại.".into(),
-        Msg::LastDeviceCantSignOut => "Đây là thiết bị cuối cùng của danh tính bạn.\nNó không thể rời đi. Hãy thêm một thiết bị khác trước, rồi mới cho cái này nghỉ.".into(),
         Msg::NoIdentityToRemove => "Không có danh tính đã chứng thực nào để gỡ.".into(),
         Msg::SignOutBuildFailed => "Không dựng được yêu cầu rời đi.\nThử lại.".into(),
         Msg::ReleaseFailed => "Không giải phóng được.\nKiểm tra kết nối rồi thử lại.".into(),

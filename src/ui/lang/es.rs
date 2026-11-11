@@ -398,7 +398,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotEggedYet(status) => format!("{status} \u{00b7} enlace seguro pendiente").into(),
         Msg::FoundNearby(h) => format!("se encontró {h} cerca").into(),
         Msg::SignOutPublishFailed => "No se pudo publicar la salida.\nRevisa la conexión y reintenta.".into(),
-        Msg::LastDeviceCantSignOut => "Este es el último dispositivo de tu identidad.\nNo puede salir. Agrega otro dispositivo primero y luego retira este.".into(),
         Msg::NoIdentityToRemove => "No hay ninguna identidad activa que quitar.".into(),
         Msg::SignOutBuildFailed => "No se pudo construir la solicitud de salida.\nReintenta.".into(),
         Msg::ReleaseFailed => "No se pudo liberar.\nRevisa la conexión y reintenta.".into(),

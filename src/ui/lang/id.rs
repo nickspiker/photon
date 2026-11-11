@@ -399,7 +399,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotEggedYet(status) => format!("{status} \u{00b7} sambungan aman masih tertunda").into(),
         Msg::FoundNearby(h) => format!("menemukan {h} di dekat sini").into(),
         Msg::SignOutPublishFailed => "Kepergiannya tidak bisa diterbitkan.\nPeriksa sambungan lalu coba lagi.".into(),
-        Msg::LastDeviceCantSignOut => "Ini perangkat terakhir identitasmu.\nIa tidak bisa keluar. Tambahkan perangkat lain dulu, lalu pensiunkan yang ini.".into(),
         Msg::NoIdentityToRemove => "Tidak ada identitas sah yang bisa dihapus.".into(),
         Msg::SignOutBuildFailed => "Permintaan keluar tidak bisa dibangun.\nCoba lagi.".into(),
         Msg::ReleaseFailed => "Tidak bisa melepas.\nPeriksa sambungan lalu coba lagi.".into(),

@@ -404,7 +404,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NotEggedYet(status) => format!("{status} \u{00b7} collegamento sicuro in attesa").into(),
         Msg::FoundNearby(h) => format!("{h} è qui vicino").into(),
         Msg::SignOutPublishFailed => "Non è stato possibile pubblicare l’uscita.\nControlla la connessione e riprova.".into(),
-        Msg::LastDeviceCantSignOut => "Questo è l’ultimo dispositivo della tua identità.\nNon può uscire. Aggiungi prima un altro dispositivo, poi ritira questo.".into(),
         Msg::NoIdentityToRemove => "Nessuna identità attestata da rimuovere.".into(),
         Msg::SignOutBuildFailed => "Non è stato possibile costruire la richiesta di uscita.\nRiprova.".into(),
         Msg::ReleaseFailed => "Non è stato possibile liberarlo.\nControlla la connessione e riprova.".into(),
