@@ -375,8 +375,6 @@ impl PhotonApp {
                 FlowDone::AddListed(Ok(reqs)) => {
                     // Photon has no per-request "owned by another fleet" check; the registry list itself is member-gated.
                     self.add_step(fgtw::flow::Event::Listed { reqs: &reqs, owned_elsewhere: &[] });
-                    // Words already typed meet the new candidates now, not on the next keystroke.
-                    self.add_words_again();
                 }
                 FlowDone::AddListed(Err(e)) => self.add_step(fgtw::flow::Event::ListFailed { reason: &e }),
                 FlowDone::AddBound { device, result } => self.add_step(fgtw::flow::Event::Bound { device, result: result.as_ref().map(|_| ()).map_err(|e| e.as_str()) }),
@@ -857,6 +855,13 @@ impl PhotonApp {
             let our_hp = self.our_handle_proof();
             let mut refresh_contacts: Vec<[u8; 32]> = Vec::new();
             for (kind, evt_hp) in &fleet_evts {
+                if *kind == "request" {
+                    // fgtw.org's binding requests for our fleet changed: a hint for the Add machine, which reads again only where the person already looked farther.
+                    if our_hp == Some(*evt_hp) {
+                        self.add_step(fgtw::flow::Event::ListMayHaveChanged);
+                    }
+                    continue;
+                }
                 if *kind == "idea" {
                     // A public idea landed or its status moved (docs/ideas.md): fetch the list when the ticker is on or the Ideas page is open — nobody else needs it.
                     if self.ideas_ticker || self.state == AppState::Settings(SettingsPage::Ideas) {

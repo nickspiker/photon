@@ -177,18 +177,6 @@ impl PhotonApp {
         Some(if ahead > 0 { now + std::time::Duration::from_secs_f64(ahead as f64 / vsf::OSCILLATIONS_PER_SECOND as f64) } else { now })
     }
 
-    /// Hand the words typed so far to the Add machine again: Enter, or a registry read that brought new candidates while the words sat typed.
-    pub(super) fn add_words_again(&mut self) {
-        if !matches!(self.state, AppState::AddDevice) {
-            return;
-        }
-        let text: String = self.textbox.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
-        if text.is_empty() {
-            return;
-        }
-        self.add_step(fgtw::flow::Event::Words { text: &text });
-    }
-
     /// Carry out the Add machine's actions with Photon's transport, vault, radios and screen.
     fn add_carry(&mut self, actions: Vec<fgtw::flow::Action>) {
         use fgtw::flow::{Action, Job, To};
@@ -1309,6 +1297,7 @@ impl PhotonApp {
                                                 "friendship" => "friendship",
                                                 "release" => "release",
                                                 "idea" => "idea",
+                                                "request" => "request",
                                                 _ => continue,
                                             };
                                             if tx.send((k, evt_hp)).is_err() {

@@ -2791,10 +2791,8 @@ impl FluorApp<Px> for PhotonApp {
                             .map(|t| Some(t.hit_id()) == self.focused)
                             .unwrap_or(false);
                         if focused_is_launch_textbox {
-                            if matches!(self.state, AppState::AddDevice) {
-                                // Words-entry screen: Enter hands the words to the machine again (it matches on every edit anyway; this covers "candidates arrived after I finished typing").
-                                self.add_words_again();
-                            } else {
+                            // On the words-entry screen Enter does nothing: the Add machine matches on every edit and again whenever a device answers.
+                            if !matches!(self.state, AppState::AddDevice) {
                                 self.submit_handle();
                             }
                             ctx.window.request_redraw();
