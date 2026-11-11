@@ -286,6 +286,7 @@ mod tests {
     fn out_of_order_chunks_reassemble_and_land() {
         crate::storage::isolate_test_storage();
         let seed = [0x70u8; 32];
+        let _session = crate::storage::session_test_lock();
         let _v = crate::storage::open_session_vault(seed, [0x72; 32], [0x74; 32]).expect("vault");
         let wire_key = [0x99u8; 32];
         let from = [0xD1u8; 32];
@@ -334,6 +335,7 @@ mod tests {
     fn a_hash_mismatch_sheds_rather_than_resumes() {
         crate::storage::isolate_test_storage();
         let seed = [0x70u8; 32];
+        let _session = crate::storage::session_test_lock();
         let _v = crate::storage::open_session_vault(seed, [0x72; 32], [0x74; 32]).expect("vault");
         let wire_key = [0x88u8; 32];
         let from = [0xC1u8; 32];

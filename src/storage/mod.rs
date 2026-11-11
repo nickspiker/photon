@@ -413,6 +413,15 @@ pub fn isolate_test_storage() {
     );
 }
 
+/// Tests that open the session vault hold this for their whole run.
+/// The blob name key and the vault identity are process-wide, so a second test opening with other seeds mid-run moved the key between a store and its read (the pigeon landing test failed 3 of 4 full runs on 2026-11-10).
+#[cfg(test)]
+pub fn session_test_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    // A test that panicked while holding it poisons it; the next test still runs, since every open re-sets the state it guards.
+    LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 // BLOBS LIVE IN THE VAULT (2026-08-20, "ONE VAULT WITH A MIRROR FOR FUCKUPS AND HEALING"): an attachment/recording is one vault value at an identity-keyed address — arbitrary size in principle (EWE), sealed by the vault's own per-address keys, mirrored by the dual rings like everything else. A file-era blobs/ dir is a census stray — deleted, never imported.
 // ADDRESSES ARE A FORENSIC SURFACE (the v0 filename lesson): trie keys sit in plaintext in the vault leaves, so an unkeyed content-hash address would let anyone holding the rings + a CANDIDATE file prove possession with zero keys. The address is blake3 KEYED by a seed-derived name key — meaningless without the identity seed. The name key lives in a process global because presence checks run on the render path where no seed is in scope; it is set the moment a session's seed exists (blob_init_names) and cleared with the session.
 static BLOB_NAME_KEY: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
@@ -1303,6 +1312,7 @@ mod tests {
         let _g = serial();
         isolate_test_storage();
         let seed = [0x61; 32];
+        let _session = session_test_lock();
         let _vault = open_session_vault(seed, [0x62; 32], [0x63; 32]).expect("session vault");
         let dir = scratch("wrapped-rest");
         for (raw, chunked) in [(sample(70_000, 0x0A), false), (sample(BLOB_CHUNK_SIZE * 2 + 1234, 0x0B), true)] {
@@ -1334,6 +1344,7 @@ mod tests {
         let _g = serial();
         isolate_test_storage();
         let seed = [0x64; 32];
+        let _session = session_test_lock();
         let _vault = open_session_vault(seed, [0x65; 32], [0x66; 32]).expect("session vault");
         // One value: the whole-blob frame carries blob_load_wire's bytes.
         let raw = sample(90_000, 0x1C);
@@ -1372,6 +1383,7 @@ mod tests {
         let _g = serial();
         isolate_test_storage();
         let seed = [0x67; 32];
+        let _session = session_test_lock();
         let _vault = open_session_vault(seed, [0x68; 32], [0x69; 32]).expect("session vault");
         let name = [0x7E; 32];
         blob_store(&seed, &name, b"not the bytes that name").expect("store");
@@ -1392,6 +1404,7 @@ mod tests {
         let _g = serial();
         isolate_test_storage();
         let seed = [0x6A; 32];
+        let _session = session_test_lock();
         let _vault = open_session_vault(seed, [0x6B; 32], [0x6C; 32]).expect("session vault");
         for raw in [sample(40_000, 0x4F), sample(BLOB_CHUNK_SIZE + 9, 0x50)] {
             let raw_hash = *blake3::hash(&raw).as_bytes();
@@ -1423,6 +1436,7 @@ mod tests {
         isolate_test_storage();
         // The blob store writes identity-scoped entries thru the DEVICE vault, so the session open is the setup — a bare FlatStorage::new leaves the device vault identityless and every put refuses ("identity not set").
         let seed = [0x5E; 32];
+        let _session = session_test_lock();
         let _vault = open_session_vault(seed, [0x5F; 32], [0x60; 32]).expect("session vault");
         // Deliberately several chunks plus a SHORT final one — the boundary the read loop is most likely to get wrong.
         let mut bytes = Vec::new();
@@ -1497,6 +1511,7 @@ mod tests {
         let dir = photon_config_dir().unwrap().join("blobs");
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(dir.join("deadbeef00.bin"), vec![0xCDu8; 128]).unwrap();
+        let _session = session_test_lock();
         let _vault = open_session_vault(identity, vault_seed, secret).unwrap();
         assert!(!dir.exists(), "blobs dir survived the census");
         // Fresh store / presence / load / delete round trip, all vault-side.
@@ -1532,6 +1547,7 @@ mod tests {
         std::fs::create_dir_all(&legacy_dir).unwrap();
         std::fs::write(legacy_dir.join("oldring.vsf"), vec![0x11u8; 256]).unwrap();
 
+        let _session = session_test_lock();
         let _vault = open_session_vault(identity, vault_seed, secret).unwrap();
 
         // Census: the strays and the blobs dir are gone from the config dir, and the legacy dir is gone wholesale.
@@ -1559,6 +1575,7 @@ mod tests {
         isolate_test_storage();
         let vault_seed = [0x4Au8; 32];
         let device_secret = [0x4Bu8; 32];
+        let _session = session_test_lock();
         let vault = open_session_vault([0x49u8; 32], vault_seed, device_secret).unwrap();
         assert!(vault.live_addrs().unwrap().is_empty(), "fresh vault is not empty");
         drop(vault);

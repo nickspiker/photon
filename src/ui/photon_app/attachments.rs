@@ -1133,6 +1133,7 @@ mod land_tests {
     fn landing_overwrites_under_the_given_name() {
         crate::storage::isolate_test_storage();
         let seed = [0x4Du8; 32];
+        let _session = crate::storage::session_test_lock();
         let _v = crate::storage::open_session_vault(seed, [0x4E; 32], [0x4F; 32]).expect("vault");
         let dir = std::env::temp_dir().join(format!("photon-land-{}", std::process::id()));
         // A stale dir from an earlier run is the only thing to clear; a fresh run finds none.
