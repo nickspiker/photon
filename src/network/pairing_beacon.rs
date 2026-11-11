@@ -26,6 +26,15 @@ static SCANNING: Mutex<bool> = Mutex::new(false);
 /// Everything heard this scan session, deduped by UUID. Cleared on scan start.
 static HEARD: Mutex<Vec<HeardBeacon>> = Mutex::new(Vec::new());
 
+/// Called when a UUID is heard for the first time this scan session, so the UI thread wakes and hands it to the add flow (no poll).
+#[allow(clippy::type_complexity)]
+static WAKER: Mutex<Option<Box<dyn Fn() + Send>>> = Mutex::new(None);
+
+/// Set the first-hearing wake (the UI thread's event proxy); replaces any earlier one.
+pub fn set_waker(wake: Box<dyn Fn() + Send>) {
+    *WAKER.lock().unwrap() = Some(wake);
+}
+
 // ── Announce (new device) ──
 
 /// Advertise this device's join beacon for as long as the returned guard lives — tie it to the join ceremony's thread scope so every exit path (bind, cancel, error) stops the radio. `eagle_time` is this device's PUBLISHED binding-offer stamp (`BindRequest::t`) — the beacon is derived entirely from published offer state, so post the offer first, then announce with the stamp it returned.
@@ -85,13 +94,26 @@ pub fn on_uuid_heard(uuid: [u8; BEACON_UUID_LEN]) {
     if !*SCANNING.lock().unwrap() {
         return; // scan already stopped; late callback
     }
-    let mut heard = HEARD.lock().unwrap();
-    match heard.iter_mut().find(|b| b.uuid == uuid) {
-        Some(b) => b.last_seen = Instant::now(),
-        None => heard.push(HeardBeacon {
-            uuid,
-            last_seen: Instant::now(),
-        }),
+    let first = {
+        let mut heard = HEARD.lock().unwrap();
+        match heard.iter_mut().find(|b| b.uuid == uuid) {
+            Some(b) => {
+                b.last_seen = Instant::now();
+                false
+            }
+            None => {
+                heard.push(HeardBeacon {
+                    uuid,
+                    last_seen: Instant::now(),
+                });
+                true
+            }
+        }
+    };
+    if first {
+        if let Some(wake) = WAKER.lock().unwrap().as_ref() {
+            wake();
+        }
     }
 }
 

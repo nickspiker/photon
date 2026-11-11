@@ -5240,7 +5240,10 @@ impl PhotonApp {
             y += u * 0.5 + gap;
             // Tappable candidate list — PROXIMITY POPULATION ONLY (docs/pairing-v2.md): only devices HEARD over the BLE announce beacon (later: NFC tap) become tap targets, NEVER the raw registry — a remote attacker who holds the handle can flood the identity-gated registry, so listing registry entries as taps would fill your finger's reach with decoys. Registry = sync only (the consent a tap binds with); proximity is what a remote attacker can't fake. Not-nearby devices don't appear — you type their words (reading them off the physical screen IS the proximity check). Index i = position in the HEARD-only subset; the tap dispatch filters identically.
             // A PICK is up (a touch on a row, owner 2026-11-10): the picked device's words to compare with its screen (its name is on the status line), then "Is your new device bright green?" with Yes and No. Nothing is bound until Yes; No does what Back does.
-            if let Some((_, _, words)) = self.add_device_selected.as_ref() {
+            // The Add machine's view (fgtw::flow::add), as its last step left it.
+            let add_view = self.add_view.clone();
+            let selected = add_view.as_ref().and_then(|v| v.selected.clone());
+            if let Some((_, _, words)) = selected.as_ref() {
                 let wsize = u * 0.4;
                 let spaced: String = words.chars().fold(String::with_capacity(words.len() + 24), |mut s, c| {
                     if c.is_ascii_uppercase() && !s.is_empty() {
@@ -5267,11 +5270,12 @@ impl PhotonApp {
                 draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(x0 + wy + between, y, wn, pill_h), &no, self.add_select_no_hit_id, ctx.pressed_hit, true, Some(*theme::PILL_RED), "Oxanium");
                 y += pill_h + gap;
             }
-            let nearby: Vec<&AddCandidate> = self
-                .add_device_candidates
+            // The machine's pickable rows (nearby, and over Bluetooth only while contended), hidden under a pick; the tap dispatch filters identically.
+            let nearby: Vec<&fgtw::flow::add::Row> = add_view
                 .iter()
-                .filter(|_| self.add_device_selected.is_none())
-                .filter(|c| c.pickable(self.add_device_contended))
+                .flat_map(|v| v.rows.iter())
+                .filter(|_| selected.is_none())
+                .filter(|r| r.pickable)
                 .take(7)
                 .collect();
             if !nearby.is_empty() {
@@ -5317,16 +5321,17 @@ impl PhotonApp {
                 }
                 y += gap;
             }
-            // The fgtw.org opt-in (local first, 2026-11-10): binding requests from devices that aren't nearby are read only after this tap.
+            // The fgtw.org opt-in (local first, 2026-11-10): binding requests from devices that aren't nearby are read only on this tap, once per tap; it reads as in progress while the read is out.
+            let listing = add_view.as_ref().is_some_and(|v| v.listing);
             {
-                let (label, colour) = if self.add_device_mailbox {
+                let (label, colour) = if listing {
                     (tr(fgtw::text::Msg::AddLookingFgtw), fluor::theme::HINT_COLOUR)
                 } else {
                     (tr(fgtw::text::Msg::AddLookFgtw), *theme::CONTACT_NAME_COLOUR)
                 };
                 let size = u * 0.45;
                 ctx.text.draw_text_center(&mut canvas, &label, cx, y + size, &TextStyle::new(size, colour).font("Oxanium"), None, None);
-                if !self.add_device_mailbox {
+                if !listing {
                     let half_w = buf_w as f32 * 0.42;
                     restamp_hit_rect(
                         &mut chrome.hit_test_map,
@@ -5341,16 +5346,17 @@ impl PhotonApp {
                 }
                 y += size * 2. + gap;
             }
-            // Status row.
-            if !self.add_device_status.is_empty() {
-                let status_colour = if self.add_device_typo.is_some() {
+            // Status row, from the machine's view.
+            let (status, typo) = Self::add_status_line(add_view.as_ref(), self.session.as_ref().map(|s| s.identity_seed));
+            {
+                let status_colour = if typo {
                     *theme::ERROR_TEXT_COLOUR // live matcher hit: names the diverging word in red
                 } else {
                     *theme::STATUS_TEXT_COLOUR
                 };
                 ctx.text.draw_text_center(
                     &mut canvas,
-                    &self.add_device_status,
+                    &status,
                     cx,
                     y + u * 0.28,
                     &TextStyle::new(u * 0.5, status_colour).font("Oxanium"),

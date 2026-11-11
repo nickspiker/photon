@@ -785,13 +785,13 @@ impl FluorApp<Px> for PhotonApp {
 
         // Yes under a pick ("Is your new device bright green?"): the add starts in the background and the screen returns to the Fleet page.
         if hit_id == self.add_select_hit_id && self.add_select_hit_id != HIT_NONE && matches!(self.state, AppState::AddDevice) {
-            self.add_selected_device();
+            self.add_step(fgtw::flow::Event::User(fgtw::flow::UserOp::Yes));
             ctx.window.request_redraw();
             return EventResponse::Handled;
         }
-        // No under it: back to the list, as Back would be.
+        // No under it: back to the list, nothing to undo (nothing was bound).
         if hit_id == self.add_select_no_hit_id && self.add_select_no_hit_id != HIT_NONE && matches!(self.state, AppState::AddDevice) {
-            self.unselect_candidate();
+            self.add_step(fgtw::flow::Event::User(fgtw::flow::UserOp::No));
             ctx.window.request_redraw();
             return EventResponse::Handled;
         }
@@ -809,13 +809,10 @@ impl FluorApp<Px> for PhotonApp {
             return EventResponse::Handled;
         }
 
-        // The Add-device screen's opt-in: read fgtw.org's binding requests too (devices that aren't nearby).
+        // The Add-device screen's opt-in: read fgtw.org's binding requests too (devices that aren't nearby), once per tap.
         if hit_id == self.add_mailbox_hit_id && self.add_mailbox_hit_id != HIT_NONE && matches!(self.state, AppState::AddDevice) {
-            if !self.add_device_mailbox {
-                self.add_device_mailbox = true;
-                self.spawn_bindreq_watch();
-                ctx.window.request_redraw();
-            }
+            self.add_step(fgtw::flow::Event::User(fgtw::flow::UserOp::LookFarther));
+            ctx.window.request_redraw();
             return EventResponse::Handled;
         }
 
@@ -849,21 +846,19 @@ impl FluorApp<Px> for PhotonApp {
         // Candidate-row tap on the AddDevice screen (BLE / list select): a pick, not an add; the picked device is told and should turn green, and Yes under it adds.
         if self.add_candidate_hit_base != HIT_NONE
             && matches!(self.state, AppState::AddDevice)
-            && self.add_device_selected.is_none()
+            && self.add_view.as_ref().is_some_and(|v| v.selected.is_none())
             && hit_id >= self.add_candidate_hit_base
             && hit_id < (self.add_candidate_hit_base + 7)
         {
             let idx = (hit_id - self.add_candidate_hit_base) as usize;
-            // Filter identically to the render — only proximity-heard candidates are tap targets (a flooded registry never populates a tappable row).
-            if let Some(cand) = self
-                .add_device_candidates
-                .iter()
-                .filter(|c| c.pickable(self.add_device_contended))
-                .nth(idx)
-            {
-                let req = cand.req.clone();
-                // A pick, not a bind (owner 2026-11-10): the device is told and should turn green; the Add under it binds.
-                self.select_candidate(req);
+            // Filter identically to the render: only the machine's pickable rows are tap targets (a flooded registry never populates a tappable row).
+            let device = self
+                .add_view
+                .as_ref()
+                .and_then(|v| v.rows.iter().filter(|r| r.pickable).nth(idx).map(|r| r.device));
+            if let Some(device) = device {
+                // A pick, not a bind (owner 2026-11-10): the device is told and should turn green; Yes under it adds.
+                self.add_step(fgtw::flow::Event::User(fgtw::flow::UserOp::Touch { device }));
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
@@ -2797,8 +2792,8 @@ impl FluorApp<Px> for PhotonApp {
                             .unwrap_or(false);
                         if focused_is_launch_textbox {
                             if matches!(self.state, AppState::AddDevice) {
-                                // Words-entry screen: Enter nudges a re-match (the live matcher re-derives on every edit anyway; this covers "candidates arrived after I finished typing").
-                                self.refresh_add_device_match();
+                                // Words-entry screen: Enter hands the words to the machine again (it matches on every edit anyway; this covers "candidates arrived after I finished typing").
+                                self.add_words_again();
                             } else {
                                 self.submit_handle();
                             }
@@ -3072,10 +3067,14 @@ impl FluorApp<Px> for PhotonApp {
         // Presence refresh on a watched presence surface, and the LAN beacon everywhere else while online.
         let presence = self.presence_due_at(now);
         let lan_beacon = self.lan_beacon_due_at(now);
-        // Pairing flows: join-words (new device) and add-device matcher/confirm (old device) results arrive on mpsc channels from worker threads, with nothing else guaranteed to drive a tick while the user's hands are off — so poll-drain at 2 Hz while either flow is live. This is channel plumbing, not time-based UI: nothing is shown or cleared on a clock.
+        // The join-words flow (new device) results arrive on an mpsc channel from its worker thread, with nothing else guaranteed to drive a tick while the user's hands are off — so poll-drain at 2 Hz while it is live.
+        // This is channel plumbing, not time-based UI: nothing is shown or cleared on a clock.
         // The Octopus page's one request rides the same poll: its answer has nothing else to wake the tick either.
-        let pairing = (self.add_join_rx.is_some() || self.add_device_rx.is_some() || self.octopus_rx.is_some())
+        // The Add machine's jobs wake the UI thread themselves when they answer.
+        let pairing = (self.add_join_rx.is_some() || self.octopus_rx.is_some())
             .then(|| Instant::now() + std::time::Duration::from_millis(500));
+        // The Add machine's one deadline: a request or a nearby mark lapsing changes the candidates by time alone.
+        let add_lapse = self.add_wake_at(now);
         // Periodic own-chain re-fold (the fleet-membership doorbell) — only where advance_protocol runs it: a Settings page someone is watching.
         let fleet_refold = self.fleet_refold_due_at(now);
         // Live wave timer: an Active wave recomputes its duration each frame, so it needs frames flowing — but only at ~2 Hz (seconds granularity), not the pulse's full rate. A minimized Active wave still ticks so the strip's timer stays honest. Ringing already animates at full rate above.
@@ -3091,7 +3090,7 @@ impl FluorApp<Px> for PhotonApp {
         // LIVE DIGITS (Nick 2026-10-01): the Base page's clock and since-opened counter, and a selected message's live age, each wake at the exact moment their last digit next changes — an edge computed from the reading, never a timer. In dozenal the counter's edges are a gross-th of a doubling apart and a message's age moves only at each doubling; in hex and arabic the clock ticks on the second.
         let live = self.live_digit_edge();
         // Soonest of all scheduled wakeups.
-        [blink, anim, presence, lan_beacon, pairing, fleet_refold, wave_timer, probe, draft, live]
+        [blink, anim, presence, lan_beacon, pairing, add_lapse, fleet_refold, wave_timer, probe, draft, live]
             .into_iter()
             .flatten()
             .min()
@@ -3459,20 +3458,30 @@ impl FluorApp<Px> for PhotonApp {
         // Freeze / unfreeze the busy widgets (attest field+button while attesting, search box+plus while adding) before anything else this frame — disabled widgets drop out of dispatch via their fluor accessors.
         self.sync_busy_freeze();
 
-        // Pairing v2 beacon scan (docs/pairing-v2.md): scan exactly while the AddDevice screen is up, diffed per tick so EVERY exit path (back, orb, bind, crash of the check thread) stops the radio without scattered call sites. The scanner is identity-agnostic — it collects photon-magic service UUIDs and the candidate matcher resolves each to a fleet device by keyed tag.
-        let want_scan = matches!(self.state, AppState::AddDevice);
+        // The Add machine's edges Photon learns by looking: the AddDevice screen shown or gone by any path (back, orb, an add starting), the fleet key's RAM copy, the BLE beacons heard since the last tick, and its deadline.
+        if self.add_tick() {
+            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+        }
+        // Pairing v2 beacon scan (docs/pairing-v2.md): scan exactly while the Add machine asks for it (its Radios), diffed per tick so the radio follows its state without scattered call sites.
+        // The scanner is identity-agnostic — it collects photon-magic service UUIDs and the machine resolves each to a candidate by keyed tag.
+        let want_scan = self.add_radios.0;
         if want_scan != self.beacon_scan_active {
             if want_scan {
                 crate::network::pairing_beacon::start_scan();
                 self.beacon_scan_active = true;
+                // The scan clears its heard list on start, so every hearing from here on is new to the machine.
+                self.add_ble_fed = None;
             } else {
                 crate::network::pairing_beacon::stop_scan();
                 self.beacon_scan_active = false;
             }
         }
-        // The NFC reader: while the AddDevice screen is up (a joiner's tap), and while a departure request is pending on an attested device (owner, 2026-11-10: a tap of the leaving device, which serves its request's salt, is Approve; the reverse of add). Android reader mode runs only with the app in front, so the screen is on. Diffed per tick like the scan, so every exit path stops the radio.
+        // The NFC reader: while the Add machine asks for it (a joiner's tap), and while a departure request is pending on an attested device (owner, 2026-11-10: a tap of the leaving device, which serves its request's salt, is Approve; the reverse of add).
+        // Android reader mode runs only with the app in front, so the screen is on.
+        // Diffed per tick like the scan, so every exit path stops the radio.
+        let want_add_reader = self.add_radios.1;
         let want_depart_reader = self.depart_asked().is_some() && self.session.is_some();
-        let want_reader = want_scan || want_depart_reader;
+        let want_reader = want_add_reader || want_depart_reader;
         if want_reader != self.depart_nfc_reader {
             if want_reader {
                 crate::network::pairing_nfc::start_reader();
@@ -3491,25 +3500,12 @@ impl FluorApp<Px> for PhotonApp {
                 { needs_redraw = true; self.note_redraw(line!() + 100_000); }
             }
         }
-        // NFC instant add: a tapped secret matching a candidate's published commitment IS the proximity and intent proof, so the add starts with no words typed and no press.
-        if want_scan {
+        // NFC instant add: a tapped secret matching a candidate's published commitment IS the proximity and intent proof, so the machine adds with no words typed and no press (a secret matching no candidate changes nothing).
+        if want_add_reader {
             if let Some(s) = tapped {
-                let matched = fgtw::sponsor::nfc_match(&s, &self.add_device_candidates).map(|i| self.add_device_candidates[i].req.clone());
-                match matched {
-                    Some(req) => {
-                        crate::logf!(
-                            "NFC: tap matched candidate {} — adding (bind + key, one act)",
-                            crate::fp(&req.device_pubkey)
-                        );
-                        // Physical proximity is the confirmation (owner 2026-11-10: "Touch on screen ... required for BLE OR no touch on screen, just physical proximity (NFC). Both of which need the fleet page open"): an NFC match adds at once, the bind and the key release as one act, like typed words; a touch on a row only picks.
-                        self.add_device_selected = None;
-                        self.add_in_background(req);
-                        { needs_redraw = true; self.note_redraw(line!() + 100_000); }
-                    }
-                    None => crate::log(
-                        "NFC: tapped secret matched no candidate (stale request or foreign tag)",
-                    ),
-                }
+                crate::logf!("NFC: tap read secret {}: handed to the add flow", hex::encode(&s[..4]));
+                self.add_step(fgtw::flow::Event::NfcRead { secret: s });
+                { needs_redraw = true; self.note_redraw(line!() + 100_000); }
             }
         }
 

@@ -531,12 +531,11 @@ pub enum StatusUpdate {
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
     },
-    /// A joining device's binding request, handed to us directly (`bind_req`, docs/pairing-v2.md over the mesh) — the UI verifies it like a registry row and adds it to the AddDevice matcher's candidates.
-    BindReqReceived {
-        handle_proof: [u8; 32],
-        req: crate::network::fgtw::fleet::BindRequest,
+    /// A joining device's binding request (`bind_req`, docs/pairing-v2.md over the mesh), whole, for the Add machine (fgtw::flow::add) to open and check like a registry row: the bytes, where they came from, and the signer the cheap parse read.
+    BindReqFrame {
+        bytes: Vec<u8>,
+        from: SocketAddr,
         sender_pubkey: DevicePubkey,
-        sender_addr: SocketAddr,
     },
     /// A fan-out blob handed to us (`fanout_resp`): the sponsor's grow for a device it just bound, or a sibling's rotation. The UI opens it with this device's own ira.
     FanoutReceived {
@@ -795,7 +794,7 @@ impl StatusUpdate {
             }
             StatusUpdate::DepartFrame { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FleetChainAsked { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
-            StatusUpdate::BindReqReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::BindReqFrame { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FanoutReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FleetStatePushed { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FleetChainReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
@@ -2949,7 +2948,7 @@ async fn run_checker(
                                 continue;
                             }
                             // The join over the mesh: a binding request handed to a sponsor, and a fan-out handed to a newcomer or a sibling. Same mandatory packet-ack.
-                            if let Ok((handle_proof, req, sender_pubkey)) = crate::network::fgtw::protocol::parse_bind_req_vsf(msg_bytes) {
+                            if let Ok((_, _, sender_pubkey)) = crate::network::fgtw::protocol::parse_bind_req_vsf(msg_bytes) {
                                 {
                                     let ack_bytes = {
                                         let pt_mgr = pt_recv.lock().unwrap();
@@ -2959,11 +2958,10 @@ async fn run_checker(
                                 }
                                 send_status_update(
                                     &status_tx_recv,
-                                    StatusUpdate::BindReqReceived {
-                                        handle_proof,
-                                        req,
+                                    StatusUpdate::BindReqFrame {
+                                        bytes: msg_bytes.to_vec(),
+                                        from: src_addr,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
-                                        sender_addr: src_addr,
                                     },
                                     &event_proxy_recv,
                                 );

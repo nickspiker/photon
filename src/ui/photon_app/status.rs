@@ -349,7 +349,7 @@ impl PhotonApp {
                 StatusUpdate::ChainPullMissReceived { .. } => "ChainPullMissReceived",
                 StatusUpdate::DepartFrame { .. } => "DepartFrame",
                 StatusUpdate::FleetChainAsked { .. } => "FleetChainAsked",
-                StatusUpdate::BindReqReceived { .. } => "BindReqReceived",
+                StatusUpdate::BindReqFrame { .. } => "BindReqFrame",
                 StatusUpdate::FanoutReceived { .. } => "FanoutReceived",
                 StatusUpdate::FleetStatePushed { .. } => "FleetStatePushed",
                 StatusUpdate::FleetChainReceived { .. } => "FleetChainReceived",
@@ -473,8 +473,10 @@ impl PhotonApp {
         let mut fleet_asks_after: Vec<([u8; 32], [u8; 32], std::net::SocketAddr)> = Vec::new();
         let mut fleet_chains_after: Vec<([u8; 32], Vec<u8>, [u8; 32])> = Vec::new();
         let mut addresses_after: Vec<crate::network::fgtw::PeerRecord> = Vec::new();
-        // The join over the mesh, deferred likewise: binding requests handed to this sponsor (while its AddDevice screen is up), and fan-outs handed to this device.
-        let mut bind_reqs_after: Vec<(crate::network::fgtw::fleet::BindRequest, std::net::SocketAddr)> = Vec::new();
+        // The join over the mesh, deferred likewise: binding request frames handed to this sponsor (for the Add machine, screen up or not), and fan-outs handed to this device.
+        let mut bind_reqs_after: Vec<(Vec<u8>, std::net::SocketAddr)> = Vec::new();
+        // Own-handle LAN beacons heard this drain, for the Add machine (it marks the device nearby).
+        let mut lan_heard_after: Vec<[u8; 32]> = Vec::new();
         let mut fanouts_after: Vec<([u8; 32], Vec<u8>, [u8; 32])> = Vec::new();
         // Fleet state a sibling pushed us (sealed, sender) — opened and merged after the loop.
         let mut fstate_pushes_after: Vec<(Vec<u8>, [u8; 32])> = Vec::new();
@@ -3143,13 +3145,8 @@ impl PhotonApp {
                                     );
                                 }
                             }
-                            if matches!(self.state, AppState::AddDevice) {
-                                for c in self.add_device_candidates.iter_mut() {
-                                    if c.req.device_pubkey == dk && !c.heard_lan {
-                                        c.heard_lan = true;
-                                        changed = true;
-                                    }
-                                }
+                            if !lan_heard_after.contains(&dk) {
+                                lan_heard_after.push(dk);
                             }
                         }
                     }
@@ -4367,11 +4364,10 @@ impl PhotonApp {
                         strangers_after.push(sender_pubkey.key);
                     }
                 }
-                // A joining device's request for OUR fleet: kept (fresh ones only) so the candidate is on the AddDevice screen the moment the human opens it — the request arrives whenever the joiner hears us beacon, not when the screen happens to be up. The human at that screen is still the gate, the words the selector; nothing binds without them.
-                StatusUpdate::BindReqReceived { handle_proof, req, sender_addr, .. } => {
-                    if self.our_handle_proof() == Some(handle_proof) {
-                        bind_reqs_after.push((req, sender_addr));
-                    }
+                // A joining device's request: the Add machine checks it is for OUR fleet and fresh, and keeps it so the candidate is on the AddDevice screen the moment the human opens it — the request arrives whenever the joiner hears us beacon, not when the screen happens to be up.
+                // The human at that screen is still the gate, the words the selector; nothing binds without them.
+                StatusUpdate::BindReqFrame { bytes, from, .. } => {
+                    bind_reqs_after.push((bytes, from));
                 }
                 // A fan-out for our fleet (a sibling's grow or rotation), or for the fleet this device is joining (the sponsor's grow — its key).
                 StatusUpdate::FleetStatePushed { handle_proof, sealed, sender_pubkey } => {
@@ -5750,10 +5746,13 @@ impl PhotonApp {
         for record in addresses_after {
             self.pass_address_on(record);
         }
-        for (req, addr) in bind_reqs_after {
-            if self.on_bind_req(req, addr) {
-                changed = true;
-            }
+        for (bytes, from) in bind_reqs_after {
+            self.add_step(fgtw::flow::Event::Frame { bytes: &bytes, from: Some(from) });
+            changed = true;
+        }
+        for device in lan_heard_after {
+            self.add_step(fgtw::flow::Event::LanHeard { device });
+            changed = true;
         }
         for dev in fstate_to_siblings_after {
             self.fleet_state_push(Some(dev));
@@ -5762,6 +5761,8 @@ impl PhotonApp {
             if self.depart_asking() || self.depart_asked().is_some() {
                 self.depart_step(fgtw::flow::Event::Reachable { from: dev });
             }
+            // The Add machine hands a grown fan-out the device has not taken (fgtw::flow::deliver).
+            self.add_step(fgtw::flow::Event::Reachable { from: dev });
         }
         // A sibling's state, opened under the fleet key we hold and merged exactly as a slot read would be; one we cannot open waits for the key sync, and the next push or online edge carries it again.
         for (sealed, sender) in fstate_pushes_after {

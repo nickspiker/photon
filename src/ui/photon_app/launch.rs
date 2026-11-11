@@ -224,6 +224,7 @@ impl PhotonApp {
                     // A fresh fleet key is an epoch-worthy edge: the next checkpoint folds it (rotation = the PCS boundary).
                     self.ckpt_mint_due = true;
                     self.fleet_key_store(&k);
+                    self.add_fleet_key_edge();
                     crate::log("FLEET: stored fleet key recovered during pairing");
                 }
                 // Establish (genesis founder) or refresh (existing device, picks up a rotation) the fleet key from the fan-out and cache it, so the roster/state seal uses the current key.

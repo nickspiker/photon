@@ -365,62 +365,22 @@ impl PhotonApp {
             { needs_redraw = true; self.note_redraw(line!()); }
         }
 
-        // AddDevice flow: apply off-thread match-check/bind results (drain first so the rx borrow ends before we mutate self).
-        // The Add screen's candidates and the background add's results (which outlive the screen).
-        let add_updates: Vec<AddDeviceUpdate> = self
-            .add_device_rx
-            .iter()
-            .chain(self.adding_rx.iter())
-            .flat_map(|rx| rx.try_iter())
-            .collect();
-        for update in add_updates {
-            match update {
-                AddDeviceUpdate::Candidates(reqs) => {
-                    // The seed's latest registry list; merged with the requests handed to us over the LAN, then the candidate rows are rebuilt.
-                    self.add_device_registry_reqs = reqs;
-                    self.rebuild_add_device_candidates();
-                }
-                AddDeviceUpdate::Bound(pk) => {
-                    // The extended chain goes to the fleet NOW over the mesh — every sibling (so their folds take the newcomer in) and the newcomer itself at the address its LAN beacon came from (its green). The seed's copy, if it took, is the mirror.
-                    let newcomer: Vec<([u8; 32], std::net::SocketAddr)> = self.lan_heard_addr.iter().filter(|(k, _)| *k == pk).copied().collect();
-                    self.fleet_chain_push(&newcomer);
-                    // And to every contact's devices, so their folds take the newcomer in before it ever speaks to them (field 2026-11-04).
-                    self.fleet_chain_push_to_contacts();
-                    self.fleet_chain_store();
-                    // The person already said yes (the green, an NFC tap, or the typed words), so the key goes out at once.
-                    self.spawn_confirm_add();
-                }
-                AddDeviceUpdate::Rotated(blob) => {
-                    // The grown fan-out goes to the newcomer (at its LAN beacon's address — its key) and to every sibling over the mesh; the seed's copy, if the mirror took, is the fallback.
-                    let newcomer: Vec<([u8; 32], std::net::SocketAddr)> = self.adding.take().into_iter().flat_map(|pk| self.lan_heard_addr.iter().filter(move |(k, _)| *k == pk).copied()).collect();
-                    self.fanout_push(&blob, &newcomer);
-                    // The add a contention shut has finished; the next one starts open again (docs/lifecycle.md P3).
-                    self.add_device_contended = false;
-                    // The person is already back on the Fleet page (or wherever they went since): the new row and this toast are the confirmation.
-                    self.refresh_fleet_retired();
-                    self.ready_toast = Some(tr(fgtw::text::Msg::DeviceAdded).into_owned());
-                    // The confirm rotated the fleet key — recover the new epoch AND re-seal the roster under it in one ordered pass, so the just-joined device's roster pull decrypts instead of failing aead::Error until a relaunch. (Was a bare key-sync that left the roster stale-sealed forever, since the periodic re-push only fires on a non-in-app attest.)
-                    self.spawn_roster_republish();
-                    // And re-fold our own chain immediately so the freshly-bound device gets its sibling contact (fleet weave kickoff) without waiting for the next fleet event.
-                    if let Some(our_hp) = self.our_handle_proof() {
-                        self.spawn_contact_fleet_refresh(vec![our_hp]);
-                    }
-                }
-                AddDeviceUpdate::Failed(e) => {
-                    // The background add's failure reaches the person wherever they are.
-                    self.adding = None;
-                    self.ready_toast = Some(tr(Msg::AddDeviceError(&e)).into_owned());
-                }
-            }
-            { needs_redraw = true; self.note_redraw(line!()); }
-        }
-
-        // The Depart machine's jobs (fgtw::flow): signed frames and approve publishes, back from their threads.
+        // The fleet machines' jobs (fgtw::flow): signed frames and approve publishes for Depart; signed frames, the registry read, the bind and the grow for Add; back from their threads.
         let flow_done: Vec<FlowDone> = self.flow_rx.try_iter().collect();
         for done in flow_done {
             match done {
                 FlowDone::Built { id, result } => self.depart_step(fgtw::flow::Event::Built { id, result: result.as_deref().map_err(|e| e.as_str()) }),
                 FlowDone::Approved { leaver, result } => self.depart_step(fgtw::flow::Event::Approved { leaver, result: result.as_ref().map_err(|e| e.as_str()) }),
+                FlowDone::AddBuilt { id, result } => self.add_step(fgtw::flow::Event::Built { id, result: result.as_deref().map_err(|e| e.as_str()) }),
+                FlowDone::AddListed(Ok(reqs)) => {
+                    // Photon has no per-request "owned by another fleet" check; the registry list itself is member-gated.
+                    self.add_step(fgtw::flow::Event::Listed { reqs: &reqs, owned_elsewhere: &[] });
+                    // Words already typed meet the new candidates now, not on the next keystroke.
+                    self.add_words_again();
+                }
+                FlowDone::AddListed(Err(e)) => self.add_step(fgtw::flow::Event::ListFailed { reason: &e }),
+                FlowDone::AddBound { device, result } => self.add_step(fgtw::flow::Event::Bound { device, result: result.as_ref().map(|_| ()).map_err(|e| e.as_str()) }),
+                FlowDone::AddGrown { device, result } => self.add_step(fgtw::flow::Event::Grown { device, result: result.as_deref().map_err(|e| e.as_str()) }),
             }
             { needs_redraw = true; self.note_redraw(line!()); }
         }
@@ -753,7 +713,7 @@ impl PhotonApp {
 
         self.tick_prof_add("proto: toggles", __r.elapsed().as_secs_f32() * 1000.0);
         let __r = Instant::now();
-        // AddDevice flow: the status line is EVENT-driven, re-derived on every edit by the LIVE MATCHER — the typed entry prefix-matches against the candidate word strings from the binding-request registry (docs/pairing-v2.md), so a typo flags at the exact word it happens and a full 23-word match auto-binds.
+        // AddDevice flow: every edit hands the words typed so far to the Add machine, whose live matcher (fgtw::sponsor::match_words, docs/pairing-v2.md) flags a typo at the exact word it happens and adds on a full 23-word match.
         if matches!(self.state, AppState::AddDevice) {
             let text: String = self
                 .textbox
@@ -761,8 +721,8 @@ impl PhotonApp {
                 .map(|tb| tb.chars.iter().collect())
                 .unwrap_or_default();
             if text != self.add_device_wordcheck_text {
-                self.add_device_wordcheck_text = text;
-                self.refresh_add_device_match();
+                self.add_device_wordcheck_text = text.clone();
+                self.add_step(fgtw::flow::Event::Words { text: &text });
                 { needs_redraw = true; self.note_redraw(line!()); }
             }
         }

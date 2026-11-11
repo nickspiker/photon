@@ -1087,28 +1087,24 @@ impl PhotonApp {
             }
         }
         // Pairing/join machinery: stop flags signalled, channels dropped, candidates gone.
-        if let Some(stop) = self.add_device_stop.take() {
-            stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
         if let Some(stop) = self.add_stop.take() {
             stop.store(true, std::sync::atomic::Ordering::Relaxed);
         }
-        self.add_device_status.clear();
-        self.add_device_candidates.clear();
-        // An add of the old identity's fleet must not land in the new session: its results go with its channel.
-        self.adding = None;
-        self.adding_tx = None;
-        self.adding_rx = None;
+        // An add of the old identity's fleet must not land in the new session: the Add machine goes, and its job answers are drained with the Depart machine's below.
+        self.add = None;
+        self.add_view = None;
+        self.add_wake = None;
+        self.add_radios = (false, false);
+        self.add_page_shown = false;
+        self.add_key_held = false;
+        self.add_ble_fed = None;
         self.add_device_wordcheck_text.clear();
-        self.add_device_typo = None;
         self.beacon_scan_active = false;
         // Departure state, both sides: no request of ours stands on a wiped device, and none of the old fleet's is ours to answer.
         self.depart = None;
         self.depart_nfc_serve = None;
         self.depart_was_denied = false;
         while self.flow_rx.try_recv().is_ok() {}
-        self.add_device_rx = None;
-        self.add_device_tx = None;
         self.lan_heard.clear();
         self.add_join_status.clear();
         self.add_join_words = None;

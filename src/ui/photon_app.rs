@@ -571,10 +571,15 @@ fn party_colour(digest: &[u8; 32]) -> u32 {
     vsf_rgb_to_stored(rgb_vsf)
 }
 
-/// A departure job's answer from its worker thread, for the Depart machine (fgtw::flow): a signed frame, or the approve publish.
+/// A fleet machine's job answered from its worker thread (fgtw::flow): for the Depart machine a signed frame or the approve publish, for the Add machine a signed frame, the registry read, the bind or the grow.
+/// Build ids are counted per machine, so each machine's signed frames come back on its own variant.
 enum FlowDone {
     Built { id: u32, result: Result<Vec<u8>, String> },
     Approved { leaver: [u8; 32], result: Result<fgtw::sponsor::Approved, String> },
+    AddBuilt { id: u32, result: Result<Vec<u8>, String> },
+    AddListed(Result<Vec<fgtw::fleet::BindRequest>, String>),
+    AddBound { device: [u8; 32], result: Result<(), String> },
+    AddGrown { device: [u8; 32], result: Result<Vec<u8>, String> },
 }
 
 /// A history page opened OFF the UI thread, posted back for the drain to merge. The kete open of an up-to-MAX_PAGE_BYTES page ran inline on the render thread — 210-485ms per page in the field (2026-08-08), the single largest status-arm stall. Only the frame's identity travels; the drain re-derives contact/rid/sibling state fresh, because the indexes and in-flight cursor it would have captured at dispatch can shift while the worker runs.
@@ -2102,31 +2107,29 @@ pub struct PhotonApp {
     pending_keyboard_request: Option<bool>,
     /// One-shot: set true when the compose box is cleared on send, so the Android host restarts IME input and a predictive keyboard doesn't re-materialise the just-sent text. Drained by `wants_input_reset`.
     pending_input_reset: bool,
-    /// AddDevice flow (EXISTING device): status line on the words-entry screen.
-    add_device_status: String,
-    /// AddDevice flow: the verified pending binding requests for OUR fleet — the matcher's candidate set, each with its expected word tokens + keyed display name precomputed. Refreshed by the bindreq watch thread (hub-poked + polled); the typed entry prefix-matches against these, keystroke by keystroke (docs/pairing-v2.md).
-    add_device_candidates: Vec<AddCandidate>,
-    /// The device being added in the background (owner 2026-11-10: "just go straight back to fleet"): its bind and then its key release run off the Add screen, so the screen closes the moment the person says yes.
-    /// One add at a time; cleared when the grow lands or fails.
-    adding: Option<[u8; 32]>,
-    /// The background add's results: made on the first add and kept for the session, so leaving or reopening the Add screen never drops a result in flight.
-    adding_tx: Option<std::sync::mpsc::Sender<AddDeviceUpdate>>,
-    adding_rx: Option<std::sync::mpsc::Receiver<AddDeviceUpdate>>,
-    /// AddDevice flow: the entry text the live matcher last ran against (debounce — the match itself is cheap, but no point re-running it on ticks where nothing was typed).
+    /// Adding a device, the sponsor's side (fgtw::flow::add, shared with ferros): candidates, the pick, the words match, contention and the add under way all live in the machine.
+    /// Made at the first fold of our chain; an add under way rests in the vault (`add_state`).
+    add: Option<fgtw::flow::add::Add>,
+    /// The machine's view after its last step, which the AddDevice screen draws (render reads this, never the machine).
+    add_view: Option<fgtw::flow::add::View>,
+    /// The machine's one deadline (Eagle oscillations) and why: the driver wakes for it and steps `Event::Wake` when it passes.
+    add_wake: Option<(i64, fgtw::flow::Wake)>,
+    /// The radios the machine asked for (BLE scan, NFC reader), which the driver's per-tick radio diffs read.
+    add_radios: (bool, bool),
+    /// Whether the machine was last told the AddDevice screen is shown (diffed per tick, so every exit path closes the flow).
+    add_page_shown: bool,
+    /// Whether the machine was last told this device holds the fleet key (diffed against the RAM copy, so a key from any recover path reaches it).
+    add_key_held: bool,
+    /// The BLE scan's hearings already handed to the machine: beacons heard after this are fed as `BeaconHeard`.
+    add_ble_fed: Option<std::time::Instant>,
+    /// AddDevice flow: the entry text last handed to the machine as `Words` (a tick where nothing was typed sends nothing).
     add_device_wordcheck_text: String,
-    /// AddDevice flow: the first typed word that diverges from every candidate's expected words (or fails the voca spell-check while no candidates are in yet). Drives the red status line at the exact word the typo happens, instead of a silent no-match after all 23.
-    add_device_typo: Option<String>,
-    /// Pairing v2 shadow beacon: whether the AddDevice-screen scan is currently running (diffed against the screen state each tick — see the tick block).
+    /// Pairing v2 shadow beacon: whether the AddDevice-screen scan is currently running (diffed against the machine's Radios each tick, see the tick block).
     beacon_scan_active: bool,
-    /// AddDevice flow: results from the off-thread candidate watch / bind / rotate (the fleet client blocks on HTTP, so it can't run on the UI thread).
-    add_device_rx: Option<std::sync::mpsc::Receiver<AddDeviceUpdate>>,
-    /// AddDevice flow: a clone-able sender so the watch, bind, and rotate threads report on the same channel.
-    add_device_tx: Option<std::sync::mpsc::Sender<AddDeviceUpdate>>,
-    /// AddDevice flow: stop flag for the bindreq watch thread — set on every flow exit so the registry polling dies with the screen.
-    add_device_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// AddDevice flow: base hit id for the tappable candidate rows (BLE/tap select). Row `i` stamps `add_candidate_hit_base + i`; up to 8 rows.
     add_candidate_hit_base: HitId,
-    /// Devices heard broadcasting LAN discovery under OUR OWN handle recently: (device pubkey, last heard). Feeds AddCandidate::heard_lan; entries older than LAN_HEARD_FRESH are pruned at read.
+    /// Devices heard broadcasting LAN discovery under OUR OWN handle recently: (device pubkey, last heard).
+    /// The joiner-beacon answers read it (the Add machine keeps its own nearby marks); entries older than LAN_HEARD_FRESH are pruned at read.
     lan_heard: Vec<([u8; 32], std::time::Instant)>,
     /// Where each own-handle LAN beacon came from: (device pubkey, its socket address) — the address a sponsor hands the extended chain and the fan-out to right after binding that device (it is not a contact yet, so no endpoint table holds it).
     lan_heard_addr: Vec<([u8; 32], std::net::SocketAddr)>,
@@ -2134,8 +2137,6 @@ pub struct PhotonApp {
     fleet_asked: Vec<[u8; 32]>,
     /// Unknown device keys that announced a signed transfer at us (StatusUpdate::StrangerFrame), each acted on once per session: the stale-fold edge that re-asks the seed for the contacts in `fleet_asked`. Bounded at 64, oldest out.
     stranger_seen: Vec<[u8; 32]>,
-    /// More than one device asked to join at once (docs/lifecycle.md P3): the network path is shut, words and LAN picks alike, and only a device heard over Bluetooth (or tapped by NFC) can be added. Raised on the first contended candidate set and held until an add completes, so withdrawing and reposting cannot reopen it.
-    add_device_contended: bool,
     /// Diagnostics "Submit" flow: result of the off-thread log upload to FGTW (blocking HTTP over up to 16 MiB). `Ok(())` → "Log sent" toast; `Err` → the reason. Drained in tick.
     log_submit_rx: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
     log_submit_tx: Option<std::sync::mpsc::Sender<Result<(), String>>>,
@@ -2183,8 +2184,6 @@ pub struct PhotonApp {
     add_join_select: std::sync::Arc<std::sync::Mutex<Option<[u8; 32]>>>,
     /// The joining device was picked: the sponsor's device name for the green ("Selected by …").
     join_selected_by: Option<String>,
-    /// The adding device's pick (button or NFC tap): (the request, the device's name, its words). Nothing is bound until Add is pressed; Back clears it.
-    add_device_selected: Option<(fgtw::fleet::BindRequest, String, String)>,
     /// The green "Add <name>" under a pick.
     add_select_hit_id: HitId,
     /// The No beside it: back to the list, nothing to undo.
@@ -2197,9 +2196,6 @@ pub struct PhotonApp {
     add_join_sponsors: Vec<([u8; 32], std::net::SocketAddr)>,
     /// A fan-out handed to the joining device (the sponsor's grow), waiting for the join thread, which holds the ira that opens it.
     add_join_fanout: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>,
-    /// The AddDevice matcher's two candidate sources: the seed's registry (the watch thread's latest list) and requests handed to this device directly over the LAN. Merged by device key, newest stamp wins.
-    add_device_registry_reqs: Vec<crate::network::fgtw::fleet::BindRequest>,
-    add_device_lan_reqs: Vec<crate::network::fgtw::fleet::BindRequest>,
     /// Roots from the pre-attest probe, stashed so the permanence-confirm press claims WITHOUT re-deriving the ~1s proof. Set on a `Fresh` probe outcome; cleared on any handle edit (via clear_launch_error) or when the claim fires.
     probed_session: Option<tohu::SessionIdentity>,
     /// Canonical spelling of the handle `probed_session` was derived from — the confirm press fires the stashed roots ONLY when the box still canonicalizes to this, so stale roots can never attest a different identity than the one on screen.
@@ -2494,8 +2490,6 @@ pub struct PhotonApp {
     /// The running join's mailbox opt-in, set by the tap; the join thread posts to fgtw.org once it reads true.
     join_mailbox: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     join_mailbox_asked: bool,
-    /// The Add-device screen is also reading fgtw.org's binding requests, because the person asked.
-    add_device_mailbox: bool,
     /// Interaction-state for the copy affordance label ("copy words" → "copied — paste them on your other device"). Cleared when the flow ends, never by a timer (no time-based UI).
     join_words_copied: bool,
     /// Two-tap arm for "Start fresh" on the JOIN screen (destructive → confirm).
@@ -3328,23 +3322,20 @@ impl PhotonApp {
             root_conversion_started: false,
             pending_keyboard_request: None,
             pending_input_reset: false,
-            add_device_status: String::new(),
-            add_device_candidates: Vec::new(),
-            adding: None,
-            adding_tx: None,
-            adding_rx: None,
+            add: None,
+            add_view: None,
+            add_wake: None,
+            add_radios: (false, false),
+            add_page_shown: false,
+            add_key_held: false,
+            add_ble_fed: None,
             beacon_scan_active: false,
             add_device_wordcheck_text: String::new(),
-            add_device_typo: None,
-            add_device_rx: None,
-            add_device_tx: None,
-            add_device_stop: None,
             add_candidate_hit_base: HIT_NONE,
             lan_heard: Vec::new(),
             lan_heard_addr: Vec::new(),
             fleet_asked: Vec::new(),
             stranger_seen: Vec::new(),
-            add_device_contended: false,
             log_submit_rx: None,
             log_submit_tx: None,
             log_submit_inflight: false,
@@ -3363,7 +3354,6 @@ impl PhotonApp {
             add_join_chain: std::sync::Arc::new(std::sync::Mutex::new(None)),
             add_join_select: std::sync::Arc::new(std::sync::Mutex::new(None)),
             join_selected_by: None,
-            add_device_selected: None,
             add_select_hit_id: HIT_NONE,
             add_select_no_hit_id: HIT_NONE,
             add_join_poke: None,
@@ -3371,8 +3361,6 @@ impl PhotonApp {
             add_join_sent: Vec::new(),
             add_join_sponsors: Vec::new(),
             add_join_fanout: std::sync::Arc::new(std::sync::Mutex::new(None)),
-            add_device_registry_reqs: Vec::new(),
-            add_device_lan_reqs: Vec::new(),
             probed_session: None,
             probed_handle: None,
             mint_first_entry: None,
@@ -3489,7 +3477,6 @@ impl PhotonApp {
             add_mailbox_hit_id: HIT_NONE,
             join_mailbox: None,
             join_mailbox_asked: false,
-            add_device_mailbox: false,
             join_words_copied: false,
             join_startfresh_armed: false,
             pending_picker_request: false,
@@ -4086,21 +4073,6 @@ fn orb_tint_for(online: bool) -> fluor::host::chrome::OrbTint {
 
 /// How long a LAN discovery hearing keeps a candidate marked "nearby" — comfortably past the joining device's ~8s announce cadence, short enough that a device that left the network stops reading as present.
 const LAN_HEARD_FRESH: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// One matcher candidate on the AddDevice screen: a verified binding request, its precomputed expected word tokens and keyed name, and whether it is heard nearby by BLE or the LAN (fgtw::sponsor::Candidate, shared with every fleet client since 2026-11-08). The candidate list marks the nearby ones; tapping one binds it (BLE/tap select), typing its words still works too.
-type AddCandidate = fgtw::sponsor::Candidate;
-
-/// Off-thread results for the AddDevice flow (candidate watch + bind + rotate), drained in `tick`.
-enum AddDeviceUpdate {
-    /// A fresh, signature-verified candidate set from the binding-request registry (the watch thread's periodic/hub-poked list).
-    Candidates(Vec<crate::network::fgtw::fleet::BindRequest>),
-    /// The consent-carrying bind is in the chain we hold; the grow that releases the key follows at once.
-    Bound([u8; 32]),
-    /// The green-confirm grow sealed and held (mirrored to the seed when it answered) — ceremony complete; carries the fan-out blob to hand the newcomer and the siblings over the mesh.
-    Rotated(Vec<u8>),
-    /// An error: the Add screen's status line, or a toast for the background add.
-    Failed(String),
-}
 
 /// Off-thread results for the new-device JOIN flow (binding-request post + membership poll), drained in `tick`.
 /// Off-thread checkpoint work reporting home: a spine advance (minted here or adopted from custody), or "nothing landed, re-arm on the next edge".
