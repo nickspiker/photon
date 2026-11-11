@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v151
 - **Adding a device asks before it adds.** Touching a nearby device only picks it: it turns bright green on its own screen, and Photon asks "Is your new device bright green?" with Yes and No; an NFC tap or the device's typed words still add it at once.
 - **Adding happens in the background.** Once you say yes, Photon goes straight back to the Fleet page and finishes the add on its own, telling you when the device is in or why it could not be added.
 - **Leaving your fleet is sturdier.** A request to leave that did not reach one of your devices is handed to it again as soon as that device is back, a departure under way survives a restart, and the device that left learns it is out at once instead of checking later.
@@ -14,6 +16,8 @@ One sentence per line, however long; plain language for the person who installs 
 - **Messages at the edge of the screen fit.** Notices that were cut off on both sides now wrap onto more lines.
 - **Text reads more cleanly.** Line breaks and ordinary punctuation replace the long dashes throughout the app, in every language.
 - **Text is stored a little differently.** Letters and symbols you type every day, common emoji included, are unchanged; a few rare characters in older messages may now show differently.
+
+Built from photon e1596e5c · chirp b01db995 · fgtw 0d53cb78 · fluor 02c209c2 · ihi 92796ee6 · kete 05552740 · limbus 30ab5cc3 · manifestus ccc5bda1 · nunc b518ad11 · opsin 60ea6940 · rarangi 387b44ab · spirix b12187fb · tapuwae 5c462e1d · tohu 7df2ac9b · voca 04dcf2df · vsf 1b87e15d
 
 ## v150
 - **Updates carry three signatures.** Every update is now signed three ways, two of them built to hold up against quantum computers, and Photon checks all three before it installs an update or trusts itself at start.
