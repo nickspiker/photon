@@ -56,6 +56,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [Member relay](project_member_relay.md) · [Sibling group pages](project_sibling_group_pages.md) — FIXED · [Sticky catching up](project_sticky_catching_up.md) — FIXED v132
 - [Old-self import removal](project_old_self_import_removal.md) — DELETE not before 2027-02-01
 - [Group waves](project_group_waves.md) — BUILT; field test pending · [Group media at any size](project_group_media_scale.md) — 1a+1b+roll BUILT; 2a next
+- [Group beam 2026-11-11](project_group_beam_2026_11_11.md) — late joiner no keyframe, ~7.5 fps sender cap, WAN seen as LAN, no Jeff-Joshua link; Jeff black screen open
 - [Address sets](project_address_sets.md) — stages 1-3 BUILT; Windows + reflexive split open
 - [Group avatars](project_group_avatars.md) — BUILT 2026-11-02; field test pending
 - [Android Widevine plate](project_android_widevine_plate.md) — 2026-11-02 KEY root = Widevine ‖ cert ‖ ANDROID_ID, PLATE = BLAKE3(Widevine ‖ cert) survives a wipe; conversion VERIFIED on the Pixel; PLATE PUBLISHED in the chain (v3 ops) + seed one-plate-one-identity gate BUILT, field test pending; pin until 2027-02-01
