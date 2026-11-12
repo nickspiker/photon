@@ -77,11 +77,11 @@ ferros_kist_build() {
     [ -s "$FERROS_KIST_IMAGE" ] || { echo "ERROR: no image at $FERROS_KIST_IMAGE after the ferros build" >&2; return 1; }
 }
 
-# Sign the image into the capsule with the release key, then check it with Photon's own trust root: every release egg verifies, the content hash holds, the kist section's option is Photon's. A capsule that fails is never in the manifest.
+# Sign the image into the capsule with the release key, then check it with Photon's own trust root: every release egg verifies, the content hash holds, the kist section's option is Photon's. A capsule that fails is never in the manifest. Its declaration carries the version this deploy ships (FULL_VERSION, the one injected into the snapshot), so a ferros device lists it and offers the update (ferros KISTS.md "The version").
 # Arg: the photon-manifest tool (it carries AUTHOR_PUBKEY).
 ferros_kist_sign() {
     local tool="$1"
     rm -f "$FERROS_KIST_CAPSULE"
-    FERROS_DEV_KEY="$PHOTON_KIST_KEY" "$FERROS_DIR/tools/photon-capsule.sh" "$FERROS_KIST_IMAGE" "$FERROS_KIST_CAPSULE" || { echo "ERROR: signing the ferros capsule failed" >&2; return 1; }
+    FERROS_DEV_KEY="$PHOTON_KIST_KEY" PHOTON_VERSION="$FULL_VERSION" "$FERROS_DIR/tools/photon-capsule.sh" "$FERROS_KIST_IMAGE" "$FERROS_KIST_CAPSULE" || { echo "ERROR: signing the ferros capsule failed" >&2; return 1; }
     "$tool" --check-capsule "$FERROS_KIST_CAPSULE" "$FERROS_KIST_OPTION" || { echo "ERROR: the ferros capsule is not Photon's (key or option); refusing to ship it" >&2; return 1; }
 }
