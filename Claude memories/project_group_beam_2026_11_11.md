@@ -14,3 +14,9 @@ Owner report 2026-11-11: "shit beam in a molecule between myself, Jeff and Joshu
 Side bug: "WakeSender::send failed" (grants.rs:34) on every Android foreground return.
 
 **How to apply:** these are messaging/beam code (Photon), not FGTW. Fix order proposed to the owner: keyframe on join + keyframe request, LAN/WAN ceiling from the live link, encoder fps, per-link congestion, then group signalling between non-author members. Related: [[project_beams]], [[project_group_media_scale]], [[project_group_waves]], [[project_beam_standing_queue]].
+
+**Owner decisions (2026-11-11), fixes approved:**
+- Keyframes: no timer. "If my friends don't need a keyframe, don't send one. If they need one, send it now, not in 2 minutes." A receiver whose decoder cannot make a picture (late join, unconcealable loss) requests one; the sender forces an IDR at once. KEYFRAME_EVERY's periodic IDR goes.
+- Rolling refresh is what the owner likes (Android: starts transparent, chunks in like a rolling shutter, no network spike). OpenH264 cannot roll; a desktop rolling encoder (hardware NVENC/VAAPI/VideoToolbox/MF intra refresh, or x264 GPL) is a new per-platform dependency = owner decision, offered, not taken.
+- "Same network isn't a decision, it's a latency and bandwidth question": the beam ceiling comes from each link's measured latency and throughput, live, never a LAN/WAN boolean.
+- Approved too: encoder told the real fps, congestion watched on every link (not only the lead), group members linked to each other (not only to the caller).
