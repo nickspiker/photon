@@ -1,6 +1,6 @@
 # Sourced, not executed. Photon for ferros devices: the kist capsule deploy.sh builds, signs and publishes beside the other platforms (docs/updates.md, "ferros").
 # The build is ferros's, from its repo beside this one: std/photon is Photon's library under fluor's ferros host, built by ferros's tools/photon-build.sh (nightly, the ferros-rust std fork, the ferros target JSON, ferros_rt), and ferros's tools/photon-capsule.sh signs the flat image into a capsule carrying Photon's declaration (its wants, in slot order) and its option (ferros docs/KISTS.md). The declaration lives only there, so a development install and a release can never declare different wants.
-# The capsule is signed with Photon's release key (owner, 2026-11-10: Photon is a commons project, so its kist carries the key that signs its manifest and binaries, not ferros's key), so the capsule's developer key (`ke`) is AUTHOR_PUBKEY. The key's PATH is handed to ferros-bridge as FERROS_DEV_KEY; the key itself is read only inside the bridge's process, never copied or printed.
+# The capsule is signed with Photon's release key (owner, 2026-11-10: Photon is a commons project, so its kist carries the key that signs its manifest and binaries, not ferros's key), so the capsule's developer key (`ke`) is AUTHOR_PUBKEY. The bridge reads a key only in its VSF form (ferros_kist::secret: section developer_key { label, seed kge }; it refuses a raw key file), so the kist is signed with photon-signing-key.vsf, the same release seed converted once from the raw photon-signing-key (2026-11-12, ferros tools/kistcat `devkey convert --label PHOTON_RELEASE`: the label whose Falcon-512 and SPHINCS+ domains are SigningBundle::release's, so the bundle is the one fgtw pins); every other signer in this repo still reads the raw file thru PHOTON_SIGNING_KEY. The key's PATH (PHOTON_KIST_KEY) is handed to ferros-bridge as FERROS_DEV_KEY; the key itself is read only inside the bridge's process, never copied or printed.
 # Callers cd to the repo root first. Every function `return 1`s on failure with a line saying what, so the caller's set -e and traps abort the deploy: a release ships every platform or none (the Windows ARM64 rule), so a missing ferros toolchain fails the deploy, never skips the target.
 
 FERROS_DIR="${FERROS_DIR:-$(cd .. && pwd)/ferros}"
@@ -15,6 +15,8 @@ FERROS_KIST_CAPSULE="$FERROS_KIST_TARGET/aarch64-unknown-ferros/$FERROS_KIST_PRO
 # ferros-rust (the std fork) and ferros-libc are named by absolute path in photon-build.sh and std/photon's Cargo.toml; checked here, recorded in the provenance below.
 FERROS_RUST_DIR="/mnt/Harbor/Code/ferros-rust"
 FERROS_LIBC_DIR="/mnt/Harbor/Code/ferros-libc"
+# Photon's release key in the VSF form the bridge reads (the header above); never the raw file, which the bridge refuses.
+PHOTON_KIST_KEY="${PHOTON_KIST_KEY:-/mnt/Harbor/Code/keys/photon-signing-key.vsf}"
 
 # Everything the ferros build needs, checked in a second before any platform builds, so a missing piece fails the deploy at its start and not an hour in.
 ferros_kist_preflight() {
@@ -28,6 +30,7 @@ ferros_kist_preflight() {
         command -v "$t" >/dev/null 2>&1 || missing="$missing\n    $t (binutils-aarch64-linux-gnu, gcc-aarch64-linux-gnu)"
     done
     cargo +nightly --version >/dev/null 2>&1 || missing="$missing\n    the nightly Rust toolchain (rustup toolchain install nightly)"
+    [ -f "$PHOTON_KIST_KEY" ] || missing="$missing\n    $PHOTON_KIST_KEY (Photon's release key as VSF: ferros tools/kistcat devkey convert --raw <keys>/photon-signing-key --label PHOTON_RELEASE --secret <keys>/photon-signing-key.vsf)"
     if [ -n "$missing" ]; then
         echo "ERROR: the ferros toolchain is incomplete; Photon for ferros (the kist capsule) is a required target. Missing:"
         printf '%b\n' "$missing"
@@ -79,6 +82,6 @@ ferros_kist_build() {
 ferros_kist_sign() {
     local tool="$1"
     rm -f "$FERROS_KIST_CAPSULE"
-    FERROS_DEV_KEY="${PHOTON_SIGNING_KEY:-/mnt/Harbor/Code/keys/photon-signing-key}" "$FERROS_DIR/tools/photon-capsule.sh" "$FERROS_KIST_IMAGE" "$FERROS_KIST_CAPSULE" || { echo "ERROR: signing the ferros capsule failed" >&2; return 1; }
+    FERROS_DEV_KEY="$PHOTON_KIST_KEY" "$FERROS_DIR/tools/photon-capsule.sh" "$FERROS_KIST_IMAGE" "$FERROS_KIST_CAPSULE" || { echo "ERROR: signing the ferros capsule failed" >&2; return 1; }
     "$tool" --check-capsule "$FERROS_KIST_CAPSULE" "$FERROS_KIST_OPTION" || { echo "ERROR: the ferros capsule is not Photon's (key or option); refusing to ship it" >&2; return 1; }
 }
