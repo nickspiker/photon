@@ -997,12 +997,15 @@ impl PhotonApp {
                                 if changed_fold {
                                     crate::logf!("MOLECULE: peer {} folded — {} device(s)", crate::fp(&hp), members.len());
                                     self.reseed_molecule_pubkeys();
+                                    // Group wave signals from those devices that waited for this fold are taken now (group_wave.rs).
+                                    self.replay_parked_group_signals();
                                 }
                             }
                             None => {
                                 crate::logf!("MOLECULE: peer {} folded for the first time — {} device(s)", crate::fp(&hp), members.len());
                                 self.molecule_peers.push(crate::types::molecule::MoleculePeer { party, handle_proof: hp, devices: members.clone(), fold_ts: tip_ts });
                                 self.reseed_molecule_pubkeys();
+                                self.replay_parked_group_signals();
                             }
                         }
                     }

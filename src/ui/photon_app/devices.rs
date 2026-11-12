@@ -1426,6 +1426,42 @@ impl PhotonApp {
     }
 
     /// Ask every live sibling for OUR fleet's chain (`fleet_req`), at its proven path or else its best candidate. Returns whether any ask went out.
+    /// A group member we never friended: its chain is held by whoever talks to it, so ask our own devices and the devices of our contacts who share a group with it (peers first, Nick 2026-11-09); fgtw.org is asked only when none of them answers (the `fleet_asked` rung).
+    fn ask_members_for_chain(&self, hp: [u8; 32]) -> bool {
+        let Some(kp) = self.device_keypair.as_ref() else { return false };
+        let Ok(frame) = crate::network::fgtw::protocol::build_fleet_req_vsf(&hp, &kp.public.to_bytes(), kp.secret.as_bytes()) else { return false };
+        let shared: Vec<[u8; 32]> = self
+            .molecule_rosters
+            .iter()
+            .filter(|(_, r)| r.members.values().any(|m| m.handle_proof == hp))
+            .flat_map(|(_, r)| r.members.values().map(|m| m.handle_proof).collect::<Vec<_>>())
+            .collect();
+        let mut sent = 0usize;
+        for c in self.contacts.iter().filter(|c| !c.locked_out && (c.is_sibling || shared.contains(&c.handle_proof))) {
+            // Our own devices are reached as the sibling ask reaches them.
+            if c.is_sibling {
+                if let (Some(dev), Some((addr, alt))) = (c.device_key(), c.race_addrs()) {
+                    self.send_frame_direct(frame.clone(), dev, addr, alt);
+                    sent += 1;
+                }
+                continue;
+            }
+            for ep in c.device_endpoints.iter().filter(|e| !c.refused_devices.contains(&e.pubkey)) {
+                let (addr, alt) = match (ep.lan(), ep.public()) {
+                    (Some(l), p) => (l, p),
+                    (None, Some(p)) => (p, None),
+                    (None, None) => continue,
+                };
+                self.send_frame_direct(frame.clone(), ep.pubkey, addr, alt);
+                sent += 1;
+            }
+        }
+        if sent > 0 {
+            crate::logf!("MOLECULE: asked {} device(s) of our fleet and our group's friends for member {}'s chain", sent, crate::fp(&hp));
+        }
+        sent > 0
+    }
+
     fn ask_siblings_for_chain(&self, our_hp: [u8; 32]) -> bool {
         let Some(kp) = self.device_keypair.as_ref() else { return false };
         let Ok(frame) = crate::network::fgtw::protocol::build_fleet_req_vsf(&our_hp, &kp.public.to_bytes(), kp.secret.as_bytes()) else { return false };
@@ -1444,7 +1480,7 @@ impl PhotonApp {
     /// Ask the contact holding `hp` for its membership chain: a `fleet_req` to every device of theirs we hold an address for. Returns whether any ask went out.
     fn ask_peers_for_chain(&self, hp: [u8; 32]) -> bool {
         let Some(kp) = self.device_keypair.as_ref() else { return false };
-        let Some(c) = self.contacts.iter().find(|c| c.handle_proof == hp && !c.is_sibling) else { return false };
+        let Some(c) = self.contacts.iter().find(|c| c.handle_proof == hp && !c.is_sibling) else { return self.ask_members_for_chain(hp) };
         let Ok(frame) = crate::network::fgtw::protocol::build_fleet_req_vsf(&hp, &kp.public.to_bytes(), kp.secret.as_bytes()) else { return false };
         let mut sent = 0usize;
         for ep in c.device_endpoints.iter().filter(|e| !c.refused_devices.contains(&e.pubkey)) {

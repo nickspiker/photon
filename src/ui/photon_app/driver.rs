@@ -5000,6 +5000,8 @@ impl PhotonApp {
                         hps.sort_unstable();
                         hps.dedup();
                         self.spawn_contact_fleet_refresh(hps);
+                        // The members of our groups we never friended fold too: their devices live in RAM only (molecules.rs fold_molecule_members).
+                        self.fold_molecule_members("resume load");
                         let ms_chains = t_phase.elapsed().as_millis();
                         // Rehydrate each contact's saved ephemeral keypairs from disk (~588KB each). load_contact_state deliberately doesn't pull these (they're huge and live in a separate vault key), so without this every resume re-runs the McEliece-heavy keygen below — which is what froze the UI on launch. Loading the persisted keypairs makes the re-key filter a no-op for contacts that already have them, so keygen only fires for genuinely keyless Pending ones.
                         // Complete contacts are SKIPPED: their ceremony sealed, the chains carry the conversation, and every live path that could want keys again (peer-lost-chains re-key, reclutch) mints a fresh round anyway — so ~588KB per settled contact was pure frame-one tax (the bulk of the field's 1.2s resume, 2026-08-12).

@@ -41,6 +41,39 @@ pub(crate) struct LiveGroupWave {
     pub joined: Vec<GroupMember>,
 }
 
+/// A group wave signal that opened under one of our groups' keys but was signed by a device no member fold names yet (a member we never friended, before their fold lands): held, and taken when the fold arrives.
+pub(crate) struct ParkedGroupSignal {
+    pub gid: MoleculeId,
+    pub ts: i64,
+    pub lane_key: Option<[u8; 32]>,
+    pub sig: WaveSignal,
+    pub device: [u8; 32],
+    /// The frame exactly as its device sealed and signed it, so it can still be handed on once taken.
+    pub raw: Vec<u8>,
+}
+
+/// Signals held for folds at most: the newest win.
+/// WHY: a parked signal is freed only by a fold landing, and a device that never folds (a forged-looking stranger that still holds a group key) must not grow the list without end; a wave's worth of joins and leaves fits many times over.
+const PARKED_SIGNALS_KEPT: usize = 32;
+
+/// MEMBERS CARRY EACH OTHER'S SIGNALS (field 2026-11-11: Jeff and Joshua each linked only to Nick, and when Nick hung up each was alone): which joined devices a member already in the wave hands one group signal on to, byte for byte, peer to peer.
+/// `before` is our joined set as it stood before the signal was taken; `signer` the device that signed it.
+/// - A join that is news to us (a device we did not hold, or a fresh nonce) goes to every other joined device: one of them may have had no path to the joiner.
+/// - A join we already held is a roll call; it reaches us only when its sender had no path to the newcomer, so it goes on to the devices that joined after its sender.
+/// - A leave from a device we held goes to every other joined device.
+/// Each device opens a frame's nonce once and hands on only what it opened, so a signal crosses each pair at most once and never cascades.
+pub(crate) fn hand_on_targets(before: &[GroupMember], sig: &WaveSignal, signer: &[u8; 32]) -> Vec<[u8; 32]> {
+    let others = || before.iter().filter(|m| m.device != *signer).map(|m| m.device);
+    match sig {
+        WaveSignal::Answer { nonce, .. } => match before.iter().find(|m| m.device == *signer) {
+            Some(held) if held.nonce == *nonce => others().filter(|d| before.iter().any(|m| m.device == *d && m.at > held.at)).collect(),
+            _ => others().collect(),
+        },
+        WaveSignal::Hangup { .. } if before.iter().any(|m| m.device == *signer) => others().collect(),
+        _ => Vec::new(),
+    }
+}
+
 /// A live media link to one member device.
 pub(crate) struct GroupLinkUp {
     pub device: [u8; 32],
@@ -135,6 +168,8 @@ impl PhotonApp {
         if self.our_reflexive.map_or(true, |h| crate::network::traverse::is_lan_scope(&h)) {
             self.reseed_reflexive_from_fgtw();
         }
+        // Every member's devices must be nameable for their joins to link: any member we never friended and hold no fold for is folded now.
+        self.fold_molecule_members("group wave offered");
         let wave_id: [u8; 16] = rand::random();
         let nonce: [u8; 32] = rand::random();
         let now = vsf::eagle_time_oscillations();
@@ -224,26 +259,50 @@ impl PhotonApp {
             Some(dev) => vec![dev],
             None => roster.standing().into_iter().filter(|p| Some(*p) != us).flat_map(|p| super::molecules::member_devices(&self.contacts, &self.molecule_peers, &p)).collect(),
         };
-        // PEER TO PEER ONLY (Nick 2026-11-01: "Relay peer-peer only, no thru fgtw.org and only if no direct path"): express goes straight to each device's own addresses and never thru the fgtw.org relay. A device with no address here still gets the signal on the group's lane row, which members carry to each other (grp_relay) — the express copy is only ever the fast lane.
+        // PEER TO PEER ONLY (Nick 2026-11-01: "Relay peer-peer only, no thru fgtw.org and only if no direct path"): express goes straight to each device's own addresses and never thru the fgtw.org relay. A device with no address here still gets the signal on the group's lane row (which rides the relay pipe only when no member path exists), and a member already in the wave hands a join or a leave on to the others (hand_on_targets).
         let mut direct = 0usize;
-        let mut unreached = 0usize;
+        let mut unreached: Vec<[u8; 32]> = Vec::new();
         for dev in &devices {
-            let mut any = false;
-            for a in self.device_addresses(dev) {
-                if a.ip().to_canonical().is_loopback() || a.ip().is_unspecified() {
-                    continue;
-                }
+            let paths = self.member_paths(dev);
+            for a in &paths {
                 for f in &frames {
-                    crate::wave::send_media(f.clone(), a);
+                    crate::wave::send_media(f.clone(), *a);
                 }
-                direct += 1;
-                any = true;
             }
-            if !any {
-                unreached += 1;
+            direct += paths.len();
+            if paths.is_empty() {
+                unreached.push(*dev);
             }
         }
-        crate::logf!("WAVE: group express {} fired → {} device(s), {} direct path(s) × {} era key(s); {} with no address ride the lane row (id {})", sig.kind(), devices.len(), direct, frames.len(), unreached, hex::encode(&sig.wave_id()[..4]));
+        // A ROLL CALL to a newcomer we have no path to goes to the members we are linked with instead, and the one who reaches the newcomer hands it on (a join we already hold reaching a member is handed to the devices that joined after its sender).
+        let mut via = 0usize;
+        if to.is_some() && !unreached.is_empty() && matches!(sig, WaveSignal::Answer { .. }) {
+            if let Some(w) = self.group_wave.as_ref().filter(|w| w.gid == gid && w.wave_id == *sig.wave_id() && w.phase == GroupPhase::Joined) {
+                for l in w.links.iter().filter(|l| !unreached.contains(&l.device)) {
+                    let paths = self.member_paths(&l.device);
+                    if let Some(a) = paths.first() {
+                        for f in &frames {
+                            crate::wave::send_media(f.clone(), *a);
+                        }
+                        via += 1;
+                    }
+                }
+            }
+        }
+        crate::logf!("WAVE: group express {} fired → {} device(s), {} direct path(s) × {} era key(s); {} with no address ride the lane row{} (id {})", sig.kind(), devices.len(), direct, frames.len(), unreached.len(), if via > 0 { format!(" and {} linked member(s) hand it on", via) } else { String::new() }, hex::encode(&sig.wave_id()[..4]));
+    }
+
+    /// Where a group signal for one member device goes, best first: the address its media link is aimed at right now (it follows the peer's authenticated packets), then every address the phonebook holds for it; never a loopback or unspecified one.
+    fn member_paths(&self, device: &[u8; 32]) -> Vec<std::net::SocketAddr> {
+        let mut out: Vec<std::net::SocketAddr> = Vec::new();
+        let linked = self.group_wave.as_ref().and_then(|w| w.links.iter().find(|l| l.device == *device)).and_then(|l| crate::wave::slot_tx_addr(l.slot));
+        for a in linked.into_iter().chain(self.device_addresses(device)) {
+            if a.ip().to_canonical().is_loopback() || a.ip().is_unspecified() || out.contains(&a) {
+                continue;
+            }
+            out.push(a);
+        }
+        out
     }
 
     /// An express frame no pair opened, tried against every molecule we stand in (current era, then retired): the signing device names the member, who need not be our contact, and the signal goes where the group's lane row would send it. `false` = no group opened it.
@@ -280,12 +339,61 @@ impl PhotonApp {
         self.express_seen.push(nonce);
         // The group key proves the sender stands in the group's era; the device signature proves which device — and the roster must still say that device's person stands.
         let Some((party, ci)) = super::molecules::group_member_of(&self.contacts, &self.molecule_peers, &self.molecule_rosters, &gid, &device) else {
-            crate::logf!("WAVE: group express {} signed by {}, no standing member's device — dropped", sig.kind(), crate::fp(&device));
+            // A member we never friended whose fold we do not hold yet (it lives in RAM, so a restart forgets it): the signal waits for the fold, which is asked for now.
+            crate::logf!("WAVE: group express {} signed by {}, which no member fold names yet — held for the folds being fetched", sig.kind(), crate::fp(&device));
+            if self.group_signals_parked.len() >= PARKED_SIGNALS_KEPT {
+                self.group_signals_parked.remove(0);
+            }
+            self.group_signals_parked.push(ParkedGroupSignal { gid, ts, lane_key, sig, device, raw: bytes.to_vec() });
+            self.fold_molecule_members("a group signal from a device we cannot name");
             return true;
         };
         crate::logf!("WAVE: group express {} from {} (device {}) in {} (jumped the lane; id {})", sig.kind(), crate::fp(&party), crate::fp(&device), hex::encode(&gid.0[..4]), hex::encode(&sig.wave_id()[..4]));
-        self.on_group_wave_signal(gid, party, ci, device, sig, lane_key, ts);
+        self.take_group_signal(gid, party, ci, device, sig, lane_key, ts, bytes);
         true
+    }
+
+    /// One express group signal from a standing member's device: handled as the lane row would be, then handed on to the joined devices that may have no path to its sender (hand_on_targets).
+    #[allow(clippy::too_many_arguments)]
+    fn take_group_signal(&mut self, gid: MoleculeId, party: [u8; 32], ci: Option<usize>, device: [u8; 32], sig: WaveSignal, lane_key: Option<[u8; 32]>, ts: i64, raw: &[u8]) {
+        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        // Our joined set before the signal moves it, when we are in the very wave it speaks of; our own devices' signals are the hand-off's business, never handed on.
+        let before: Option<Vec<GroupMember>> = self.group_wave.as_ref().filter(|w| w.gid == gid && w.wave_id == *sig.wave_id() && w.phase == GroupPhase::Joined && Some(party) != us).map(|w| w.joined.clone());
+        self.on_group_wave_signal(gid, party, ci, device, sig, lane_key, ts);
+        let Some(before) = before else {
+            return;
+        };
+        // Still in it after the signal (a leave can end the wave here), and still the same wave.
+        if !self.group_wave.as_ref().is_some_and(|w| w.wave_id == *sig.wave_id() && w.phase == GroupPhase::Joined) {
+            return;
+        }
+        let mut handed = 0usize;
+        for dev in hand_on_targets(&before, &sig, &device) {
+            if let Some(a) = self.member_paths(&dev).first() {
+                crate::wave::send_media(raw.to_vec(), *a);
+                handed += 1;
+            }
+        }
+        if handed > 0 {
+            crate::logf!("WAVE: group express {} from {} handed on to {} member device(s) in the wave (id {})", sig.kind(), crate::fp(&device), handed, hex::encode(&sig.wave_id()[..4]));
+        }
+    }
+
+    /// A member fold landed (protocol.rs): every held group signal whose device it now names is taken, oldest first; the rest wait on.
+    pub(super) fn replay_parked_group_signals(&mut self) {
+        if self.group_signals_parked.is_empty() {
+            return;
+        }
+        let parked = std::mem::take(&mut self.group_signals_parked);
+        for p in parked {
+            match super::molecules::group_member_of(&self.contacts, &self.molecule_peers, &self.molecule_rosters, &p.gid, &p.device) {
+                Some((party, ci)) => {
+                    crate::logf!("WAVE: held group express {} from {} (device {}) taken now that its fold landed (id {})", p.sig.kind(), crate::fp(&party), crate::fp(&p.device), hex::encode(&p.sig.wave_id()[..4]));
+                    self.take_group_signal(p.gid, party, ci, p.device, p.sig, p.lane_key, p.ts, &p.raw);
+                }
+                None => self.group_signals_parked.push(p),
+            }
+        }
     }
 
     /// The offer's send commit (messaging.rs drain_braid_tx): the origin's own copy of the doomed egg.
@@ -319,6 +427,7 @@ impl PhotonApp {
         let Some(device) = self.our_device() else {
             return;
         };
+        self.fold_molecule_members("joining a group wave");
         let nonce: [u8; 32] = rand::random();
         if !self.send_group_wave_signal(gid, WaveSignal::Answer { wave_id, nonce, device: Some(device) }, vsf::eagle_time_oscillations()) {
             crate::log("WAVE: group join send failed — the group can't carry a frame right now");
@@ -501,6 +610,8 @@ impl PhotonApp {
                             return;
                         }
                         self.freshen_clock_for_wave();
+                        // The members we never friended fold while we ring, so their joins can be named and linked by the time we answer.
+                        self.fold_molecule_members("group wave ringing");
                         self.group_wave = Some(Self::ringing_group_wave(gid, wave_id, row_ts, key, GroupMember { device, party, nonce, at: row_ts }));
                         let guard = match ci {
                             Some(ci) => self.ring_alert_guard(ci),
@@ -533,10 +644,13 @@ impl PhotonApp {
                     None => None,
                 };
                 // A device already in with a DIFFERENT nonce left and came back (its leave may never have reached us): its old link goes, the fresh nonce brings a fresh secret.
+                // An OLDER join from it (a copy a member handed on that landed after its return) never undoes the newer one.
                 let rejoin = match w.joined.iter_mut().find(|m| m.device == device) {
                     Some(m) if m.nonce == nonce => return,
+                    Some(m) if m.at > row_ts => return,
                     Some(m) => {
                         m.nonce = nonce;
+                        m.at = row_ts;
                         true
                     }
                     None => {
@@ -1201,5 +1315,66 @@ impl PhotonApp {
         let w = self.group_wave.as_ref()?;
         let party = w.links.first().and_then(|l| w.joined.iter().find(|m| m.device == l.device)).or_else(|| w.joined.first())?.party;
         self.contacts.iter().position(|c| !c.is_sibling && c.handle_hash == party)
+    }
+}
+
+#[cfg(test)]
+mod hand_on_tests {
+    use super::{hand_on_targets, GroupMember};
+    use crate::wave::signal::WaveSignal;
+
+    const WAVE: [u8; 16] = [0x7d; 16];
+
+    fn member(device: u8, nonce: u8, at: i64) -> GroupMember {
+        GroupMember { device: [device; 32], party: [device ^ 0x80; 32], nonce: [nonce; 32], at }
+    }
+
+    fn answer(device: u8, nonce: u8) -> WaveSignal {
+        WaveSignal::Answer { wave_id: WAVE, nonce: [nonce; 32], device: Some([device; 32]) }
+    }
+
+    /// The 2026-11-11 group: Nick's device (0xA0) is the origin, Jeff (0xB0) joined, then Joshua (0xC0); from Nick's side Joshua's join is news, so it goes to Jeff, who had no path to Joshua.
+    #[test]
+    fn a_new_join_goes_to_every_other_joined_device() {
+        let before = [member(0xB0, 1, 10)];
+        assert_eq!(hand_on_targets(&before, &answer(0xC0, 2), &[0xC0; 32]), vec![[0xB0; 32]]);
+        // A device already in with a fresh nonce came back: news again, to everyone but itself.
+        let before = [member(0xB0, 1, 10), member(0xC0, 2, 20)];
+        assert_eq!(hand_on_targets(&before, &answer(0xC0, 3), &[0xC0; 32]), vec![[0xB0; 32]]);
+    }
+
+    /// Jeff's roll call to Joshua reaches Nick only because Jeff had no path to Joshua: Nick already holds Jeff's join, so it goes to the devices that joined after Jeff (Joshua) and to nobody who joined before him.
+    #[test]
+    fn a_roll_call_goes_only_to_devices_that_joined_after_its_sender() {
+        let before = [member(0xD0, 4, 5), member(0xB0, 1, 10), member(0xC0, 2, 20)];
+        assert_eq!(hand_on_targets(&before, &answer(0xB0, 1), &[0xB0; 32]), vec![[0xC0; 32]]);
+        // The newest device's roll call has nobody after it: nothing is handed on, so a roll call never bounces back and forth.
+        assert!(hand_on_targets(&before, &answer(0xC0, 2), &[0xC0; 32]).is_empty());
+    }
+
+    /// A leave from a device we hold goes to every other joined device; a leave from one we never held, an offer, or a decline goes nowhere.
+    #[test]
+    fn a_leave_goes_on_and_the_rest_stay_put() {
+        let before = [member(0xB0, 1, 10), member(0xC0, 2, 20)];
+        let hangup = WaveSignal::Hangup { wave_id: WAVE };
+        assert_eq!(hand_on_targets(&before, &hangup, &[0xB0; 32]), vec![[0xC0; 32]]);
+        assert!(hand_on_targets(&before, &hangup, &[0xE0; 32]).is_empty());
+        let offer = WaveSignal::Offer { wave_id: WAVE, nonce: [9; 32], device: Some([0xA0; 32]) };
+        assert!(hand_on_targets(&before, &offer, &[0xA0; 32]).is_empty());
+        assert!(hand_on_targets(&before, &WaveSignal::Decline { wave_id: WAVE }, &[0xB0; 32]).is_empty());
+    }
+
+    /// The signer never gets its own signal back, and nobody is named twice.
+    #[test]
+    fn the_signer_is_never_a_target() {
+        let before = [member(0xB0, 1, 10), member(0xC0, 2, 20), member(0xD0, 3, 30)];
+        for sig in [answer(0xC0, 7), answer(0xC0, 2), WaveSignal::Hangup { wave_id: WAVE }] {
+            let t = hand_on_targets(&before, &sig, &[0xC0; 32]);
+            assert!(!t.contains(&[0xC0; 32]));
+            let mut d = t.clone();
+            d.sort_unstable();
+            d.dedup();
+            assert_eq!(d.len(), t.len());
+        }
     }
 }

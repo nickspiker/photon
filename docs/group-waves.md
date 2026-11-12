@@ -56,6 +56,15 @@ A group key is shared by every member, so it proves membership and nothing more:
 The receiver opens what no pair opened against every molecule it stands in, drops a stale stamp or a nonce it has seen (the pair's replay guard), resolves the member from the signing device, and hands the signal to the same handler as the lane row; whichever copy lands second is a no-op.
 The offer goes express at its send commit, the moment the origin holds the egg the frame must carry; joins and leaves go with their lane rows; a roll call is express only, to the newcomer.
 
+### Members carry each other's signals (2026-11-11)
+
+Field 2026-11-11: Nick waved a group with Jeff and Joshua, who never friended each other; each linked only to Nick, and when Nick hung up each was alone ("0 in besides us").
+Two causes, both fixed:
+- **Folds after a restart.** A member we never friended is known by their fold (`MoleculePeer`), which lives in RAM and was fetched only on roster edges, so after a restart a device named none of their devices: their frames dropped as a stranger's, our lane rows went only to friends ("transmit to 1 route(s)") and our express named only friends' devices. `molecules::fold_molecule_members` now folds every standing member we never friended on the load edges (resume and attest) and on every group wave edge (offer, ring, join). An express signal from a device no fold names yet is held (`ParkedGroupSignal`, 32 at most) and taken when the fold lands.
+- **No path between two members.** Express goes only to an address we hold, so a member with no path to another reached it by nothing faster than the lane row. Now a member already in the wave hands a group signal on, byte for byte, to the other joined devices (`hand_on_targets`): a join that is news to it goes to every other joined device, a join it already held (a roll call) goes to the devices that joined after its sender, and a leave goes to everyone. A roll call to a newcomer we have no path to goes to the members we are linked with, and the one who reaches the newcomer hands it on. Each device opens a nonce once and hands on only what it opened, so a signal crosses each pair at most once; within the joined mesh a join costs at most the square of the people in it, the same order as the media links themselves.
+Nothing new is on the wire: a handed-on frame is the author's own sealed, device-signed frame, and an older peer opens it as if it came straight from the author. The order of paths is unchanged: the member's own addresses first (BLE, LAN, WAN as the phonebook ranks them), a member who can reach both next, and the lane row, which rides the fgtw.org relay pipe only when no member path exists, last.
+A join older than the one we hold for that device (a handed-on copy that arrives after its return) never undoes the newer one.
+
 ## The audio session
 
 The group wave opens the session when its first link comes up and closes it when the wave ends; the links never open or close it (`EngineParams::group`).

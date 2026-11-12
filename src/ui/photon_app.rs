@@ -2227,6 +2227,8 @@ pub struct PhotonApp {
     group_wave: Option<group_wave::GroupWave>,
     /// Group waves running in our groups that this device is not in, one per group: what joining one needs (group_wave::LiveGroupWave).
     live_group_waves: Vec<group_wave::LiveGroupWave>,
+    /// Group wave signals signed by a device no member fold names yet, held until the fold lands (group_wave::ParkedGroupSignal); RAM only.
+    group_signals_parked: Vec<group_wave::ParkedGroupSignal>,
     /// Live photons that arrived ahead of their chain and wait in the gap buffer, by (conversation, eagle time): if the history walk delivers one, it rings as live (conversation.rs) instead of landing silent as recovered history.
     live_gap_rows: Vec<(crate::types::ConversationId, i64)>,
     /// Wave overlay controls — retained fluor Buttons (no hand-rolled pills). Painted front-first on EVERY screen (a ring must be answerable from wherever the user is — docs/waves.md); registered cross-screen in `visit_app_widgets` so hover/press/dispatch ride the same walk as every other Button. `wave_status_btn` is a non-interactive label chip (full-brightness, never in the walk, never stamped). `wave_start_btn` = ☎ Wave (conversation, no live wave); `wave_action_btn` = Answer / Hang up / Keep (phase decides the verb); `wave_decline_btn` = Decline / Delete (ringing/ended only).
@@ -3376,6 +3378,7 @@ impl PhotonApp {
             active_wave: None,
             group_wave: None,
             live_group_waves: Vec::new(),
+            group_signals_parked: Vec::new(),
             live_gap_rows: Vec::new(),
             wave_status_btn: None,
             wave_start_btn: None,

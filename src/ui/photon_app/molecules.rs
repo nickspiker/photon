@@ -70,6 +70,19 @@ pub(super) fn member_devices(contacts: &[crate::types::Contact], peers: &[crate:
     }
 }
 
+/// The handle proofs of the standing members whose devices we hold no fold for: not us, not a friend (a contact folds as a contact), and no MoleculePeer naming any device yet.
+/// `named` is every standing member's proof across the groups we stand in; the answer is sorted and deduped, one fold per person however many groups name them.
+pub(super) fn unfolded_member_proofs(named: &[[u8; 32]], us: Option<[u8; 32]>, friends: &[[u8; 32]], peers: &[crate::types::molecule::MoleculePeer]) -> Vec<[u8; 32]> {
+    let mut out: Vec<[u8; 32]> = named
+        .iter()
+        .copied()
+        .filter(|hp| Some(*hp) != us && !friends.contains(hp) && !peers.iter().any(|p| p.handle_proof == *hp && !p.devices.is_empty()))
+        .collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
 /// Frames kept per group for relaying: the newest win.
 const GROUP_FRAMES_KEPT: usize = 256;
 /// At most this many frames handed to one member device per sync record (oldest first; the next record carries on).
@@ -885,6 +898,27 @@ impl PhotonApp {
             .find_map(|(_, r)| r.members.values().find(|m| m.handle_proof == *hp && r.is_standing(&m.party)).map(|m| m.party))
             .or_else(|| self.molecule_parked.iter().find_map(|(_, r, _)| named(r)))
             .or_else(|| self.bond_offers.iter().find_map(|o| named(&o.snapshot)))
+    }
+
+    /// FOLD EVERY MEMBER WE NEVER FRIENDED (field 2026-11-11, Jeff and Joshua in Nick's group): a MoleculePeer lives in RAM only, and the roster edges were the only thing that folded one, so after a restart this device named no device of such a member.
+    /// Without the fold their frames are dropped as a stranger's, our rows and wave joins are routed to nobody of theirs, and a group wave between them is two calls with the one friend they share.
+    /// Called on the load edges (resume and attest) and on every group wave edge (an offer, a ring, a join, a frame from a device we cannot name); a member already folded is skipped, so a repeat costs nothing.
+    pub(super) fn fold_molecule_members(&mut self, why: &str) {
+        let mut named: Vec<[u8; 32]> = Vec::new();
+        for (gid, roster) in &self.molecule_rosters {
+            let phase = self.molecule_locals.iter().find(|(g, _)| g == gid).map(|(_, l)| l.phase).unwrap_or_default();
+            if matches!(phase, MoleculePhase::Left) {
+                continue;
+            }
+            named.extend(roster.standing().iter().filter_map(|p| roster.members.get(p).map(|m| m.handle_proof)));
+        }
+        let friends: Vec<[u8; 32]> = self.contacts.iter().map(|c| c.handle_proof).collect();
+        let proofs = unfolded_member_proofs(&named, self.our_handle_proof(), &friends, &self.molecule_peers);
+        if proofs.is_empty() {
+            return;
+        }
+        crate::logf!("MOLECULE: folding {} member(s) we never friended ({}) — their devices are where our group frames and wave joins go", proofs.len(), why);
+        self.spawn_contact_fleet_refresh(proofs);
     }
 
     /// Ask for the folds of every never-friended member a roster names, so its records can be verified against them.
@@ -1795,5 +1829,25 @@ impl PhotonApp {
             crate::log_err!(crate::storage::molecule::index_molecule(&gid, storage), "index a molecule in the vault");
         }
         changed
+    }
+}
+
+#[cfg(test)]
+mod fold_tests {
+    use super::unfolded_member_proofs;
+    use crate::types::molecule::MoleculePeer;
+
+    /// The 2026-11-11 group from Joshua's side: Nick is a friend (folds as a contact), Jeff is a member Joshua never friended and holds no fold for after a restart, and Joshua is us; only Jeff is folded, once, however many groups name him.
+    #[test]
+    fn only_members_with_no_fold_are_asked_for() {
+        let (nick, jeff, joshua) = ([0xA0u8; 32], [0xB0u8; 32], [0xC0u8; 32]);
+        let named = [nick, jeff, joshua, jeff];
+        assert_eq!(unfolded_member_proofs(&named, Some(joshua), &[nick], &[]), vec![jeff]);
+        // Once Jeff's fold names a device, nothing is asked again.
+        let folded = MoleculePeer { party: [0xB1; 32], handle_proof: jeff, devices: vec![[0xE3; 32]], fold_ts: 1 };
+        assert!(unfolded_member_proofs(&named, Some(joshua), &[nick], &[folded]).is_empty());
+        // A peer whose chain vanished holds no devices: it is asked for again.
+        let emptied = MoleculePeer { party: [0xB1; 32], handle_proof: jeff, devices: Vec::new(), fold_ts: 1 };
+        assert_eq!(unfolded_member_proofs(&named, Some(joshua), &[nick], &[emptied]), vec![jeff]);
     }
 }

@@ -308,6 +308,8 @@ impl PhotonApp {
                         self.molecule_rosters.push((gid, roster));
                     }
                 }
+                // The members of those groups we never friended: their devices live in RAM only, so every load folds them again (molecules.rs fold_molecule_members).
+                self.fold_molecule_members("attest load");
                 // OLD-SELF IMPORT — MIGRATION-EXPIRES: 2027-02-01 (Nick 2026-10-27: "that import of old will be english only and version out in 12 versions, no reason to keep old non atoms around in the code"); grep the tag to find every piece.
                 // The old self conversation the worker handed over (it holds a photon and is no atom yet): founded in place as one, after the atoms (found_self_atom).
                 if let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
