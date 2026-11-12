@@ -1800,7 +1800,7 @@ fn run(
                         }
                     }
                 }
-                // The beam ladder's input: this second's verdict on the shared path (wave/mod.rs LINK_VERDICT) — congested on loss the queue corroborates or a building delay slope, clean on no reported loss and a calm slope.
+                // The beam's input: this second's verdict on this link's path (wave/mod.rs LINK_READINGS, every link under its own far slot) — congested on loss the queue corroborates or a building delay slope, clean on no reported loss and a calm slope.
                 {
                     let slope_now = if slope_buckets.len() >= 5 {
                         let (f, b) = (*slope_buckets.front().unwrap() as f32, *slope_buckets.back().unwrap() as f32);
@@ -1814,7 +1814,10 @@ fn run(
                     let blacked_out = rtt_n > 0 && verdict_rtt_n == 0;
                     let congested = (peer_loss_sec_max >= LOSSES_TO_DROP as u32 && (queue_agrees || peer_loss_sec_max >= PEER_LOSS_CATASTROPHIC)) || slope_now > SLOPE_DROP_MS_PER_SEC || standing_queue || blacked_out || slope_dropped_sec;
                     let clean = peer_loss_sec_max == 0 && slope_now <= SLOPE_CLIMB_MS_PER_SEC && !standing_queue && !blacked_out && !slope_dropped_sec;
-                    if is_lead() { super::publish_link_verdict(congested, clean); }
+                    // Every link, lead or not: a group beam goes out on all of them and any one's queue is the shared uplink's.
+                    // The queue is the round trip's average over its floor (an average never runs under the floor it is taken over, so the difference is never negative).
+                    let (rtt_ms, queue_ms) = if rtt_n > 0 && rtt_min != u32::MAX { (rtt_ema.round().max(1.0) as u32, (rtt_ema - rtt_min as f32).round() as u32) } else { (0, 0) }; // WHY/PROOF: 0 is the published "no measurement yet"; a sub-millisecond LAN round trip publishes as 1
+                    super::publish_link_reading(far, congested, clean, rtt_ms, queue_ms);
                     verdict_rtt_n = 0;
                     slope_dropped_sec = false;
                 }
@@ -2018,6 +2021,8 @@ fn run(
     if let Some(g) = group_tx.as_ref() {
         g.drop_want(far);
     }
+    // The link's readings go before its far slot is released, so a link that claims the slot next never has its first verdict cleared.
+    super::clear_link_reading(far);
     teardown(sink_gen, release);
     // tx_chain/rx_chain drop here — zeroized; the wave is cryptographically gone.
 }

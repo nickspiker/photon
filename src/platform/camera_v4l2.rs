@@ -177,6 +177,20 @@ impl FrameSource for Camera {
     fn characterization(&self) -> vsf::spectral_image::ProfileEntry {
         crate::wave::beam_session::assumed_srgb_entry()
     }
+    /// The buffer is dequeued and handed back without a JPEG decode or a YUYV conversion: a frame the sender keeps neither for the encoder nor for the self-view costs only the dequeue.
+    fn skip(&mut self) -> bool {
+        let Some(stream) = self.stream.as_mut() else { return false };
+        match stream.next() {
+            Ok(_) => {
+                self.frames += 1;
+                true
+            }
+            Err(e) => {
+                crate::logf!("BEAM: camera {}: {}", self.path, e);
+                false
+            }
+        }
+    }
     fn next(&mut self) -> Option<(I420, Gains)> {
         // A frame that cannot fill the picture (torn, or another size) is skipped and the next one read: the loop ends at a good frame or a camera that has gone.
         loop {

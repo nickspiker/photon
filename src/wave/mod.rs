@@ -61,19 +61,63 @@ pub static MIC_DENIED: std::sync::atomic::AtomicBool = std::sync::atomic::Atomic
 /// macOS refused the microphone WITHOUT asking (an answer in under half a second — the stale-bundle case): the bundle is repaired and its permission entry reset, so the wave screen says to quit and reopen Photon rather than sending anyone to a Settings list Photon is not even in.
 pub static MIC_RELAUNCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// THE LINK VERDICT (the beam ladder's input, 2026-10-13): the audio engine's once-a-second judgement of the path both tracks share — bit 0 CLEAN (no loss reported, delay calm), bit 1 CONGESTED (loss the queue corroborates, or delay building), the rest a sequence number so a reader sees each verdict once. One controller for the link; video is the elastic part that moves first.
-pub static LINK_VERDICT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-
-pub fn publish_link_verdict(congested: bool, clean: bool) {
-    use std::sync::atomic::Ordering;
-    let seq = (LINK_VERDICT.load(Ordering::Relaxed) >> 2).wrapping_add(1) & 0x3FFF_FFFF;
-    LINK_VERDICT.store((seq << 2) | ((congested as u32) << 1) | clean as u32, Ordering::Relaxed);
+/// THE LINK READINGS (the beam's input: its ladder since 2026-10-13, its ceiling since 2026-11-11): each link's audio engine judges the path it rides once a second and publishes here under its own far slot, every link and not only the lead (Nick 2026-11-11, the three-way beam: the mesh sends every frame on every link, so two links double the upload, and the lead link alone never saw the second link's queue).
+/// The verdict word: bit 0 CLEAN (no loss reported, delay calm), bit 1 CONGESTED (loss the queue corroborates, delay building, a standing queue, a silent second), the rest a sequence number so a reader sees each verdict once.
+/// Beside it, the link's round trip and the queue it is carrying (the round trip's average over its floor), in whole ms, 0 = not measured.
+pub struct LinkReading {
+    verdict: std::sync::atomic::AtomicU32,
+    rtt_ms: std::sync::atomic::AtomicU32,
+    queue_ms: std::sync::atomic::AtomicU32,
+    /// Bumped when the link's engine ends: a reader holding an older epoch is looking at a link that is gone (the slot may carry a new one).
+    epoch: std::sync::atomic::AtomicU32,
 }
 
-/// (sequence, congested, clean); sequence 0 = no verdict yet.
-pub fn link_verdict() -> (u32, bool, bool) {
-    let v = LINK_VERDICT.load(std::sync::atomic::Ordering::Relaxed);
-    (v >> 2, v & 2 != 0, v & 1 != 0)
+impl LinkReading {
+    fn new() -> Self {
+        use std::sync::atomic::AtomicU32;
+        LinkReading { verdict: AtomicU32::new(0), rtt_ms: AtomicU32::new(0), queue_ms: AtomicU32::new(0), epoch: AtomicU32::new(0) }
+    }
+}
+
+pub static LINK_READINGS: crate::platform::audio::PartyTable<LinkReading> = crate::platform::audio::PartyTable::new(LinkReading::new);
+
+/// One link's reading as a reader takes it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LinkNow {
+    pub epoch: u32,
+    /// The verdict's sequence number; 0 = no verdict yet on this link.
+    pub seq: u32,
+    pub congested: bool,
+    pub clean: bool,
+    pub rtt_ms: u32,
+    pub queue_ms: u32,
+}
+
+/// The engine of the link on far slot `slot`, once a second.
+pub fn publish_link_reading(slot: usize, congested: bool, clean: bool, rtt_ms: u32, queue_ms: u32) {
+    use std::sync::atomic::Ordering;
+    let r = LINK_READINGS.at(slot);
+    r.rtt_ms.store(rtt_ms, Ordering::Relaxed);
+    r.queue_ms.store(queue_ms, Ordering::Relaxed);
+    let seq = (r.verdict.load(Ordering::Relaxed) >> 2).wrapping_add(1) & 0x3FFF_FFFF;
+    r.verdict.store((seq << 2) | ((congested as u32) << 1) | clean as u32, Ordering::Relaxed);
+}
+
+/// The link's engine ended: no verdict on that slot until a new link publishes one.
+pub fn clear_link_reading(slot: usize) {
+    use std::sync::atomic::Ordering;
+    let r = LINK_READINGS.at(slot);
+    r.epoch.fetch_add(1, Ordering::Relaxed);
+    r.verdict.store(0, Ordering::Relaxed);
+    r.rtt_ms.store(0, Ordering::Relaxed);
+    r.queue_ms.store(0, Ordering::Relaxed);
+}
+
+pub fn link_reading(slot: usize) -> LinkNow {
+    use std::sync::atomic::Ordering;
+    let r = LINK_READINGS.at(slot);
+    let v = r.verdict.load(Ordering::Relaxed);
+    LinkNow { epoch: r.epoch.load(Ordering::Relaxed), seq: v >> 2, congested: v & 2 != 0, clean: v & 1 != 0, rtt_ms: r.rtt_ms.load(Ordering::Relaxed), queue_ms: r.queue_ms.load(Ordering::Relaxed) }
 }
 
 /// Sink generation: each install bumps it; an engine clears only the generation it installed (a drained engine exiting seconds after hangup must not tear down the next wave's sink).

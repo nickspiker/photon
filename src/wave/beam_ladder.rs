@@ -6,7 +6,7 @@
 //!
 //! Below the smallest band (`d < 0`) the lever is FRAME RATE, which costs nothing to change: 30 fps at `d = 0`, halving per stop, floored at 5.
 //!
-//! The verdict (wave/mod.rs `LINK_VERDICT`, published by the audio engine each second): CONGESTED → down one half-stop at once; CLEAN → up one half-stop after [`CLIMB_CLEAN_VERDICTS`] in a row; anything else holds. Edges, not timers: the ladder moves only when a new verdict lands.
+//! The verdict (every live link's, wave/mod.rs `LINK_READINGS`, combined by beam_session's link watch): CONGESTED → down one half-stop at once; CLEAN → up one half-stop after [`CLIMB_CLEAN_VERDICTS`] in a row; anything else holds. Edges, not timers: the ladder moves only when a new verdict lands.
 
 /// The smallest band is at least this wide.
 pub const MIN_BAND_WIDTH: usize = 120;
@@ -213,6 +213,11 @@ impl Ladder {
 
     pub fn detail(&self) -> i32 {
         self.d
+    }
+
+    /// What band `band` costs on the rung where a climb first lands in it (a half-stop over the top of the band below, softness 1), at the current tuning: the rate a link must be able to take before the beam may enter that band (beam_session's ceiling).
+    pub fn entry_bitrate(&self, band: usize) -> u32 {
+        self.raw_plan(2 * band as i32 - 1, band).bitrate
     }
 
     pub fn plan(&self) -> Plan {

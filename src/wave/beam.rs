@@ -6,6 +6,9 @@
 //!
 //! The beam describes itself IN-BAND: a [`Kind::Info`] packet (geometry, fps, codec, the VSF characterization entry: matrix, class, tier, transfer) goes out at start and once a second, like intra refresh for metadata — nothing is added to the offer/answer, a beam can start mid-wave, a late joiner needs nothing from signalling.
 //!
+//! The one thing a receiver says back is [`Kind::KeyAsk`]: its decoder cannot make a picture, so the sender owes it a picture to start from, now and once however many ask ([`KeyAsks`]).
+//! It rides the receiver's own direction of the same link, under the same chains, so a link carries it whether or not that end is beaming.
+//!
 //! Threads: the sender runs on whatever thread produces frames ([`BeamTx::send_frame`] is a plain call); the receiver is one thread fed by the sink, handing completed frames to its [`RxShared`] for the decoder stage (one receiver per link of a group wave).
 
 use super::keys::{Direction, StepChain, PACKETS_PER_STEP};
@@ -40,6 +43,10 @@ pub enum Kind {
     Info = 1,
     /// ORIENTATION (Nick 2026-10-13: "we capture and send at whatever orientation the sensor is… flip it on demand based on the rotation set by the frame that we send"): `[2, quarter turns clockwise 0..=3]` — how far the receiver turns the sensor-native picture so the world's up is up. Sent at start, the moment it changes, and with every self-description; a v117 receiver counts the unknown kind as a bad packet and carries on.
     Orient = 2,
+    /// A PICTURE TO START FROM (Nick 2026-11-11: "if my friends don't need a keyframe, don't send one. If they need one, I'd send it now"): `[3, frame number u32 LE]`, sent by a RECEIVER back toward the sender in its own direction when its decoder cannot make a picture (no parameter sets yet, or a lost reference concealment cannot carry).
+    /// The frame number is the newest frame the asker holds: an ask older than the sender's last keyframe was made before that keyframe could arrive, so it is already answered.
+    /// A sender from before this kind counts it as a bad packet and carries on; a receiver from before it never sends one.
+    KeyAsk = 3,
 }
 
 /// Which codec the encoded frames are in. One today; the byte exists so a second never needs a flag day.
@@ -120,6 +127,93 @@ pub(crate) fn decode_info(p: &[u8]) -> Option<Info> {
     })
 }
 
+const KEY_ASK_LEN: usize = 1 + 4; // kind, the newest frame number held
+
+fn encode_key_ask(held: u32) -> [u8; KEY_ASK_LEN] {
+    let mut p = [0u8; KEY_ASK_LEN];
+    p[0] = Kind::KeyAsk as u8;
+    p[1..5].copy_from_slice(&held.to_le_bytes());
+    p
+}
+
+fn decode_key_ask(p: &[u8]) -> Option<u32> {
+    if p.len() != KEY_ASK_LEN || p[0] != Kind::KeyAsk as u8 {
+        return None;
+    }
+    Some(u32::from_le_bytes([p[1], p[2], p[3], p[4]]))
+}
+
+// ───────────────────────── asks for a picture to start from ─────────────────────────
+
+/// The SENDER's view of its receivers' asks (Nick 2026-11-11: keyframes on request, no timer): whether one is owed, and the frame number of the last picture a cold decoder could start from that went out.
+/// Several asks landing together cost one answer, and an ask made before the last answer could arrive is already answered.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct KeyAsks {
+    owed: bool,
+    last_answer: Option<u32>,
+}
+
+impl KeyAsks {
+    pub const fn new() -> Self {
+        KeyAsks { owed: false, last_answer: None }
+    }
+
+    /// A receiver's ask, naming the newest frame it holds.
+    pub fn ask(&mut self, held: u32) {
+        if let Some(k) = self.last_answer {
+            // Frame numbers run forward and wrap: `held` behind the last answer means the ask left the receiver before that answer reached it.
+            if (held.wrapping_sub(k) as i32) < 0 {
+                return;
+            }
+        }
+        self.owed = true;
+    }
+
+    /// Owed whatever the receivers last held: a link that joined mid-beam needs the parameter sets now.
+    pub fn ask_now(&mut self) {
+        self.owed = true;
+    }
+
+    /// The sender's frame edge: is an answer owed on this frame? Taking it clears it, so a burst of asks costs one.
+    pub fn take(&mut self) -> bool {
+        std::mem::take(&mut self.owed)
+    }
+
+    /// Frame `frame_no` went out as a picture a cold decoder can start from (an IDR, or the parameter sets ahead of a rolling refresh): every ask made before it is answered.
+    pub fn answered(&mut self, frame_no: u32) {
+        self.owed = false;
+        self.last_answer = Some(frame_no);
+    }
+}
+
+/// This device's outgoing beam's asks (one outgoing beam per device: a 1:1 wave's or the group's fan).
+static KEY_ASKS: Mutex<KeyAsks> = Mutex::new(KeyAsks::new());
+
+/// A receiver's ask arrived (the beam-rx thread of the link it came on).
+pub fn note_key_ask(held: u32) {
+    KEY_ASKS.lock().unwrap().ask(held);
+}
+
+/// A link joined mid-beam: the next frame carries what a cold decoder needs.
+pub fn ask_key_now() {
+    KEY_ASKS.lock().unwrap().ask_now();
+}
+
+/// The sender's frame edge (see [`KeyAsks::take`]).
+pub fn take_key_ask() -> bool {
+    KEY_ASKS.lock().unwrap().take()
+}
+
+/// The sender's report that frame `frame_no` carried a starting picture (see [`KeyAsks::answered`]).
+pub fn key_answered(frame_no: u32) {
+    KEY_ASKS.lock().unwrap().answered(frame_no);
+}
+
+/// A sender starting: its first frame is a starting picture anyway, so nothing an earlier beam was asked is owed.
+pub fn reset_key_asks() {
+    *KEY_ASKS.lock().unwrap() = KeyAsks::new();
+}
+
 fn data_head(frame_no: u32, len: u32, gains: Gains) -> [u8; DATA_HEAD] {
     let mut h = [0u8; DATA_HEAD];
     h[0] = Kind::Data as u8;
@@ -154,6 +248,8 @@ pub struct BeamTx {
     /// Datagrams handed to the socket forwarder; `send_fail` counts the ones it refused (the runtime gone = a stop edge the caller reads).
     pub sent: u64,
     pub send_fail: u64,
+    /// Wire bytes handed to the socket forwarder: the link's achieved send rate, read on each of its verdicts (beam_session's link watch).
+    pub bytes: u64,
 }
 
 impl BeamTx {
@@ -161,7 +257,7 @@ impl BeamTx {
         let mut s = beam_secret(wave_secret);
         let chain = StepChain::new(&s, dir);
         s.zeroize();
-        Self { chain, seq: 0, peer, sent: 0, send_fail: 0 }
+        Self { chain, seq: 0, peer, sent: 0, send_fail: 0, bytes: 0 }
     }
 
     /// The peer moved (address-follows-auth, the wave's own redirect): point the beam there too.
@@ -178,8 +274,10 @@ impl BeamTx {
         self.seq = self.seq.wrapping_add(1);
         self.chain.advance_to(StepChain::step_for_seq(seq));
         if let Some(wire) = packet::seal_beam(&self.chain, seq, payload) {
+            let n = wire.len() as u64;
             if super::send_media(wire, self.peer) {
                 self.sent += 1;
+                self.bytes += n;
             } else {
                 self.send_fail += 1;
             }
@@ -189,6 +287,11 @@ impl BeamTx {
     /// Send the picture's rotation: quarter turns clockwise (0..=3) that put the world's up at the top.
     pub fn send_orient(&mut self, quarter_turns: u8) {
         self.seal_and_send(&[Kind::Orient as u8, quarter_turns & 3]);
+    }
+
+    /// Ask the far sender for a picture to start from (see [`Kind::KeyAsk`]): `held` is the newest frame number this receiver holds.
+    pub fn send_key_ask(&mut self, held: u32) {
+        self.seal_and_send(&encode_key_ask(held));
     }
 
     /// Send the beam's self-description. Call at start and on the `INFO_EVERY_FRAMES` cadence (the caller's frame counter is the edge).
@@ -234,6 +337,8 @@ pub struct BeamRx {
     info_changed: bool,
     /// The sender's latest rotation, quarter turns clockwise.
     pub rotation: u8,
+    /// The far receiver's latest ask for a picture to start from (the newest frame it holds), until the thread hands it on.
+    key_ask: Option<u32>,
     pub frames_done: u64,
     pub frames_lost: u64,
     pub bad_packets: u64,
@@ -252,6 +357,7 @@ impl BeamRx {
             info: None,
             info_changed: false,
             rotation: 0,
+            key_ask: None,
             frames_done: 0,
             frames_lost: 0,
             bad_packets: 0,
@@ -270,6 +376,11 @@ impl BeamRx {
         } else {
             None
         }
+    }
+
+    /// The far receiver's ask, iff one arrived since the last take.
+    pub fn take_key_ask(&mut self) -> Option<u32> {
+        self.key_ask.take()
     }
 
     /// One beam datagram off the wire. Returns a completed frame when this symbol finished one.
@@ -303,6 +414,13 @@ impl BeamRx {
             Some(&k) if k == Kind::Data as u8 => self.push_symbol(&payload),
             Some(&k) if k == Kind::Orient as u8 && payload.len() >= 2 => {
                 self.rotation = payload[1] & 3;
+                None
+            }
+            Some(&k) if k == Kind::KeyAsk as u8 => {
+                match decode_key_ask(&payload) {
+                    Some(held) => self.key_ask = Some(held),
+                    None => self.bad_packets += 1,
+                }
                 None
             }
             _ => {
@@ -464,6 +582,9 @@ pub fn start_rx(wave_secret: &[u8; 32], dir: Direction) -> RxHandle {
                         if let Some(info) = brx.take_info_change() {
                             *shared2.info.lock().unwrap() = Some(info);
                         }
+                        if let Some(held) = brx.take_key_ask() {
+                            note_key_ask(held);
+                        }
                         shared2.rotation.store(brx.rotation, std::sync::atomic::Ordering::Relaxed);
                     }
                     Err(mpsc::RecvError) => break,
@@ -618,6 +739,58 @@ mod tests {
         assert!(rx.push(&wire).is_none());
         assert_eq!(rx.rotation, 3);
         assert_eq!(rx.bad_packets, 0);
+    }
+
+    /// A receiver's ask rides its own direction of the link and the sender's receiver hands it on; a malformed one is a bad packet, never an ask.
+    #[test]
+    fn a_key_ask_rides_the_receivers_direction() {
+        let s = secret();
+        let peer: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        // The asker (the answering side) seals in its own direction; the sender opens with the asker's.
+        let mut asker = BeamTx::new(&s, Direction::AnswerToOrigin, peer);
+        let mut sender_rx = BeamRx::new(&s, Direction::AnswerToOrigin);
+        asker.chain.advance_to(0);
+        let wire = packet::seal_beam(&asker.chain, 0, &encode_key_ask(0x0102_0304)).unwrap();
+        assert!(sender_rx.push(&wire).is_none());
+        assert_eq!(sender_rx.take_key_ask(), Some(0x0102_0304));
+        assert_eq!(sender_rx.take_key_ask(), None, "an ask is handed on once");
+        let short = packet::seal_beam(&asker.chain, 1, &[Kind::KeyAsk as u8, 1, 2]).unwrap();
+        assert!(sender_rx.push(&short).is_none());
+        assert_eq!((sender_rx.take_key_ask(), sender_rx.bad_packets), (None, 1));
+    }
+
+    /// Several asks landing together cost ONE starting picture; an ask made before the last answer could arrive is already answered; one made after it (that answer lost) is owed again.
+    #[test]
+    fn asks_coalesce_into_one_answer() {
+        let mut k = KeyAsks::new();
+        assert!(!k.take(), "nothing is owed until someone asks");
+        // Three receivers ask before the sender's next frame: one answer.
+        k.ask(40);
+        k.ask(41);
+        k.ask(39);
+        assert!(k.take());
+        assert!(!k.take(), "taken once, owed no more");
+        k.answered(45);
+        // Asks still in flight from before frame 45 reached them: already answered.
+        k.ask(42);
+        k.ask(44);
+        assert!(!k.take());
+        // An asker that holds frame 45 or later and still cannot decode lost that answer: owed again.
+        k.ask(47);
+        assert!(k.take());
+        // A link added mid-beam is owed one whatever it holds.
+        k.ask_now();
+        assert!(k.take());
+        // Answering clears an ask the same frame already satisfied.
+        k.ask(50);
+        k.answered(51);
+        assert!(!k.take());
+        // Frame numbers wrap: an ask just past the wrap is after an answer just before it.
+        k.answered(u32::MAX - 1);
+        k.ask(2);
+        assert!(k.take());
+        k.ask(u32::MAX - 3);
+        assert!(!k.take());
     }
 
     #[test]

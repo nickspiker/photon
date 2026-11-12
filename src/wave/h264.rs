@@ -2,7 +2,9 @@
 //!
 //! Where the toolchain can build its C++ today: x86_64 Linux, macOS, and Android (decode; the phone encodes thru MediaCodec). Everywhere else this module is the stub below, [`AVAILABLE`] is false and a beam is not offered — aarch64 Linux joins once its cross sysroot carries libstdc++, Windows once the builder has a C++ cross-compiler and a static C++ runtime link. The gate is the same cfg as the dependency in Cargo.toml; keep the two in step.
 //!
-//! What OpenH264 lacks against the design: a rolling intra refresh (it has only whole IDR frames, periodic or on demand) and a per-frame byte cap (only per-NAL slicing). So the DESKTOP sends a keyframe every [`KEYFRAME_EVERY`] frames and on request, which docs/beams.md allows — the desktop is never the constrained end — and the phone side keeps the no-keyframes rule.
+//! What OpenH264 lacks against the design: a rolling intra refresh (it has only whole IDR frames, periodic or on demand) and a per-frame byte cap (only per-NAL slicing).
+//! So the DESKTOP sends a keyframe at the stream's start, at a size change, and when a receiver asks for one ([`super::beam::Kind::KeyAsk`]) — never on a timer (Nick 2026-11-11: "if my friends don't need a keyframe, don't send one. If they need one, I'd send it now, not in 2 minutes").
+//! A desktop rolling refresh needs a hardware encoder or x264, a new per-platform dependency and the owner's call; the phone side keeps its rolling refresh and no keyframes.
 //!
 //! Frames cross this boundary as planar I420 ([`I420`]): what the camera paths produce and what the receive chain in docs/beams.md §4 consumes. The codec sees bytes; the colour story (γ2, gains, the characterization entry) lives beside the frame, never in it.
 
@@ -43,6 +45,34 @@ impl I420 {
     }
 }
 
+impl I420 {
+    /// The frame box-averaged down by `k` (a power of two) each way, to even dimensions: what a small picture (the self-view inset) needs, at 1/k² of the work of converting the whole frame.
+    pub fn shrunk(&self, k: usize) -> I420 {
+        debug_assert!(k.is_power_of_two());
+        let (w, h) = ((self.w / k) & !1, (self.h / k) & !1);
+        let mut out = I420::new(w, h);
+        let shift = 2 * k.trailing_zeros();
+        box_down(&self.y, self.w, k, w, h, shift, &mut out.y);
+        box_down(&self.u, self.w / 2, k, w / 2, h / 2, shift, &mut out.u);
+        box_down(&self.v, self.w / 2, k, w / 2, h / 2, shift, &mut out.v);
+        out
+    }
+}
+
+/// Each output sample the mean of the k×k source block it covers (`shift` = log2 k²); the output is no larger than the source over k, so every block lies inside it.
+fn box_down(src: &[u8], sw: usize, k: usize, dw: usize, dh: usize, shift: u32, out: &mut [u8]) {
+    for y in 0..dh {
+        for x in 0..dw {
+            let mut s = 0u32;
+            for r in 0..k {
+                let at = (y * k + r) * sw + x * k;
+                s += src[at..at + k].iter().map(|&v| v as u32).sum::<u32>();
+            }
+            out[y * dw + x] = (s >> shift) as u8;
+        }
+    }
+}
+
 /// NV12 → I420, integer. Video-range input (16..235 luma, 16..240 chroma) is expanded to full range in Q12, truncating — the receive chain is 601 full range.
 pub fn nv12_to_i420(y: &[u8], ys: usize, c: &[u8], cs: usize, w: usize, h: usize, video_range: bool, out: &mut I420) {
     let cw = w / 2;
@@ -76,8 +106,53 @@ pub fn nv12_to_i420(y: &[u8], ys: usize, c: &[u8], cs: usize, w: usize, h: usize
     }
 }
 
-/// Keyframe cadence on the desktop encoder, in frames: the one place a burst is tolerated (docs/beams.md stage 1). At 30 fps this is once every 20 s.
-pub const KEYFRAME_EVERY: u32 = 600;
+/// The H.264 NAL unit types in an Annex-B access unit, in order (the low five bits of each unit's first byte after its start code).
+fn nal_units(au: &[u8]) -> impl Iterator<Item = (u8, std::ops::Range<usize>)> + '_ {
+    // Every start code (00 00 01, the four-byte form being one more zero in front) opens a unit that runs to the next start code or the end.
+    let mut starts: Vec<usize> = Vec::new();
+    let mut i = 0;
+    while i + 3 <= au.len() {
+        if au[i] == 0 && au[i + 1] == 0 && au[i + 2] == 1 {
+            starts.push(i + 3);
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    let ends: Vec<usize> = starts.iter().skip(1).map(|&s| s - 3).chain(std::iter::once(au.len())).collect();
+    // WHY/PROOF: the bytes are an encoder's output handed over JNI (external to this code) — a start code as the unit's last three bytes, or two back to back, opens a unit with no header byte, and reading its type would index past it.
+    starts.into_iter().zip(ends).filter(|(s, e)| s < e).map(move |(s, e)| {
+        // A four-byte start code leaves its leading zero on the end of the unit before; trailing zeros are never part of a unit's payload.
+        let mut e = e;
+        while e > s + 1 && au[e - 1] == 0 {
+            e -= 1;
+        }
+        (au[s] & 0x1F, s..e)
+    })
+}
+
+/// NAL type 5: an IDR slice, a picture a cold decoder can start from.
+const NAL_IDR: u8 = 5;
+/// NAL types 7 and 8: the sequence and picture parameter sets.
+const NAL_SPS: u8 = 7;
+const NAL_PPS: u8 = 8;
+
+/// Does this access unit carry an IDR picture?
+pub fn has_idr(au: &[u8]) -> bool {
+    nal_units(au).any(|(t, _)| t == NAL_IDR)
+}
+
+/// The access unit's parameter sets (SPS and PPS), each with a four-byte start code, as one block to put in front of a later unit; empty when it carries none.
+pub fn param_sets(au: &[u8]) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (t, r) in nal_units(au) {
+        if t == NAL_SPS || t == NAL_PPS {
+            out.extend_from_slice(&[0, 0, 0, 1]);
+            out.extend_from_slice(&au[r]);
+        }
+    }
+    out
+}
 
 #[cfg(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos", target_os = "android"))]
 mod real {
@@ -100,11 +175,17 @@ mod real {
     }
 
     impl Encoder {
-        /// A real-time camera encoder: constant bitrate, no frame skipping (the loss loop owns the rate, not the encoder), baseline profile, keyframes every [`super::KEYFRAME_EVERY`] frames.
+        /// A real-time camera encoder: constant bitrate, no frame skipping (the loss loop owns the rate, not the encoder), baseline profile, one keyframe at the start and then only when forced ([`Encoder::force_keyframe`]).
+        /// `fps` is the rate frames are actually ENCODED at (the plan's, never the camera's), so rate control spreads the bitrate over the frames it really gets.
         pub fn new(w: usize, h: usize, fps: u32, bitrate_bps: u32) -> Result<Self, String> {
             if w == 0 || h == 0 || w % 2 != 0 || h % 2 != 0 {
                 return Err(format!("H264: frame size {}×{} must be even and non-zero", w, h));
             }
+            // WHY/PROOF: `encode` divides by the rate for its nominal stamps and OpenH264 refuses a rate of 0 — the guard replaces the old `fps.max(1)` at each division with one refusal here, where a caller's bad rate is named.
+            if fps == 0 {
+                return Err("H264: a frame rate of 0".into());
+            }
+            // An intra period of 0 is OpenH264's "the first frame only" (uiIntraPeriod): no periodic keyframe.
             let cfg = EncoderConfig::new()
                 .usage_type(UsageType::CameraVideoRealTime)
                 .rate_control_mode(RateControlMode::Bitrate)
@@ -112,27 +193,45 @@ mod real {
                 .max_frame_rate(FrameRate::from_hz(fps as f32))
                 .skip_frames(false)
                 .profile(Profile::Baseline)
-                .intra_frame_period(IntraFramePeriod::from_num_frames(super::KEYFRAME_EVERY));
+                .intra_frame_period(IntraFramePeriod::from_num_frames(0));
             let enc = Enc::with_api_config(OpenH264API::from_source(), cfg)
                 .map_err(|e| format!("H264: encoder: {e}"))?;
             Ok(Self { enc, w, h, fps, frames: 0 })
         }
 
-        /// Encode one frame; the bytes are this access unit's Annex-B NAL units (SPS/PPS ride the keyframes). Empty when the encoder emitted nothing for the frame.
+        /// Encode one frame stamped on the nominal grid of the encoder's frame rate; the bytes are this access unit's Annex-B NAL units (SPS/PPS ride the keyframes). Empty when the encoder emitted nothing for the frame.
         pub fn encode(&mut self, frame: &I420) -> Result<Vec<u8>, String> {
+            let ms = self.frames * 1000 / self.fps as u64;
+            self.encode_at(frame, ms)
+        }
+
+        /// Encode one frame stamped `ms` milliseconds into the stream: the camera's own clock, so rate control sees the frames' real spacing.
+        pub fn encode_at(&mut self, frame: &I420, ms: u64) -> Result<Vec<u8>, String> {
             if frame.w != self.w || frame.h != self.h {
                 return Err(format!("H264: frame {}×{} on a {}×{} encoder", frame.w, frame.h, self.w, self.h));
             }
             let src = YUVSlices::new((&frame.y, &frame.u, &frame.v), (self.w, self.h), (self.w, self.w / 2, self.w / 2));
-            let ts = Timestamp::from_millis(self.frames * 1000 / self.fps.max(1) as u64);
             self.frames += 1;
-            let bs = self.enc.encode_at(&src, ts).map_err(|e| format!("H264: encode: {e}"))?;
+            let bs = self.enc.encode_at(&src, Timestamp::from_millis(ms)).map_err(|e| format!("H264: encode: {e}"))?;
             Ok(bs.to_vec())
         }
 
-        /// The next frame is a keyframe — the receiver's recovery ask.
+        /// The next frame is a keyframe (an IDR with its SPS/PPS) — a receiver's ask, answered on the very next frame.
         pub fn force_keyframe(&mut self) {
             self.enc.force_intra_frame();
+        }
+
+        /// The rate frames are encoded at changed (the ladder's frame-rate lever, the user's cap): rate control re-spreads the bitrate LIVE, no keyframe.
+        pub fn set_fps(&mut self, fps: u32) {
+            // WHY/PROOF: as in `new` — a rate of 0 would be a zero divisor in `encode`'s stamps (OpenH264 itself refuses it and keeps its old rate); an unchanged rate costs the encoder nothing to skip.
+            if fps == 0 || fps == self.fps {
+                return;
+            }
+            self.fps = fps;
+            let mut f = fps as f32;
+            unsafe {
+                self.enc.raw_api().set_option(openh264_sys2::ENCODER_OPTION_FRAME_RATE, &mut f as *mut f32 as *mut std::ffi::c_void);
+            }
         }
 
         /// Change the target bitrate LIVE (the beam ladder's within-band step): no keyframe, no new parameter sets.
@@ -219,7 +318,11 @@ mod real {
         pub fn encode(&mut self, _frame: &I420) -> Result<Vec<u8>, String> {
             Err("H264: no desktop codec on this platform".into())
         }
+        pub fn encode_at(&mut self, _frame: &I420, _ms: u64) -> Result<Vec<u8>, String> {
+            Err("H264: no desktop codec on this platform".into())
+        }
         pub fn force_keyframe(&mut self) {}
+        pub fn set_fps(&mut self, _fps: u32) {}
         pub fn set_bitrate(&mut self, _bps: u32) {}
         pub fn dimensions(&self) -> (usize, usize) {
             (0, 0)
@@ -256,6 +359,35 @@ mod conv_tests {
         assert_eq!(pic.unpainted_mask(), Some(vec![1, 1, 1, 0]));
         let whole = I420::new(4, 4);
         assert_eq!(whole.unpainted_mask(), None, "a whole picture (black included) has no mask");
+    }
+
+    #[test]
+    fn a_shrunk_frame_averages_whole_blocks() {
+        let mut f = I420::new(8, 4);
+        f.y.iter_mut().enumerate().for_each(|(i, v)| *v = if (i % 8) < 4 { 100 } else { 200 });
+        f.u.iter_mut().for_each(|v| *v = 60);
+        let s = f.shrunk(2);
+        assert_eq!((s.w, s.h), (4, 2));
+        assert_eq!(s.y, vec![100, 100, 200, 200, 100, 100, 200, 200]);
+        assert_eq!(s.u, vec![60, 60]);
+        assert_eq!(s.v, vec![128, 128]);
+        assert_eq!(f.shrunk(1), f, "a shrink by one is the frame");
+    }
+
+    /// The NAL scan finds an IDR and lifts the parameter sets out of an access unit, three- and four-byte start codes alike, so a phone's next frame can carry them again.
+    #[test]
+    fn nal_scan_finds_the_idr_and_the_parameter_sets() {
+        // SPS (0x67), PPS (0x68) behind four-byte start codes, an IDR slice (0x65) behind a three-byte one.
+        let au = [0, 0, 0, 1, 0x67, 0x42, 0x00, 0x1F, 0, 0, 0, 1, 0x68, 0xCE, 0x38, 0, 0, 1, 0x65, 0x88, 0x84];
+        assert!(has_idr(&au));
+        assert_eq!(param_sets(&au), vec![0, 0, 0, 1, 0x67, 0x42, 0x00, 0x1F, 0, 0, 0, 1, 0x68, 0xCE, 0x38]);
+        // A P slice (0x41) alone: no IDR, no parameter sets.
+        let p = [0, 0, 0, 1, 0x41, 0x9A, 0x02];
+        assert!(!has_idr(&p));
+        assert!(param_sets(&p).is_empty());
+        // A start code with nothing behind it opens no unit.
+        assert!(!has_idr(&[0, 0, 1]));
+        assert!(param_sets(&[0, 0, 0, 1]).is_empty());
     }
 
     #[test]
@@ -347,9 +479,28 @@ mod tests {
         }
         enc.force_keyframe();
         let au = enc.encode(&frame(w, h, 5)).unwrap();
+        assert!(has_idr(&au) && !param_sets(&au).is_empty(), "a forced keyframe is an IDR with its parameter sets");
         // A decoder that saw nothing before must decode this unit on its own: it carries SPS/PPS and an IDR.
         let mut cold = Decoder::new().unwrap();
         let pic = cold.decode(&au).unwrap().expect("a forced keyframe decodes cold");
         assert_eq!((pic.w, pic.h), (w, h));
+    }
+
+    /// No timer: after the first frame the desktop encoder sends no keyframe until one is forced, however long the stream runs, and a frame-rate change costs none either.
+    #[test]
+    fn no_keyframe_comes_unasked() {
+        let (w, h) = (160, 120);
+        let mut enc = Encoder::new(w, h, 30, 200_000).unwrap();
+        let first = enc.encode(&frame(w, h, 0)).unwrap();
+        assert!(has_idr(&first), "the stream opens with its one keyframe");
+        for t in 1..(1 << 10) {
+            if t == 1 << 9 {
+                enc.set_fps(15);
+            }
+            let au = enc.encode_at(&frame(w, h, t), t as u64 * 40).unwrap();
+            assert!(!has_idr(&au), "frame {t} was a keyframe nobody asked for");
+        }
+        enc.force_keyframe();
+        assert!(has_idr(&enc.encode(&frame(w, h, 3)).unwrap()));
     }
 }

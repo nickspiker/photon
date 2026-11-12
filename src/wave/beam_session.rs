@@ -141,24 +141,32 @@ fn android_turns(orient: u8) -> u8 {
     ((orient & 3) + super::beam_settings::turns_for(&lens)) & 3
 }
 
-/// The phone's ladder, the camera timestamp (ns) of the last frame it kept, and the beam-settings generation it last read.
-static ANDROID_LADDER: Mutex<Option<(super::beam_ladder::Ladder, i64, u32)>> = Mutex::new(None);
+/// The phone's ladder: the ladder, the camera timestamp (ns) of the last frame it kept, the beam-settings generation it last read, and the watch over its links.
+struct PhoneLadder {
+    ladder: super::beam_ladder::Ladder,
+    last_kept: i64,
+    seen: u32,
+    watch: LinkWatch,
+}
+
+static ANDROID_LADDER: Mutex<Option<PhoneLadder>> = Mutex::new(None);
 
 /// Per camera frame (Kotlin, before it touches the encoder): step the ladder with any new link verdict and say what to do with this frame — packed `keep | band << 1 | soft << 4 | kbit/s << 8 | coded width << 24 | coded height << 40` (14 bits of kbit/s, 16 of each dimension); −1 when no beam is running. A band change also re-describes the beam at once (the receiver's geometry).
 pub fn android_plan(t_ns: i64) -> i64 {
     let mut g = ANDROID_LADDER.lock().unwrap();
-    let Some((ladder, last_kept, seen)) = g.as_mut() else { return -1 };
+    let Some(PhoneLadder { ladder, last_kept, seen, watch }) = g.as_mut() else { return -1 };
     let before = ladder.plan();
-    let (seq, congested, clean) = super::link_verdict();
-    if follow_settings(ladder, seen) | ladder.verdict(seq, congested, clean) {
+    // Lock order as everywhere: the ladder, then the feed.
+    let takes = ENCODED_TX.lock().unwrap().as_ref().map(|f| f.out.takes()).unwrap_or_default();
+    if follow_settings(ladder, seen) | steer(ladder, watch, &takes) {
         let p = ladder.plan();
         if (p.w, p.h) != (before.w, before.h) {
             let (nw, nh) = (p.w, p.h);
             crate::logf!("BEAM: phone ladder → band {}×{} (soft {}, {} fps, {} kbit/s) — the encoder restarts at the new size", nw, nh, p.soft, p.fps, p.bitrate / 1000);
-            if let Some((tx, info, _)) = ENCODED_TX.lock().unwrap().as_mut() {
-                info.width = nw;
-                info.height = nh;
-                tx.send_info(info);
+            if let Some(feed) = ENCODED_TX.lock().unwrap().as_mut() {
+                feed.info.width = nw;
+                feed.info.height = nh;
+                feed.out.send_info(&feed.info);
             }
         }
     }
@@ -190,12 +198,18 @@ pub trait FrameSource: Send {
     fn characterization(&self) -> vsf::spectral_image::ProfileEntry;
     /// The next frame as planar I420 plus the gains the camera applied (none for a UVC camera). `None` = the camera is gone.
     fn next(&mut self) -> Option<(h264::I420, Gains)>;
+    /// Let the next frame go by unconverted: the sender keeps fewer frames than the camera delivers, and a frame neither encoded nor shown is not worth decoding. False = the camera is gone.
+    /// A source with nothing cheaper to do converts it and drops it.
+    fn skip(&mut self) -> bool {
+        self.next().is_some()
+    }
 }
 
 /// The receiving half: the beam-rx thread (transport) plus this decode thread.
 pub struct Receiver {
     _rx: beam::RxHandle,
     slot: usize,
+    back: Back,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -213,20 +227,25 @@ impl Drop for Receiver {
             drop(t.join());
         }
         *PICTURES.at(self.slot).lock().unwrap() = None;
-        // The parked transport is the 1:1 wave's; a group link's receiver leaves it alone.
-        if self.slot == 0 {
-            *PARKED_TX.lock().unwrap() = None;
+        // The 1:1 wave's transport ends with the wave; a group link's receiver leaves it alone (its link's transport is the fan's).
+        if let Back::Pair(key) = self.back {
+            let mut g = PAIR_TX.lock().unwrap();
+            if g.as_ref().is_some_and(|(k, _, _)| *k == key) {
+                *g = None;
+            }
         }
         PICTURE_GEN.fetch_add(1, Ordering::Relaxed);
     }
 }
 
-/// Start receiving the peer's beam for a wave. `we_are_origin` picks the chain: the peer sends in the other direction.
-/// THE BEAM'S TRANSPORT OUTLIVES ITS CAMERA (field 2026-10-14, Emma's Samsung on v118: the beam turned off and on mid-wave, the restart built a NEW BeamTx whose step chain began again at 0, the receiver's chain had moved past it, and all 3,700 packets after the restart failed to open — the far side froze on the last picture). One transport per wave and direction, with its frame counter: parked when the camera stops, taken back when it starts again. Keyed by a one-way hash of the wave secret and our side, so a new wave never inherits it; dropped when a wave's receiver starts or stops (the wave's own edges).
 /// The lens the phone is beaming from, as Kotlin names it ("Front", "Back · 24 mm"), for the self-view caption.
 static ANDROID_CAMERA_NAME: Mutex<Option<String>> = Mutex::new(None);
 
-static PARKED_TX: Mutex<Option<([u8; 32], BeamTx, u32)>> = Mutex::new(None);
+/// THE 1:1 WAVE'S BEAM TRANSPORT, our direction, with its frame counter: up with the wave's receiver and down with it, beaming or not, as a group link's transport lives in the fan.
+/// THE BEAM'S TRANSPORT OUTLIVES ITS CAMERA (field 2026-10-14, Emma's Samsung on v118: the beam turned off and on mid-wave, the restart built a NEW BeamTx whose step chain began again at 0, the receiver's chain had moved past it, and all 3,700 packets after the restart failed to open — the far side froze on the last picture): a sender borrows this one and leaves its frame counter here when it stops.
+/// It is up for the whole wave because a RECEIVER sends on it too: its asks for a picture to start from ride our direction of the link whether or not we beam (2026-11-11).
+/// Keyed by a one-way hash of the wave secret and our side, so a new wave never inherits it.
+static PAIR_TX: Mutex<Option<([u8; 32], BeamTx, u32)>> = Mutex::new(None);
 
 fn tx_key(wave_secret: &[u8; 32], we_are_origin: bool) -> [u8; 32] {
     let mut h = blake3::Hasher::new_derive_key("photon beam transport park v0");
@@ -235,22 +254,85 @@ fn tx_key(wave_secret: &[u8; 32], we_are_origin: bool) -> [u8; 32] {
     *h.finalize().as_bytes()
 }
 
-/// This wave's transport: the parked one if it is this wave's (its chain runs on), else a new one.
-fn take_tx(wave_secret: &[u8; 32], we_are_origin: bool, peer: std::net::SocketAddr) -> (BeamTx, u32) {
+/// This wave's transport, made if it is not up: the one already up keeps its chain (a second BeamTx under the same key would reuse its nonces).
+/// Returns the frame number a sender continues from.
+fn ensure_pair_tx(wave_secret: &[u8; 32], we_are_origin: bool) -> u32 {
     let key = tx_key(wave_secret, we_are_origin);
-    if let Some((k, mut tx, n)) = PARKED_TX.lock().unwrap().take() {
-        if k == key {
-            tx.set_peer(peer);
-            crate::logf!("BEAM: the wave's beam transport resumes at frame {} — its key chain runs on", n);
-            return (tx, n);
+    let mut g = PAIR_TX.lock().unwrap();
+    if let Some((k, _, n)) = g.as_ref() {
+        if *k == key {
+            return *n;
         }
     }
     let dir = if we_are_origin { Direction::OriginToAnswer } else { Direction::AnswerToOrigin };
-    (BeamTx::new(wave_secret, dir, peer), 0)
+    let peer = super::wave_tx_addr().unwrap_or(crate::network::status::RELAY_ADDR);
+    *g = Some((key, BeamTx::new(wave_secret, dir, peer), 0));
+    0
 }
 
-fn park_tx(key: [u8; 32], tx: BeamTx, frame_no: u32) {
-    *PARKED_TX.lock().unwrap() = Some((key, tx, frame_no));
+/// Run `f` on the 1:1 wave's transport, aimed at the wave's current peer address, if the wave keyed `key` is the one up.
+fn with_pair<R>(key: &[u8; 32], f: impl FnOnce(&mut BeamTx) -> R) -> Option<R> {
+    let mut g = PAIR_TX.lock().unwrap();
+    match g.as_mut() {
+        Some((k, tx, _)) if k == key => {
+            if let Some(addr) = super::wave_tx_addr() {
+                if addr != tx.peer() {
+                    tx.set_peer(addr);
+                }
+            }
+            Some(f(tx))
+        }
+        _ => None,
+    }
+}
+
+/// Which link a receiver's asks go back on: the 1:1 wave's transport (its key), or a group link's in the fan (its far slot).
+#[derive(Clone, Copy)]
+enum Back {
+    Pair([u8; 32]),
+    Group(usize),
+}
+
+/// A receiver asks its sender for a picture to start from, on its own direction of the link (beam.rs `Kind::KeyAsk`).
+fn send_key_ask(back: Back, held: u32) {
+    match back {
+        Back::Pair(key) => {
+            with_pair(&key, |tx| tx.send_key_ask(held));
+        }
+        Back::Group(slot) => {
+            if let Some((_, tx, _)) = GROUP_FAN.lock().unwrap().iter_mut().find(|(s, _, _)| *s == slot) {
+                if let Some(addr) = super::slot_tx_addr(slot) {
+                    if addr != tx.peer() {
+                        tx.set_peer(addr);
+                    }
+                }
+                tx.send_key_ask(held);
+            }
+        }
+    }
+}
+
+/// A RECEIVER'S NEED for a picture to start from (Nick 2026-11-11: "if they need one, I'd send it now, not in 2 minutes"): a frame the decoder could not make a clean picture of — no parameter sets yet (a late join), or a lost reference it is still concealing — and the first such frame asks at once.
+/// A receiver still stuck asks again only after [`KEY_ASK_AGAIN`] more such frames (the answer was lost, or is still crossing a long round trip); a clean picture ends the need.
+#[derive(Debug, Default)]
+struct KeyNeed {
+    stuck: u32,
+}
+
+/// Stuck frames between two asks from a receiver that stays stuck: a second at 30 fps, longer than any round trip a beam survives.
+const KEY_ASK_AGAIN: u32 = 1 << 5;
+
+impl KeyNeed {
+    /// One more stuck frame: true when it should ask.
+    fn stuck(&mut self) -> bool {
+        let ask = self.stuck % KEY_ASK_AGAIN == 0;
+        self.stuck += 1;
+        ask
+    }
+
+    fn pictured(&mut self) {
+        self.stuck = 0;
+    }
 }
 
 /// Who a beam sender sends to: the 1:1 wave's peer (its wave secret and our side), or every link of the group wave (the fan, docs/group-waves.md).
@@ -278,6 +360,9 @@ pub fn fan_add(slot: usize, link_secret: &[u8; 32], we_are_origin: bool) {
     let mut fan = GROUP_FAN.lock().unwrap();
     fan.retain(|(s, _, _)| *s != slot);
     fan.push((slot, BeamTx::new(link_secret, dir, peer), true));
+    // A link added mid-beam starts decoding at once: the next frame carries the parameter sets (a desktop's keyframe, a phone's sets ahead of its rolling refresh) instead of waiting for the newcomer to fail and ask.
+    // With no beam going out this asks nothing: a sender clears asks when it starts, its first frame being a starting picture anyway.
+    super::beam::ask_key_now();
 }
 
 /// A group link went down: its transport leaves the fan.
@@ -293,7 +378,8 @@ pub fn fan_clear() {
 
 /// One sender's way out: the 1:1 wave's single transport, or the group's fan (with the beam's latest self-description and rotation, which a link that joins mid-beam is sent first).
 enum Outbound {
-    Pair(BeamTx),
+    /// The 1:1 wave's transport in PAIR_TX, by its key.
+    Pair([u8; 32]),
     Group { info: Option<Info>, orient: u8, sent: u64, fail: u64 },
 }
 
@@ -301,13 +387,8 @@ impl Outbound {
     /// Follow the peers' current addresses (the wave's own re-points, address-follows-auth).
     fn follow(&mut self) {
         match self {
-            Outbound::Pair(tx) => {
-                if let Some(addr) = super::wave_tx_addr() {
-                    if addr != tx.peer() {
-                        tx.set_peer(addr);
-                    }
-                }
-            }
+            // `with_pair` aims the transport at the wave's current address on every use.
+            Outbound::Pair(_) => {}
             Outbound::Group { .. } => {
                 for (slot, tx, _) in GROUP_FAN.lock().unwrap().iter_mut() {
                     if let Some(addr) = super::slot_tx_addr(*slot) {
@@ -326,7 +407,9 @@ impl Outbound {
             crate::wave::spool::beam_record(crate::wave::spool::BeamRecKind::Info, 0, &beam::encode_info(i));
         }
         match self {
-            Outbound::Pair(tx) => tx.send_info(i),
+            Outbound::Pair(key) => {
+                with_pair(key, |tx| tx.send_info(i));
+            }
             Outbound::Group { info, .. } => {
                 *info = Some(i.clone());
                 for (_, tx, fresh) in GROUP_FAN.lock().unwrap().iter_mut() {
@@ -343,7 +426,9 @@ impl Outbound {
             crate::wave::spool::beam_record(crate::wave::spool::BeamRecKind::Orient, 0, &[q]);
         }
         match self {
-            Outbound::Pair(tx) => tx.send_orient(q),
+            Outbound::Pair(key) => {
+                with_pair(key, |tx| tx.send_orient(q));
+            }
             Outbound::Group { orient, .. } => {
                 *orient = q;
                 for (_, tx, _) in GROUP_FAN.lock().unwrap().iter_mut() {
@@ -367,8 +452,8 @@ impl Outbound {
             crate::wave::spool::beam_record(crate::wave::spool::BeamRecKind::Frame, 0, &crate::wave::spool::beam_frame_payload(frame_no, gains.0, au));
         }
         match self {
-            Outbound::Pair(tx) => {
-                tx.send_frame(frame_no, gains, au);
+            Outbound::Pair(key) => {
+                with_pair(key, |tx| tx.send_frame(frame_no, gains, au));
             }
             Outbound::Group { info, orient, sent, fail } => {
                 for (_, tx, fresh) in GROUP_FAN.lock().unwrap().iter_mut() {
@@ -392,29 +477,47 @@ impl Outbound {
     /// Datagrams sent and refused so far.
     fn counts(&self) -> (u64, u64) {
         match self {
-            Outbound::Pair(tx) => (tx.sent, tx.send_fail),
+            Outbound::Pair(key) => with_pair(key, |tx| (tx.sent, tx.send_fail)).unwrap_or((0, 0)),
             Outbound::Group { sent, fail, .. } => (*sent, *fail),
         }
     }
 
-    /// The way out for a target, and the frame number to continue from: the 1:1 wave's parked transport resumes its chain; the group's fan already runs.
+    /// Every link this beam goes out on, as the link watch takes it: its far slot, its engine's reading, and the beam bytes sent to it so far.
+    fn takes(&self) -> Vec<LinkTake> {
+        match self {
+            Outbound::Pair(key) => with_pair(key, |tx| tx.bytes).map(|bytes| vec![LinkTake { slot: 0, now: super::link_reading(0), bytes }]).unwrap_or_default(),
+            Outbound::Group { .. } => GROUP_FAN.lock().unwrap().iter().map(|(slot, tx, _)| LinkTake { slot: *slot, now: super::link_reading(*slot), bytes: tx.bytes }).collect(),
+        }
+    }
+
+    /// The way out for a target, and the frame number to continue from: the 1:1 wave's transport runs on from where the last sender left it; the group's fan already runs.
     fn for_target(target: &Target) -> Result<(Outbound, u32, Option<[u8; 32]>), String> {
         match target {
             Target::Pair(secret, origin) => {
-                let Some(peer) = super::wave_tx_addr() else {
+                if super::wave_tx_addr().is_none() {
                     return Err("BEAM: no peer address yet — the wave's first authenticated packet sets it".into());
-                };
-                let (tx, n) = take_tx(secret, *origin, peer);
-                Ok((Outbound::Pair(tx), n, Some(tx_key(secret, *origin))))
+                }
+                let n = ensure_pair_tx(secret, *origin);
+                if n != 0 {
+                    crate::logf!("BEAM: the wave's beam transport resumes at frame {} — its key chain runs on", n);
+                }
+                let key = tx_key(secret, *origin);
+                Ok((Outbound::Pair(key), n, Some(key)))
             }
             Target::Group => Ok((Outbound::Group { info: None, orient: 0, sent: 0, fail: 0 }, GROUP_FRAME_NO.load(Ordering::Relaxed), None)),
         }
     }
 
-    /// The sender stopped: a 1:1 transport parks under its key so a restart runs its chain on; the fan stays with the group wave.
+    /// The sender stopped: the 1:1 transport keeps the frame counter so a restart runs its chain on; the fan stays with the group wave.
     fn park(self, key: Option<[u8; 32]>, frame_no: u32) {
         match (self, key) {
-            (Outbound::Pair(tx), Some(k)) => park_tx(k, tx, frame_no),
+            (Outbound::Pair(_), Some(k)) => {
+                if let Some((pk, _, n)) = PAIR_TX.lock().unwrap().as_mut() {
+                    if *pk == k {
+                        *n = frame_no;
+                    }
+                }
+            }
             (Outbound::Group { .. }, _) => GROUP_FRAME_NO.store(frame_no, Ordering::Relaxed),
             _ => {}
         }
@@ -422,12 +525,17 @@ impl Outbound {
 }
 
 pub fn start_receiver(wave_secret: &[u8; 32], we_are_origin: bool) -> Receiver {
-    *PARKED_TX.lock().unwrap() = None;
-    start_receiver_slot(wave_secret, we_are_origin, 0)
+    // The wave's transport comes up with its receiver: a receiver's asks ride it before this end ever beams.
+    ensure_pair_tx(wave_secret, we_are_origin);
+    start_receiver_with(wave_secret, we_are_origin, 0, Back::Pair(tx_key(wave_secret, we_are_origin)))
 }
 
 /// The same for a group link (docs/group-waves.md): its own transport chain from the link's secret, its picture in the link's far slot.
 pub fn start_receiver_slot(wave_secret: &[u8; 32], we_are_origin: bool, slot: usize) -> Receiver {
+    start_receiver_with(wave_secret, we_are_origin, slot, Back::Group(slot))
+}
+
+fn start_receiver_with(wave_secret: &[u8; 32], we_are_origin: bool, slot: usize, back: Back) -> Receiver {
     let dir = if we_are_origin { Direction::AnswerToOrigin } else { Direction::OriginToAnswer };
     let rx = beam::start_rx(wave_secret, dir);
     let stop = Arc::new(AtomicBool::new(false));
@@ -435,12 +543,14 @@ pub fn start_receiver_slot(wave_secret: &[u8; 32], we_are_origin: bool, slot: us
     let shared = rx.shared.clone();
     let thread = std::thread::Builder::new()
         .name("beam-decode".into())
-        .spawn(move || decode_loop(stop2, shared, slot))
+        .spawn(move || decode_loop(stop2, shared, slot, back))
         .expect("beam-decode thread");
-    Receiver { _rx: rx, slot, stop, thread: Some(thread) }
+    Receiver { _rx: rx, slot, back, stop, thread: Some(thread) }
 }
 
-fn decode_loop(stop: Arc<AtomicBool>, shared: Arc<beam::RxShared>, slot: usize) {
+fn decode_loop(stop: Arc<AtomicBool>, shared: Arc<beam::RxShared>, slot: usize, back: Back) {
+    let mut need = KeyNeed::default();
+    let mut asks = 0u64;
     let mut decoder: Option<h264::Decoder> = None;
     let mut conv = Converter::new(Characterization::IDENTITY_GAMMA2);
     let mut rgb = Vec::new();
@@ -530,17 +640,30 @@ fn decode_loop(stop: Arc<AtomicBool>, shared: Arc<beam::RxShared>, slot: usize) 
                 beam_record(BeamRecKind::Frame, t, &crate::wave::spool::beam_frame_payload(frame.frame_no, frame.gains.0, &frame.bytes));
             }
             let Some(dec) = decoder.as_mut() else { continue };
-            match dec.decode(&frame.bytes) {
+            let concealed_before = dec.concealed;
+            // A frame the decoder could not make a clean picture of: none at all (no parameter sets yet, a reference it never had) or one painted over a lost reference.
+            let stuck = match dec.decode(&frame.bytes) {
                 Ok(Some(pic)) => {
                     decoded += 1;
                     shown = Some((pic, frame.gains, frame.frame_no));
+                    dec.concealed != concealed_before
                 }
-                Ok(None) => {}
+                Ok(None) => false,
                 Err(e) => {
                     failed += 1;
                     if failed <= 3 || failed % 100 == 0 {
                         crate::logf!("BEAM: decode failed ({} so far): {}", failed, e);
                     }
+                    true
+                }
+            };
+            if !stuck {
+                need.pictured();
+            } else if need.stuck() {
+                send_key_ask(back, frame.frame_no);
+                asks += 1;
+                if asks <= 3 || asks % 16 == 0 {
+                    crate::logf!("BEAM: asked the sender for a picture to start from at frame {} ({} asks so far)", frame.frame_no, asks);
                 }
             }
         }
@@ -561,12 +684,13 @@ fn decode_loop(stop: Arc<AtomicBool>, shared: Arc<beam::RxShared>, slot: usize) 
         }
     }
     crate::logf!(
-        "BEAM: decode thread down — {} pictures ({} concealed, {} shown with holes), {} failures, {} frames given up as lost",
+        "BEAM: decode thread down — {} pictures ({} concealed, {} shown with holes), {} failures, {} frames given up as lost, {} asks for a picture to start from",
         decoded,
         decoder.as_ref().map_or(0, |d| d.concealed),
         holey,
         failed,
-        skipped
+        skipped,
+        asks
     );
 }
 
@@ -583,16 +707,177 @@ impl Drop for Sender {
             // A panicked thread's Err is the panic the hook already logged; the join is for the ordering.
             drop(t.join());
         }
-        if let Some((tx, _, n)) = ENCODED_TX.lock().unwrap().take() {
-            tx.park(ENCODED_KEY.lock().unwrap().take(), n);
+        if let Some(feed) = ENCODED_TX.lock().unwrap().take() {
+            feed.out.park(ENCODED_KEY.lock().unwrap().take(), feed.frame_no);
         }
     }
 }
 
-/// The ladder's ceiling for a capture's bands: the highest band no wider than 1920 on a LAN-fast path (a round trip of 15 ms or less), else no wider than 1280 — the far side's decoder is the limit, not the LAN (2026-11-01, Nick and Emma: on one LAN the beam reached the whole 2560×1920 capture at 7.4 Mbit/s and Emma's phone decoded about ten frames a second) — and two bands lower again on a metered network. The receiver stating its own decode ceiling is the real answer and needs a wire field; until then the far side is assumed to be a phone.
+// ───────────────────────── the ceiling and the link watch ─────────────────────────
+
+/// THE NETWORK'S PART OF THE CEILING (Nick 2026-11-11: "same network isn't a decision, it's a latency and bandwidth question"): the widest coded frame the live links have shown they carry, from each link's measured round trip and achieved throughput, re-read on every one of its verdicts ([`LinkWatch`]).
+/// It replaced a LAN boolean (a round trip of 15 ms or less, read once at the sender's start from the previous wave's figure — 0 for a fresh wave, so a phone on cellular got 1920×1080 on 2026-11-11).
+/// Reset to [`CONSERVATIVE_W`] whenever a sender starts.
+static NET_W: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(CONSERVATIVE_W as u32);
+/// Until a link has measured anything (a round trip and a clean second of beam on it), the beam stays within this width: 640 for a 2560 or 1280 capture, 960 for 1920.
+const CONSERVATIVE_W: usize = 1 << 10;
+/// The far side's decoder, not the network (2026-11-01, Nick and Emma: on one LAN the beam reached the whole 2560×1920 capture at 7.4 Mbit/s and Emma's phone decoded about ten frames a second): no beam wider than this, the old LAN ceiling kept as a decoder's.
+/// The receiver stating its own decode ceiling is the real answer and needs a wire field; until then the far side is assumed to be a phone.
+const FAR_DECODE_W: usize = 1920;
+/// A clean second counts as throughput the link carried only while the queue on it stays under this (the round trip's average over its floor, ms): a link already holding a queue is not carrying with room to spare, however clean its loss looks.
+const QUEUE_OK_MS: u32 = 1 << 5;
+/// A link's verdicts before it counts (its first second carries its start: the connect probe, the first round trips, and no beam byte count to measure against).
+const SUSTAINED_VERDICTS: u32 = 1 << 1;
+/// How far over what a link has carried the beam may reach to enter a band, in quarters: 2¾×, about a stop and a half — the entry rung of the band above costs twice the top of the band below, so a link that carried that top (or up to about a quarter under it, for an encoder that undershoots) opens the next band and no further.
+const HEADROOM_Q2: u64 = 11;
+
+/// One link as the watch takes it on a frame edge: its far slot, its engine's reading, and the beam bytes sent to it so far.
+#[derive(Debug, Clone, Copy)]
+struct LinkTake {
+    slot: usize,
+    now: super::LinkNow,
+    bytes: u64,
+}
+
+/// One link as the watch keeps it.
+#[derive(Debug, Clone)]
+struct Watched {
+    slot: usize,
+    epoch: u32,
+    /// The last verdict taken, and how many have been.
+    seq: u32,
+    verdicts: u32,
+    /// The beam bytes sent to the link, and the watch's clock (ms), at that verdict.
+    bytes: u64,
+    at_ms: u64,
+    /// The highest rate (bit/s) the link carried through a clean second with no queue to speak of; 0 = none yet. A congested second caps it at the rate that congested.
+    carried_bps: u64,
+    /// This link has given a verdict in the current round, and all of its verdicts in the round were clean.
+    in_round: bool,
+    round_clean: bool,
+}
+
+/// CONGESTION ON EVERY LINK (Nick 2026-11-11): the ladder hears every live link, not only the lead, because the mesh sends each frame on each link and the uplink they share fills from all of them.
+/// Any sustained link congested steps the beam down at once; a round in which every sustained link spoke and all were clean counts as one clean verdict, so two links climb no faster than one.
+/// The same watch measures each link's achieved throughput for the ceiling ([`LinkWatch::net_top`]); the weakest link sets it.
+#[derive(Debug, Default)]
+struct LinkWatch {
+    links: Vec<Watched>,
+    seq: u32,
+}
+
+impl LinkWatch {
+    fn new() -> Self {
+        LinkWatch { links: Vec::new(), seq: 0 }
+    }
+
+    /// Every live link's reading at `now_ms` (any monotonic clock in ms): the combined verdict `(sequence, congested, clean)` when one lands, for `Ladder::verdict`.
+    fn step(&mut self, now_ms: u64, takes: &[LinkTake]) -> Option<(u32, bool, bool)> {
+        // A link that left the beam (or whose engine ended, the slot perhaps carrying a new link) leaves the watch.
+        self.links.retain(|l| takes.iter().any(|t| t.slot == l.slot && t.now.epoch == l.epoch));
+        let mut congested = false;
+        for t in takes {
+            if t.now.seq == 0 {
+                continue;
+            }
+            let Some(l) = self.links.iter_mut().find(|l| l.slot == t.slot) else {
+                // First sight: whatever the link said before, the watch has no byte count from its start, so its next verdict is its first measured second.
+                self.links.push(Watched { slot: t.slot, epoch: t.now.epoch, seq: t.now.seq, verdicts: 1, bytes: t.bytes, at_ms: now_ms, carried_bps: 0, in_round: false, round_clean: true });
+                continue;
+            };
+            if l.seq == t.now.seq {
+                continue;
+            }
+            // WHY/PROOF: per_second's case — a camera's queued buffers hand over at once after a stall, so two frame edges with a verdict between them can land inside one millisecond, and a zero divisor would panic the sending thread; one millisecond is the clock's resolution.
+            let ms = (now_ms - l.at_ms).max(1);
+            // The link's transport only counts up while its epoch holds (a new link in the slot is a new epoch and a new entry).
+            let rate = (t.bytes - l.bytes) * 8 * 1000 / ms;
+            l.seq = t.now.seq;
+            l.bytes = t.bytes;
+            l.at_ms = now_ms;
+            l.verdicts += 1;
+            // Carried: the best clean second's rate, a running maximum; a congested second says the link could not take the rate it was given, so the carried rate never stands above it.
+            if t.now.clean && t.now.rtt_ms != 0 && t.now.queue_ms <= QUEUE_OK_MS {
+                l.carried_bps = l.carried_bps.max(rate);
+            }
+            if t.now.congested {
+                l.carried_bps = l.carried_bps.min(rate);
+            }
+            if l.verdicts >= SUSTAINED_VERDICTS {
+                congested |= t.now.congested;
+                l.in_round = true;
+                l.round_clean &= t.now.clean;
+            }
+        }
+        let sustained: Vec<&Watched> = self.links.iter().filter(|l| l.verdicts >= SUSTAINED_VERDICTS).collect();
+        let (c, k) = if congested {
+            (true, false)
+        } else if !sustained.is_empty() && sustained.iter().all(|l| l.in_round) {
+            (false, sustained.iter().all(|l| l.round_clean))
+        } else {
+            return None;
+        };
+        for l in self.links.iter_mut() {
+            l.in_round = false;
+            l.round_clean = true;
+        }
+        // The ladder ignores a repeated sequence and starts from 0, so the first verdict is 1.
+        self.seq += 1;
+        Some((self.seq, c, k))
+    }
+
+    /// The highest band of `ladder`'s the weakest sustained link carries (the lowest of their tops: the mesh sends every frame to every link); [`CONSERVATIVE_W`] until one has measured anything.
+    fn net_top(&self, ladder: &super::beam_ladder::Ladder) -> usize {
+        self.links.iter().filter(|l| l.verdicts >= SUSTAINED_VERDICTS).map(|l| link_top(ladder, l.carried_bps)).min().unwrap_or_else(|| super::beam_ladder::top_within(ladder.bands(), CONSERVATIVE_W))
+    }
+}
+
+/// One link's top band: [`CONSERVATIVE_W`] until it has carried anything, else the highest band whose entry rung costs no more than [`HEADROOM_Q2`] quarters of what it carried.
+fn link_top(ladder: &super::beam_ladder::Ladder, carried_bps: u64) -> usize {
+    let bands = ladder.bands();
+    if carried_bps == 0 {
+        return super::beam_ladder::top_within(bands, CONSERVATIVE_W);
+    }
+    let budget = carried_bps * HEADROOM_Q2 >> 2;
+    // The smallest band is always open; each band above costs more to enter than the one below, so the first that does not fit ends the climb.
+    let mut top = 0;
+    for b in 1..bands.len() {
+        if ladder.entry_bitrate(b) as u64 > budget {
+            break;
+        }
+        top = b;
+    }
+    top
+}
+
+/// The watch's clock: milliseconds since the first read, monotonic.
+fn now_ms() -> u64 {
+    static BASE: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    BASE.get_or_init(std::time::Instant::now).elapsed().as_millis() as u64
+}
+
+/// One frame edge's steering: the link watch's combined verdict moves the ladder, and the links' measured ceiling moves its top. True when the plan changed.
+fn steer(ladder: &mut super::beam_ladder::Ladder, watch: &mut LinkWatch, takes: &[LinkTake]) -> bool {
+    let before = ladder.plan();
+    let verdict = watch.step(now_ms(), takes);
+    // WHY the band held is kept: the network's part of the ceiling only gates CLIMBING — stepping down is the ladder's answer to the per-link verdicts, with its one-stop overlap — so a link that just joined or a second that congested never forces a band crossing (and a keyframe for everyone) from here.
+    let hold = watch.net_top(ladder).max(before.band);
+    let w = ladder.bands()[hold].0 as u32;
+    if NET_W.swap(w, Ordering::Relaxed) != w {
+        ladder.set_max_band(ceiling(ladder.bands()));
+        let top = ladder.bands()[ceiling(ladder.bands())];
+        crate::logf!("BEAM: the links carry up to {} wide — ceiling now {}×{}", w, top.0, top.1);
+    }
+    if let Some((seq, congested, clean)) = verdict {
+        ladder.verdict(seq, congested, clean);
+    }
+    ladder.plan() != before
+}
+
+/// The ladder's ceiling for a capture's bands: the narrower of what the links carry ([`NET_W`]) and the far decoder ([`FAR_DECODE_W`]), two bands lower again on a metered network, and never past the user's size cap or the phone encoder's own.
 fn ceiling(bands: &[(u16, u16)]) -> usize {
-    let lan = super::LAST_LINK_RTT_MS.load(Ordering::Relaxed) <= 15;
-    let mut top = super::beam_ladder::top_within(bands, if lan { 1920 } else { 1280 });
+    // Two ceilings compose: the lower one binds.
+    let mut top = super::beam_ladder::top_within(bands, (NET_W.load(Ordering::Relaxed) as usize).min(FAR_DECODE_W));
     if crate::network::wfd::net_metered() {
         // WHY/PROOF: the ladder's floor — a capture with fewer than three bands stays at rung 0 on a metered link, never wraps to a rung that does not exist.
         top = top.saturating_sub(2);
@@ -624,7 +909,7 @@ pub fn android_encoder_cap(width: u32) {
 /// The encoder stopped taking frames: the ceiling drops below the band it hung on, and the ladder moves down so Kotlin restarts the encoder at the smaller size. False when it is already on the smallest band (Kotlin then restarts it where it is).
 pub fn android_encoder_stalled() -> bool {
     let mut g = ANDROID_LADDER.lock().unwrap();
-    let Some((ladder, _, _)) = g.as_mut() else { return false };
+    let Some(PhoneLadder { ladder, .. }) = g.as_mut() else { return false };
     let p = ladder.plan();
     if p.band == 0 {
         crate::logf!("BEAM: the phone's encoder stalled at {}×{}, the smallest band — restarting it there", p.w, p.h);
@@ -637,17 +922,17 @@ pub fn android_encoder_stalled() -> bool {
     let q = ladder.plan();
     crate::logf!("BEAM: the phone's encoder stalled at {}×{} — ceiling now {} wide, restarting at {}×{}", p.w, p.h, below, q.w, q.h);
     // The new size goes out now (android_plan announces only the changes it makes itself); same lock order as android_plan: the ladder, then the feed.
-    if let Some((tx, info, _)) = ENCODED_TX.lock().unwrap().as_mut() {
-        info.width = q.w;
-        info.height = q.h;
-        tx.send_info(info);
+    if let Some(feed) = ENCODED_TX.lock().unwrap().as_mut() {
+        feed.info.width = q.w;
+        feed.info.height = q.h;
+        feed.out.send_info(&feed.info);
     }
     true
 }
 
 /// Re-apply the ceiling to a live phone ladder.
 fn android_reclamp() {
-    if let Some((ladder, _, _)) = ANDROID_LADDER.lock().unwrap().as_mut() {
+    if let Some(PhoneLadder { ladder, .. }) = ANDROID_LADDER.lock().unwrap().as_mut() {
         let top = ceiling(ladder.bands());
         ladder.set_max_band(top);
     }
@@ -678,17 +963,34 @@ fn follow_settings(ladder: &mut super::beam_ladder::Ladder, seen: &mut u32) -> b
     after != before
 }
 
+/// The self-view inset's width target: a desktop frame is shrunk by whole blocks (a power of two) to no narrower than this before its colour conversion.
+const SELF_MIN_W: usize = 1 << 8;
+
+/// The power of two a `w`-wide camera frame shrinks by for the self-view (1 = as it is).
+fn self_view_shrink(w: usize) -> usize {
+    let mut k = 1;
+    while w / (k << 1) >= SELF_MIN_W {
+        k <<= 1;
+    }
+    k
+}
+
 /// Start sending a camera's frames (desktop): capture → H.264 → the beam track, toward the wave's current peer address (re-read every frame, so a redirect is followed).
 pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_bps: u32) -> Result<Sender, String> {
     let (sw, sh) = source.dimensions();
     let cam_fps = source.fps().max(1);
+    // A new beam measures its links from nothing, and owes nothing an earlier beam was asked: its first frame is a keyframe anyway.
+    NET_W.store(CONSERVATIVE_W as u32, Ordering::Relaxed);
+    beam::reset_key_asks();
     // THE LADDER (beam_ladder.rs): bands from the camera's own frame; the ceiling per `ceiling`.
     let bands = super::beam_ladder::bands_for(sw, sh);
     let (mut ladder, mut seen) = new_ladder(bands);
     let max_band = ceiling(ladder.bands());
     let mut plan = ladder.plan();
     let (bw, bh) = (plan.w, plan.h);
-    let mut enc = h264::Encoder::new(bw as usize, bh as usize, cam_fps, plan.bitrate)?;
+    // THE RATE ACTUALLY ENCODED (2026-11-11: the encoder was built and stamped at the camera's 60 fps while it was handed the plan's 30, so rate control spread the bitrate over frames that never came): the plan's rate, or the camera's own when the camera is the slower one, since a slow camera's every frame is kept.
+    let mut enc_fps = plan.fps.min(cam_fps);
+    let mut enc = h264::Encoder::new(bw as usize, bh as usize, enc_fps, plan.bitrate)?;
     let (mut tx, first_frame, key) = Outbound::for_target(&target)?;
     // CALIBRATION (beam_calibrate.rs, Nick 2026-10-31: "that should work for all platforms"): this camera is the one Calibrate scans, keyed by its name; a calibration made earlier this run outranks the assumed sRGB entry.
     let cam_name = camera_name().unwrap_or_default();
@@ -700,10 +1002,10 @@ pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_b
     };
     let mut self_conv = Converter::new(Characterization::from_entry(&entry));
     let colour = colour_bytes_cal(&entry, cal);
-    let mut info = Info { width: bw, height: bh, fps: cam_fps as u8, codec: Codec::H264, colour };
+    let mut info = Info { width: bw, height: bh, fps: enc_fps as u8, codec: Codec::H264, colour };
     let mut landed = super::beam_calibrate::LANDED.load(Ordering::Relaxed);
     let top = ladder.bands()[max_band];
-    crate::logf!("BEAM: ladder up — camera {}×{}, ceiling {}×{}, starting {}×{} at {} kbit/s", sw, sh, top.0, top.1, bw, bh, plan.bitrate / 1000);
+    crate::logf!("BEAM: ladder up — camera {}×{} @ {} fps, ceiling {}×{} until the links measure, starting {}×{} at {} fps, {} kbit/s", sw, sh, cam_fps, top.0, top.1, bw, bh, enc_fps, plan.bitrate / 1000);
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = stop.clone();
     let thread = std::thread::Builder::new()
@@ -712,11 +1014,16 @@ pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_b
             // THE RANK: a beam is live on this device for exactly as long as this thread runs, and bulk transfers give way for that long (network::rank).
             let _rank = crate::network::rank::realtime_begin();
             let mut frame_no = first_frame;
-            let mut cam_frames = 0u64;
             let mut rate_acc = 0u32;
             let mut sent_bytes = 0u64;
             let mut self_rgb = Vec::new();
             let mut coded = h264::I420::new(bw as usize, bh as usize);
+            // The encoder's clock: each frame is stamped with when the camera handed it over, counted from the encoder's start, so rate control sees the frames' real spacing.
+            let mut enc_t0 = std::time::Instant::now();
+            let mut watch = LinkWatch::new();
+            // Camera frames since the self-view last refreshed (it refreshes every other camera frame: the camera as it is, whatever the ladder sends), and how far its copy is shrunk.
+            let mut self_gap = 0u32;
+            let self_k = self_view_shrink(sw);
             // This camera's turns (Settings → Beam), sent now and again on every change — a change bumps the settings generation, read on each frame's edge.
             let cam = camera_name().unwrap_or_default();
             let mut turns = super::beam_settings::turns_for(&cam);
@@ -725,10 +1032,69 @@ pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_b
             let (mut win_t, mut win_cam, mut win_sent, mut win_bytes) = (std::time::Instant::now(), 0u64, 0u64, 0u64);
             tx.send_orient(turns);
             while !stop2.load(Ordering::Relaxed) {
+                if win_cam >= cam_fps as u64 {
+                    let ms = win_t.elapsed().as_millis() as u64;
+                    *SEND_STATS.lock().unwrap() = Some(SendStats { cam_w: sw, cam_h: sh, cam_fps: per_second(win_cam, ms), sent_w: coded.w, sent_h: coded.h, sent_fps: per_second(win_sent, ms), kbps: per_second(win_bytes * 8, ms) / 1000 });
+                    (win_t, win_cam, win_sent, win_bytes) = (std::time::Instant::now(), 0, 0, 0);
+                }
+                // The ladder moves on edges: a new verdict from any link and the ceiling the links have measured (`steer`), a tap on Settings → Beams; `|` so both run.
+                let takes = tx.takes();
+                if follow_settings(&mut ladder, &mut seen) | steer(&mut ladder, &mut watch, &takes) {
+                    let next = ladder.plan();
+                    // As at the start: the plan's rate, or a slower camera's own.
+                    let next_fps = next.fps.min(cam_fps);
+                    if next.band != plan.band {
+                        // A band crossing: the one place the coded size — and so a keyframe — changes.
+                        let (nw, nh) = (next.w, next.h);
+                        match h264::Encoder::new(nw as usize, nh as usize, next_fps, next.bitrate) {
+                            Ok(e) => {
+                                enc = e;
+                                enc_t0 = std::time::Instant::now();
+                                enc_fps = next_fps;
+                                coded = h264::I420::new(nw as usize, nh as usize);
+                                info.width = nw;
+                                info.height = nh;
+                                info.fps = enc_fps as u8;
+                                tx.send_info(&info);
+                                crate::logf!("BEAM: ladder → band {}×{} (soft {} half-stops, {} fps, {} kbit/s) — a keyframe for the new size", nw, nh, next.soft, enc_fps, next.bitrate / 1000);
+                            }
+                            Err(e) => crate::logf!("BEAM: ladder band change failed: {}", e),
+                        }
+                    } else {
+                        if next.bitrate != plan.bitrate {
+                            enc.set_bitrate(next.bitrate);
+                        }
+                        // The frame-rate lever moves the encoder's rate with it, live: no keyframe, and the next self-description says so.
+                        if next_fps != enc_fps {
+                            enc_fps = next_fps;
+                            enc.set_fps(enc_fps);
+                            info.fps = enc_fps as u8;
+                        }
+                    }
+                    plan = next;
+                }
+                // The plan's frame rate (the ladder's lever below the smallest band, and the user's cap): keep plan.fps of every cam_fps camera frames, spread evenly — 24 of 30 keeps four in five (free in H.264, no keyframe). A camera slower than the plan keeps every frame.
+                rate_acc += enc_fps;
+                let keep = rate_acc >= cam_fps;
+                if keep {
+                    rate_acc -= cam_fps;
+                }
+                let show = self_gap >= 1;
+                // NOTHING CONVERTED THAT NOTHING USES (2026-11-11, a 1080p group beam that went out at 7.5 fps of a planned 30): a camera frame neither encoded nor due for the self-view goes by undecoded — half of a 60 fps Motion-JPEG camera's frames at a 30 fps plan.
+                if !keep && !show {
+                    if !source.skip() {
+                        crate::log("BEAM: camera gone — sender stops");
+                        break;
+                    }
+                    win_cam += 1;
+                    self_gap += 1;
+                    continue;
+                }
                 let Some((frame, gains)) = source.next() else {
                     crate::log("BEAM: camera gone — sender stops");
                     break;
                 };
+                let at_ms = enc_t0.elapsed().as_millis() as u64;
                 win_cam += 1;
                 // Calibrate: the frame goes to the scanner when one is wanted (one atomic otherwise); a calibration that landed for this camera recolours the self-view and the beam's self-description at once.
                 super::beam_calibrate::offer_frame(&frame);
@@ -742,11 +1108,6 @@ pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_b
                         crate::logf!("BEAM: {} calibrated — the beam's colour follows", cam_name);
                     }
                 }
-                if win_cam >= cam_fps as u64 {
-                    let ms = win_t.elapsed().as_millis() as u64;
-                    *SEND_STATS.lock().unwrap() = Some(SendStats { cam_w: sw, cam_h: sh, cam_fps: per_second(win_cam, ms), sent_w: coded.w, sent_h: coded.h, sent_fps: per_second(win_sent, ms), kbps: per_second(win_bytes * 8, ms) / 1000 });
-                    (win_t, win_cam, win_sent, win_bytes) = (std::time::Instant::now(), 0, 0, 0);
-                }
                 if super::beam_settings::generation() != turns_seen {
                     turns_seen = super::beam_settings::generation();
                     let t = super::beam_settings::turns_for(&cam);
@@ -756,63 +1117,52 @@ pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_b
                         crate::logf!("BEAM: {} turned {} quarter turn(s)", cam, turns);
                     }
                 }
-                cam_frames += 1;
                 tx.follow();
-                // The self-view, every other camera frame — the camera as it is, whatever the ladder sends.
-                if cam_frames % 2 == 0 {
-                    post_self(&self_conv, &frame, gains, frame_no, &mut self_rgb, turns, true);
+                if show {
+                    // The inset is small: the frame is shrunk by whole blocks first, a sixteenth of the colour conversion for a 1080p camera.
+                    post_self(&self_conv, &frame.shrunk(self_k), gains, frame_no, &mut self_rgb, turns, true);
+                    self_gap = 0;
+                } else {
+                    self_gap += 1;
                 }
-                // The link verdict moves the ladder (an edge: a new verdict once a second, nothing in between).
-                let (seq, congested, clean) = super::link_verdict();
-                // Settings → Beams moves it too (a tap on the page, read on this frame's edge); `|` so both run.
-                if follow_settings(&mut ladder, &mut seen) | ladder.verdict(seq, congested, clean) {
-                    let next = ladder.plan();
-                    if next.band != plan.band {
-                        // A band crossing: the one place the coded size — and so a keyframe — changes.
-                        let (nw, nh) = (next.w, next.h);
-                        match h264::Encoder::new(nw as usize, nh as usize, cam_fps, next.bitrate) {
-                            Ok(e) => {
-                                enc = e;
-                                coded = h264::I420::new(nw as usize, nh as usize);
-                                info.width = nw;
-                                info.height = nh;
-                                tx.send_info(&info);
-                                crate::logf!("BEAM: ladder → band {}×{} (soft {} half-stops, {} fps, {} kbit/s) — a keyframe for the new size", nw, nh, next.soft, next.fps, next.bitrate / 1000);
-                            }
-                            Err(e) => crate::logf!("BEAM: ladder band change failed: {}", e),
-                        }
-                    } else if next.bitrate != plan.bitrate {
-                        enc.set_bitrate(next.bitrate);
-                    }
-                    plan = next;
-                }
-                // The plan's frame rate (the ladder's lever below the smallest band, and the user's cap): keep plan.fps of every cam_fps camera frames, spread evenly — 24 of 30 keeps four in five (free in H.264, no keyframe). A camera slower than the plan keeps every frame.
-                rate_acc += plan.fps.min(cam_fps);
-                if rate_acc < cam_fps {
+                if !keep {
                     continue;
                 }
-                rate_acc -= cam_fps;
                 if frame_no % beam::INFO_EVERY_FRAMES == 0 {
                     tx.send_info(&info);
                     tx.send_orient(turns);
                 }
-                // The camera frame → the coded size at the ladder's softness (crop to 16:9, shrink, grow).
-                let mut f = frame;
-                let (fw, fh) = (f.w, f.h);
-                let (cw, ch) = (coded.w, coded.h);
-                let src = [
-                    super::beam_scale::Plane::from_slice(&mut f.y, fw, 1, fw, fh),
-                    super::beam_scale::Plane::from_slice(&mut f.u, fw / 2, 1, fw / 2, fh / 2),
-                    super::beam_scale::Plane::from_slice(&mut f.v, fw / 2, 1, fw / 2, fh / 2),
-                ];
-                let dst = [
-                    super::beam_scale::Plane::from_slice(&mut coded.y, cw, 1, cw, ch),
-                    super::beam_scale::Plane::from_slice(&mut coded.u, cw / 2, 1, cw / 2, ch / 2),
-                    super::beam_scale::Plane::from_slice(&mut coded.v, cw / 2, 1, cw / 2, ch / 2),
-                ];
-                super::beam_scale::resample_frame(src, dst, plan.soft);
-                match enc.encode(&coded) {
+                // A receiver asked for a picture to start from (a late join, a reference it lost): this very frame is the keyframe, one for every ask that landed since the last frame.
+                if beam::take_key_ask() {
+                    enc.force_keyframe();
+                    crate::logf!("BEAM: a receiver asked for a picture to start from — frame {} is a keyframe", frame_no);
+                }
+                // The camera frame → the coded size at the ladder's softness (crop to the coded aspect, shrink, grow); a frame already the coded size at full detail goes to the encoder as it is.
+                let encoded = if (frame.w, frame.h) == (coded.w, coded.h) && plan.soft == 0 {
+                    enc.encode_at(&frame, at_ms)
+                } else {
+                    let mut f = frame;
+                    let (fw, fh) = (f.w, f.h);
+                    let (cw, ch) = (coded.w, coded.h);
+                    let src = [
+                        super::beam_scale::Plane::from_slice(&mut f.y, fw, 1, fw, fh),
+                        super::beam_scale::Plane::from_slice(&mut f.u, fw / 2, 1, fw / 2, fh / 2),
+                        super::beam_scale::Plane::from_slice(&mut f.v, fw / 2, 1, fw / 2, fh / 2),
+                    ];
+                    let dst = [
+                        super::beam_scale::Plane::from_slice(&mut coded.y, cw, 1, cw, ch),
+                        super::beam_scale::Plane::from_slice(&mut coded.u, cw / 2, 1, cw / 2, ch / 2),
+                        super::beam_scale::Plane::from_slice(&mut coded.v, cw / 2, 1, cw / 2, ch / 2),
+                    ];
+                    super::beam_scale::resample_frame(src, dst, plan.soft);
+                    enc.encode_at(&coded, at_ms)
+                };
+                match encoded {
                     Ok(au) if !au.is_empty() => {
+                        // Every IDR answers every ask made before it, whatever caused it (the stream's start, a band change, an ask).
+                        if h264::has_idr(&au) {
+                            beam::key_answered(frame_no);
+                        }
                         sent_bytes += au.len() as u64;
                         win_sent += 1;
                         win_bytes += au.len() as u64;
@@ -824,7 +1174,7 @@ pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_b
                 frame_no = frame_no.wrapping_add(1);
                 if frame_no % (cam_fps * 10) == 0 {
                     let (sent, fail) = tx.counts();
-                    crate::logf!("BEAM: sent {} frames, {} KB, {} datagrams ({} refused); ladder {}×{} soft {} @ {} fps", frame_no, sent_bytes / 1024, sent, fail, coded.w, coded.h, plan.soft, plan.fps);
+                    crate::logf!("BEAM: sent {} frames, {} KB, {} datagrams ({} refused); ladder {}×{} soft {} @ {} fps", frame_no, sent_bytes / 1024, sent, fail, coded.w, coded.h, plan.soft, enc_fps);
                 }
             }
             *SEND_STATS.lock().unwrap() = None;
@@ -836,36 +1186,62 @@ pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_b
     Ok(Sender { stop, thread: Some(thread) })
 }
 
-/// The ENCODED-frame feed (Android: Kotlin's Camera2 + MediaCodec push access units here). Installed by [`start_encoded_sender`], read by [`push_encoded`].
-static ENCODED_TX: Mutex<Option<(Outbound, Info, u32)>> = Mutex::new(None);
-/// The parking key of the transport in ENCODED_TX (see PARKED_TX); `None` for a group beam, whose fan stays with the group wave.
+/// The ENCODED-frame feed (Android: Kotlin's Camera2 + MediaCodec push access units here): the way out, the beam's self-description, the next frame number, and the stream's parameter sets as last seen in it. Installed by [`start_encoded_sender`], read by [`push_encoded`].
+struct EncodedFeed {
+    out: Outbound,
+    info: Info,
+    frame_no: u32,
+    /// SPS and PPS with their start codes: the phone's encoder puts them ahead of its first access unit (and every CONFIG_EVERY after, PhotonBeam.kt), and an ask puts them ahead of the next one.
+    param_sets: Vec<u8>,
+}
+
+static ENCODED_TX: Mutex<Option<EncodedFeed>> = Mutex::new(None);
+/// The key of the 1:1 transport the feed sends on (see PAIR_TX); `None` for a group beam, whose fan stays with the group wave.
 static ENCODED_KEY: Mutex<Option<[u8; 32]>> = Mutex::new(None);
 
 /// Start a sender that is fed encoded frames from outside (the phone). Returns the handle whose drop clears the feed.
 pub fn start_encoded_sender(target: Target, info: Info) -> Result<Sender, String> {
-    let (mut tx, first_frame, key) = Outbound::for_target(&target)?;
-    tx.send_info(&info);
+    let (mut out, first_frame, key) = Outbound::for_target(&target)?;
+    // The encoder's first access unit carries the parameter sets, so nothing an earlier beam was asked is owed.
+    beam::reset_key_asks();
+    out.send_info(&info);
     *ENCODED_KEY.lock().unwrap() = key;
-    *ENCODED_TX.lock().unwrap() = Some((tx, info, first_frame));
+    *ENCODED_TX.lock().unwrap() = Some(EncodedFeed { out, info, frame_no: first_frame, param_sets: Vec::new() });
     Ok(Sender { stop: Arc::new(AtomicBool::new(false)), thread: None })
 }
 
 /// One encoded frame from the platform encoder. `gains` are what the ISP applied (Q12), `au` the H.264 access unit. Returns false when no encoded sender is up.
 pub fn push_encoded(gains: Gains, au: &[u8]) -> bool {
     let mut g = ENCODED_TX.lock().unwrap();
-    let Some((tx, info, frame_no)) = g.as_mut() else { return false };
-    tx.follow();
+    let Some(feed) = g.as_mut() else { return false };
+    feed.out.follow();
+    let n = feed.frame_no;
     let o = android_turns(ANDROID_ORIENT.load(Ordering::Relaxed));
     let changed = ANDROID_ORIENT_SENT.swap(o, Ordering::Relaxed) != o;
-    if *frame_no % beam::INFO_EVERY_FRAMES == 0 {
-        tx.send_info(info);
+    if n % beam::INFO_EVERY_FRAMES == 0 {
+        feed.out.send_info(&feed.info);
     }
     // The rotation goes out the moment it changes, and with every self-description for a receiver that joined late.
-    if changed || *frame_no % beam::INFO_EVERY_FRAMES == 0 {
-        tx.send_orient(o);
+    if changed || n % beam::INFO_EVERY_FRAMES == 0 {
+        feed.out.send_orient(o);
     }
-    tx.send_frame(*frame_no, gains, au);
-    *frame_no = frame_no.wrapping_add(1);
+    // A PICTURE TO START FROM, the phone's way (Nick 2026-11-11: the rolling refresh starts transparent and "chunks in like a rolling shutter, no network spike"): never an IDR.
+    // A cold decoder needs only the parameter sets to begin, and the refresh paints the picture in; so a unit that carries them answers every ask before it, and an ask puts them ahead of the next unit that does not.
+    let sets = h264::param_sets(au);
+    if !sets.is_empty() {
+        feed.param_sets = sets;
+        beam::key_answered(n);
+        feed.out.send_frame(n, gains, au);
+    } else if !feed.param_sets.is_empty() && beam::take_key_ask() {
+        let mut with = feed.param_sets.clone();
+        with.extend_from_slice(au);
+        beam::key_answered(n);
+        crate::logf!("BEAM: a receiver asked for a picture to start from — frame {} carries the parameter sets; the rolling refresh paints the rest", n);
+        feed.out.send_frame(n, gains, &with);
+    } else {
+        feed.out.send_frame(n, gains, au);
+    }
+    feed.frame_no = n.wrapping_add(1);
     true
 }
 
@@ -935,26 +1311,30 @@ pub fn android_started(w: usize, h: usize, fps: u32, maker: Option<[f32; 9]>, st
     let colour = colour_bytes_cal(&entry, calibrated.map(|(_, c)| c));
     // THE LADDER (beam_ladder.rs): bands from the capture itself (Kotlin picked it: ≤ ~5 MP, ≤ 30 fps, least cropped), the ceiling per `ceiling`.
     let bands = super::beam_ladder::bands_for(w, h);
+    let mut lg = ANDROID_LADDER.lock().unwrap();
+    // A new beam measures its links from nothing; a camera switch keeps what the links have shown (the network did not change with the lens).
+    if lg.is_none() {
+        NET_W.store(CONSERVATIVE_W as u32, Ordering::Relaxed);
+    }
     let max_band = ceiling(&bands);
     let top = bands[max_band];
-    let mut lg = ANDROID_LADDER.lock().unwrap();
-    if let (Some((ladder, last_kept, _)), Some((tx, info, _))) = (lg.as_mut(), ENCODED_TX.lock().unwrap().as_mut()) {
+    if let (Some(PhoneLadder { ladder, last_kept, .. }), Some(feed)) = (lg.as_mut(), ENCODED_TX.lock().unwrap().as_mut()) {
         ladder.rebuild(bands, max_band);
         *last_kept = 0;
         let p = ladder.plan();
-        info.width = p.w;
-        info.height = p.h;
-        info.fps = fps.min(255) as u8;
-        info.colour = colour;
-        tx.send_info(info);
+        feed.info.width = p.w;
+        feed.info.height = p.h;
+        feed.info.fps = fps.min(255) as u8;
+        feed.info.colour = colour;
+        feed.out.send_info(&feed.info);
         ANDROID_ORIENT_SENT.store(0xFF, Ordering::Relaxed);
         crate::logf!("BEAM: camera switched to {} — capture {}×{} @ {} fps, ceiling {}×{}, now {}×{} (detail kept)", camera, w, h, fps, top.0, top.1, p.w, p.h);
         return Ok(());
     }
     let (ladder, seen) = new_ladder(bands);
     let p = ladder.plan();
-    crate::logf!("BEAM: phone ladder up — camera {}, capture {}×{} @ {} fps, ceiling {}×{}, starting {}×{}", camera, w, h, fps, top.0, top.1, p.w, p.h);
-    *lg = Some((ladder, 0, seen));
+    crate::logf!("BEAM: phone ladder up — camera {}, capture {}×{} @ {} fps, ceiling {}×{} until the links measure, starting {}×{}", camera, w, h, fps, top.0, top.1, p.w, p.h);
+    *lg = Some(PhoneLadder { ladder, last_kept: 0, seen, watch: LinkWatch::new() });
     drop(lg);
     let info = Info { width: p.w, height: p.h, fps: fps.min(255) as u8, codec: Codec::H264, colour };
     let s = start_encoded_sender(target, info)?;
@@ -987,9 +1367,9 @@ pub fn android_apply_calibration(entry: &vsf::spectral_image::ProfileEntry, cal:
     if let Some(conv) = ANDROID_SELF_CONV.lock().unwrap().as_mut() {
         conv.set_characterization(Characterization::from_entry(entry));
     }
-    if let Some((tx, info, _)) = ENCODED_TX.lock().unwrap().as_mut() {
-        info.colour = colour_bytes_cal(entry, Some(cal));
-        tx.send_info(info);
+    if let Some(feed) = ENCODED_TX.lock().unwrap().as_mut() {
+        feed.info.colour = colour_bytes_cal(entry, Some(cal));
+        feed.out.send_info(&feed.info);
     }
 }
 
@@ -1548,6 +1928,118 @@ mod tests {
         assert!(invert3(&[0.; 9]).is_none());
         // Off the straight path with the camera's own curve, the label says sRGB transfer — never γ2 it does not carry.
         assert_eq!(phone_entry(None, false, false).transfer, vsf::spectral_image::Transfer::Srgb);
+    }
+
+    /// One link's reading as its engine would publish it.
+    fn take(slot: usize, seq: u32, congested: bool, clean: bool, queue_ms: u32, bytes: u64) -> LinkTake {
+        LinkTake { slot, now: crate::wave::LinkNow { epoch: 0, seq, congested, clean, rtt_ms: 40, queue_ms }, bytes }
+    }
+
+    /// The bytes that make a one-second verdict interval carry `bps`.
+    fn bytes_for(bps: u32) -> u64 {
+        bps as u64 / 8
+    }
+
+    /// THE CEILING FROM THE LINKS (Nick 2026-11-11): conservative until a link has measured anything, then one band past what it has carried cleanly, the weakest link setting it — and a second carried under a queue earns nothing.
+    #[test]
+    fn the_ceiling_opens_band_by_band_as_the_weakest_link_carries() {
+        use crate::wave::beam_ladder::{bands_for, bitrate_for, top_within, Ladder};
+        let bands = bands_for(1920, 1080);
+        assert_eq!(bands, vec![(120, 68), (240, 134), (480, 270), (960, 540), (1920, 1080)]);
+        let ladder = Ladder::new(bands.clone(), 4);
+        let top = |b: usize| bitrate_for(bands[b].0 as u32, bands[b].1 as u32, 0, 30, 100);
+        let mut w = LinkWatch::new();
+        // Nothing measured: the conservative width (960 for a 1920 capture), whatever the capture could do.
+        assert_eq!(w.net_top(&ladder), top_within(&bands, CONSERVATIVE_W));
+        assert_eq!(w.net_top(&ladder), 3);
+        // First sight of a link that has spoken: still nothing measured.
+        assert_eq!(w.step(0, &[take(0, 7, false, true, 2, 0)]), None);
+        assert_eq!(w.net_top(&ladder), 3);
+        // A clean second carrying the top of band 1 opens band 2 and no further.
+        let mut bytes = bytes_for(top(1));
+        assert_eq!(w.step(1000, &[take(0, 8, false, true, 2, bytes)]), Some((1, false, true)));
+        assert_eq!(w.net_top(&ladder), 2, "measured now, and below the conservative start");
+        // Carrying the top of band 2 opens band 3; carrying band 3's opens the capture.
+        bytes += bytes_for(top(2));
+        w.step(2000, &[take(0, 9, false, true, 2, bytes)]);
+        assert_eq!(w.net_top(&ladder), 3);
+        bytes += bytes_for(top(3));
+        w.step(3000, &[take(0, 10, false, true, 2, bytes)]);
+        assert_eq!(w.net_top(&ladder), 4);
+        // An encoder a fifth under its plan still opens the next band; one half under does not.
+        let mut u = LinkWatch::new();
+        u.step(0, &[take(0, 1, false, true, 2, 0)]);
+        u.step(1000, &[take(0, 2, false, true, 2, bytes_for(top(2) / 5 * 4))]);
+        assert_eq!(u.net_top(&ladder), 3);
+        let mut h = LinkWatch::new();
+        h.step(0, &[take(0, 1, false, true, 2, 0)]);
+        h.step(1000, &[take(0, 2, false, true, 2, bytes_for(top(2) / 2))]);
+        assert_eq!(h.net_top(&ladder), 2);
+        // A clean second over a standing queue (Jeff's 71 ms on 2026-11-11) earns nothing: still unmeasured, the conservative ceiling.
+        let mut q = LinkWatch::new();
+        q.step(0, &[take(0, 1, false, true, 71, 0)]);
+        q.step(1000, &[take(0, 2, false, true, 71, bytes_for(top(4)))]);
+        assert_eq!(q.net_top(&ladder), 3);
+        // Two links: the mesh sends every frame on each, so the weaker one's top binds.
+        let mut two = LinkWatch::new();
+        two.step(0, &[take(1, 1, false, true, 2, 0), take(2, 1, false, true, 2, 0)]);
+        two.step(1000, &[take(1, 2, false, true, 2, bytes_for(top(3))), take(2, 2, false, true, 2, bytes_for(top(1)))]);
+        assert_eq!(two.net_top(&ladder), 2);
+        // A congested second caps what a link is credited with at the rate it could not take.
+        two.step(2000, &[take(1, 3, true, false, 2, bytes_for(top(3)) + bytes_for(top(0))), take(2, 2, false, true, 2, bytes_for(top(1)))]);
+        assert_eq!(link_top(&ladder, two.links[0].carried_bps), link_top(&ladder, top(0) as u64));
+        // The weak link leaves: the other one alone sets it.
+        let mut gone = LinkWatch::new();
+        gone.step(0, &[take(1, 1, false, true, 2, 0), take(2, 1, false, true, 2, 0)]);
+        gone.step(1000, &[take(1, 2, false, true, 2, bytes_for(top(3))), take(2, 2, false, true, 2, bytes_for(top(1)))]);
+        gone.step(1100, &[take(1, 2, false, true, 2, bytes_for(top(3)))]);
+        assert_eq!(gone.net_top(&ladder), 4);
+    }
+
+    /// CONGESTION ON EVERY LINK (Nick 2026-11-11): any sustained link congested steps the beam down at once; a clean verdict needs every sustained link heard clean, so two links climb no faster than one; a link's first verdict (its start) is not counted.
+    #[test]
+    fn every_sustained_link_is_heard() {
+        let mut w = LinkWatch::new();
+        assert_eq!(w.step(0, &[take(1, 1, false, true, 2, 0), take(2, 1, true, false, 2, 0)]), None, "first sight: neither link counts yet");
+        // Link 1 speaks clean; link 2 has not spoken again, and is not sustained yet, so link 1 alone makes the round.
+        assert_eq!(w.step(1000, &[take(1, 2, false, true, 2, 1000), take(2, 1, true, false, 2, 0)]), Some((1, false, true)));
+        // Link 2's second verdict is congested: down at once, whatever link 1 says.
+        assert_eq!(w.step(1300, &[take(1, 2, false, true, 2, 1000), take(2, 2, true, false, 2, 500)]), Some((2, true, false)));
+        // Link 1 clean again: the round waits for link 2.
+        assert_eq!(w.step(2000, &[take(1, 3, false, true, 2, 2000), take(2, 2, true, false, 2, 500)]), None);
+        // Link 2 clean too: one clean verdict for the pair.
+        assert_eq!(w.step(2300, &[take(1, 3, false, true, 2, 2000), take(2, 3, false, true, 2, 1000)]), Some((3, false, true)));
+        // A round where one link was neither clean nor congested holds (not clean).
+        w.step(3000, &[take(1, 4, false, true, 2, 3000), take(2, 3, false, true, 2, 1000)]);
+        assert_eq!(w.step(3300, &[take(1, 4, false, true, 2, 3000), take(2, 4, false, false, 2, 1500)]), Some((4, false, false)));
+        // A link whose engine ended (a new epoch in its slot) starts over: not counted until sustained again.
+        let mut fresh = take(2, 1, true, false, 2, 0);
+        fresh.now.epoch = 1;
+        assert_eq!(w.step(4000, &[take(1, 5, false, true, 2, 4000), fresh]), Some((5, false, true)), "the new link's congested first verdict does not count");
+        // The same sequence read twice is one verdict.
+        assert_eq!(w.step(4100, &[take(1, 5, false, true, 2, 4000), fresh]), None);
+    }
+
+    /// A receiver asks on its first stuck frame, again only after KEY_ASK_AGAIN more, and a clean picture ends the need.
+    #[test]
+    fn a_stuck_receiver_asks_once_then_again_only_if_still_stuck() {
+        let mut n = KeyNeed::default();
+        assert!(n.stuck(), "the first frame it cannot picture asks at once");
+        for _ in 1..KEY_ASK_AGAIN {
+            assert!(!n.stuck());
+        }
+        assert!(n.stuck(), "still stuck a whole interval later: the answer was lost, ask again");
+        n.pictured();
+        assert!(n.stuck(), "a new need after a picture asks at once");
+    }
+
+    /// The self-view shrinks a big camera by whole powers of two to no narrower than its target, and leaves a small one alone.
+    #[test]
+    fn the_self_view_shrinks_by_powers_of_two() {
+        assert_eq!(self_view_shrink(1920), 4);
+        assert_eq!(self_view_shrink(1280), 4);
+        assert_eq!(self_view_shrink(640), 2);
+        assert_eq!(self_view_shrink(320), 1);
     }
 
     #[test]
