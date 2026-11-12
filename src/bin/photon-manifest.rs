@@ -5,6 +5,7 @@
 //! Usage:
 //!   photon-manifest --release-notice --out notice.vsf   (the signed "a release is out" document deploy.sh posts to fgtw.org)
 //!   photon-manifest --print-release-bundle   (the release key's public bundle, every scheme, as hex: what fgtw::release pins)
+//!   photon-manifest --check-capsule <capsule.vsf> <option-hex64>   (deploy.sh: the ferros kist capsule carries every release egg and Photon's option in its kist section)
 //!   photon-manifest --channel development --out manifest-dev.vsf \
 //!       [--merge existing-manifest.vsf] \
 //!       --artefact <platform> <arch> <major.minor.patch> <commit-sha1-hex40> <url> <blake3-hex64> [--artefact ...]
@@ -35,6 +36,13 @@ fn main() {
             "--merge" => merge = args.next(),
             "--release-notice" => notice = true,
             "--print-release-bundle" => print_bundle = true,
+            "--check-capsule" => {
+                let (Some(path), Some(option)) = (args.next(), args.next()) else {
+                    fail("--check-capsule needs the capsule and the option (64 hex chars)");
+                };
+                check_capsule(&path, &option);
+                return;
+            }
             "--artefact" => {
                 let (
                     Some(platform),
@@ -197,4 +205,26 @@ fn main() {
         rows.len(),
         channel.label()
     );
+}
+
+/// The ferros kist capsule (deploy.sh, scripts/lib/ferros-kist.sh) is Photon's: signed by the release key with every egg (fgtw::release, the check ferros's installer runs), its `hp` a true content hash, and its `kist` section's `option` Photon's (2026-11-10: the option left the header for its own field).
+fn check_capsule(path: &str, option_hex: &str) {
+    let bytes = std::fs::read(path).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
+    // The option comes from the deploy's command line: refuse anything but exactly 32 bytes.
+    let option: [u8; 32] = hex::decode(option_hex)
+        .ok()
+        .and_then(|v| v.try_into().ok())
+        .unwrap_or_else(|| fail("--check-capsule option must be 64 hex chars"));
+    fgtw::release::verify_release(&bytes).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
+    let sections = photon_messenger::storage::record::verified_sections(&bytes, Some(fgtw::release::RELEASE_ED25519))
+        .unwrap_or_else(|e| fail(&format!("{path}: {e}")));
+    let named = sections
+        .iter()
+        .find(|s| s.name == "kist")
+        .and_then(|s| s.get_field("option").and_then(|f| f.values.first()));
+    match named {
+        Some(VsfType::hR(o)) if o[..] == option[..] => {}
+        _ => fail(&format!("{path}: its option is not Photon's")),
+    }
+    println!("photon-manifest: {path} is Photon's kist: every release egg verifies, option {option_hex}, blake3 {}", blake3::hash(&bytes).to_hex());
 }

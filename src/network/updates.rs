@@ -40,6 +40,11 @@ pub const fn our_platform() -> (&'static str, &'static str) {
     {
         ("Android", "arm64")
     }
+    // A ferros device: the kist capsule's row (deploy.sh), read by the device that installed the kist, never by the running Photon (a kist is updated by the device that sealed it, docs/updates.md "ferros").
+    #[cfg(target_os = "ferros")]
+    {
+        ("ferros", "arm64")
+    }
     #[cfg(not(any(
         all(
             target_os = "linux",
@@ -50,7 +55,8 @@ pub const fn our_platform() -> (&'static str, &'static str) {
             any(target_arch = "x86_64", target_arch = "aarch64")
         ),
         target_os = "macos",
-        target_os = "android"
+        target_os = "android",
+        target_os = "ferros"
     )))]
     {
         ("unsupported", "unsupported")
