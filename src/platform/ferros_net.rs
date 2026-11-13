@@ -59,16 +59,9 @@ fn counter_hz() -> u64 {
 
 /// `d` from now on the counter: the deadline the ip server holds a call to.
 fn deadline_after(d: std::time::Duration) -> u64 {
-    counter() + (d.as_nanos() * counter_hz() as u128 / 1_000_000_000) as u64
-}
-
-/// The ip server's flags (INFO's byte: bit 0 an IPv4 route, bit 1 an IPv6 one, bit 2 the cellular call, bit 3 a person present), or 0xFF when it said nothing.
-fn info_flags() -> u8 {
-    let mut r = [0u8; 64];
-    match call(&[3], &mut r) {
-        Ok(n) if n >= 51 => r[50],
-        _ => 0xFF,
-    }
+    let t = counter() as u128 + d.as_nanos() * counter_hz() as u128 / 1_000_000_000;
+    // WHY the check: the timeout is the caller's, and Duration reaches 2^64 s; past the counter's range (about 24,000 years at 24 MHz) cast down it would wrap to a deadline already passed and time out at once. A timeout that long is none: u64::MAX, held until a datagram comes.
+    if t >= u64::MAX as u128 { u64::MAX } else { t as u64 }
 }
 
 /// One WATCH (op 11): [11, mode, flags seen, id, datagram seen, deadline, ports] → (flags, the datagram told of up to, the ports with news), or None from an ip server without the op.
@@ -167,8 +160,12 @@ fn watcher() {
             let mut w = WATCHER.lock().unwrap();
             w.held = Some(w.gen);
             let mut ports: Vec<u16> = w.ports.iter().map(|p| p.port).collect();
-            // The server watches sixteen ports a call; Photon binds a handful.
-            ports.truncate(16);
+            // The server watches sixteen ports a call (payloads/ip WATCH_PORTS); Photon binds a handful. A seventeenth would never wake its receives: said loudly, every time the set changes past it.
+            if ports.len() > 16 {
+                crate::logf!("ferros net: {} ports bound, the ip server watches 16 a call: the receives on port {} and those after it will not wake", ports.len(), ports[16]);
+                debug_assert!(false, "more than 16 ports watched at the ip server");
+                ports.truncate(16);
+            }
             (ports, w.flags)
         };
         // Level mode on the first watch (no flags seen yet): every datagram waiting counts, the seen number meaning nothing yet.
@@ -224,7 +221,12 @@ impl Future for News {
         if w.none {
             return Poll::Ready(());
         }
-        let Some(p) = w.ports.iter_mut().find(|p| p.port == self.port) else { return Poll::Ready(()) };
+        // A socket registers its port when made and drops it when dropped, so a receive on a port the watcher does not know is a bug here: said, and pending (Ready would spin the task on its RECV).
+        let Some(p) = w.ports.iter_mut().find(|p| p.port == self.port) else {
+            crate::logf!("ferros net: a receive waits on port {} the watcher does not know", self.port);
+            debug_assert!(false, "receive on an unregistered port");
+            return Poll::Pending;
+        };
         if p.news != self.seen {
             return Poll::Ready(());
         }
@@ -398,8 +400,22 @@ pub struct StdUdpSocket {
     port: u16,
     /// Its reader id at the ip server (its own watch's, apart from the process's watcher's, so the two never answer each other's calls); a socket made async reads as the process's watcher.
     id: u32,
+    /// Whether this socket has watched at the server (its blocking receive waited out an early answer): told UNWATCH (op 13) when dropped, so no datagram waits for a reader that is gone.
+    watched: std::sync::atomic::AtomicBool,
     peer: Mutex<Option<SocketAddr>>,
     read_timeout: Mutex<Option<std::time::Duration>>,
+}
+
+impl Drop for StdUdpSocket {
+    /// A socket that watched tells the server its reader is gone (op 13 UNWATCH), so no datagram of its port waits for it; one that never watched has nothing there to forget. (A process that ends without dropping is forgotten by the server 64 s after its last watch.)
+    fn drop(&mut self) {
+        if self.watched.load(std::sync::atomic::Ordering::Relaxed) {
+            let mut req = vec![13u8];
+            req.extend_from_slice(&self.id.to_be_bytes());
+            let mut r = [0u8; 8];
+            crate::log_err!(call(&req, &mut r), "ferros net: UNWATCH of a dropped socket");
+        }
+    }
 }
 
 impl StdUdpSocket {
@@ -413,7 +429,7 @@ impl StdUdpSocket {
             call(&[2, (addr.port() >> 8) as u8, addr.port() as u8], &mut reply)?;
             addr.port()
         };
-        Ok(StdUdpSocket { port, id: watch_id() ^ (counter() as u32).rotate_left(8) ^ 1, peer: Mutex::new(None), read_timeout: Mutex::new(None) })
+        Ok(StdUdpSocket { port, id: watch_id() ^ (counter() as u32).rotate_left(8) ^ 1, watched: false.into(), peer: Mutex::new(None), read_timeout: Mutex::new(None) })
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -427,7 +443,7 @@ impl StdUdpSocket {
     }
 
     pub fn try_clone(&self) -> io::Result<Self> {
-        Ok(StdUdpSocket { port: self.port, id: self.id, peer: Mutex::new(*self.peer.lock().unwrap()), read_timeout: Mutex::new(*self.read_timeout.lock().unwrap()) })
+        Ok(StdUdpSocket { port: self.port, id: self.id, watched: false.into(), peer: Mutex::new(*self.peer.lock().unwrap()), read_timeout: Mutex::new(*self.read_timeout.lock().unwrap()) })
     }
 
     pub fn set_read_timeout(&self, t: Option<std::time::Duration>) -> io::Result<()> {
@@ -491,6 +507,8 @@ impl StdUdpSocket {
         }
         // u64::MAX: no timeout, held until a datagram comes.
         let deadline = timeout.map_or(u64::MAX, deadline_after);
+        // The flags the server last said (0xFF none yet: the first watch is answered at once with them, and every later one holds while they stand).
+        let mut flags = 0xFFu8;
         loop {
             if let Some(got) = recv_once(self.port, self.id, buf, deadline)? {
                 return Ok(got);
@@ -498,11 +516,13 @@ impl StdUdpSocket {
             if counter() >= deadline {
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "no datagram"));
             }
-            // The watch's deadline: 0 is none at the server.
+            // Answered early with nothing: nobody present (the watch holds until the person bit changes), or the server's sixteen holds taken and this one the oldest (the watch holds in a table of its own). The watch's deadline: 0 is none at the server.
             let until = if deadline == u64::MAX { 0 } else { deadline };
-            if watch_call(true, info_flags(), self.id, 0, until, &[self.port]).is_none() {
+            self.watched.store(true, std::sync::atomic::Ordering::Relaxed);
+            match watch_call(true, flags, self.id, 0, until, &[self.port]) {
+                Some((f, _, _)) => flags = f,
                 // An ip server without WATCH (nor deadlines): asked again 2 ms on, as before.
-                std::thread::sleep(std::time::Duration::from_millis(2));
+                None => std::thread::sleep(std::time::Duration::from_millis(2)),
             }
         }
     }
