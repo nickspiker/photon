@@ -1,0 +1,15 @@
+---
+name: project_photon_alias_migration
+description: 2026-11-13 Photon moves off the person's root onto its own per-kist alias on every platform (ferros docs/PHOTON.md "Photon's own key: the migration", M0-M7); readers release, then speakers, then cutover; split with the ferros session
+metadata:
+  type: project
+---
+Owner (via the ferros session, 2026-11-13): "Let's try and get the migration complete. I'd like to get the next version of Photon ready so we can ship Photon on ferros." Plan: ferros docs/PHOTON.md "Photon's own key: the migration" + "Decisions" M0-M7 (M6 flipped: logs keyed from the person key). Owner: deploys to fgtw.org/passless.org/ferros.org need no further go (M5 approved); fleets beyond the owner's have at most two devices, so the cutover can be near-immediate.
+
+**Agreed split (2026-11-13):**
+- ferros session: the kernel's alias call + person key; the identity service's facets endpoint (binding, people); std/photon handing `PhotonKeys` in; the **Binding** in fgtw on branch `facets` (off `person-key`).
+- Photon session (me): `PhotonKeys` (photon aa53a370, `crypto::photon_keys`: alias, handle_proof, identity_pub = pinned party id, binding bytes, legacy_seed Option); the **alias-signed DeviceList** in fgtw on my own branch off `person-key`, built in a separate worktree (fgtw's main tree is Photon's path dep); then in Photon: (a) readers (take a rotation: binding by a fleet device with every egg + alias sig + old identity sig, checked vs the pinned chain; keep the alias beside the pin; take photons from a device in an alias-signed list), (b) PhotonKeys plumbing keeping groups 2/3/4/6 on legacy_seed while Some, moving each device's entries once when it speaks, (c) speakers gated on every fleet device running the reader (fleet presence carries the Photon version), (d) M6 logs: a one-time tag shown at submit + `photonlog --tag`, and (e) M5's new fgtw.org roster slot (approved, deploy when ready).
+- Group 0: ferros Photon has no identity seed, so its ceremonies use the alias's agreement key (fgtw::alias::agreement_*); it can only talk to contacts/siblings on the readers release. Group 1 (fleet) stays on the root in Photon's FGTW part.
+- The person-key branch merges to fgtw main once it passes on the ferros 8a; then facets; rebase mine after.
+
+**How to apply:** follow the order; nothing on fgtw.org beyond M5; keys and handles never public. Related: [[feedback_fgtw_out_of_photon]], [[project_one_identity]], [[project_profile_pending]].
