@@ -39,9 +39,9 @@ fn post_signed(_device: &Keypair, _hp: &[u8; 32], op: &str, _fields: Vec<(String
     Err(format!("{op}: no fgtw.org from ferros"))
 }
 
-/// Sign `fields` as section `op` for identity `hp` and post it; the answer's sections, or the worker's refusal.
+/// Sign `fields` as section `op` for identity `hp` with this device's key: the document the worker checks against the current members of that fleet (the Octopus ops, a log submit).
 #[cfg(not(target_os = "ferros"))]
-fn post_signed(device: &Keypair, hp: &[u8; 32], op: &str, mut fields: Vec<(String, VsfType)>) -> Result<Vec<VsfSection>, String> {
+pub(super) fn member_signed(device: &Keypair, hp: &[u8; 32], op: &str, mut fields: Vec<(String, VsfType)>) -> Result<Vec<u8>, String> {
     fields.insert(0, ("hp".to_string(), VsfType::hP(hp.to_vec())));
     let pk = device.public.to_bytes();
     let unsigned = vsf::VsfBuilder::new()
@@ -50,7 +50,13 @@ fn post_signed(device: &Keypair, hp: &[u8; 32], op: &str, mut fields: Vec<(Strin
         .add_section(op, fields)
         .build()
         .map_err(|e| format!("{op}: build: {e}"))?;
-    let body = super::fleet::sign_device_envelope(unsigned, &pk, device.secret.as_bytes()).map_err(|e| format!("{op}: sign: {e}"))?;
+    super::fleet::sign_device_envelope(unsigned, &pk, device.secret.as_bytes()).map_err(|e| format!("{op}: sign: {e}"))
+}
+
+/// Sign `fields` as section `op` for identity `hp` and post it; the answer's sections, or the worker's refusal.
+#[cfg(not(target_os = "ferros"))]
+fn post_signed(device: &Keypair, hp: &[u8; 32], op: &str, fields: Vec<(String, VsfType)>) -> Result<Vec<VsfSection>, String> {
+    let body = member_signed(device, hp, op, fields)?;
     let client = reqwest::blocking::Client::builder().timeout(std::time::Duration::from_secs(1 << 6)).build().map_err(|e| format!("{op}: client: {e}"))?;
     let bytes = client
         .post(FGTW_URL)

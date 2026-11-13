@@ -3098,10 +3098,9 @@ impl PhotonApp {
             self.log_submit_tx = Some(tx);
         }
         // hp comes from the SESSION itself, not HandleQuery's worker-populated cache: a sticky-broadcast resume can reach Ready with `last_handle_proof` still unset, which made this gate claim "not signed in" to a user who plainly was (seen live, twice). Signed in ⇒ session ⇒ handle_proof; the cache is only a fallback.
-        if let (Some(hp), Some(kp), Some(seed), Some(tx)) = (
+        if let (Some(hp), Some(kp), Some(tx)) = (
             self.our_handle_proof(),
             self.device_keypair.clone(),
-            self.session.as_ref().map(|s| s.identity_seed),
             self.log_submit_tx.clone(),
         ) {
             // Immediate press feedback — the read + upload run seconds on a big log, and silence here read as "the button did nothing". Replaced by "Log sent √" / "Send failed" when the worker thread reports.
@@ -3117,7 +3116,7 @@ impl PhotonApp {
                     bytes.len()
                 );
                 let r =
-                    put_log_blocking(&bytes, &note, &kp, &hp, &seed).map_err(|e| format!("{e}"));
+                    put_log_blocking(&bytes, &note, &kp, &hp).map_err(|e| format!("{e}"));
                 crate::log_err!(tx.send(r), "the log submit result to the UI thread");
             });
             self.log_submit_inflight = true;

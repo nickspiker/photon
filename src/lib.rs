@@ -10,6 +10,7 @@
 //   era.rs          — the LIGHT ERA RATCHET: hybrid KEM (ML-KEM-1024 + X25519 + HQC-256) era_keygen/era_encapsulate/era_decapsulate, derive_era_fresh/derive_era_transcript/derive_era_keys (next era = KDF(old root ‖ old hk ‖ fresh ‖ transcript)), EraSignal Init/Resp/Nudge row grammar, LIGHT_RATCHET_CADENCE_ROWS=256. EraDecapKeys — the GROUP-persisted decap bundle (export_decaps/era_decapsulate_molecule): a published bundle must open a wrap minted while the device slept.
 //   handle_proof.rs — memory-hard handle attestation (~1s); re-exports ihi::handle_proof.
 //   photon_keys.rs  — PhotonKeys: what the messenger holds of the person (its alias, the handle proof, the pinned identity key, the binding, the legacy seed until this device speaks the alias); ferros docs/PHOTON.md "Photon's own key: the migration".
+//   log_seal.rs     — submitted logs sealed to the maintainer's log key alone (ephemeral X25519 + XChaCha20-Poly1305), filed under the handle proof; ferros docs/PHOTON.md M6.
 //   self_verify.rs  — Ed25519 binary signature verification: AUTHOR_PUBKEY, SYSTEM_PUBKEYS, is_system_pubkey, verify_binary_hash, verify_file (update downloads — verify BEFORE exec).
 //   shards.rs       — social recovery key sharding (TODO).
 //
@@ -740,24 +741,6 @@ pub fn fp(public_id: &[u8]) -> String {
     hex::encode(&public_id[..public_id.len().min(4)])
 }
 
-/// The log-submission encryption key: a ChaCha20-Poly1305 key derived from the identity seed ALONE — deliberately NOT folding in device_secret.
-/// The identity seed is deterministic from the handle, so anyone who knows the handle (the admin, handed one by a peer with a support request) can re-derive this key and open that peer's submitted log — while anyone who merely grabs the R2 ciphertext, not knowing whose it is, cannot. This is the whole "decryptable if you know the identity seed" property: the log is sealed on the client with this key before it ever leaves the device, so no plaintext hits the wire.
-pub fn log_encryption_key(identity_seed: &[u8; 32]) -> [u8; 32] {
-    let mut hasher = blake3::Hasher::new();
-    hasher.update(identity_seed);
-    hasher.update(b"photon.log.v0");
-    *hasher.finalize().as_bytes()
-}
-
-/// The log RETRIEVAL tag: `spaghettify("photon_log_v1" ‖ identity_seed)`.
-/// A submitted log is stored on FGTW under this tag, and pulled by presenting it — so the tag is a *capability* derived one-way from the identity seed (which is deterministic from the handle). Whoever knows the seed can both FIND (this tag) and DECRYPT ([`log_encryption_key`]) the logs; whoever doesn't sees only opaque tags over ciphertext. spaghettify (not BLAKE3) matches the stack's one-way primitive and keeps the seed unrecoverable from the tag; the tag is what travels to the server, never the seed. Distinct domain tag from the encryption key so the two derivations can't collide.
-pub fn log_retrieval_tag(identity_seed: &[u8; 32]) -> [u8; 32] {
-    let mut input = Vec::with_capacity(13 + 32);
-    input.extend_from_slice(b"photon_log_v1");
-    input.extend_from_slice(identity_seed);
-    ihi::spaghettify(&input)
-}
-
 /// Base-flipping known answers. NUM_BASE is one process-wide atomic and cargo runs tests in parallel, so every test that sets a base holds the gate and restores the dozenal default on drop.
 #[cfg(test)]
 pub(crate) mod base_kat {
@@ -926,20 +909,6 @@ mod log_seal_tests {
         assert_eq!(dms_size(1), fmt_num(3));
     }
 
-    #[test]
-    fn seal_roundtrips_no_plaintext_and_rejects_wrong_seed() {
-        let seed = [7u8; 32];
-        let log = b"INFO  FGTW: announce port=4383 ip=redacted".as_slice();
-        let key = log_encryption_key(&seed);
-        let sealed = storage::encrypt_bytes(log, &key).unwrap();
-        // No plaintext on the wire: the ciphertext must not contain the log bytes.
-        assert!(!sealed.windows(log.len()).any(|w| w == log));
-        // The right seed opens it.
-        assert_eq!(storage::decrypt_bytes(&sealed, &key).unwrap(), log);
-        // A different seed derives a different key → AEAD auth failure, never a wrong plaintext.
-        let wrong = log_encryption_key(&[8u8; 32]);
-        assert!(storage::decrypt_bytes(&sealed, &wrong).is_err());
-    }
 }
 
 /// Stochastic pad for ANY periodic timer or age threshold: `base` scaled by a fresh random factor in [0.5, 1.0].

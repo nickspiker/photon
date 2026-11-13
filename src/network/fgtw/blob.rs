@@ -297,81 +297,49 @@ pub fn put_blob_blocking(
 }
 
 /// Submits the on-device diagnostic log to FGTW (the "press log → it lands where the dev can pull it" flow).
-/// Sends POST / with VSF section "log_put": the log bytes + optional note + handle_proof + timestamp, the whole frame canonically signed by the device key (worker verifies via `read_verified`, so the log bytes are authenticated, not just a detached key). Storing on FGTW instead of on-device is deliberate for now — an outbound HTTPS POST is NAT-immune, so it works exactly where the P2P path is failing, and it needs no USB pull. The worker keys each submission by timestamp, so this ADDS to a device's log history rather than overwriting.
+/// The log and its note are sealed to the maintainer's log key alone ([`crate::crypto::log_seal`], ferros docs/PHOTON.md M6) and filed under this identity's handle proof, so the maintainer finds them by typing the handle and nobody else can open them.
+/// Sends `log_submit`, signed by this device for its identity: the worker files only for a current member of that fleet. Storing on FGTW instead of on-device is deliberate for now: an outbound HTTPS POST is NAT-immune, so it works exactly where the P2P path is failing, and it needs no USB pull. Each submission is filed by its own time, so this ADDS to a device's log history rather than overwriting.
 #[cfg(target_os = "ferros")]
-pub fn put_log_blocking(_log_bytes: &[u8], _note: &str, _device_keypair: &Keypair, _handle_proof: &[u8; 32], _identity_seed: &[u8; 32]) -> Result<(), BlobError> {
+pub fn put_log_blocking(_log_bytes: &[u8], _note: &str, _device_keypair: &Keypair, _handle_proof: &[u8; 32]) -> Result<(), BlobError> {
     unreachable_from_ferros()
 }
 
 #[cfg(not(target_os = "ferros"))]
-pub fn put_log_blocking(
-    log_bytes: &[u8],
-    note: &str,
-    device_keypair: &Keypair,
-    handle_proof: &[u8; 32],
-    identity_seed: &[u8; 32],
-) -> Result<(), BlobError> {
+pub fn put_log_blocking(log_bytes: &[u8], note: &str, device_keypair: &Keypair, handle_proof: &[u8; 32]) -> Result<(), BlobError> {
     let client = reqwest::blocking::Client::builder()
         // 300s: a capped-at-24MB log on a slow cellular uplink (1 Mbps up ≈ 3+ min) must finish, not die mid-body as "error sending request".
         .timeout(std::time::Duration::from_secs(300))
         .build()
         .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
 
-    // Seal the log (and note) on the client BEFORE it leaves the device — ChaCha20-Poly1305 under a key derived from the identity seed, so no plaintext ever hits the wire and the R2 blob is opaque to anyone who can't re-derive the key from the handle. The `v'e'` encoding byte marks the value encrypted (VSF-proper); the worker stores the ciphertext verbatim.
-    let key = crate::log_encryption_key(identity_seed);
-    let sealed_log = crate::storage::encrypt_bytes(log_bytes, &key)
-        .map_err(|e| BlobError::Network(format!("Log encrypt: {e}")))?;
-    // The retrieval tag is what indexes this log on the server: spaghettify(domain ‖ seed), a one-way capability. The worker stores under it; a puller who knows the seed re-derives it to find the log. The seed itself never leaves the device.
-    let tag = crate::log_retrieval_tag(identity_seed);
-    // Anti-spam gate: an explicit device-key signature over the tag (the worker verifies this, mirroring blob_put's signature-over-key — build_signed_blob_vsf's header signature is provenance-only and not read_verified-checkable).
-    let tag_signature = device_keypair.secret.sign(&tag);
-
+    // Sealed on the client BEFORE it leaves the device, to the maintainer's key: no plaintext on the wire, and the filed blob opens for nobody else, the submitter included.
+    let sealed = crate::crypto::log_seal::seal(log_bytes, note, &crate::crypto::log_seal::LOG_KEY_PUBLIC).map_err(|e| BlobError::Network(format!("Log seal: {e}")))?;
     let mut fields = vec![
-        (
-            "timestamp".to_string(),
-            VsfType::e(vsf::types::EtType::e6(crate::network::time_base::now_osc())),
-        ),
-        (
-            "handle_proof".to_string(),
-            VsfType::hP(handle_proof.to_vec()),
-        ),
-        ("tag".to_string(), VsfType::v(b'r', tag.to_vec())),
-        (
-            "signature".to_string(),
-            VsfType::ge(tag_signature.to_bytes().to_vec()),
-        ),
-        ("data".to_string(), VsfType::v(b'e', sealed_log)),
+        ("ephemeral".to_string(), VsfType::kx(sealed.ephemeral.to_vec())),
+        ("data".to_string(), VsfType::v(b'e', sealed.log)),
     ];
-    // The optional note rides only when the user typed one — a blank field is simply absent (the worker treats a missing note as "").
-    // Sealed under the same key as the log — the note can carry sensitive context too, so it never hits the wire in the clear either.
-    if !note.is_empty() {
-        let sealed_note = crate::storage::encrypt_bytes(note.as_bytes(), &key)
-            .map_err(|e| BlobError::Network(format!("Note encrypt: {e}")))?;
-        fields.push(("note".to_string(), VsfType::v(b'e', sealed_note)));
+    // The note rides only when the user typed one; a blank one is simply absent.
+    if let Some(note) = sealed.note {
+        fields.push(("note".to_string(), VsfType::v(b'e', note)));
     }
 
-    // ONE RETRY ON A WINDOW REFUSAL (2026-09-17, Theresa's "timestamp outside valid window" on every submit): the worker's refusal carries its own clock; adopt it as photon's time base and stamp the frame again — the server judging the window is the time source that matters for this frame.
-    let mut fields = fields;
+    // ONE RETRY ON A WINDOW REFUSAL (2026-09-17, Theresa's "timestamp outside valid window" on every submit): the worker's refusal carries its own clock; adopt it as photon's time base and sign the document again, so its creation time is stamped afresh. The server judging the window is the time source that matters for this frame.
     let mut retried = false;
     loop {
-        let frame_fields: Vec<(String, VsfType)> = fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
-        let vsf_bytes = build_signed_blob_vsf(device_keypair, "log_put", frame_fields)?;
+        let body = super::octopus::member_signed(device_keypair, handle_proof, "log_submit", fields.clone()).map_err(BlobError::Network)?;
         let sent_at = std::time::Instant::now();
         let response = client
             .post(FGTW_URL)
             .header("Content-Type", "application/octet-stream")
-            .body(vsf_bytes)
+            .body(body)
             .send()
-            .map_err(|e| BlobError::Network(format!("log_put request failed: {}", e)))?;
+            .map_err(|e| BlobError::Network(format!("log_submit request failed: {}", e)))?;
         let status = response.status();
         let body = response.bytes().unwrap_or_default();
         if let Some((reason, detail)) = fgtw::client::error_frame(&body) {
             if let (Some(server_now), false) = (crate::network::time_base::server_now_from_detail(&detail), retried) {
                 let rtt_osc = (sent_at.elapsed().as_secs_f64() * crate::OSC_PER_SEC as f64) as i64;
                 crate::network::time_base::adopt_from_server(server_now, rtt_osc);
-                if let Some(ts) = fields.iter_mut().find(|(k, _)| k == "timestamp") {
-                    ts.1 = VsfType::e(vsf::types::EtType::e6(crate::network::time_base::now_osc()));
-                }
                 retried = true;
                 continue;
             }
@@ -393,6 +361,7 @@ pub fn log_delete_blocking(_tag: &[u8; 32]) -> Result<(), BlobError> {
     unreachable_from_ferros()
 }
 
+// LEGACY LOG PULL — MIGRATION-EXPIRES: 2027-02-01: a pre-M6 Photon's logs, filed under a seed-derived tag; the maintainer's photonlog reads them until those Photons have updated.
 #[cfg(not(target_os = "ferros"))]
 pub fn log_delete_blocking(tag: &[u8; 32]) -> Result<(), BlobError> {
     let client = reqwest::blocking::Client::builder()
@@ -425,6 +394,7 @@ pub fn log_list_blocking(_tag: &[u8; 32]) -> Result<Vec<String>, BlobError> {
     unreachable_from_ferros()
 }
 
+// LEGACY LOG PULL — MIGRATION-EXPIRES: 2027-02-01: a pre-M6 Photon's logs, filed under a seed-derived tag; the maintainer's photonlog reads them until those Photons have updated.
 #[cfg(not(target_os = "ferros"))]
 pub fn log_list_blocking(tag: &[u8; 32]) -> Result<Vec<String>, BlobError> {
     let client = reqwest::blocking::Client::builder()
@@ -471,6 +441,7 @@ pub fn log_get_blocking(_key: &str) -> Result<Vec<u8>, BlobError> {
     unreachable_from_ferros()
 }
 
+// LEGACY LOG PULL — MIGRATION-EXPIRES: 2027-02-01: a pre-M6 Photon's logs, filed under a seed-derived tag; the maintainer's photonlog reads them until those Photons have updated.
 #[cfg(not(target_os = "ferros"))]
 pub fn log_get_blocking(key: &str) -> Result<Vec<u8>, BlobError> {
     let client = reqwest::blocking::Client::builder()
@@ -505,6 +476,97 @@ pub fn log_get_blocking(key: &str) -> Result<Vec<u8>, BlobError> {
     section
         .get_value::<Vec<u8>>("data")
         .map_err(|e| BlobError::ServerError(format!("log_get data: {}", e)))
+}
+
+/// One log as fgtw.org filed it under a handle proof: the worker's complete VSF document (section `log`), still sealed to the maintainer's log key.
+#[derive(Clone, Debug)]
+pub struct FiledLog {
+    pub device: [u8; 32],
+    pub filed_osc: i64,
+    pub ephemeral: [u8; 32],
+    pub log: Vec<u8>,
+    pub note: Option<Vec<u8>>,
+}
+
+/// Read a filed log's document; every field is checked by its type marker.
+pub fn parse_filed_log(bytes: &[u8]) -> Result<FiledLog, BlobError> {
+    let sections = crate::storage::record::verified_sections(bytes, None).map_err(|e| BlobError::Network(format!("filed log: {e}")))?;
+    let s = sections.iter().find(|s| s.name == "log").ok_or_else(|| BlobError::Network("filed log: no log section".into()))?;
+    let first = |n: &str| s.get_field(n).and_then(|f| f.values.first());
+    let key32 = |v: Option<&VsfType>| -> Option<[u8; 32]> {
+        match v? {
+            VsfType::ke(b) | VsfType::kx(b) if b.len() == 32 => b.as_slice().try_into().ok(),
+            _ => None,
+        }
+    };
+    let device = key32(first("device")).ok_or_else(|| BlobError::Network("filed log: no device".into()))?;
+    let ephemeral = key32(first("ephemeral")).ok_or_else(|| BlobError::Network("filed log: no ephemeral key".into()))?;
+    let filed_osc = s.eagle("filed").ok_or_else(|| BlobError::Network("filed log: no time".into()))?;
+    let log = match first("data") {
+        Some(VsfType::v(b'e', b)) => b.clone(),
+        _ => return Err(BlobError::Network("filed log: no sealed data".into())),
+    };
+    let note = match first("note") {
+        Some(VsfType::v(b'e', b)) => Some(b.clone()),
+        _ => None,
+    };
+    Ok(FiledLog { device, filed_osc, ephemeral, log, note })
+}
+
+/// The keys of every log filed under a handle proof (`log_list { hp }`); unsigned, since what it names opens only for the maintainer.
+pub fn log_list_by_proof_blocking(handle_proof: &[u8; 32]) -> Result<Vec<String>, BlobError> {
+    let mut sec = vsf::file_format::VsfSection::new("log_list");
+    sec.add_field("hp", VsfType::hP(handle_proof.to_vec()));
+    let bytes = gripe_post(sec, "log_list", None)?;
+    let schema = vsf::schema::SectionSchema::new("log_list_ack").field("keys", vsf::schema::TypeConstraint::DictKey);
+    let section = vsf::schema::SectionBuilder::parse_document(schema, &bytes, None).map_err(|e| BlobError::Network(format!("Parse log_list_ack: {}", e)))?;
+    let joined = section.get_value::<String>("keys").unwrap_or_default();
+    Ok(joined.lines().filter(|l| !l.is_empty()).map(|l| l.to_string()).collect())
+}
+
+/// One filed log's document, verbatim (`log_get { key }` on a key under `photon-logs/hp/`).
+pub fn log_get_filed_blocking(key: &str) -> Result<Vec<u8>, BlobError> {
+    let mut sec = vsf::file_format::VsfSection::new("log_get");
+    sec.add_field("key", VsfType::d(vsf::Ascii::new(key).map_err(|e| BlobError::Network(format!("key: {e}")))?));
+    gripe_post(sec, "log_get", None)
+}
+
+/// One line of the maintainer's mailbox: whose log, when it was filed, its size and its key.
+#[derive(Clone, Debug)]
+pub struct MailboxEntry {
+    pub handle_proof: [u8; 32],
+    pub filed_osc: i64,
+    pub size: u64,
+    pub key: String,
+}
+
+/// Every log filed on fgtw.org, who and when (`log_mailbox`), signed by the release key: only the maintainer reads the mailbox.
+pub fn log_mailbox_blocking(signing_key: &[u8; 32]) -> Result<Vec<MailboxEntry>, BlobError> {
+    let bytes = gripe_post(vsf::file_format::VsfSection::new("log_mailbox"), "log_mailbox", Some(signing_key))?;
+    let sections = crate::storage::record::verified_sections(&bytes, None).map_err(|e| BlobError::Network(format!("log_mailbox answer: {e}")))?;
+    let mut out = Vec::new();
+    for s in sections.iter().filter(|s| s.name == "filed") {
+        let first = |n: &str| s.get_field(n).and_then(|f| f.values.first());
+        let handle_proof = match first("hp") {
+            Some(VsfType::hP(b)) if b.len() == 32 => b.as_slice().try_into().map_err(|_| BlobError::Network("mailbox hp".into()))?,
+            _ => return Err(BlobError::Network("log_mailbox: an entry without its person".into())),
+        };
+        let filed_osc = s.eagle("filed").ok_or_else(|| BlobError::Network("log_mailbox: an entry without its time".into()))?;
+        let size = first("size").and_then(|v| v.as_u64()).ok_or_else(|| BlobError::Network("log_mailbox: an entry without its size".into()))?;
+        let key = match first("key") {
+            Some(VsfType::d(k)) => k.to_string(),
+            _ => return Err(BlobError::Network("log_mailbox: an entry without its key".into())),
+        };
+        out.push(MailboxEntry { handle_proof, filed_osc, size, key });
+    }
+    Ok(out)
+}
+
+/// Delete every log filed under a handle proof once the maintainer holds them (`log_consume { hp }`), signed by the release key.
+pub fn log_consume_blocking(signing_key: &[u8; 32], handle_proof: &[u8; 32]) -> Result<(), BlobError> {
+    let mut sec = vsf::file_format::VsfSection::new("log_consume");
+    sec.add_field("hp", VsfType::hP(handle_proof.to_vec()));
+    gripe_post(sec, "log_consume", Some(signing_key)).map(|_| ())
 }
 
 /// One drained fleet-inbox event (docs/fleet-inbox.md). `kind` is the ASCII event tag ("bind_attempt"); `device` the device pubkey it concerned; `attempted_by` the handle_proof of whoever triggered it (the fleet a bind was attempted into) — rendered as a contact name if known, opaque otherwise; `t_osc` its eagle-time.
@@ -785,31 +847,20 @@ pub async fn delete_blob(storage_key: &str, device_keypair: &Keypair) -> Result<
 mod log_capability_tests {
     use super::*;
 
-    // Network smoke test against the LIVE fgtw.org worker: submit a sealed log, then pull it back by the seed-derived tag and decrypt it. Run explicitly: `cargo test --features development -- --ignored roundtrip`.
+    // Network smoke test against the LIVE fgtw.org worker: submit a sealed log, then find it by the handle proof it was filed under. Opening it needs the maintainer's log key, which no test holds. Run explicitly: `cargo test --features development -- --ignored roundtrip`; the device must be a member of the fleet it names.
     #[test]
     #[ignore]
     fn roundtrip_submit_list_get_decrypt() {
-        let seed = [0x42u8; 32];
         let kp = super::super::derive_device_keypair(b"photonlog-smoke-fingerprint");
         let hp = [0x11u8; 32];
         let payload = b"SMOKE photon.log capability roundtrip payload".to_vec();
 
-        put_log_blocking(&payload, "smoke note", &kp, &hp, &seed).expect("submit");
+        put_log_blocking(&payload, "smoke note", &kp, &hp).expect("submit");
 
-        let tag = crate::log_retrieval_tag(&seed);
-        let keys = log_list_blocking(&tag).expect("list");
-        assert!(
-            !keys.is_empty(),
-            "no keys listed under the tag after submit"
-        );
-
-        let ct = log_get_blocking(&keys[0]).expect("get");
-        let plain =
-            crate::storage::decrypt_bytes(&ct, &crate::log_encryption_key(&seed)).expect("decrypt");
-        assert_eq!(
-            plain, payload,
-            "decrypted log must match what was submitted"
-        );
+        let keys = log_list_by_proof_blocking(&hp).expect("list");
+        assert!(!keys.is_empty(), "no keys listed under the proof after submit");
+        let filed = parse_filed_log(&log_get_filed_blocking(&keys[0]).expect("get")).expect("parse");
+        assert_eq!(filed.device, kp.public.to_bytes(), "filed under the submitting device");
     }
 }
 

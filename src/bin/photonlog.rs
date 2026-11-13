@@ -9,14 +9,15 @@
 //!   -l, --level LEVEL   only records at this severity or higher (TRACE|DEBUG|INFO|WARN|ERROR, or 0..4)
 //!   -g, --grep SUBSTR   only records whose message contains SUBSTR (case-insensitive)
 //!   -f, --follow        keep reading as new records are appended (tail -f); survives the 16 MiB rotation
-//!   -p, --pull          fetch this identity's SUBMITTED logs straight from FGTW (needs --handle or --seed), decrypt, and decode — no manual R2 wrangling. The seed derives both the retrieval tag (to find them) and the key (to open them).
-//!   -H, --handle NAME   the peer's handle. Derives their identity seed on the spot (cheap) — the friendly way to identify whose logs to pull. Use this; --seed is the raw-bytes escape hatch.
-//!   -s, --seed HEX64    the peer's 32-byte identity seed directly (deterministic from their handle). Equivalent to --handle but pre-derived.
+//!   -p, --pull          fetch a person's SUBMITTED logs from FGTW and decode them. They are filed under the person's handle proof (typing the handle finds them) and sealed to the maintainer's log key (keys/photon-log-key.vsf, crypto/log_seal.rs), which opens them; the release key then clears the filed copies.
+//!   -H, --handle NAME   the person's handle: computes their handle proof (~1 s).
 //!   -P, --petname NAME  resolve NAME thru the dev-machine pseudonym map ($FERROS_HANDLE_MAP, lines of `handle = petname`) and pull that identity's logs — the handle never touches a command line, a screen, or a transcript. THE way to pull a person's logs on a dev machine; --handle stays for machines without the map.
-//!   -S, --session       pull YOUR OWN logs using the live tohu session registers (the seed this device's app actually submitted under — the ground truth when a --handle pull comes up empty). No handle typed, no seed echoed.
-//!   -k, --key  HEX64    like --seed for local decrypt but you already hold the raw 32-byte log key (skips the seed→key derivation; can't --pull).
+//!   -S, --session       this machine's own identity, from the live tohu session registers. No handle typed.
+//!   -M, --mailbox       list every filed log, whose and when, newest last (signed by the release key); names come from the pseudonym map when it is present.
+//!   -s, --seed HEX64    LEGACY: an identity seed, for logs a pre-M6 Photon sealed under its seed.
+//!   -k, --key  HEX64    LEGACY: a pre-M6 raw log key, to open a local sealed blob.
 //!
-//! Examples: `photonlog -l warn` · `photonlog --pull --handle alice -l warn` · `photonlog --pull --session` · `photonlog her-blob.vsf --handle alice`.
+//! Examples: `photonlog -l warn` · `photonlog --pull --petname kea -l warn` · `photonlog --pull --session` · `photonlog --mailbox`.
 
 use std::io::Read;
 
@@ -125,15 +126,131 @@ fn parse_hex32(s: &str) -> Option<[u8; 32]> {
     v.try_into().ok()
 }
 
+// LEGACY LOG PULL — MIGRATION-EXPIRES: 2027-02-01. A Photon from before M6 (ferros docs/PHOTON.md) sealed its log under a key derived from the identity seed and filed it under a tag from the same seed, so anyone who knew the handle could open it; the reader stays only until those Photons have updated. Grep the tag to find every piece.
+fn legacy_log_key(identity_seed: &[u8; 32]) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hasher.update(identity_seed);
+    hasher.update(b"photon.log.v0");
+    *hasher.finalize().as_bytes()
+}
+
+// LEGACY LOG PULL — MIGRATION-EXPIRES: 2027-02-01.
+fn legacy_log_tag(identity_seed: &[u8; 32]) -> [u8; 32] {
+    let mut input = Vec::with_capacity(13 + 32);
+    input.extend_from_slice(b"photon_log_v1");
+    input.extend_from_slice(identity_seed);
+    ihi::spaghettify(&input)
+}
+
+/// The pseudonym map's (handle, petname) pairs, or none when the map is absent; the handles stay in memory only.
+fn map_pairs() -> Vec<(String, String)> {
+    let map_path = std::env::var("FERROS_HANDLE_MAP").unwrap_or_else(|_| "/mnt/Harbor/Code/keys/claude-pseudonym-map.txt".to_string());
+    let Ok(map) = std::fs::read_to_string(&map_path) else { return Vec::new() };
+    map.lines()
+        .filter(|l| !l.trim_start().starts_with('#'))
+        .filter_map(|l| l.trim_end().split_once(" = ").map(|(h, p)| (h.to_string(), p.to_string())))
+        .collect()
+}
+
+/// Pull, open and print every log filed under a handle proof, then clear the filed copies once each one opened (the local cache keeps the sealed documents; the 24 h sweep is the backstop).
+fn pull_filed(hp: &[u8; 32], filter: &Filter) {
+    use photon_messenger::network::fgtw::{log_consume_blocking, log_get_filed_blocking, log_list_by_proof_blocking, parse_filed_log};
+    let log_key = match photon_messenger::crypto::log_seal::log_key() {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("photonlog: the log key: {e}");
+            std::process::exit(2);
+        }
+    };
+    let keys = match log_list_by_proof_blocking(hp) {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("photonlog: log_list failed: {e}");
+            std::process::exit(1);
+        }
+    };
+    if keys.is_empty() {
+        eprintln!("photonlog: no filed logs for {}", photon_messenger::fp(hp));
+        return;
+    }
+    eprintln!("photonlog: {} filed log(s) for {}", keys.len(), photon_messenger::fp(hp));
+    // Filed logs never change (each is filed under its own time), so a cached document is never fetched again; the cache holds them sealed, as fgtw.org did.
+    let cache_dir = std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join(".cache/photon-logs")).unwrap_or_else(|_| std::path::PathBuf::from(".photon-log-cache"));
+    if let Err(e) = std::fs::create_dir_all(&cache_dir) {
+        eprintln!("photonlog: cache dir {} not made ({e}); every log is fetched", cache_dir.display());
+    }
+    let mut failures = 0usize;
+    for k in &keys {
+        let path = cache_dir.join(k.replace('/', "_"));
+        let doc = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(_) => match log_get_filed_blocking(k) {
+                Ok(b) => {
+                    if let Err(e) = std::fs::write(&path, &b) {
+                        eprintln!("photonlog: caching {} failed: {e}", path.display());
+                    }
+                    b
+                }
+                Err(e) => {
+                    eprintln!("photonlog: {k}: fetch failed ({e})");
+                    failures += 1;
+                    continue;
+                }
+            },
+        };
+        let filed = match parse_filed_log(&doc) {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("photonlog: {k}: {e}");
+                failures += 1;
+                continue;
+            }
+        };
+        println!("\n── {k} ── device {} ──", photon_messenger::fp(&filed.device));
+        if let Some(note) = &filed.note {
+            match photon_messenger::crypto::log_seal::open(note, &filed.ephemeral, &log_key).map(String::from_utf8) {
+                Ok(Ok(text)) => println!("★ NOTE FROM SUBMITTER: {text}"),
+                _ => eprintln!("photonlog: {k}: the note did not open"),
+            }
+        }
+        match photon_messenger::crypto::log_seal::open(&filed.log, &filed.ephemeral, &log_key) {
+            Ok(plain) => {
+                print_records(&plain, filter);
+            }
+            Err(e) => {
+                eprintln!("photonlog: {k}: did not open ({e})");
+                failures += 1;
+            }
+        }
+    }
+    if failures > 0 {
+        eprintln!("photonlog: {failures} log(s) failed; the filed copies stay for a retry");
+        return;
+    }
+    let release = match photon_messenger::crypto::self_verify::release_signing_key() {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("photonlog: filed copies kept until the 24 h sweep ({e})");
+            return;
+        }
+    };
+    match log_consume_blocking(&release, hp) {
+        Ok(()) => eprintln!("photonlog: consumed; the filed copies are deleted (the cache keeps them sealed)"),
+        Err(e) => eprintln!("photonlog: clearing the filed copies failed ({e}); they stay until the 24 h sweep"),
+    }
+}
+
 fn main() {
     let mut path: Option<String> = None;
     let mut min_level = 0u64;
     let mut grep: Option<String> = None;
     let mut follow = false;
-    // Decrypt / pull key material. `seed` (the identity seed) drives BOTH the retrieval tag (find) and the log key (decrypt); `raw_key` is the log key alone (decrypt a local blob only, can't pull).
+    // Whose logs: `hp` (the handle proof) finds the logs filed since M6, which the maintainer's log key opens; `seed` finds and opens a pre-M6 Photon's (LEGACY LOG PULL); `raw_key` opens a local pre-M6 blob.
+    let mut hp: Option<[u8; 32]> = None;
     let mut seed: Option<[u8; 32]> = None;
     let mut raw_key: Option<[u8; 32]> = None;
     let mut pull = false;
+    let mut mailbox = false;
 
     let mut gripes_list = false;
     let mut gripe_status: Option<([u8; 32], String, String, String)> = None;
@@ -157,12 +274,12 @@ fn main() {
                     }
                 }
             }
+            "-M" | "--mailbox" => mailbox = true,
             "-H" | "--handle" => match args.next() {
-                // The friendly path: derive the identity seed straight from the handle (cheap — ihi::handle_to_hash, NOT the memory-hard proof), using photon's exact canonicalization so it matches the submitter's seed.
+                // The handle proof finds the person's filed logs (~1 s, memory-hard); the identity seed (cheap) finds a pre-M6 Photon's (LEGACY LOG PULL). Photon's exact derivations, so they match the submitter's.
                 Some(h) => {
-                    seed = Some(photon_messenger::storage::contacts::derive_identity_seed(
-                        &h,
-                    ))
+                    hp = Some(photon_messenger::types::Handle::username_to_handle_proof(&h));
+                    seed = Some(photon_messenger::storage::contacts::derive_identity_seed(&h));
                 }
                 None => {
                     eprintln!("photonlog: --handle needs the handle string");
@@ -179,7 +296,8 @@ fn main() {
             "-P" | "--petname" => match args.next() {
                 Some(p) => match petname_to_handle(&p) {
                     Ok(h) => {
-                        seed = Some(photon_messenger::storage::contacts::derive_identity_seed(&h))
+                        hp = Some(photon_messenger::types::Handle::username_to_handle_proof(&h));
+                        seed = Some(photon_messenger::storage::contacts::derive_identity_seed(&h));
                     }
                     Err(e) => {
                         eprintln!("photonlog: {e}");
@@ -191,9 +309,12 @@ fn main() {
                     std::process::exit(2);
                 }
             },
-            // The live tohu registers hold the seed THIS device's app submits under — which can differ from a fresh handle derivation (a resumed session carries its registers verbatim across derivation eras). Reading them is the sanctioned seed source (same as photon-vault-carry), and the seed never appears on a command line or a screen.
+            // The live tohu registers hold the identity THIS device's app submits under, proof and seed both; neither appears on a command line or a screen.
             "-S" | "--session" => match tohu::session() {
-                Some(s) => seed = Some(s.identity_seed),
+                Some(s) => {
+                    hp = Some(s.handle_proof);
+                    seed = Some(s.identity_seed);
+                }
                 None => {
                     eprintln!("photonlog: no live session in the tohu registers — open photon once this boot (resume or attest), then retry");
                     std::process::exit(2);
@@ -268,14 +389,64 @@ fn main() {
         return;
     }
 
-    // Pull mode: fetch this identity's submitted logs straight from FGTW, decrypt, and decode — no manual R2 wrangling. The seed derives the retrieval tag (to find them) and the log key (to open them); knowledge of the seed IS the whole capability.
+    // The maintainer's mailbox (M6): every filed log, whose and when. A name comes from the pseudonym map: each handle's proof is computed (~1 s each) until every person in the mailbox is named.
+    if mailbox {
+        let key = match photon_messenger::crypto::self_verify::release_signing_key() {
+            Ok(k) => k,
+            Err(e) => {
+                eprintln!("photonlog: {e}");
+                std::process::exit(2);
+            }
+        };
+        let mut entries = match photon_messenger::network::fgtw::log_mailbox_blocking(&key) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("photonlog: log_mailbox failed: {e}");
+                std::process::exit(1);
+            }
+        };
+        entries.sort_by_key(|e| e.filed_osc);
+        let mut names: Vec<([u8; 32], String)> = Vec::new();
+        let mut unnamed: Vec<[u8; 32]> = entries.iter().map(|e| e.handle_proof).collect();
+        unnamed.sort_unstable();
+        unnamed.dedup();
+        for (handle, pet) in map_pairs() {
+            if unnamed.is_empty() {
+                break;
+            }
+            let proof = photon_messenger::types::Handle::username_to_handle_proof(&handle);
+            if let Some(i) = unnamed.iter().position(|p| *p == proof) {
+                unnamed.swap_remove(i);
+                names.push((proof, pet));
+            }
+        }
+        for e in &entries {
+            let who = names.iter().find(|(p, _)| *p == e.handle_proof).map(|(_, n)| n.clone()).unwrap_or_else(|| photon_messenger::fp(&e.handle_proof));
+            println!("{}  {:<24} {:>10}  {}", eagle_display(e.filed_osc), who, photon_messenger::unit_size(e.size, photon_messenger::SizeUnit::KiB), e.key);
+        }
+        eprintln!("photonlog: {} filed log(s)", entries.len());
+        return;
+    }
+
+    // Pull mode, M6: the logs filed under the person's handle proof, opened with the maintainer's log key.
+    if pull {
+        match hp {
+            Some(hp) => pull_filed(&hp, &filter),
+            None if seed.is_none() => {
+                eprintln!("photonlog: --pull needs --petname <name>, --handle <name> or --session to identify whose logs to fetch");
+                std::process::exit(2);
+            }
+            None => {}
+        }
+    }
+
+    // LEGACY LOG PULL — MIGRATION-EXPIRES: 2027-02-01: a pre-M6 Photon's logs, found and opened by the identity seed.
     if pull {
         let Some(seed) = seed else {
-            eprintln!("photonlog: --pull needs --petname <name>, --handle <name>, --session, or --seed <64hex> to identify whose logs to fetch");
-            std::process::exit(2);
+            return;
         };
-        let tag = photon_messenger::log_retrieval_tag(&seed);
-        let key = photon_messenger::log_encryption_key(&seed);
+        let tag = legacy_log_tag(&seed);
+        let key = legacy_log_key(&seed);
         use photon_messenger::network::fgtw::{
             log_delete_blocking, log_get_blocking, log_list_blocking,
         };
@@ -288,13 +459,13 @@ fn main() {
         };
         if keys.is_empty() {
             eprintln!(
-                "photonlog: no submitted logs for that identity (tag {})",
+                "photonlog: no pre-M6 logs for that identity (tag {})",
                 hex::encode(&tag[..6])
             );
             return;
         }
         eprintln!(
-            "photonlog: {} submitted log(s) for tag {}",
+            "photonlog: {} pre-M6 log(s) for tag {}",
             keys.len(),
             hex::encode(&tag[..6])
         );
@@ -384,7 +555,7 @@ fn main() {
 
     // Decrypt key for a LOCAL sealed blob: the raw log key if given, else derived from the seed.
     let log_key: Option<[u8; 32]> =
-        raw_key.or_else(|| seed.as_ref().map(photon_messenger::log_encryption_key));
+        raw_key.or_else(|| seed.as_ref().map(legacy_log_key));
 
     let path = path.unwrap_or_else(|| "photon.log.vsf".to_string());
 

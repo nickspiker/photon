@@ -12,7 +12,7 @@ pub mod relay;
 pub use blob::{
     delete_blob, delete_blob_blocking, get_blob, get_blob_blocking, inbox_drain_blocking,
     log_delete_blocking, log_get_blocking, log_list_blocking, put_blob, put_blob_blocking,
-    put_log_blocking, BlobError, FleetInboxEvent, gripe_get_blocking, gripe_list_blocking, gripe_put_blocking, gripe_status_blocking, PublicGripe};
+    put_log_blocking, parse_filed_log, log_list_by_proof_blocking, log_get_filed_blocking, log_mailbox_blocking, log_consume_blocking, FiledLog, MailboxEntry, BlobError, FleetInboxEvent, gripe_get_blocking, gripe_list_blocking, gripe_put_blocking, gripe_status_blocking, PublicGripe};
 pub use bootstrap::load_bootstrap_peers;
 #[cfg(not(target_os = "android"))]
 pub use fingerprint::get_machine_fingerprint;
