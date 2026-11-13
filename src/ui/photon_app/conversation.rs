@@ -228,16 +228,7 @@ impl PhotonApp {
         if contact.is_sibling {
             self.our_sibling_pid()
         } else {
-            self.session.as_ref().map(|s| {
-                if let Some((seed, pid)) = self.identity_pid_cache.get() {
-                    if seed == s.identity_seed {
-                        return pid;
-                    }
-                }
-                let pid = crate::crypto::clutch::identity_party_id(&s.identity_seed);
-                self.identity_pid_cache.set(Some((s.identity_seed, pid)));
-                pid
-            })
+            self.own_party_id()
         }
     }
 
@@ -308,7 +299,7 @@ impl PhotonApp {
     /// Send a hidden control row (a delete marker) in ANY conversation: it lands as our own hidden row first (re-ACK durability), then rides to every other member.
     pub(super) fn send_control_in_conversation(&mut self, id: crate::types::ConversationId, control: crate::types::RowControl, eagle_time: i64) -> bool {
         if let Some(gid) = self.roster_id_of(id) {
-            let Some(our_pid) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+            let Some(our_pid) = self.own_party_id() else {
                 return false;
             };
             let mut row = crate::types::ChatMessage::control(control.clone(), true, eagle_time);
@@ -332,7 +323,7 @@ impl PhotonApp {
             return false;
         };
         if let Some(gid) = self.roster_id_of(id) {
-            let Some(our_pid) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+            let Some(our_pid) = self.own_party_id() else {
                 return false;
             };
             let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: None, wrap: None, deliver: None, answer: None };
@@ -385,7 +376,7 @@ impl PhotonApp {
         let Some((_, roster)) = self.molecule_rosters.get(gi) else {
             return false;
         };
-        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let us = self.own_party_id();
         roster.standing().into_iter().filter(|p| Some(*p) != us).any(|p| {
             self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == p && c.is_online && c.validated_path.is_some_and(|(a, _)| a != crate::network::status::RELAY_ADDR))
         })
@@ -395,7 +386,7 @@ impl PhotonApp {
         let id = self.active_conversation?;
         if let Some(gid) = self.roster_id_of(id) {
             let roster = &self.molecule_rosters.iter().find(|(g, _)| *g == gid)?.1;
-            let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+            let us = self.own_party_id();
             let others: Vec<[u8; 32]> = roster.standing().into_iter().filter(|p| Some(*p) != us).collect();
             let members: Vec<&crate::types::Contact> = others.iter().filter_map(|p| self.contacts.iter().find(|c| !c.is_sibling && c.handle_hash == *p)).collect();
             let standing = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default() == crate::storage::molecule::MoleculePhase::Standing;
@@ -1322,7 +1313,7 @@ impl PhotonApp {
     /// The rows the contacts list draws with the magenta unread ring (render.rs `RowView`): a non-sibling contact's own conversation, a group not left, an invitation not yet answered, each named by a key prefix for the log.
     /// The taskbar and tray orb ring exactly when one of these does, so a conversation the list never shows cannot hold the orb lit (2026-11-08: the orb stayed magenta with nothing unread on screen). Lazy, so the tick's check builds no names.
     pub(super) fn unread_rows(&self) -> impl Iterator<Item = String> + '_ {
-        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let us = self.own_party_id();
         let contacts = self.contacts.iter().filter(move |c| !c.is_sibling && us.is_some_and(|us| super::dm_conversation(&self.conversations, &us, c).is_some_and(|v| v.unread_count > 0))).map(|c| format!("contact {}", crate::fp(&c.handle_hash)));
         let groups = self
             .molecule_rosters
@@ -1468,10 +1459,7 @@ impl PhotonApp {
             sender_pubkey,
             plaintext,
         } = d;
-        let Some(our_handle_hash) = self
-            .session
-            .as_ref()
-            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+        let Some(our_handle_hash) = self.own_party_id()
         else {
             return;
         };
@@ -2394,7 +2382,7 @@ impl PhotonApp {
             self.on_molecule_signal(ci, cp, sig, wire, kem, ts);
         }
         if let Some((ci, fid, is_bond, is_group)) = cadence_ci {
-            let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+            let us = self.own_party_id();
             if is_group {
                 // GROUP cadence (docs/molecules.md §10.4): the lowest standing party id mints, on one device of its fleet; everyone else lets the edge pass.
                 let gid = crate::types::molecule::MoleculeId(*fid.as_bytes());
@@ -2638,10 +2626,7 @@ impl PhotonApp {
             // A replicated BOND (docs/conversations.md §7) completes the friend's ceremony on this device too, but never names their conversation: friendship_id stays the conversation's.
             let adopted_bond = self.friendship_chains.iter().find(|(id, _)| *id == fid).is_some_and(|(_, c)| c.bond);
             // WIRE THE CONTACT AT THE CHAINS (per-device lanes): the adopt used to leave contact.friendship_id unset on every non-owner device — the chains sat adopted in RAM while chain_transmit bailed at "no friendship chain" and boot never re-loaded them (the vault load walks contact-referenced fids only). With the id wired and persisted, this device is transmit-capable on its own lane from the first replicated frame.
-            if let Some(our_pid) = self
-                .session
-                .as_ref()
-                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+            if let Some(our_pid) = self.own_party_id()
             {
                 let other = self
                     .friendship_chains
@@ -2750,10 +2735,7 @@ impl PhotonApp {
                 .contacts
                 .iter()
                 .any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key));
-            let Some(our_pid) = self
-                .session
-                .as_ref()
-                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+            let Some(our_pid) = self.own_party_id()
             else {
                 continue;
             };
@@ -3230,7 +3212,7 @@ impl PhotonApp {
 
     /// Who a conversation's alert speaks as, any size: a pair's friend by name and relationship digest, a group by its title and its id — so one conversation sounds the same on every device.
     fn alert_voice(&self, id: crate::types::ConversationId) -> (String, [u8; 32]) {
-        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
+        let us = self.own_party_id().unwrap_or([0u8; 32]);
         if let Some(ci) = self.pair_contact_of(id) {
             return (self.contacts[ci].display_name(), relationship_digest(&self.contacts[ci].handle_hash, &us));
         }
@@ -3356,7 +3338,7 @@ impl PhotonApp {
             let Some(vsf_rgb) = result.pixels else {
                 // Own-avatar decode failed (poisoned vault bytes) — arm the FGTW recovery the old synchronous load fired inline. Only the boot decode worker sends owner-None with no pixels (the recover worker sends success only), so this can't loop.
                 if result.owner.is_none() && result.name.is_none() {
-                    if let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) {
+                    if let Some(seed) = self.messenger_root() {
                         self.self_avatar_recover_pending = Some(seed);
                     }
                 }

@@ -242,7 +242,7 @@ impl PhotonApp {
                 for incoming in &data.contacts {
                     // OLD-SELF IMPORT — MIGRATION-EXPIRES: 2027-02-01 (Nick 2026-10-27: "that import of old will be english only and version out in 12 versions, no reason to keep old non atoms around in the code"); grep the tag to find every piece.
                     // The retired self row never comes back from the cloud: the conversation with only us in it is an atom.
-                    if !incoming.is_sibling && self.session.as_ref().is_some_and(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed) == incoming.handle_hash) {
+                    if !incoming.is_sibling && self.own_party_id() == Some(incoming.handle_hash) {
                         continue;
                     }
                     let dominated = self
@@ -312,7 +312,7 @@ impl PhotonApp {
                 self.fold_molecule_members("attest load");
                 // OLD-SELF IMPORT — MIGRATION-EXPIRES: 2027-02-01 (Nick 2026-10-27: "that import of old will be english only and version out in 12 versions, no reason to keep old non atoms around in the code"); grep the tag to find every piece.
                 // The old self conversation the worker handed over (it holds a photon and is no atom yet): founded in place as one, after the atoms (found_self_atom).
-                if let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+                if let Some(us) = self.own_party_id() {
                     let nid = crate::types::Conversation::new([us]).id();
                     if let Some(pos) = self.conversations.iter().position(|v| v.id() == nid && !v.is_molecule()) {
                         let legacy = self.conversations.remove(pos);
@@ -492,10 +492,7 @@ impl PhotonApp {
                 contact.ceremony_owner =
                     self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
                 // Self-contact: same identity, no key exchange needed.
-                let is_self = self
-                    .session
-                    .as_ref()
-                    .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                let is_self = self.own_party_id()
                     == Some(contact.handle_hash);
                 if is_self {
                     contact.clutch_state = crate::types::ClutchState::Complete;
@@ -520,7 +517,7 @@ impl PhotonApp {
                     let ci = self.contacts.len() - 1;
                     self.send_friend_knock(ci);
                     // THEIR KNOCK CAME FIRST (Jeff's log 2026-10-01): they added us before we added them, so their knock arrived as a stranger's and only its token survived. This add is the mutuality edge in that order — our knock just went out so their side flips too, and consent here lets the keygen queue arm the ceremony.
-                    if let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+                    if let Some(us) = self.own_party_id() {
                         let token = crate::crypto::clutch::derive_conversation_token(&[us, self.contacts[ci].handle_hash]);
                         if let Some(pos) = self.stranger_knocks.iter().position(|t| *t == token) {
                             self.stranger_knocks.remove(pos);

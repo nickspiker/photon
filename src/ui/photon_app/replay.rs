@@ -87,7 +87,7 @@ impl PhotonApp {
                 return; // refused (a live wave owns the audio) — the toast says so
             }
         }
-        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or_default();
+        let us = self.own_party_id().unwrap_or_default();
         let conv = self.active_conversation;
         // The recording's people, as its row names them; a recording kept before rows named them reads as us and, in a pair, the other person.
         let named: Vec<[u8; 32]> = conv
@@ -162,7 +162,7 @@ impl PhotonApp {
         if rp.face_diam == diameter && rp.faces.len() == rp.voices.len() {
             return;
         }
-        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let us = self.own_party_id();
         let proof = self.session.as_ref().map(|s| s.handle_proof).unwrap_or_default();
         let faces: Vec<Vec<u8>> = rp
             .voices

@@ -561,10 +561,7 @@ impl PhotonApp {
         use crate::network::status::ClutchCompleteRequest;
 
         // PARTY ID (not raw seed): the last un-migrated seam site. First-completion sends derived the token from party ids; this retransmit path used the raw identity seed, so every friend-proof RETRANSMIT rode a token no receiver recognizes ("unknown conversation_token" forever at the peer) — a proof lost once could never land, and stalls that needed a proof retransmit never converged (live 2026-07-24: proofs for round 933db663 arriving under acbaf3c9 instead of 8586b07e).
-        let Some(our_handle_hash) = self
-            .session
-            .as_ref()
-            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+        let Some(our_handle_hash) = self.own_party_id()
         else {
             return;
         };
@@ -636,7 +633,7 @@ impl PhotonApp {
         }
         self.contacts[ci].consent_mutual = true;
         crate::logf!("CONSENT: mutual add confirmed with {} ({}) — arming the ceremony", crate::fp(&self.contacts[ci].handle_proof), via);
-        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let us = self.own_party_id();
         if let Some(us) = us {
             if self.contacts[ci].clutch_our_keypairs.is_none() && !self.contacts[ci].clutch_keygen_in_progress {
                 let (id, them) = (self.contacts[ci].id.clone(), self.contacts[ci].handle_hash);
@@ -672,10 +669,7 @@ impl PhotonApp {
             if (contact.consent_mutual && !back) || contact.is_sibling || contact.knocked_session {
                 return;
             }
-            let Some(us) = self
-                .session
-                .as_ref()
-                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+            let Some(us) = self.own_party_id()
             else {
                 return;
             };
@@ -740,10 +734,7 @@ impl PhotonApp {
             return;
         }
         // PARTY ID (not raw seed) + the sibling seam: the fresh-send paths derive the token from party ids, but this RE-SEND path used the raw identity seed — every re-fired offer (stall re-fire, queued-KEM recovery, addr-change re-arm) rode a token the peer can't place, which is exactly the "offers under an unknown token" storms in the field logs (the 0d9b7fc0 flood in the field logs was OUR re-sends, not a ghost device).
-        let Some(our_handle_hash) = self
-            .session
-            .as_ref()
-            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+        let Some(our_handle_hash) = self.own_party_id()
         else {
             return;
         };
@@ -883,7 +874,7 @@ impl PhotonApp {
                 routes.push((bfid, vec![r]));
             }
         }
-        if let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+        if let Some(us) = self.own_party_id() {
             for (g, _) in &self.molecule_rosters {
                 let fid = crate::types::FriendshipId::from_bytes(g.0);
                 if !self.friendship_chains.iter().any(|(id, c)| *id == fid && c.has_pending_messages()) {
@@ -1078,7 +1069,7 @@ impl PhotonApp {
 
     pub(super) fn contact_idx_for_conversation_token(&self, token: &[u8; 32]) -> Option<usize> {
         let our_pid =
-            crate::crypto::clutch::identity_party_id(&self.session.as_ref()?.identity_seed);
+            self.own_party_id()?;
         // The pair's conversation token, or its BOND's (docs/conversations.md §7) — both name exactly one friend.
         self.contacts.iter().position(|c| {
             !c.is_sibling
@@ -1089,10 +1080,7 @@ impl PhotonApp {
 
     /// The COMPLETE-WITHOUT-CHAINS re-key: discard the lying Complete state and open a fresh ceremony. Two callers, both evidence-gated: the no-siblings immediate heal (single-device wipe), and the all-live-siblings-answered-miss verdict from chain_pull (the fleet truly holds nothing). Callers log the WHY; this is the mechanism only.
     pub(super) fn rekey_without_chains(&mut self, ci: usize) {
-        let Some(us) = self
-            .session
-            .as_ref()
-            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+        let Some(us) = self.own_party_id()
         else {
             return;
         };
@@ -1801,10 +1789,7 @@ impl PhotonApp {
         } else {
             None
         };
-        let our_pid = self
-            .session
-            .as_ref()
-            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let our_pid = self.own_party_id();
 
         // Candidate pass (read-only): eligible contacts + the best available route. FRIEND route (woven keyed chain, friend online) is preferred — it's the authoritative two-party copy; otherwise the FLEET route asks an online sibling under the fleet key, which needs no chain at all (a roster-merged contact backfills before its first CLUTCH, and the self notes conversation only ever has this route).
         // (the conversation, the chains whose history key fingerprints a parked walk, token, primary, alt, recipient, relay)
@@ -2008,7 +1993,7 @@ impl PhotonApp {
         const BLIND_INFLIGHT_TIMEOUT_OSC: i64 = 15 * crate::OSC_PER_SEC;
         let now_osc = vsf::eagle_time_oscillations();
 
-        let Some(our_seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+        let Some(our_identity_pid) = self.own_party_id() else {
             return;
         };
         let Some(kp) = self.device_keypair.as_ref() else {
@@ -2056,7 +2041,7 @@ impl PhotonApp {
             let our_pid = if contact.is_sibling {
                 crate::crypto::clutch::sibling_party_id(&device_pubkey)
             } else {
-                crate::crypto::clutch::identity_party_id(&our_seed)
+                our_identity_pid
             };
             let token =
                 crate::crypto::clutch::derive_conversation_token(&[our_pid, contact.handle_hash]);
@@ -2151,10 +2136,7 @@ impl PhotonApp {
             return;
         };
         // The SELF contact is this fleet, not a network peer: pinging it makes our own devices answer as "wrong responder", and the punch machinery then storms our own addresses forever (the 7ff3835f probe spam in every 2026-07-26 log). Presence for our devices rides the SIBLING contacts.
-        if self
-            .session
-            .as_ref()
-            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+        if self.own_party_id()
             == Some(contact.handle_hash)
         {
             return;

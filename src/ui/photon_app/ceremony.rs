@@ -408,10 +408,7 @@ impl PhotonApp {
         )> = Vec::new();
 
         // Our party id for CLUTCH: the identity pubkey (public; contacts pin it — never the seed).
-        let our_handle_hash = match self
-            .session
-            .as_ref()
-            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+        let our_handle_hash = match self.own_party_id()
         {
             Some(h) => h,
             None => return changed,
@@ -804,10 +801,7 @@ impl PhotonApp {
 
         let mut changed = false;
         let mut ceremony_completions: Vec<usize> = Vec::new();
-        let our_handle_hash = match self
-            .session
-            .as_ref()
-            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+        let our_handle_hash = match self.own_party_id()
         {
             Some(h) => h,
             None => return changed,

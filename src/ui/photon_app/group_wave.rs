@@ -251,7 +251,7 @@ impl PhotonApp {
         if frames.is_empty() {
             return;
         }
-        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let us = self.own_party_id();
         let Some((_, roster)) = self.molecule_rosters.iter().find(|(g, _)| *g == gid) else {
             return;
         };
@@ -356,7 +356,7 @@ impl PhotonApp {
     /// One express group signal from a standing member's device: handled as the lane row would be, then handed on to the joined devices that may have no path to its sender (hand_on_targets).
     #[allow(clippy::too_many_arguments)]
     fn take_group_signal(&mut self, gid: MoleculeId, party: [u8; 32], ci: Option<usize>, device: [u8; 32], sig: WaveSignal, lane_key: Option<[u8; 32]>, ts: i64, raw: &[u8]) {
-        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let us = self.own_party_id();
         // Our joined set before the signal moves it, when we are in the very wave it speaks of; our own devices' signals are the hand-off's business, never handed on.
         let before: Option<Vec<GroupMember>> = self.group_wave.as_ref().filter(|w| w.gid == gid && w.wave_id == *sig.wave_id() && w.phase == GroupPhase::Joined && Some(party) != us).map(|w| w.joined.clone());
         self.on_group_wave_signal(gid, party, ci, device, sig, lane_key, ts);
@@ -443,7 +443,7 @@ impl PhotonApp {
         }
         Self::stop_group_ring_platform();
         // MUTED COMING IN FROM THE THIRD (Nick 2026-11-01: "First and second person in, unmuted, 3 and up, mute coming in"): two or more other people already in makes us the third or later, and we join muted — the Mute pill shows Unmute, every link starts silent (group_link_up applies wave_muted).
-        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let us = self.own_party_id();
         let mut parties: Vec<[u8; 32]> = Vec::new();
         for m in self.group_wave.as_ref().map(|w| w.joined.as_slice()).unwrap_or(&[]) {
             if Some(m.party) != us && !parties.contains(&m.party) {
@@ -517,7 +517,7 @@ impl PhotonApp {
         };
         let l = self.live_group_waves.remove(pos);
         // Our own devices are never linked to: if one of them is in, our join moves the wave here (the hand-off) and it leaves.
-        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let us = self.own_party_id();
         let others: Vec<GroupMember> = l.joined.iter().copied().filter(|m| Some(m.party) != us).collect();
         let Some(origin) = others.first().copied() else {
             crate::log("WAVE: the running group wave holds only our own devices — nothing to join here");
@@ -617,7 +617,7 @@ impl PhotonApp {
                             Some(ci) => self.ring_alert_guard(ci),
                             None => {
                                 let name = self.member_granted_name(&gid, &party);
-                                let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+                                let us = self.own_party_id();
                                 us.and_then(|us| self.ring_alert_for(name, &party, &us))
                             }
                         };
@@ -975,7 +975,7 @@ impl PhotonApp {
         row.notified = true;
         row.delivered = true;
         row.author = if w.we_are_origin {
-            self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+            self.own_party_id()
         } else {
             w.joined.first().map(|m| m.party)
         };
@@ -1169,7 +1169,7 @@ impl PhotonApp {
         };
         let mut out = Vec::new();
         if w.phase == GroupPhase::Joined {
-            if let (Some(d), Some(us)) = (self.our_device(), self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))) {
+            if let (Some(d), Some(us)) = (self.our_device(), self.own_party_id()) {
                 out.push(RollFace { device: d, us: true, party: us, ci: None, slot: None, name: String::new() });
             }
         }
@@ -1215,7 +1215,7 @@ impl PhotonApp {
 
     /// The group keep, off the UI thread: wait for every link's engine (the fill drain may still be writing), merge the spools into one recording, store it; the drain lands the row.
     fn spawn_group_keep(&mut self, gid: MoleculeId, offer_osc: i64, wave_id: [u8; 16], spent: Vec<(crate::wave::spool::SpoolTicket, Option<std::thread::JoinHandle<()>>, [u8; 32])>, beam: Option<crate::wave::spool::BeamTicket>) {
-        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+        let (Some(seed), Some(us)) = (self.messenger_root(), self.own_party_id()) else {
             return;
         };
         let tx = self.wave_keep_sender();
@@ -1223,7 +1223,6 @@ impl PhotonApp {
         self.pending_keep_hold = 1;
         let wave_id8: [u8; 8] = wave_id[..8].try_into().unwrap();
         // The recording's people in channel order — ours on channel 0, then each spool's far party in the order merge_group_records lays them out (zero = a link whose party was not known).
-        let us = crate::crypto::clutch::identity_party_id(&seed);
         let parties: Vec<[u8; 32]> = std::iter::once(us).chain(spent.iter().map(|s| s.2)).collect();
         let spawned = std::thread::Builder::new()
             .name("wave-keep".into())
@@ -1269,7 +1268,7 @@ impl PhotonApp {
         let mut row = ChatMessage::attachment(file, true, offer_osc + 2).with_reference(crate::types::RefKind::Wave, offer_osc + 1);
         row.notified = true;
         row.delivered = true;
-        row.author = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        row.author = self.own_party_id();
         let mut pushed = vec![row.clone()];
         // The beams' video (saved only when the user turned it on): its own fleet-internal row at +4, each track named by its person.
         if let Some(v) = video {

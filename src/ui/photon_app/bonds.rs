@@ -40,7 +40,7 @@ impl PhotonApp {
             return;
         }
         self.bonds_checked = key;
-        let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+        let Some(us) = self.own_party_id() else {
             return;
         };
         let mut splits: Vec<(crate::types::FriendshipId, crate::types::friendship::BondId, crate::types::FriendshipChains, [u8; 32])> = Vec::new();
@@ -92,7 +92,7 @@ impl PhotonApp {
         };
         let bfid = crate::types::FriendshipId::from_bytes(b.0);
         if !self.conversations.iter().any(|v| v.id() == bfid) {
-            if let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+            if let Some(us) = self.own_party_id() {
                 let mut bc = crate::types::Conversation::new_bond(b, [us, them]);
                 // A brand-new friend's bond has nothing on disk; an existing friend's re-keyed bond was loaded at boot, and a miss here hydrates thru the persist rescue.
                 bc.hydrated = fresh_friend;
@@ -677,7 +677,7 @@ impl PhotonApp {
         if self.chains_know_era(fid, peer_tag) {
             return false;
         }
-        let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+        let Some(us) = self.own_party_id() else {
             return false;
         };
         if let Some(ci) = self.contacts.iter().position(|c| !c.is_sibling && self.bond_chains_id(c) == Some(fid)) {

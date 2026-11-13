@@ -2264,15 +2264,12 @@ impl PhotonApp {
                 self.forget_booted(&e.handle_proof);
             }
             // SELF-GUARD: never mint a NEW row bearing OUR handle_proof under a foreign key — that is the self-contact stub (an empty duplicate whose keygen queue CLUTCHes at our own fleet; the census caught two of them beside the legit self row, 2026-08-11). The true notes-to-self row keys on our identity pid and merges thru the position() match above; anything else claiming our proof is stale roster debris.
-            if let Some((our_proof, our_seed)) = self
-                .session
-                .as_ref()
-                .map(|s| (s.handle_proof, s.identity_seed))
+            if let (Some(our_proof), Some(our_pid)) = (self.session.as_ref().map(|s| s.handle_proof), self.own_party_id())
             {
                 // OLD-SELF IMPORT — MIGRATION-EXPIRES: 2027-02-01 (Nick 2026-10-27: "that import of old will be english only and version out in 12 versions, no reason to keep old non atoms around in the code"); grep the tag to find every piece.
                 // Our own identity is never a contact: under a foreign key it is self-stub debris, under our own the retired self row (the conversation with only us in it is an atom now — an older device still pushes it).
                 if e.handle_proof == our_proof {
-                    if e.handle_hash != crate::crypto::clutch::identity_party_id(&our_seed) {
+                    if e.handle_hash != our_pid {
                         crate::logf!("FLEET: roster entry claims OUR identity under a foreign key ({}…) — refused (self-stub debris)", hex::encode(&e.handle_hash[..4]));
                     }
                     continue;

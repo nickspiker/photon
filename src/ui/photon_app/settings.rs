@@ -397,7 +397,7 @@ impl PhotonApp {
 
     /// Rotate the avatar bearer pin WITHOUT a new image — the removal-heal follow-up (braid.md §14.2). The pin is a bearer credential (AES key ‖ wall lookup) held at rest by friends and the whole fleet, and it otherwise rotates only on an avatar CHANGE — so a departed device would keep fetching + decrypting the avatar forever. Mirrors `set_avatar_from_file`'s rotate-on-set half: mint + set + publish + stamp-bump on the UI thread (the stamp makes siblings refetch, since the old wall slot is about to die), then re-upload the vault-cached avatar under the new pin and delete the old slot off-thread. Skips — pin left standing — when there's no pin at rest (nothing to revoke) or no vault copy to re-upload (deleting the wall blob without a replacement would blank the avatar fleet-wide; the next avatar set/sync closes it). Same accepted ordering as set: the new pin is announced before the upload lands, so an upload failure leaves a dangling pin that heals on the next set.
     pub(super) fn rotate_avatar_pin(&mut self) {
-        let Some(identity_seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+        let Some(identity_seed) = self.messenger_root() else {
             return;
         };
         let (Some(storage), Some(kp), Some(hp)) = (
@@ -1694,7 +1694,7 @@ impl PhotonApp {
     /// Re-upload the pin-keyed wall blob so its name slot matches the current `profile.name`. Off-thread; a missing local avatar or pin is a quiet skip (the blob can't exist without them).
     fn republish_wall_blob_with_name(&self) {
         let (Some(identity_seed), Some(storage), Some(kp), Some(hp)) = (
-            self.session.as_ref().map(|s| s.identity_seed),
+            self.messenger_root(),
             self.storage.clone(),
             self.device_keypair.clone(),
             self.our_handle_proof(),

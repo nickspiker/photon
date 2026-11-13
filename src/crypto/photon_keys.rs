@@ -2,6 +2,9 @@
 //! On ferros the kernel hands the alias in and the identity service the proof and binding; on the desktop and Android Photon's FGTW part derives the alias itself from the person key, with the same function and the same constant for Photon's kist identity, so every platform holds the same bytes.
 //! The messenger takes this where it took the session's `identity_seed`; the root stays only in Photon's FGTW part, on the platforms that have one.
 
+/// The domain the messenger root is hashed from the alias under.
+const MESSENGER_ROOT_CONTEXT: &str = "photon 2026-11-13 messenger root from the alias";
+
 /// The person, as Photon's messenger knows them.
 #[derive(Clone)]
 pub struct PhotonKeys {
@@ -22,6 +25,14 @@ impl PhotonKeys {
     pub fn new(alias: [u8; 32], handle_proof: [u8; 32], identity_pub: [u8; 32], binding: Vec<u8>, legacy_seed: Option<[u8; 32]>) -> Self {
         PhotonKeys { alias, handle_proof, identity_pub, binding, legacy_seed }
     }
+
+    /// The root the messenger's own records derive from (PHOTON.md groups 2, 3, 4 and 6: vault addresses, blob names, the own avatar, notes to self): the identity seed while this device still holds one, so nothing moves before it speaks the alias, and otherwise a key hashed from the alias, the same on every device of the person's.
+    pub fn messenger_root(&self) -> [u8; 32] {
+        match self.legacy_seed {
+            Some(seed) => seed,
+            None => blake3::derive_key(MESSENGER_ROOT_CONTEXT, &self.alias),
+        }
+    }
 }
 
 impl Drop for PhotonKeys {
@@ -32,5 +43,19 @@ impl Drop for PhotonKeys {
         if let Some(s) = self.legacy_seed.as_mut() {
             s.zeroize();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_messenger_root_is_the_seed_until_the_device_speaks_the_alias() {
+        let held = PhotonKeys::new([1; 32], [2; 32], [3; 32], Vec::new(), Some([4; 32]));
+        assert_eq!(held.messenger_root(), [4; 32], "nothing moves while the identity seed is held");
+        let ferros = PhotonKeys::new([1; 32], [2; 32], [3; 32], Vec::new(), None);
+        assert_eq!(ferros.messenger_root(), PhotonKeys::new([1; 32], [9; 32], [9; 32], Vec::new(), None).messenger_root(), "the alias alone decides it, the same on every device");
+        assert_ne!(ferros.messenger_root(), [1; 32], "never the alias's own bytes");
     }
 }

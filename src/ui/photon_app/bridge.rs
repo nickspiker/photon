@@ -894,7 +894,7 @@ fn hash_file(path: &std::path::Path) -> std::io::Result<[u8; 32]> {
 impl PhotonApp {
     /// CLIENT: drop → pigeon. The read, the hash and the vault store run on the seal worker (a big file would stall the window); `drain_pigeon_prepared` announces it and sends the chunks.
     pub(super) fn send_bridge_pigeon(&mut self, ci: usize, path: &std::path::Path) {
-        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+        let Some(seed) = self.messenger_root() else {
             return;
         };
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -956,7 +956,7 @@ impl PhotonApp {
 
     /// CLIENT: seal and send chunks of a pigeon — all of them (`which` = None, the first send) or exactly the slots a repair ask named. Every frame carries the size and the name sealed under the fleet key, so whichever lands first opens the host's spool. After a restart (no outbound record) the vault's own manifest still serves a repair; the name is then omitted (the host already has its spool).
     pub(super) fn dispatch_pigeon_chunks(&mut self, ci: usize, hash: [u8; 32], which: Option<Vec<u32>>) {
-        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+        let Some(seed) = self.messenger_root() else {
             return;
         };
         let (device, addr_pair, relay_to, token) = {
@@ -1144,7 +1144,7 @@ impl PhotonApp {
             return;
         };
         let from = inf.from_device();
-        let seed = self.session.as_ref().map(|s| s.identity_seed);
+        let seed = self.messenger_root();
         let contact = self.contacts.iter().find(|c| c.device_key() == Some(from)).map(|c| c.id);
         let (Some(seed), Some(contact)) = (seed, contact) else {
             crate::log("PIGEON: whole, but its sibling or our session is gone — not landed (the spool stays for the next session)");

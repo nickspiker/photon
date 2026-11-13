@@ -1645,7 +1645,7 @@ impl FluorApp<Px> for PhotonApp {
                                     Some(m) => m.toggle(),
                                     None => {
                                         let dur = self.wave_env.get(&hash).and_then(|o| o.as_ref()).and_then(|envs| envs.first()).map(|e| e.bins as f32 * e.samples_per_bin as f32 / e.sample_rate.max(1) as f32).unwrap_or(0.0); // WHY/PROOF: the sample rate is the envelope blob's header — file data; the duration divides by it
-                                        let bytes = self.session.as_ref().map(|se| se.identity_seed).and_then(|seed| crate::storage::blob_load(&seed, &hash));
+                                        let bytes = self.messenger_root().and_then(|seed| crate::storage::blob_load(&seed, &hash));
                                         self.music_play = bytes.and_then(|b| super::music_play::MusicPlay::start(hash, b, dur));
                                     }
                                 }
@@ -1703,7 +1703,7 @@ impl FluorApp<Px> for PhotonApp {
                             let row = self.conv_by_id(sci).and_then(|v| v.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out && !m.delivered).cloned());
                             if let Some(row) = row {
                                 // A conversation with nobody else in it: delivery IS the disk write (write-confirm-then-send, 2026-08-21), so resend retries the SIGNALLED persist — the verdict flips it bright or toasts the refusal again. Re-pushing a never-durable row to siblings is exactly the amplification the law forbids.
-                                let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+                                let us = self.own_party_id();
                                 let alone = us.is_some_and(|us| self.conv_by_id(sci).is_some_and(|v| v.remote_count(&us) == 0));
                                 if alone {
                                     self.persist_conversation_signalled(sci, vec![ts]);
@@ -3294,7 +3294,7 @@ impl FluorApp<Px> for PhotonApp {
                 // Cross-party: the hidden delete marker on the chain (friend conversations with a local chain; a chainless device's fleet tombstone still reaches the chain owner, which is where a follow-up marker could ride — v1 logs the gap).
                 // Send the marker only where there is someone to send it TO. Zero remote participants (our own notes) means the row is already gone everywhere it exists; a sibling is our own fleet, which the push above already covered.
                 // AUTHORSHIP PROPAGATES, EXPERIENCE DOESN'T (Nick 2026-09-14): the marker rides ONLY for a row WE authored — deleting the friend's message or a wave is decluttering OUR fleet, never a reach into theirs (a wave is a shared event; each side's archive is their own memory of it).
-                let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+                let us = self.own_party_id();
                 let has_remote = us.is_some_and(|us| self.conv_by_id(sci).is_some_and(|v| v.remote_count(&us) > 0));
                 let is_sib = self.pair_contact_of(sci).is_some_and(|ci| self.contacts[ci].is_sibling);
                 if has_remote && !is_sib && !row.is_outgoing {
@@ -4674,7 +4674,27 @@ impl PhotonApp {
         }
 
         // Auto-resume from the remembered session roots. If tohu has this login's roots (persisted on a prior, FGTW-confirmed attest), paint Ready IMMEDIATELY from local state — we already own this identity, so there is no reason to block the first frame on the network. The avatar comes from a local cache file (no vault, no network); contacts + peer presence + cloud-merge arrive a beat later via the background `query_resume` and merge in thru `on_query_result`. A rejection (handle claimed by another device) bails back to the attest screen; a transient network error leaves the local session on Ready untouched. None (first run / post-logout) falls thru to the normal typed-attest flow.
-        if let Some(remembered) = tohu::session() {
+        // ferros (PHOTON.md step 4): the person came in as PhotonKeys with no identity seed, so there is no handle screen and no FGTW part here: the vault opens under the messenger root, off the UI thread as below, and the resume lands Photon on its contacts.
+        if let Some(root) = self.photon_keys.as_ref().filter(|k| k.legacy_seed.is_none()).map(|k| k.messenger_root()) {
+            if let Some(kp) = &self.device_keypair {
+                let device_secret = *kp.secret.as_bytes();
+                let t_boot = std::time::Instant::now();
+                let (tx, rx) = std::sync::mpsc::channel();
+                let spawned = std::thread::Builder::new()
+                    .name("vault-open".into())
+                    .spawn(move || {
+                        crate::log_err!(tx.send(crate::storage::open_session_vault(root, root, device_secret)), "the opened vault to the UI thread");
+                    })
+                    .is_ok();
+                if spawned {
+                    self.resume_vault_rx = Some((rx, None, t_boot));
+                    crate::log("RESUME: PhotonKeys in hand; the vault opens under the messenger root");
+                } else {
+                    let opened = crate::storage::open_session_vault(root, root, device_secret);
+                    self.finish_resume_load(None, opened, t_boot);
+                }
+            }
+        } else if let Some(remembered) = tohu::session() {
             // Blob name key + the one-time v0→v1 filename re-key walk — BEFORE the first Ready frame, so render-path blob_present reads work immediately (and the plaintext-hash possession oracle is closed the moment a seed exists).
             crate::storage::blob_init_names(&remembered.identity_seed);
             self.session = Some(remembered);
@@ -4695,13 +4715,13 @@ impl PhotonApp {
                     })
                     .is_ok();
                 if spawned {
-                    self.resume_vault_rx = Some((rx, remembered, t_boot));
+                    self.resume_vault_rx = Some((rx, Some(remembered), t_boot));
                     crate::log("RESUME: vault opening off the UI thread");
                 } else {
                     // No thread: open inline, the old way, rather than never becoming Ready.
                     let opened = crate::storage::open_session_vault(identity_seed, vault_seed, device_secret);
                     self.resume_vault_rx = None;
-                    self.finish_resume_load(remembered, opened, t_boot);
+                    self.finish_resume_load(Some(remembered), opened, t_boot);
                 }
             }
             // The vault worker finishes the resume (Ready, the announce, the first pings) when the handle lands; only the no-thread fallback reached Ready synchronously above.
@@ -4720,7 +4740,12 @@ impl PhotonApp {
 
 impl PhotonApp {
     /// The resume's back half, once the vault handle lands (or inline when no worker thread could be spawned): every load that used to sit on the UI thread behind the open — contacts, messages, chains, keypairs, settings — then Ready, the announce and the first pings.
-    fn finish_resume_load(&mut self, remembered: tohu::SessionIdentity, opened: Result<std::sync::Arc<crate::storage::FlatStorage>, crate::storage::StorageError>, t_boot: std::time::Instant) {
+    fn finish_resume_load(&mut self, remembered: Option<tohu::SessionIdentity>, opened: Result<std::sync::Arc<crate::storage::FlatStorage>, crate::storage::StorageError>, t_boot: std::time::Instant) {
+        // The person this resume opens for: the session's on the desktop and Android, PhotonKeys' on ferros, where there is no session (PHOTON.md step 4).
+        let (Some(our_hp), Some(our_root)) = (self.our_handle_proof(), self.messenger_root()) else {
+            crate::log("RESUME: neither a session nor PhotonKeys; nothing to open for");
+            return;
+        };
         let ms_vault = t_boot.elapsed().as_millis();
                         match opened {
                     Ok(s) => {
@@ -4783,7 +4808,7 @@ impl PhotonApp {
                         // Fleet siblings load from their own index (they never enter the contacts index).
                         {
                             let siblings = crate::storage::contacts::load_all_siblings(
-                                remembered.handle_proof,
+                                our_hp,
                                 &s,
                             );
                             if !siblings.is_empty() {
@@ -4814,7 +4839,7 @@ impl PhotonApp {
                             }
                         }
                         // The bonds' hidden conversations: their control rows, for re-ACK durability (docs/conversations.md §7).
-                        if let Some(us) = self.session.as_ref().map(|se| crate::crypto::clutch::identity_party_id(&se.identity_seed)) {
+                        if let Some(us) = self.own_party_id() {
                             let bonds: Vec<(crate::types::friendship::BondId, [u8; 32])> = self.contacts.iter().filter_map(|c| c.bond_id(&us).map(|b| (b, c.handle_hash))).collect();
                             for (b, them) in bonds {
                                 if self.conversations.iter().any(|v| v.id().as_bytes() == &b.0) {
@@ -4868,7 +4893,7 @@ impl PhotonApp {
                             }
                             // OLD-SELF IMPORT — MIGRATION-EXPIRES: 2027-02-01 (Nick 2026-10-27: "that import of old will be english only and version out in 12 versions, no reason to keep old non atoms around in the code"); grep the tag to find every piece.
                             // THE SELF ROW RETIRES (docs/conversations.md Phase 2; Nick 2026-10-26: "You should drop out of your own people list. As Jeff said 'I should be able to unfriend myself'"): the conversation with only us in it is an atom like any other (found_self_atom), so the contact that used to stand for it goes — from the list, the vault and the index; its rows stay in their table.
-                            if let Some(us) = self.session.as_ref().map(|se| crate::crypto::clutch::identity_party_id(&se.identity_seed)) {
+                            if let Some(us) = self.own_party_id() {
                                 if self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == us) {
                                     crate::log("STORAGE: the self row retires — the conversation with only us in it is an atom, its rows stay in their table");
                                     crate::log_err!(crate::storage::contacts::delete_contact(&us, &s), "the self row's contact removal");
@@ -4880,11 +4905,9 @@ impl PhotonApp {
                                 }
                             }
                             // The reference values the census hashes are read against — without these in the same log, "is that hash our pid or debris?" needs a second device round-trip.
-                            if let (Some(sess), Some(sib_pid)) =
-                                (self.session.as_ref(), self.our_sibling_pid())
+                            if let (Some(our_pid), Some(sib_pid)) =
+                                (self.own_party_id(), self.our_sibling_pid())
                             {
-                                let our_pid =
-                                    crate::crypto::clutch::identity_party_id(&sess.identity_seed);
                                 crate::logf!(
                                     "STORAGE: census — OUR ids: identity pid {}, this device's sibling pid {}",
                                     hex::encode(&our_pid[..4]),
@@ -4906,12 +4929,8 @@ impl PhotonApp {
                                 }
                             }
                             // SELF-STUB PURGE: a non-sibling row carrying OUR handle_proof under a handle_hash that is NOT our identity pid is a corrupt self-contact stub — the source of the "CLUTCH offers toward its OWN identity" storm (ticketed 2026-08-07; the census caught THREE self rows on one desktop, 2026-08-11, two of them empty stubs spraying 573KB offers at the fleet's own contacts). Empty-conversation stubs only: a row that somehow holds messages is somebody's data and stays for a deliberate repair, never a boot-time sweep.
-                            if let Some((our_proof, our_seed)) = self
-                                .session
-                                .as_ref()
-                                .map(|s| (s.handle_proof, s.identity_seed))
+                            if let (Some(our_proof), Some(our_pid)) = (self.our_handle_proof(), self.own_party_id())
                             {
-                                let our_pid = crate::crypto::clutch::identity_party_id(&our_seed);
                                 let stub_hashes: Vec<[u8; 32]> = self
                                     .contacts
                                     .iter()
@@ -4965,7 +4984,7 @@ impl PhotonApp {
                         let loaded_chains =
                             crate::storage::friendship::load_all_friendships(&friendship_ids, &s);
                         // BONDS (docs/conversations.md §7): every friend's bond loads beside its conversation's chains, by the id both parties derive.
-                        let bond_pid = self.session.as_ref().map(|se| crate::crypto::clutch::identity_party_id(&se.identity_seed));
+                        let bond_pid = self.own_party_id();
                         let loaded_bonds = bond_pid.map(|us| crate::storage::friendship::load_bonds(&self.contacts, &us, &s)).unwrap_or_default();
                         let loaded_chains: Vec<_> = loaded_chains.into_iter().chain(loaded_bonds).collect();
                         for (fid, chains) in loaded_chains {
@@ -5012,7 +5031,7 @@ impl PhotonApp {
                             .filter(|c| !c.is_sibling)
                             .map(|c| c.handle_proof)
                             .collect();
-                        hps.push(remembered.handle_proof);
+                        hps.push(our_hp);
                         hps.sort_unstable();
                         hps.dedup();
                         self.spawn_contact_fleet_refresh(hps);
@@ -5046,6 +5065,7 @@ impl PhotonApp {
                         }
                         let ms_keypairs = t_phase.elapsed().as_millis();
                         self.storage = Some(s);
+                        self.merge_people();
                         // Frame one owns the persisted ergonomics: fleet_settings live on disk, but nothing read them at boot — every ensure_fleet_settings caller was a user action or the network merge drain, so the zoom restore waited ~5s for the first fleet pull (and forever offline), painting every launch at default scale (Nick, 2026-08-12).
                         let t_phase = std::time::Instant::now();
                         self.ensure_fleet_settings();
@@ -5055,14 +5075,14 @@ impl PhotonApp {
                             storage
                                 .read_addr(&crate::storage::vault_key(
                                     "avatar",
-                                    &remembered.identity_seed,
+                                    &our_root,
                                 ))
                                 .ok()
                                 .flatten()
                         });
                         match own_avatar_bytes {
                             Some(bytes) => {
-                                let seed = remembered.identity_seed;
+                                let seed = our_root;
                                 let tx = self.avatar_dl_tx.clone();
                                 std::thread::spawn(move || {
                                     let pixels =
@@ -5080,10 +5100,10 @@ impl PhotonApp {
                             }
                             // Local vault had no avatar (e.g. this device was cleared) — recover our own from FGTW, where it was published. Off-thread; installs via the avatar drain.
                             None => {
-                                if !self.spawn_self_avatar_recover(remembered.identity_seed) {
+                                if !self.spawn_self_avatar_recover(our_root) {
                                     // No pin at rest yet (settings still loading) — the tick retries once one lands.
                                     self.self_avatar_recover_pending =
-                                        Some(remembered.identity_seed);
+                                        Some(our_root);
                                 }
                             }
                         }
@@ -5103,7 +5123,9 @@ impl PhotonApp {
             self.state = AppState::Ready;
             if let Some(hq) = self.handle_query.as_ref() {
                 crate::log("UI: resumed to Ready from local session roots (tohu) — FGTW announce + presence run in background");
-                hq.query_resume(remembered);
+                if let Some(remembered) = remembered {
+                    hq.query_resume(remembered);
+                }
             }
             // Kick presence immediately for the just-loaded contacts so their online rings reflect reality without waiting for the FGTW round-trip.
             self.ping_contacts();
@@ -5163,4 +5185,42 @@ pub(super) const SETTINGS_PILL_SLOTS: HitId = 64;
 
 fn reserve_hits(counter: &mut HitId, n: HitId) {
     *counter = counter.checked_add(n).expect("hit-id space exhausted: more than 65 535 ids reserved — a span is leaking, not a real need");
+}
+
+impl PhotonApp {
+    /// The person's people as ferros's identity service handed them (FACETS.md "People", PHOTON.md step 4): each becomes a contact by handle proof and pinned identity key, with the genesis pinned and the name the person gave them shown until the contact publishes their own.
+    /// A row already held keeps its state; only a missing genesis pin is filled. Each new or changed row is saved at once.
+    fn merge_people(&mut self) {
+        if self.people.is_empty() {
+            return;
+        }
+        let people = std::mem::take(&mut self.people);
+        let mut added = 0usize;
+        for p in &people {
+            let idx = match self.contacts.iter().position(|c| !c.is_sibling && c.handle_proof == p.handle_proof) {
+                Some(i) => {
+                    if self.contacts[i].pinned_genesis != [0u8; 32] {
+                        continue;
+                    }
+                    self.contacts[i].pinned_genesis = p.genesis;
+                    i
+                }
+                None => {
+                    let mut c = crate::types::Contact::from_pin([0u8; 64], p.handle_proof, p.identity, None);
+                    c.pinned_genesis = p.genesis;
+                    c.published_name = p.name.clone();
+                    self.contacts.push(c);
+                    added += 1;
+                    self.contacts.len() - 1
+                }
+            };
+            if let Some(storage) = self.storage.as_ref() {
+                crate::log_err!(crate::storage::contacts::save_contact(&self.contacts[idx], storage), "a contact from the person's people");
+            }
+        }
+        crate::logf!("PEOPLE: {} of the person's people handed in, {} new contact row(s)", people.len(), added);
+        self.people = people;
+        self.reseed_contact_pubkeys();
+        self.scene_dirty = true;
+    }
 }

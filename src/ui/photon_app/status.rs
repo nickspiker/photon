@@ -195,10 +195,7 @@ impl PhotonApp {
         };
 
         // Our party id for CLUTCH: the identity PUBKEY (the value contacts pin at first-met). It rides CLUTCH offers for contact matching — public by design; the secret identity binding is the friendship-secret egg, never this id. (Was the raw identity seed, which also parked our seed in every peer's contact row — docs/identity-profile.md.)
-        let our_handle_hash = match self
-            .session
-            .as_ref()
-            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+        let our_handle_hash = match self.own_party_id()
         {
             Some(h) => h,
             None => return false, // Can't do CLUTCH without our party id
@@ -1300,10 +1297,7 @@ impl PhotonApp {
                     relayed_by,
                 } => {
                     // Get our handle_hash for chain lookups
-                    let our_handle_hash = match self
-                        .session
-                        .as_ref()
-                        .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                    let our_handle_hash = match self.own_party_id()
                     {
                         // PARTY ID: the friendship chain + slots are keyed on party ids (from_clutch + send both use our_party_id); matching on the raw seed here dropped every incoming message/probe as "not a participant" and hung the weave.
                         Some(h) => h,
@@ -1712,10 +1706,7 @@ impl PhotonApp {
                         continue;
                     }
                     // Get our handle_hash
-                    let our_handle_hash = match self
-                        .session
-                        .as_ref()
-                        .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                    let our_handle_hash = match self.own_party_id()
                     {
                         // PARTY ID: the friendship chain + slots are keyed on party ids (from_clutch + send both use our_party_id); matching on the raw seed here dropped every incoming message/probe as "not a participant" and hung the weave.
                         Some(h) => h,
@@ -2007,10 +1998,7 @@ impl PhotonApp {
                         std::net::SocketAddr::new(raw_sender_addr.ip(), crate::PHOTON_PORT);
 
                     // Get our handle_hash
-                    let our_handle_hash = match self
-                        .session
-                        .as_ref()
-                        .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                    let our_handle_hash = match self.own_party_id()
                     {
                         // PARTY ID (not raw seed): the conversation token + slots key on party ids on the SEND side; the receive path must match or every friend ceremony stalls at "unknown conversation_token".
                         Some(h) => h,
@@ -2710,10 +2698,7 @@ impl PhotonApp {
                         std::net::SocketAddr::new(raw_sender_addr.ip(), crate::PHOTON_PORT);
 
                     // Get our handle_hash
-                    let our_handle_hash = match self
-                        .session
-                        .as_ref()
-                        .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                    let our_handle_hash = match self.own_party_id()
                     {
                         // PARTY ID (not raw seed): the conversation token + slots key on party ids on the SEND side; the receive path must match or every friend ceremony stalls at "unknown conversation_token".
                         Some(h) => h,
@@ -2925,10 +2910,7 @@ impl PhotonApp {
 
                     // Find contact by conversation_token. Party-id seam: BOTH participants token on their PARTY IDS (send derives ours via identity_party_id; matching on the raw seed here was the "unknown conversation_token" stall). Sibling candidates token with the device-derived pid pair. (Our id isn't needed downstream — completion derives it internally — so it's discarded.)
                     let our_sibling_pid = self.our_sibling_pid();
-                    let our_handle_hash = match self
-                        .session
-                        .as_ref()
-                        .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                    let our_handle_hash = match self.own_party_id()
                     {
                         Some(h) => h,
                         None => continue,
@@ -3481,10 +3463,7 @@ impl PhotonApp {
                         }
 
                         // MEMBER route, any size (docs/conversations.md Phase 2): bind token → chains (history key) → the member whose device asked (molecules::member_by_device) — a pair's peer, who must be a mutual contact owning that device, or a standing member of a roster conversation, friended or not (their fold already holds the device). The page comes from the conversation's own table: a roster conversation's id, a pair's derived from the contact (the SHADOW SEAM rule: rows live where the contact derives them).
-                        let our_pid = self
-                            .session
-                            .as_ref()
-                            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+                        let our_pid = self.own_party_id();
                         let friend_route: Option<([u8; 32], [u8; 32], Option<u64>)> = our_pid.and_then(|us| {
                             let (_, chains) = self.friendship_chains.iter().find(|(_, c)| c.conversation_token == conversation_token && !c.bond)?;
                             let key = chains.history_key().copied()?;
@@ -3663,7 +3642,7 @@ impl PhotonApp {
                 } => {
                     let known = self.attach_peer_known(&sender_pubkey.key, &conversation_token);
                     let wire_key = self.attach_wire_key(&sender_pubkey.key, &conversation_token);
-                    let seed = self.session.as_ref().map(|s| s.identity_seed);
+                    let seed = self.messenger_root();
                     // The sender is not quiet: every ask aimed at it waits on (attach_fetch_retry_tick).
                     if known {
                         self.attach_heard.insert(sender_pubkey.key, std::time::Instant::now());
@@ -3727,7 +3706,7 @@ impl PhotonApp {
                 } => {
                     let known = self.attach_peer_known(&sender_pubkey.key, &conversation_token);
                     let wire_key = self.attach_wire_key(&sender_pubkey.key, &conversation_token);
-                    let seed = self.session.as_ref().map(|s| s.identity_seed);
+                    let seed = self.messenger_root();
                     if known {
                         self.attach_heard.insert(sender_pubkey.key, std::time::Instant::now());
                     }
@@ -3814,7 +3793,7 @@ impl PhotonApp {
                 } => {
                     let known = self.attach_peer_known(&sender_pubkey.key, &conversation_token);
                     let wire_key = self.attach_wire_key(&sender_pubkey.key, &conversation_token);
-                    let seed = self.session.as_ref().map(|s| s.identity_seed);
+                    let seed = self.messenger_root();
                     if known {
                         self.attach_heard.insert(sender_pubkey.key, std::time::Instant::now());
                     }
@@ -3953,7 +3932,7 @@ impl PhotonApp {
                     sender_addr,
                 } => {
                     let known = self.attach_peer_known(&sender_pubkey.key, &conversation_token);
-                    let seed = self.session.as_ref().map(|s| s.identity_seed);
+                    let seed = self.messenger_root();
                     // THE RELAY COPY ONLY WHERE THE DIRECT LEG IS UNPROVEN (field 2026-09-17, Nick: "re-uploads/replications of pigeons"): every served chunk went out twice — PT direct AND a Cloudflare relay copy, unconditionally — so a 142 MB pigeon cost 284 MB and every relay byte. A requester we hold a punch-validated path to gets the direct leg alone (PT is reliable on it); a relay-injected request, or a requester with no validated path, still gets the relay copy — that is the one-directional-reverse-path case the copy existed for.
                     let relay_needed = crate::network::traverse::gather::is_bogus_addr(&sender_addr)
                         || !self.contacts.iter().any(|c| c.knows_device(&sender_pubkey.key) && c.validated_path.is_some());
@@ -4260,9 +4239,7 @@ impl PhotonApp {
                     sender_addr: _,
                 } => {
                     // THE MUTUALITY EDGE (consent gate, 2026-08-25): a knock resolvable against OUR roster means the knocker is someone WE added — both humans have now entered each other's handles, and the ceremony may finally arm. An unmatched token is a stranger: drop silently, remember nothing (they get no storage, no reply, no evidence they were heard). The knock's whole job ends here; the ceremony pipeline from keygen onward is unchanged.
-                    let our_pid = self.session.as_ref().map(|s| {
-                        crate::crypto::clutch::identity_party_id(&s.identity_seed)
-                    });
+                    let our_pid = self.own_party_id();
                     let matched = our_pid.and_then(|us| {
                         self.contacts.iter().position(|c| {
                             !c.is_sibling
@@ -4691,10 +4668,7 @@ impl PhotonApp {
                         )
                     } else {
                         // Participants are PARTY IDS (chains key on them since the pin-set migration) — resolve "other" against OUR party id, never the raw seed.
-                        let our_pid = self
-                            .session
-                            .as_ref()
-                            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+                        let our_pid = self.own_party_id();
                         let key_and_other = self
                             .friendship_chains
                             .iter()
@@ -4722,7 +4696,7 @@ impl PhotonApp {
                     let group = self.molecule_rosters.iter().find(|(g, _)| g.token() == conversation_token).map(|(g, _)| *g);
                     // THE SELF ATOM ON DEMAND (2026-11-02, Nick's reset Pixel: "my Self atom disappeared" — 80 sibling pages for it dropped as "token resolves to no contact"): a device founds the self atom only when it holds a row, and a device that holds none never got one, because the pages that carry them were dropped for want of the atom. A sibling's page for its token proves the fleet holds rows: the atom is founded after this pass (the same atom every device derives from the identity seed), and the sibling's next re-serve lands.
                     if from_sibling && group.is_none() {
-                        if let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+                        if let Some(us) = self.own_party_id() {
                             let self_gid = crate::types::molecule::MoleculeId(*crate::types::Conversation::new([us]).id().as_bytes());
                             if self_gid.token() == conversation_token {
                                 self_atom_wanted_after = true;
@@ -4813,7 +4787,7 @@ impl PhotonApp {
                     if sent_osc != 0 && (now.saturating_sub(sent_osc) > BLIND_STALE_OSC || crate::network::time_base::from_the_future(sent_osc)) { // symmetric window, as for hist_req
                         continue;
                     }
-                    let Some(our_seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+                    let Some(our_friend_pid) = self.own_party_id() else {
                         continue;
                     };
 
@@ -4822,8 +4796,7 @@ impl PhotonApp {
                         BlindFrameKind::Put | BlindFrameKind::Get => {
                             let our_sibling_pid = self.our_sibling_pid();
                             // Friend tokens derive from the identity PARTY IDS (never the raw seed — the peer derives with pids, so a seed here rejects every legitimate frame as unknown-token).
-                            let our_friend_pid =
-                                crate::crypto::clutch::identity_party_id(&our_seed);
+                            
                             let cidx = self.contacts.iter().position(|c| {
                                 let our = if c.is_sibling {
                                     match our_sibling_pid {
@@ -5572,10 +5545,7 @@ impl PhotonApp {
 
         // COMPLETE-WITHOUT-CHAINS SELF-HEAL (field 2026-08-26, Emma's device after the pre-fix crypto wipe): the wipe cleared her friendship chains, the RAM resurrection restored a contact CLAIMING Complete — so every inbound frame dropped "No friendship found" forever and nothing ever triggered a repair, because the state said there was nothing to fix. The evidence is the frame we couldn't route: a probed token whose contact claims Complete while its chains are ABSENT gets the same reset the offer-while-Complete re-key path runs, and the fresh offer walks the peer thru the normal accepting-re-key flow. Evidence-driven (never fires on healthy or mid-ceremony state), once per contact per session via the keygen-in-progress latch.
         for token in rekey_probe {
-            let our_pid = self
-                .session
-                .as_ref()
-                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+            let our_pid = self.own_party_id();
             let Some(us) = our_pid else { break };
             let Some(ci) = self.contacts.iter().position(|c| {
                 !c.is_sibling
@@ -5735,10 +5705,7 @@ impl PhotonApp {
             if !all_missed {
                 continue;
             }
-            let us = self
-                .session
-                .as_ref()
-                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+            let us = self.own_party_id();
             let Some(ci) = us.and_then(|us| {
                 self.contacts.iter().position(|c| {
                     !c.is_sibling
@@ -5771,7 +5738,7 @@ impl PhotonApp {
 
         // The self atom a sibling's page asked for (see THE SELF ATOM ON DEMAND): founded now, empty, exactly as every device of ours derives it — the sibling's next re-serve fills it.
         if self_atom_wanted_after {
-            if let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+            if let Some(us) = self.own_party_id() {
                 if self.found_self_atom(crate::types::Conversation::new([us])).is_some() {
                     crate::log("MOLECULE: a sibling holds rows of the conversation with only us in it — its atom is founded here to take them");
                 }

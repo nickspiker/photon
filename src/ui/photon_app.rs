@@ -1951,6 +1951,10 @@ pub struct PhotonApp {
     scene_dirty: bool,
     /// The device's session identity (register-shaped roots), set on `QueryResult::Success`. `None` while the user is still on Launch. Replaces the handle string — Photon never holds the plaintext handle past first attest; an optional "show my handle" label would re-prompt rather than store it.
     session: Option<tohu::SessionIdentity>,
+    /// What the messenger holds of the person (crypto::photon_keys, ferros docs/PHOTON.md step 4): handed in by ferros's std/photon before the first frame; None on the desktop and Android until this device speaks the alias, and every accessor below then reads the session.
+    photon_keys: Option<crate::crypto::photon_keys::PhotonKeys>,
+    /// The person's people as the identity service handed them (ferros, FACETS.md "People"): each a contact by handle proof, pinned identity key, genesis and the name the person gave them. Empty elsewhere.
+    people: Vec<fgtw::people::Person>,
     /// The private identity secret S — RAM-ONLY, never persisted (crypto::blind::PrivateS). Reconstituted from a friend's OTP-blinded deposit (blind_get→blind_srv) or generated fresh at first weave-seal AFTER every reachable woven friend answers found=0 (probe-before-generate: a []n-reset device must RECOVER its S, never mint a second one). Zeroized on []u/de-attest and on drop.
     private_s: crate::crypto::blind::PrivateS,
     /// True when the dual-ring vault flagged a damaged ring on open this session. Drives the persistent amber banner on the Ready screen. Sticky for the session.
@@ -2064,7 +2068,7 @@ pub struct PhotonApp {
     /// A wave just started with no reachable address for this device: the next tick pushes our record to it and sweeps presence (set from the engine-start path, which holds only &self).
     wave_needs_addresses: std::cell::Cell<Option<[u8; 32]>>,
     /// The resume's vault-open worker: (its channel, the remembered session, the boot instant). Some while the open is in flight; the tick polls it and finishes the resume when the handle lands.
-    resume_vault_rx: Option<(std::sync::mpsc::Receiver<Result<std::sync::Arc<crate::storage::FlatStorage>, crate::storage::StorageError>>, tohu::SessionIdentity, std::time::Instant)>,
+    resume_vault_rx: Option<(std::sync::mpsc::Receiver<Result<std::sync::Arc<crate::storage::FlatStorage>, crate::storage::StorageError>>, Option<tohu::SessionIdentity>, std::time::Instant)>,
     /// The last frame the ACTIVE wave screen was repainted for its own sake: the timer, the live stats and the ring change at most once a second (Nick 2026-09-12: "wave screen should update at most every second").
     last_wave_redraw: Option<std::time::Instant>,
     /// Attachment fetches in flight, by content hash (see [`FetchAsk`]). A request that gets no answer — the holder dozing, the frame lost — used to leave the row at "fetching" forever; the retry tick moves an ask whose device went quiet to the next device and lets go after a bounded run of fruitless asks (field 2026-09-12: the desktop asked for a wave at 23:55 and nothing ever came back).
@@ -3251,6 +3255,8 @@ impl PhotonApp {
             last_chord_held: false,
             scene_dirty: true,
             session: None,
+            photon_keys: None,
+            people: Vec::new(),
             private_s: crate::crypto::blind::PrivateS::None,
             vault_degraded: false,
             vault_degraded_latched: false,
@@ -3757,9 +3763,25 @@ impl PhotonApp {
         self.device_keypair = Some(keypair);
     }
 
-    /// Inject the full signing bundle beside the keypair, before `init` — Android's `NetworkContext` derives both from the one device oracle. On desktop `init` derives the bundle itself from the fingerprint.
+    /// Inject the signing bundle beside the keypair, before `init` — Android's `NetworkContext` derives both from the one device oracle. On desktop `init` derives the bundle itself from the fingerprint.
     pub fn set_signing_bundle(&mut self, bundle: crate::network::fgtw::fleet::SigningBundle) {
         self.signing_bundle = Some(bundle);
+    }
+
+    /// Hand in the person as the messenger knows them, before `init` (ferros's std/photon, PHOTON.md step 4): the alias, the handle proof, the pinned identity key and the binding.
+    /// The binding is taken only when it names this alias and this handle proof; one that does not is refused loudly and Photon runs as before, on its own handle screen.
+    pub fn set_photon_keys(&mut self, keys: crate::crypto::photon_keys::PhotonKeys) {
+        let alias = fgtw::alias::bundle(&keys.alias).public().ed25519();
+        match fgtw::binding::Binding::from_vsf_bytes(&keys.binding) {
+            Ok(b) if b.alias_key() == alias && b.handle_proof == keys.handle_proof => self.photon_keys = Some(keys),
+            Ok(_) => crate::log("PHOTON KEYS: refused, the binding names another alias or person"),
+            Err(e) => crate::logf!("PHOTON KEYS: refused, the binding does not read ({})", e),
+        }
+    }
+
+    /// Hand in the person's people (ferros, FACETS.md "People"), before `init`.
+    pub fn set_people(&mut self, people: Vec<fgtw::people::Person>) {
+        self.people = people;
     }
 
     /// Take the one-shot image-picker request. JNI shim polls this once per frame; returns `true` exactly on the frame the user taps the avatar so the Activity launches `ACTION_GET_CONTENT` once per tap.
@@ -4586,11 +4608,37 @@ fn sibling_presence_snapshot(contacts: &[crate::types::Contact]) -> Vec<SiblingP
 
 impl PhotonApp {
     /// OUR identity handle proof, session-first: a sticky-broadcast resume can reach Ready with HandleQuery's worker-populated `last_handle_proof` still unset, and every fleet-plane gate that read only the cache sat silently dead for the whole session — no fstate pull, no roster push, no fleet-key sync, so §4.2 ownership never converged between siblings (a resumed phone, 36 minutes, 2026-08-04). Signed in ⇒ session ⇒ handle_proof; the cache covers the pre-session attest window.
+    /// With PhotonKeys handed in (ferros) the proof is theirs: there is no session.
     fn our_handle_proof(&self) -> Option<[u8; 32]> {
-        self.session.as_ref().map(|s| s.handle_proof).or_else(|| {
+        self.photon_keys.as_ref().map(|k| k.handle_proof).or_else(|| self.session.as_ref().map(|s| s.handle_proof)).or_else(|| {
             self.handle_query
                 .as_ref()
                 .and_then(|hq| hq.get_handle_proof())
+        })
+    }
+
+    /// The root the messenger's own records derive from (PHOTON.md groups 2, 3, 4 and 6): PhotonKeys' when handed in, else the session's identity seed, the same bytes the desktop and Android have always used.
+    pub(super) fn messenger_root(&self) -> Option<[u8; 32]> {
+        match &self.photon_keys {
+            Some(k) => Some(k.messenger_root()),
+            None => self.session.as_ref().map(|s| s.identity_seed),
+        }
+    }
+
+    /// OUR party id as a friend pins it (PHOTON.md group 0, M2: the pinned identity key stays the identifier): PhotonKeys' identity key when handed in, else Ed25519 of the session's seed, which is the same key, cached since the derivation is a scalar multiply.
+    pub(super) fn own_party_id(&self) -> Option<[u8; 32]> {
+        if let Some(k) = &self.photon_keys {
+            return Some(k.identity_pub);
+        }
+        self.session.as_ref().map(|s| {
+            if let Some((seed, pid)) = self.identity_pid_cache.get() {
+                if seed == s.identity_seed {
+                    return pid;
+                }
+            }
+            let pid = crate::crypto::clutch::identity_party_id(&s.identity_seed);
+            self.identity_pid_cache.set(Some((s.identity_seed, pid)));
+            pid
         })
     }
 }

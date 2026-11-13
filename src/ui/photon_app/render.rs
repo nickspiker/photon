@@ -184,7 +184,7 @@ impl PhotonApp {
             .map(|gi| self.molecule_rosters[gi].1.members.values().map(|m| (m.party, if m.name.is_empty() { tr(Msg::PendingMember).into_owned() } else { m.name.clone() })).collect())
             .unwrap_or_default();
         // THE DELIVERY RING (Nick 2026-10-25: "equal segments per identity, consistent for 1 or 1000"), snapshotted pre-chrome: the conversation's people in join order, and the stamps of our rows that have not left this device yet.
-        let ring_us: [u8; 32] = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
+        let ring_us: [u8; 32] = self.own_party_id().unwrap_or([0u8; 32]);
         let ring_parties: Vec<[u8; 32]> = match (active_gi, self.active_conversation) {
             (Some(gi), _) => self.molecule_rosters[gi].1.join_order(),
             (None, Some(id)) => {
@@ -334,7 +334,7 @@ impl PhotonApp {
             }
             // While naming a new atom the list is the member picker: us, then the people — no conversations, no invitations.
             let rf = if self.atom_naming { ReadyFilter::People } else { self.ready_filter };
-            let us_pid = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
+            let us_pid = self.own_party_id().unwrap_or([0u8; 32]);
             // The strip's height as last measured (wrapped pills push the first row down), one row until first drawn.
             let strip_h: isize = if self.ready_strip_h > 0.0 { self.ready_strip_h.ceil() as isize } else { row_h };
             let block_h: isize = strip_h
@@ -750,6 +750,9 @@ impl PhotonApp {
         // The standing bands are computed BEFORE the chrome borrow (they read plain state), then painted by a free fn on the two screens that show them.
         let standing_bands = self.standing_bands();
         let link_btn_visible = self.compose_link_available();
+        // Our party id, asked before the chrome borrow for the same reason.
+        let own_pid = self.own_party_id();
+        let messenger_root = self.messenger_root();
         let Some(chrome) = self.chrome.as_mut() else {
             return;
         };
@@ -971,10 +974,10 @@ impl PhotonApp {
                 let colour = pi
                     .and_then(|i| {
                         let c = &self.contacts[i];
-                        self.session.as_ref().map(|s| {
+                        own_pid.map(|us| {
                             party_colour(&relationship_digest(
                                 &c.handle_hash,
-                                &crate::crypto::clutch::identity_party_id(&s.identity_seed),
+                                &us,
                             ))
                         })
                     })
@@ -984,7 +987,7 @@ impl PhotonApp {
                 // A GROUP: one tile per member (one grid for faces and pictures, 2026-10-31) — a member whose picture is up fills their tile with it, the rest show their face ringed in the colour of their newest audio (ours from what we send), the name inside the tile in that person's colour.
                 self.beam_self_rect = None;
                 if group_layout {
-                    let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+                    let us = own_pid;
                     let me = crate::wave::beam_session::self_picture();
                     for (face, ((tx, ty, tw, th), (fx, fy, fr))) in &group_roll {
                         let (label, tint) = if face.us {
@@ -1048,10 +1051,10 @@ impl PhotonApp {
                 if matches!(phase, crate::wave::WavePhase::Ringing) {
                     if let Some(digest) = pi.and_then(|i| {
                         let c = &self.contacts[i];
-                        self.session.as_ref().map(|s| {
+                        own_pid.map(|us| {
                             relationship_digest(
                                 &c.handle_hash,
-                                &crate::crypto::clutch::identity_party_id(&s.identity_seed),
+                                &us,
                             )
                         })
                     }) {
@@ -2155,7 +2158,7 @@ impl PhotonApp {
             let typed_party = if self.atom_naming { None } else { Self::typed_handle_party(&self.contacts_textbox.as_ref().map(|t| t.chars.iter().collect::<String>()).unwrap_or_default()) };
             // …and it is the member picker: us, then the people (the pre-pass sized exactly these).
             let rf = if self.atom_naming { ReadyFilter::People } else { self.ready_filter };
-            let us_pid = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
+            let us_pid = own_pid.unwrap_or([0u8; 32]);
             let mut matching: Vec<ReadyRow> = self
                 .atom_naming
                 .then_some(ReadyRow::Me)
@@ -2175,10 +2178,7 @@ impl PhotonApp {
                 .chain(self.offer_row_lines.iter().enumerate().filter(|(_, l)| !self.atom_naming && !l.is_empty() && matches!(rf, ReadyFilter::All | ReadyFilter::Invitations)).map(|(oi, _)| ReadyRow::Offer(oi)))
                 .collect();
             // ORDER: unread conversations float to the top, then everyone sorts by MOST-RECENT activity (last message either way — a fresh reply or a fresh receipt lifts the contact). `matching` is the ONE place display order exists — the row loop draws from it AND stamps each row's hit id with the TRUE contact index it holds, so the tap handler resolves taps with no knowledge of the permutation. The key is (unread-first, newest-activity-first); i64::MIN for a contact with no messages sinks it below any conversation.
-            let our_handle_hash = self
-                .session
-                .as_ref()
-                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+            let our_handle_hash = own_pid
                 .unwrap_or([0u8; 32]);
             matching.sort_by_key(|row| {
                 let conv = match *row {
@@ -2505,7 +2505,7 @@ impl PhotonApp {
                 let d = ctx.damage_clip;
                 restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, d.x0 as isize, (layout.rail.y as isize).max(d.y0 as isize), d.x1 as isize, d.y1 as isize, HIT_NONE);
                 // Our pid keys the colours below — a keyed colour, not a self-check. "Is this only me" is the participant count.
-                let our_hh = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
+                let our_hh = own_pid.unwrap_or([0u8; 32]);
                 let seed_ref = self.session.as_ref().map(|se| se.identity_seed);
                 // The person a Person page shows, as a contact row when they are one of ours.
                 let person = if let ConversationPage::Person(p) = page { Some(p) } else { None };
@@ -3196,10 +3196,7 @@ impl PhotonApp {
                     }
                     let group_face_px = group_face.and_then(|h| super::group_avatar::face_at(&self.group_faces, &h, avatar_diam));
                     // Relationship colour inputs, hoisted above the avatar closure so both it and the header share them. Our pid feeds the relationship digest — a keyed colour, not a self-check; "is this me" is the participant count.
-                    let our_handle_hash = self
-                        .session
-                        .as_ref()
-                        .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+                    let our_handle_hash = own_pid
                         .unwrap_or([0u8; 32]);
                     // The device-derived sibling pid, captured here (immutable self reads only) so the conv key below needs no &self call while `contact` holds a borrow.
                     let is_self_contact = hdr.remote == 0;
@@ -4377,7 +4374,7 @@ impl PhotonApp {
                                             let cols = (bx1 - wx0).max(1.0) as usize; // WHY/PROOF: a bubble squeezed to nothing still gets one column of waveform, never a zero-width fold that divides by its columns
                                             let played_cols = frac.map(|f| (f * cols as f32) as usize).unwrap_or(0);
                                             // Loads on the render edge, one per hash: an env blob parses in the worker (vec of one); the audio derive decodes once and yields every channel. A far blob not yet held is queued for one fetch.
-                                            if let Some(seed) = self.session.as_ref().map(|se| se.identity_seed) {
+                                            if let Some(seed) = messenger_root {
                                                 if self.wave_env_tx.is_none() {
                                                     let (tx, rx) = std::sync::mpsc::channel();
                                                     self.wave_env_tx = Some(tx);
@@ -4548,7 +4545,7 @@ impl PhotonApp {
                             if audio_lines > 0 {
                                 if let Some((ahash, _, _)) = msg.file_parts() {
                                     if !self.wave_env.contains_key(&ahash) && !self.wave_env_pending.contains(&ahash) {
-                                        if let Some(seed) = self.session.as_ref().map(|se| se.identity_seed) {
+                                        if let Some(seed) = messenger_root {
                                             if self.wave_env_tx.is_none() {
                                                 let (tx, rx) = std::sync::mpsc::channel();
                                                 self.wave_env_tx = Some(tx);
@@ -7049,7 +7046,7 @@ impl PhotonApp {
                         let muted = self.molecule_locals.iter().find(|(g, _)| g == gid).map_or(false, |(_, l)| l.muted);
                         let n = roster.standing().len();
                         let row = fluor::region::Region::new(inset.x, y, inset.w, line_h);
-                        ctx.text.draw_text_left(&mut canvas, &format!("{} \u{00b7} {}", roster.display_title(), crate::fmt_num64(n as u64)), row.x + line_h * 0.3, row.center_y(), &TextStyle::new(hspan2 * 0.85, party_colour(&molecule_digest(gid, &self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32])))).weight(500).font("Oxanium"), page_clip, None);
+                        ctx.text.draw_text_left(&mut canvas, &format!("{} \u{00b7} {}", roster.display_title(), crate::fmt_num64(n as u64)), row.x + line_h * 0.3, row.center_y(), &TextStyle::new(hspan2 * 0.85, party_colour(&molecule_digest(gid, &own_pid.unwrap_or([0u8; 32])))).weight(500).font("Oxanium"), page_clip, None);
                         let pill = fluor::region::Region::new(row.x + row.w * 0.62, row.y + row.h * 0.08, row.w * 0.34, row.h * 0.84);
                         draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill, &tr(Msg::MutePill { muted }), btn_base + 2 + gi as HitId, ctx.pressed_hit, true, muted.then_some(*theme::PILL_GREEN), "Oxanium");
                         y += line_h * 1.1;

@@ -312,9 +312,7 @@ impl PhotonApp {
             if let (Some(kp), Some(hp), Some(our_pid), Some(storage)) = (
                 self.device_keypair.clone(),
                 self.our_handle_proof(),
-                self.session
-                    .as_ref()
-                    .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)),
+                self.own_party_id(),
                 self.storage.as_ref().map(Arc::clone),
             ) {
                 std::thread::spawn(move || {

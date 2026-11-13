@@ -131,7 +131,7 @@ impl PhotonApp {
             return;
         }
         // PREPARE OFF-THREAD (typed attachments 2026-09-10): the kind sniff is cheap, but an image's decode for the previews is hundreds of ms on a phone photo and the AV1 encode more — the worker hands back the typed extras and the drain sends the row (re-resolving the contact by handle, the index may have moved). A RAW gets a temp copy for limbus (file-only reader), minted in the worker and removed by the drain.
-        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+        let Some(seed) = self.messenger_root() else {
             return;
         };
         let tx = self.attach_prepared_tx.clone();
@@ -203,7 +203,7 @@ impl PhotonApp {
             // A headed send needs no separate preview blob: the preview's bytes live inside the head. Only a head that failed to store falls back to the pre-flag-day shape (preview blob + inline extras).
             let mut meta = p.meta;
             if p.head.is_none() {
-                if let (Some(blob), Some(ph), Some(seed)) = (p.blob.as_ref(), meta.preview_hash, self.session.as_ref().map(|s| s.identity_seed)) {
+                if let (Some(blob), Some(ph), Some(seed)) = (p.blob.as_ref(), meta.preview_hash, self.messenger_root()) {
                     if let Err(e) = crate::storage::blob_store(&seed, &ph, blob) {
                         crate::logf!("attach: preview blob store failed: {}", e);
                         meta.preview_hash = None;
@@ -328,7 +328,7 @@ impl PhotonApp {
     /// `token` names the conversation the blob belongs to when it is not the pair's own (a roster conversation's push to one of its members).
     pub(super) fn send_attach_blob(&mut self, ci: usize, content_hash: &[u8; 32], token: Option<[u8; 32]>) {
         let token_for = token;
-        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+        let Some(seed) = self.messenger_root() else {
             return;
         };
         let (device, addr_pair, relay_to, token) = {
@@ -568,7 +568,7 @@ impl PhotonApp {
             }
         }
         // STRANGERS IN THE ROOM (Nick 2026-10-26: "we know who's in it"): a standing member we never friended is asked like a friend — their devices from the roster's fold (member_devices), their addresses from the phonebook (device_addresses), the relay alone when none is known. They rank with a friend's offline devices: after the friends' live paths and our own siblings, before nobody.
-        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let us = self.own_party_id();
         let strangers: Vec<[u8; 32]> = members.iter().copied().filter(|p| Some(*p) != us && !self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == *p)).collect();
         for party in &strangers {
             for dev in super::molecules::member_devices(&self.contacts, &self.molecule_peers, party) {
@@ -836,7 +836,7 @@ impl PhotonApp {
             }
             self.rewrap_rx = None;
         }
-        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else { return true };
+        let Some(seed) = self.messenger_root() else { return true };
         let mut pairs: Vec<([u8; 32], [u8; 32])> = Vec::new();
         for m in self.conversations.iter().flat_map(|c| c.messages.iter()).filter(|m| !m.deleted) {
             let Some(f) = m.file.as_ref() else { continue };
@@ -899,7 +899,7 @@ impl PhotonApp {
 
     /// EXPORT a kept wave in `fmt` (wave/export.rs): the vault read and the decode run on a worker — an hour of audio decodes for seconds and the UI thread never touches the vault — then the file goes where Save puts files (Downloads; on Android the public Downloads/Photon). The result toasts from the tick drain.
     pub(super) fn wave_export_start(&mut self, conv: crate::types::ConversationId, ts: i64, fmt: crate::wave::export::ExportFormat) {
-        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else { return };
+        let Some(seed) = self.messenger_root() else { return };
         let rec = self.conv_by_id(conv).and_then(|v| {
             v.messages
                 .iter()
@@ -983,7 +983,7 @@ impl PhotonApp {
 
     /// Save a held blob to the user's Downloads dir under its own name, replacing an earlier save of that name. Returns the destination on success.
     pub(super) fn attach_save(&mut self, name: &str, content_hash: &[u8; 32]) -> Result<String, SaveMiss> {
-        let seed = self.session.as_ref().map(|s| s.identity_seed).ok_or(SaveMiss::Failed)?;
+        let seed = self.messenger_root().ok_or(SaveMiss::Failed)?;
         // Android: stage in the app's private dir, then hand the file to the PUBLIC Downloads/Photon (MediaStore) — the private dir was invisible to the user and every other app (Nick 2026-09-28: "somewhere sane and shared").
         #[cfg(target_os = "android")]
         let base = crate::storage::photon_config_dir().map_err(|_| SaveMiss::Failed)?.join("staging");
@@ -1213,7 +1213,7 @@ impl PhotonApp {
     #[cfg(not(target_os = "android"))]
     pub(super) fn start_file_drag(&mut self) -> Option<fluor::host::EventResponse> {
         let (hash, name, _, _) = self.file_drag_from.take()?;
-        let seed = self.session.as_ref()?.identity_seed;
+        let seed = self.messenger_root()?;
         let name = Self::attach_file_name(&seed, &name, &hash);
         // The press is the OS's now: its release never reaches us, so nothing of ours may wait on it.
         self.press_held = false;

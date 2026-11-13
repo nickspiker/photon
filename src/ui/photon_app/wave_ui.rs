@@ -439,7 +439,7 @@ impl PhotonApp {
                 return;
             }
         }
-        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+        let Some(seed) = self.messenger_root() else {
             return;
         };
         self.wave_playback = None;
@@ -739,7 +739,7 @@ impl PhotonApp {
             return;
         }
         self.orphan_waves_swept = true;
-        let seed = self.session.as_ref().map(|s| s.identity_seed).unwrap_or([0u8; 32]);
+        let seed = self.messenger_root().unwrap_or([0u8; 32]);
         let mut claimed: Vec<[u8; 8]> = Vec::new();
         for (ticket, peer, offer_osc, id8) in crate::wave::spool::recover_orphans() {
             crate::logf!(
@@ -1831,7 +1831,7 @@ impl PhotonApp {
             (c.phase == WavePhase::Active).then(|| c.spool.take()).flatten()
         });
         self.active_wave = None;
-        let seed = self.session.as_ref().map(|s| s.identity_seed).unwrap_or([0u8; 32]);
+        let seed = self.messenger_root().unwrap_or([0u8; 32]);
         if let Some(peer) = peer {
             if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
                 // The wave row, always: empty content, typed payload. Same stamp on every device that lived any part of the wave → one row fleet-wide, outcome folded by rank.
@@ -2058,7 +2058,7 @@ impl PhotonApp {
                     if let Some(ci) = self.contact_index_by_handle_hash(&r.peer) {
                         // "wave.audio" (a beam will mint "beam.video") — no POTS in Photon, so nothing here is a "phone call": see docs/waves.md on why that word is retired. The row REFERENCES the wave row (offer_osc+1) and carries the envelope thumbnail, so every sibling folds it into the card and draws the shape before it holds the blob.
                         // Channel 0 is ours, channel 1 theirs — named so the replay screen shows each voice as its person.
-                        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+                        let us = self.own_party_id();
                         let parties = us.map(|u| vec![u, r.peer]).unwrap_or_default();
                         let file = crate::types::AttachRef { hash: kept.hash, name: String::new(), size: kept.size, role: crate::types::AttachRole::WaveAudio, head: None, wrap: None, parties };
                         let mut row = ChatMessage::attachment(file, true, r.offer_osc + 2)
@@ -2431,7 +2431,7 @@ impl PhotonApp {
             if self.beam_ticket.is_none() {
                 return;
             }
-            if let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+            if let Some(us) = self.own_party_id() {
                 beam_record(BeamRecKind::Party, 0, &us);
             }
         }

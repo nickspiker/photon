@@ -516,7 +516,7 @@ impl PhotonApp {
         if let Some((p_era, p_root, p_hk, lineage)) = pending {
             match (joiner, p_hk) {
                 (Some((ci, bundles)), Some(p_hk)) => {
-                    let Some(our_pid) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+                    let Some(our_pid) = self.own_party_id() else {
                         return;
                     };
                     let mut whole = Vec::with_capacity(64);
@@ -543,7 +543,7 @@ impl PhotonApp {
         let Some(pos) = self.molecule_rosters.iter().position(|(id, _)| *id == gid) else {
             return;
         };
-        let Some(our_pid) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+        let Some(our_pid) = self.own_party_id() else {
             return;
         };
         let our_device = self.device_keypair.as_ref().map(|k| *k.public.as_bytes());
@@ -678,7 +678,7 @@ impl PhotonApp {
         self.persist_molecule(&gid);
         self.persist_chains_of(&fid);
         // Our first frame in the group: our own member record + bundle, so every member holds them even if the sponsor's records post is still in flight.
-        if let (Some(our_pid), Some(seed), Some(hp)) = (self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)), self.device_seed(), self.session.as_ref().map(|s| s.handle_proof)) {
+        if let (Some(our_pid), Some(seed), Some(hp)) = (self.own_party_id(), self.device_seed(), self.session.as_ref().map(|s| s.handle_proof)) {
             let (name, avatar) = self.own_name_grant();
             let mut ours = Roster::default();
             ours.merge_member(crate::types::molecule::join_record(our_pid, hp, &name, avatar, offer.sponsor, &seed));
@@ -785,7 +785,7 @@ impl PhotonApp {
                 self.persist_conversation_async(fid);
             }
             // ONE MINTER for the whole group: the lowest standing party, on one device of its fleet — every member's every device used to mint here, each a different era.
-            let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+            let us = self.own_party_id();
             let mints_here = us.is_some() && us == standing_after.first().copied() && self.fleet_device_acts(None);
             for p in &departed {
                 crate::logf!("MOLECULE: {} left {} — {} standing remain; {}", crate::fp(p), hex::encode(&gid.0[..4]), standing_after.len(), if mints_here { "minting the next era" } else { "the group's minter mints the next era" });
@@ -808,7 +808,7 @@ impl PhotonApp {
         if !member || self.chains_know_era(fid, tag) {
             return;
         }
-        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let us = self.own_party_id();
         let Some(us) = us.filter(|u| standing.first() == Some(u)) else {
             return; // the lowest standing party heals; everyone else takes what it delivers
         };
@@ -867,7 +867,7 @@ impl PhotonApp {
     /// Is `device` one of `party`'s folded devices: `Some(true)` it is, `Some(false)` it is not, `None` we hold no fold for them yet.
     /// One resolver for every roster subject — ourselves (this device plus our siblings), a friend (the fold-respecting `knows_device`), or a never-friended member (its MoleculePeer fold).
     pub(super) fn record_signer_verdict(&self, party: &[u8; 32], device: &[u8; 32]) -> Option<bool> {
-        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let us = self.own_party_id();
         if us.as_ref() == Some(party) {
             return Some(self.own_fleet_devices().contains(device));
         }
@@ -886,7 +886,7 @@ impl PhotonApp {
         if now != Some(false) || !own_fleet {
             return now;
         }
-        let us = self.session.as_ref().filter(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed) == *party).map(|s| s.handle_proof);
+        let us = if self.own_party_id() == Some(*party) { self.our_handle_proof() } else { None };
         let hp = us
             .or_else(|| self.contacts.iter().find(|c| !c.is_sibling && c.handle_hash == *party).map(|c| c.handle_proof))
             .or_else(|| self.molecule_peers.iter().find(|p| p.party == *party).map(|p| p.handle_proof))?;
@@ -995,7 +995,7 @@ impl PhotonApp {
         let fid = crate::types::FriendshipId::from_bytes(gid.0);
         // We are in the set while we hold the keys and have not left, whether or not our own records have reached our roster yet.
         let mut members = standing.clone();
-        if let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+        if let Some(us) = self.own_party_id() {
             let keyed = self.friendship_chains.iter().any(|(id, c)| *id == fid && !c.awaiting_root());
             if keyed && !self.molecule_is_left(gid) {
                 members.push(us);
@@ -1185,7 +1185,7 @@ impl PhotonApp {
 
     /// FOUND an ATOM (docs/molecules.md §0: you can only ever create an atom): a conversation with you alone in it, titled or not. Nothing is offered to anyone; binding people in later makes it a molecule.
     pub(super) fn found_atom_alone(&mut self, title: &str, history_from_genesis: bool) -> Option<MoleculeId> {
-        let (Some(our_pid), Some(seed), Some(hp)) = (self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)), self.device_seed(), self.session.as_ref().map(|s| s.handle_proof)) else {
+        let (Some(our_pid), Some(seed), Some(hp)) = (self.own_party_id(), self.device_seed(), self.session.as_ref().map(|s| s.handle_proof)) else {
             return None;
         };
         let (name, avatar) = self.own_name_grant();
@@ -1214,7 +1214,7 @@ impl PhotonApp {
     /// OLD-SELF IMPORT — MIGRATION-EXPIRES: 2027-02-01 (Nick 2026-10-27: "that import of old will be english only and version out in 12 versions, no reason to keep old non atoms around in the code"); grep the tag to find every piece.
     /// Boot: the old self conversation (`Conversation::new([us])`, its own table) becomes an atom in place when it holds a photon and is no atom yet; an empty one is never founded. Runs after the atoms load, so a device that converted earlier finds its atom already held.
     pub(super) fn adopt_old_self_conversation(&mut self, storage: &crate::storage::FlatStorage) {
-        let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+        let Some(us) = self.own_party_id() else {
             return;
         };
         let mut legacy = crate::types::Conversation::new([us]);
@@ -1305,7 +1305,7 @@ impl PhotonApp {
 
     /// Hand roster records (our leave) to our own devices as a page row under the group's token, the records in the `gpl` column.
     pub(super) fn share_molecule_records_with_fleet(&self, gid: MoleculeId, blob: Vec<u8>) {
-        let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+        let Some(us) = self.own_party_id() else {
             return;
         };
         let mut msg = crate::types::ChatMessage::control(crate::types::RowControl::Molecule(MoleculeSignal::Records), true, crate::network::time_base::stamp_osc());
@@ -1317,7 +1317,7 @@ impl PhotonApp {
 
     /// A sibling came online: every group we have left hands it our leave again (a no-op merge on a device that already left), so a device that was away when we left still leaves.
     pub(super) fn reshare_fleet_leaves(&self) {
-        let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+        let Some(us) = self.own_party_id() else {
             return;
         };
         for (gid, roster) in &self.molecule_rosters {
@@ -1551,7 +1551,7 @@ impl PhotonApp {
         if ready.is_empty() {
             return false;
         }
-        let Some(our_pid) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+        let Some(our_pid) = self.own_party_id() else {
             self.pending_molecule_posts.extend(ready);
             return false;
         };
@@ -1609,7 +1609,7 @@ impl PhotonApp {
 
     /// LEAVE (§10.1 Standing → Left, D9): post our signed leave record into the group and go read-only at once — the token drops from the admission list, compose closes, the row greys. The root is zeroized when the leave row's first ACK proves a survivor holds it (`on_molecule_ack`), so a lost frame cannot strand the others without the news; alone, at once.
     pub(super) fn leave_molecule(&mut self, gid: MoleculeId) -> bool {
-        let (Some(our_pid), Some(seed)) = (self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)), self.device_seed()) else {
+        let (Some(our_pid), Some(seed)) = (self.own_party_id(), self.device_seed()) else {
             return false;
         };
         let Some(pos) = self.molecule_rosters.iter().position(|(g, _)| *g == gid) else {
@@ -1659,7 +1659,7 @@ impl PhotonApp {
         if title.is_empty() {
             return false;
         }
-        let (Some(our_pid), Some(seed)) = (self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)), self.device_seed()) else {
+        let (Some(our_pid), Some(seed)) = (self.own_party_id(), self.device_seed()) else {
             return false;
         };
         let Some(pos) = self.molecule_rosters.iter().position(|(g, _)| *g == gid) else {
@@ -1698,7 +1698,7 @@ impl PhotonApp {
         // The joiners hold the era we are on now: their rows go out from here (the held flush below reaches them on the fresh lane).
         self.molecule_era_joiners.retain(|(g, _)| *g != gid);
         // Fresh bundle for the new era.
-        if let (Some(our_pid), Some(seed)) = (self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)), self.device_seed()) {
+        if let (Some(our_pid), Some(seed)) = (self.own_party_id(), self.device_seed()) {
             let era = self.friendship_chains.iter().find(|(id, _)| *id == fid).map(|(_, c)| c.era_index).unwrap_or(0);
             let eph = crate::crypto::era::era_keygen(era, 0, crate::crypto::era::KEM_SET_DEFAULT);
             let bundle = crate::types::molecule::bundle_record(our_pid, era, &eph, &seed);
@@ -1756,7 +1756,7 @@ impl PhotonApp {
     pub(super) fn fleet_holds_molecule(&mut self, gid: MoleculeId) {
         let fid = crate::types::FriendshipId::from_bytes(gid.0);
         // OUR LEAVE, made on a sibling: the roster carries our leave record and we no longer stand, so this device leaves too (Nick 2026-10-24: a leave stayed on the device it was made on).
-        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let us = self.own_party_id();
         let we_left = us.is_some_and(|us| self.molecule_rosters.iter().any(|(g, r)| *g == gid && r.leaves.contains_key(&us) && !r.is_standing(&us)));
         if we_left {
             if !self.molecule_is_left(&gid) {

@@ -34,7 +34,7 @@ const FACE_DIAMETERS: usize = 4;
 impl PhotonApp {
     /// Set group `gid`'s picture from a picked or dropped image file. NOTHING runs on the UI thread: a low-priority worker decodes, encodes the house image, and stores the blob; the record is minted and posted when it reports back (`drain_group_faces`), so no member is told of a picture that is not stored yet.
     pub(super) fn set_molecule_avatar(&mut self, gid: MoleculeId, image_bytes: Vec<u8>) {
-        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+        let Some(seed) = self.messenger_root() else {
             crate::log("GROUP AVATAR: ignored — not attested yet");
             return;
         };
@@ -84,7 +84,7 @@ impl PhotonApp {
 
     /// Mint, merge, persist and post one avatar record (the rename pattern): the record alone rides the Records post, never the roster around it.
     fn post_molecule_avatar(&mut self, gid: MoleculeId, image: Option<[u8; 32]>) -> bool {
-        let (Some(our_pid), Some(seed)) = (self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)), self.device_seed()) else {
+        let (Some(our_pid), Some(seed)) = (self.own_party_id(), self.device_seed()) else {
             return false;
         };
         let Some(pos) = self.molecule_rosters.iter().position(|(g, _)| *g == gid) else {
@@ -139,7 +139,7 @@ impl PhotonApp {
         if !std::mem::take(&mut self.group_faces_dirty) {
             return;
         }
-        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else { return };
+        let Some(seed) = self.messenger_root() else { return };
         let named: Vec<[u8; 32]> = self.molecule_rosters.iter().filter_map(|(_, r)| r.avatar_image()).collect();
         self.group_faces.retain(|f| named.contains(&f.image));
         for image in named {

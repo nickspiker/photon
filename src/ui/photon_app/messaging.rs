@@ -190,7 +190,7 @@ impl PhotonApp {
     /// Our own party in a conversation: the identity party for a roster conversation and for anyone we befriended, the device-derived pid in our own fleet's conversations.
     pub(super) fn our_pid_in(&self, id: crate::types::ConversationId) -> Option<crate::types::conversation::PartyId> {
         if self.roster_id_of(id).is_some() {
-            return self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+            return self.own_party_id();
         }
         let ci = self.pair_contact_of(id)?;
         self.our_party_id(&self.contacts[ci])
@@ -919,7 +919,7 @@ impl PhotonApp {
                 crate::logf!("MOLECULE: cannot send in {} — no root held", hex::encode(&gid.0[..4]));
                 return false;
             }
-            let Some(our_pid) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+            let Some(our_pid) = self.own_party_id() else {
                 return false;
             };
             let routes = self.routes_for_conversation(id, &our_pid);

@@ -124,6 +124,9 @@ impl PhotonApp {
 
     /// Decode the ORIGINAL for the open viewer, off-thread: opsin's ingest for everything it decodes (DNG/RAW/TIFF/JXL/JPEG/WebP/VSF — thru a temp file in the runtime dir, its readers want a path), the image crate's linear sRGB decode handed to opsin as linear VSF RGB for the rest (PNG, GIF, BMP), so it is ONE viewer whatever the bytes. The display copy folds to [`crate::ui::attach_preview::LINEAR_VIEW_MAX_EDGE`] (twelve bytes a pixel); a phone drops the decode itself once its facts are captured. A picture not held here is fetched once; the tick re-runs this when it lands.
     pub(super) fn request_view_decode(&mut self) {
+        let Some(seed) = self.messenger_root() else {
+            return;
+        };
         let Some(v) = self.viewer.as_mut() else {
             return;
         };
@@ -142,9 +145,6 @@ impl PhotonApp {
             // The probe is on its way; the tick asks again.
             None => return,
         }
-        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
-            return;
-        };
         v.decoding = true;
         v.decode_frac.store(0, std::sync::atomic::Ordering::Relaxed);
         let frac = v.decode_frac.clone();
@@ -270,7 +270,7 @@ impl PhotonApp {
 
     /// Open the reader on a text/code row (the blob must be held).
     pub(super) fn open_reader(&mut self, hash: [u8; 32], name: String) {
-        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+        let Some(seed) = self.messenger_root() else {
             return;
         };
         let Some(bytes) = crate::storage::blob_load(&seed, &hash) else {
@@ -340,7 +340,7 @@ impl PhotonApp {
         if wants.is_empty() {
             return;
         }
-        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+        let Some(seed) = self.messenger_root() else {
             return;
         };
         if self.head_tx.is_none() {
@@ -417,7 +417,7 @@ impl PhotonApp {
     /// Preview wants the last render collected: a held preview blob → decode job; a missing one → one fetch per session (the friend + every sibling answer).
     pub(super) fn drain_img_wants(&mut self) {
         let wants = std::mem::take(&mut self.img_wants);
-        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+        let Some(seed) = self.messenger_root() else {
             return;
         };
         for (peer, hash, held, from_original) in wants {
