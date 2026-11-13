@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v152
 - **Names and pictures stay put.** Your name and avatar now carry your own signature and the moment you set them, so every device keeps the newest one; an older or empty copy can no longer replace a friend's picture with the placeholder or wipe their name.
 - **Messages reach friends who are online.** A message no longer waits for a direct connection that only looked like it worked: it also travels the backup route until the direct one has carried a message your friend confirmed, and a send that cannot go direct goes the backup way instead of nowhere.
 - **"Not delivered" means not delivered.** A message your friend already received, by any route, now says so, and a message is only marked delivered when your friend's device confirms it.
@@ -14,6 +16,8 @@ One sentence per line, however long; plain language for the person who installs 
 - **Group waves and beams link everyone.** Members who are not friends with each other now see and hear each other too, not only the person who started the wave.
 - **Beams look better and start sooner.** Someone who joins a beam late gets a picture straight away, the picture size follows each connection's real speed, and a busy connection makes the beam step down instead of stalling.
 - **Adding a device finds it even when its words came first.** Words typed before the new device has asked are matched as soon as it does.
+
+Built from photon 3aa5243c · chirp b01db995 · fgtw 39c516ae · fluor b3f68bb1 · ihi 92796ee6 · kete d04e2151 · limbus 30ab5cc3 · manifestus b154914e · nunc b518ad11 · opsin 60ea6940 · rarangi 387b44ab · spirix b12187fb · tapuwae 5c462e1d · tohu 7df2ac9b · voca 04dcf2df · vsf 1b87e15d
 
 ## v151
 - **Adding a device asks before it adds.** Touching a nearby device only picks it: it turns bright green on its own screen, and Photon asks "Is your new device bright green?" with Yes and No; an NFC tap or the device's typed words still add it at once.
