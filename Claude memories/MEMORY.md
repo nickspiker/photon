@@ -67,7 +67,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [Handle rename](project_handle_rename.md) — in the spec, scoped 2026-11-03: succession + slot move, four seams, two constraints to respect before any successor record ships
 - [Octopus page](project_octopus_page.md) — 2026-11-10 admin dashboard = Photon page via "Octopus" in the Diagnostics note; worker answers 3 signed VSF ops; NO tokens/cookies/login (passless)
 - [x codebook bump](project_x_codebook_bump.md) — 2026-11-10 vsf x re-issue DECIDED: accept; ASCII pinned (e29d6ff8); common emoji unchanged; take bump in lockstep when sent
-- [Profile Pending](project_profile_pending.md) — 2026-11-10 names/avatars Pending: no signed revision, last-heard wins, nobody asks; fix = fgtw Profile (FLOWS stage 7), awaiting go
+- [Profile Pending](project_profile_pending.md) — P1 LANDED 9d7916f6 (signed revisioned name/pin records); P2 open (roster codec, want/hand-on, avatars on every device)
 - [Attest→contacts 18 s](project_attest_to_contacts_latency.md) — SHELVED until flows + Pending land, then MUST fix
 - [Security audit](project_security_audit.md) — batch 1 + LIB-01 + VSF-05..12 + NET-04/06/07 receiver half FIXED by 2026-11-03 (v139); PROVENANCE PIN until 2027-02-01; NET-04/05 wire half = next flag day; Mediums next
 - [vault seed stretch](project_vault_seed_stretch.md) — CSTV-02 vault half NOT built: kete identity = key input AND address scope; plan recorded
