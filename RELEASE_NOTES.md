@@ -6,6 +6,14 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Names and pictures stay put.** Your name and avatar now carry your own signature and the moment you set them, so every device keeps the newest one; an older or empty copy can no longer replace a friend's picture with the placeholder or wipe their name.
+- **Messages reach friends who are online.** A message no longer waits for a direct connection that only looked like it worked: it also travels the backup route until the direct one has carried a message your friend confirmed, and a send that cannot go direct goes the backup way instead of nowhere.
+- **"Not delivered" means not delivered.** A message your friend already received, by any route, now says so, and a message is only marked delivered when your friend's device confirms it.
+- **Conversations stop going quiet for hours.** When two devices disagree about a conversation's newest encryption key, they now settle it the same way at once instead of talking past each other for a day.
+- **Groups keep working after a restart.** A group with a message nobody had confirmed yet could become unreadable on a device that restarted; it now saves correctly.
+- **Group waves and beams link everyone.** Members who are not friends with each other now see and hear each other too, not only the person who started the wave.
+- **Beams look better and start sooner.** Someone who joins a beam late gets a picture straight away, the picture size follows each connection's real speed, and a busy connection makes the beam step down instead of stalling.
+- **Adding a device finds it even when its words came first.** Words typed before the new device has asked are matched as soon as it does.
 
 ## v151
 - **Adding a device asks before it adds.** Touching a nearby device only picks it: it turns bright green on its own screen, and Photon asks "Is your new device bright green?" with Yes and No; an NFC tap or the device's typed words still add it at once.
