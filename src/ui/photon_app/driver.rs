@@ -38,6 +38,12 @@ impl FluorApp<Px> for PhotonApp {
         self.pending_keyboard_request.take()
     }
 
+    /// The system keyboard's rows from the frame's bottom, as a host that composites a keyboard over the frame tells them (ferros: fluor's ferros host, WINDOWS.md "The keyboard"; 0 when it goes).
+    /// Kept here and laid out by the tick's keyboard watch, which has the viewport this call does not.
+    fn on_keyboard_inset(&mut self, rows: u32) {
+        self.keyboard_rows = rows;
+    }
+
     /// Honest-IME read: the FOCUSED textbox's text + cursor (chars), thru the one registry — any box (compose, search, profile fields) mirrors truthfully to the Android InputConnection.
     fn ime_editor_state(&mut self) -> Option<(String, usize)> {
         let focus = self.focused?;
@@ -3404,6 +3410,14 @@ impl FluorApp<Px> for PhotonApp {
                 self.scene_dirty = true;
                 { needs_redraw = true; self.note_redraw(line!() + 100_000); }
             }
+        }
+
+        // The host's keyboard watch (ferros, `on_keyboard_inset`): as Android's above, the frame never resizes for the keyboard, so a change of its rows lays the bottom-anchored widgets out again here. Never set on a host without a composited keyboard, so it stays 0 there.
+        if self.keyboard_rows != self.keyboard_rows_laid {
+            self.keyboard_rows_laid = self.keyboard_rows;
+            self.update_widget_layout(ctx);
+            self.scene_dirty = true;
+            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
 
         // Android sticky-session freshness: while signed in, on a fresh resume/attest (deadline None) and every jittered 30–60 min after, fire the "ensure" signal — Kotlin reads the sticky and only re-posts if the OS evicted it. Keeps the reinstall-survival capsule alive against Samsung's sticky eviction, cheaply (the read-then-skip means no churn when it's already there). Only overrides an idle signal so a fresh attest's force-post (1) or a nuke (-1) is never clobbered.

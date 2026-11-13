@@ -34,10 +34,15 @@ use crate::network::http::SEED_HTTPS as FGTW_URL;
 /// Photon's HTTP reach to FGTW: POST via the shared pooled client, hand the crate back `{status, body}` so it owns the `error`-frame reason / success interpretation.
 struct PhotonTransport;
 impl FgtwTransport for PhotonTransport {
+    /// ferros has no TLS: the same POST over plain HTTP on port 80, which fgtw.org answers as it answers HTTPS (every body a signed VSF document, folded and verified here). The peers still come first (the held chains above); fgtw.org stays the mirror asked last.
     #[cfg(target_os = "ferros")]
-    fn post(&self, _body: Vec<u8>) -> Result<FgtwResponse, String> {
+    fn post(&self, body: Vec<u8>) -> Result<FgtwResponse, String> {
         fgtw_log_to_ours();
-        Err("no fgtw.org from ferros: the fleet is the peers".to_string())
+        let (status, body) = crate::platform::ferros_http::post(crate::network::http::SEED_HOST, 80, "/", "application/octet-stream", &body).map_err(|e| {
+            crate::logf!("FGTW: plain HTTP to fgtw.org failed: {}", e);
+            "No connection to FGTW".to_string()
+        })?;
+        Ok(FgtwResponse { status, body })
     }
 
     #[cfg(not(target_os = "ferros"))]
