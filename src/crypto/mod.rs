@@ -4,6 +4,7 @@ pub mod clutch;
 pub mod era;
 pub mod handle_proof;
 pub mod keys;
+pub mod photon_keys;
 pub mod self_verify;
 pub mod shards;
 

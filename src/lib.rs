@@ -9,6 +9,7 @@
 //   clutch.rs       — 8-algorithm parallel key ceremony: smear_hash, derive_conversation_token, derive_ceremony_instance, spaghettify, sibling_party_id (device-derived fleet-weave party id), offer provenance (prior + braid claims), agreed_braid.
 //   era.rs          — the LIGHT ERA RATCHET: hybrid KEM (ML-KEM-1024 + X25519 + HQC-256) era_keygen/era_encapsulate/era_decapsulate, derive_era_fresh/derive_era_transcript/derive_era_keys (next era = KDF(old root ‖ old hk ‖ fresh ‖ transcript)), EraSignal Init/Resp/Nudge row grammar, LIGHT_RATCHET_CADENCE_ROWS=256. EraDecapKeys — the GROUP-persisted decap bundle (export_decaps/era_decapsulate_molecule): a published bundle must open a wrap minted while the device slept.
 //   handle_proof.rs — memory-hard handle attestation (~1s); re-exports ihi::handle_proof.
+//   photon_keys.rs  — PhotonKeys: what the messenger holds of the person (its alias, the handle proof, the pinned identity key, the binding, the legacy seed until this device speaks the alias); ferros docs/PHOTON.md "Photon's own key: the migration".
 //   self_verify.rs  — Ed25519 binary signature verification: AUTHOR_PUBKEY, SYSTEM_PUBKEYS, is_system_pubkey, verify_binary_hash, verify_file (update downloads — verify BEFORE exec).
 //   shards.rs       — social recovery key sharding (TODO).
 //
