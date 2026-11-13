@@ -309,6 +309,12 @@ impl PTManager {
         self.dead_addrs.iter().any(|d| same_addr(*d, addr))
     }
 
+    /// True when [`send_tagged`](Self::send_tagged) would refuse this payload outright: a single-packet send whose every named address stopped answering.
+    /// Nothing is queued for a refused send and nothing goes on the wire, so the caller owes the frame another path (the relay): a send must never go nowhere (Brittany 2026-11-12, a photon held 25 minutes behind an address PT had declared dead).
+    pub fn refuses(&self, peer_addr: SocketAddr, alt_addr: Option<SocketAddr>, len: usize) -> bool {
+        len <= Self::SINGLE_PACKET_MAX && self.is_dead(peer_addr) && alt_addr.map_or(true, |a| self.is_dead(a))
+    }
+
     /// The revival edge: any datagram FROM an address proves it answers again, so sends to it resume.
     /// The receive loop calls this for every datagram; it is a no-op while nothing is dead.
     /// The addresses that died since the last call, for the network loop to report as unreachable-peer edges.
@@ -379,7 +385,7 @@ impl PTManager {
         // Small payload — enqueue as a reliable packet (stop-and-wait, one in flight per peer, retransmitted on backoff in tick() until the receiver's delivery ack arrives). Returns the bytes to send NOW only if no packet is already in flight to this peer; otherwise it queues behind the in-flight head and goes out when that head is acked.
         if data.len() <= Self::SINGLE_PACKET_MAX {
             // A dead primary hands the send to a live alternate, else the send is refused: nothing queues behind an address that stopped answering, and the first datagram heard from it lifts the refusal.
-            // Returning empty is the same contract as the sentinel guard above; the caller's relay fan-out and retransmit sweep are untouched.
+            // A refusal returns empty like the sentinel guard above, and the caller asks `refuses` first: a refused frame goes over the relay, since the caller's own relay fan-out can be empty while a direct path is held.
             let (peer_addr, alt_addr) = match (self.is_dead(peer_addr), alt_addr.filter(|a| !self.is_dead(*a))) {
                 (false, alt) => (peer_addr, alt),
                 (true, Some(alt)) => (alt, None),
@@ -1899,6 +1905,25 @@ mod tests {
         assert!(mgr.send(dead, vec![9; 64]).is_empty(), "an unrelated datagram revives nothing");
         mgr.heard_from(dead);
         assert!(!mgr.send(dead, vec![9; 64]).is_empty(), "heard from again: sends resume");
+    }
+
+    /// `refuses` names exactly the sends `send_tagged` drops on the floor, so the caller can carry them over the relay (Brittany 2026-11-12: the 21:05 photon went only to an address PT had declared dead, and nowhere else, for 25 minutes).
+    #[test]
+    fn refuses_names_exactly_the_sends_a_dead_address_drops() {
+        let mut mgr = PTManager::new(test_keypair());
+        let dead: SocketAddr = "70.214.59.205:3825".parse().unwrap();
+        let live: SocketAddr = "[2600:1012:b379::1]:4383".parse().unwrap();
+        assert!(!mgr.refuses(dead, None, 64), "nothing is dead yet");
+        mgr.dead_addrs.push(dead);
+        assert!(mgr.refuses(dead, None, 64));
+        assert!(mgr.send_with_pubkey(dead, vec![1; 64], Some([7; 32])).is_empty());
+        assert!(mgr.outbound_packets.is_empty(), "a refused send queues nothing, so no PT ladder will ever relay it");
+        assert!(!mgr.refuses(dead, Some(live), 64), "a live alternate takes the send");
+        assert!(!mgr.send_with_pubkey_and_alt(dead, Some(live), vec![2; 64], Some([7; 32])).is_empty());
+        assert!(mgr.refuses(dead, Some(dead), 64), "an alternate that is itself dead is no alternate");
+        assert!(!mgr.refuses(dead, None, PTManager::SINGLE_PACKET_MAX + 1), "a stream has its own SPEC ladder and relay fallback");
+        mgr.heard_from(dead);
+        assert!(!mgr.refuses(dead, None, 64), "heard from again: no longer refused");
     }
 
     // Helper to parse VSF section fields (for legacy format like pt_spec)

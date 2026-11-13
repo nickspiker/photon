@@ -657,6 +657,9 @@ pub enum StatusUpdate {
         plaintext_hash: [u8; 32],
         /// The signing device — the only identity an ACK carries; a GROUP resolves it to the acking party for the per-member ledger (docs/molecules.md step 4).
         sender_pubkey: [u8; 32],
+        /// Where the ACK came from: a real address when it arrived direct, `RELAY_ADDR` over the relay pipe.
+        /// A receiver ACKs direct only a frame it got direct, so a direct ACK from the validated path is the proof that path carries messages (`Contact::direct_confirmed`).
+        sender_addr: SocketAddr,
     },
     /// Avatar request received from a peer - they want our avatar (verified signature)
     AvatarRequestReceived {
@@ -1265,6 +1268,30 @@ async fn relay_reply(
     } else {
         udp::send(socket, bytes, dst).await;
     }
+}
+
+/// A direct send PT refused (every address it names stopped answering, `PTManager::refuses`) goes over the relay to the device it was for: a send never goes nowhere.
+/// Direct stays first; this is the fallback the refusal used to skip, because the caller's own relay fan-out is empty while a direct path is held (Brittany 2026-11-12, a photon sent only to a dead address and nowhere else for 25 minutes).
+/// When the fan-out already names the device, it carries the frame and nothing more is sent.
+fn relay_refused_send(
+    what: &'static str,
+    keypair: &crate::network::fgtw::Keypair,
+    peer_addr: SocketAddr,
+    recipient: [u8; 32],
+    relay_to: &[[u8; 32]],
+    bytes: &[u8],
+) {
+    if relay_to.contains(&recipient) {
+        return;
+    }
+    crate::logf!("PT: {} to {} refused (that address stopped answering) — fell back to the relay for device {}", what, peer_addr, crate::fp(&recipient));
+    let kp = keypair.clone();
+    let bytes = bytes.to_vec();
+    tokio::spawn(async move {
+        if let Err(e) = crate::network::fgtw::relay::send_via_relay_always(&kp, &recipient, &bytes).await {
+            crate::logf!("RELAY: {} fallback to {} failed: {}", what, hex::encode(&recipient[..4]), e);
+        }
+    });
 }
 
 // The old relay dispatch (split_concatenated_vsf + dispatch_relayed_clutch) is GONE. The pipe injects each relayed frame directly into the receiver's select! as a whole datagram tagged RELAY_ADDR, so the real dispatch parses it — CLUTCH, ping/pong, chat, acks all — with no bespoke relay parser. There is nothing to split either: a WebSocket frame IS one message (no concatenation, unlike the old fetch response).
@@ -4092,6 +4119,7 @@ async fn run_checker(
                                             acked_eagle_time,
                                             plaintext_hash,
                                             sender_pubkey: sender_pubkey.key,
+                                            sender_addr: src_addr,
                                         },
                                         &event_proxy_recv,
                                     );
@@ -4355,7 +4383,7 @@ async fn run_checker(
                                             &event_proxy_recv,
                                         );
                                     }
-                                    // Resolve the probe → validated path. The address we sent to (`target`) is what we'll use to reach them; the ack's src confirms reachability. `resolve` removes the entry so a replayed ack can't re-validate.
+                                    // Resolve the probe → validated path. `resolve` removes the entry so a replayed ack can't re-validate.
                                     let resolved = {
                                         pending_probes_recv
                                             .lock()
@@ -4363,10 +4391,20 @@ async fn run_checker(
                                             .resolve(&provenance_hash)
                                     };
                                     if let Some((peer, target)) = resolved {
+                                        // THE PATH IS WHERE THE ANSWER CAME FROM, never merely where the probe went: the answer's source is the one address proven both ways (its datagram reached us, and our reply to it rides the pinhole it just opened).
+                                        // Crediting the probed address let an answer from another address validate a path nothing read (Brittany 2026-11-12: probe to ...10d8 answered from ...b379, and every photon after went to ...10d8 alone).
+                                        let path = crate::network::traverse::punch::answered_path(target, src_addr);
+                                        if udp::canon_socketaddr(path) != udp::canon_socketaddr(target) {
+                                            crate::logf!(
+                                                "TRAVERSE: the probe went to {} but the answer came from {} — the path is credited to the answer's source",
+                                                target,
+                                                src_addr
+                                            );
+                                        }
                                         crate::logf!(
                                             "TRAVERSE: ACK from {} — path validated {}",
                                             src_addr,
-                                            target
+                                            path
                                         );
                                         // The path reaches the device that SIGNED the ack, not the one the probe was aimed at.
                                         // Crediting `peer` let another contact's device at the same address (a shared 192.168.1.2 on two home LANs, a sibling behind one NAT) hold a friend's path "validated" forever: the relay leg stayed off, every ping went to the wrong device, and the friend sat offline while chat and ACKs flowed over the relay all day (Daniel 2026-11-06).
@@ -4388,7 +4426,7 @@ async fn run_checker(
                                             &status_tx_recv,
                                             StatusUpdate::PathValidated {
                                                 peer_pubkey: responder_pubkey,
-                                                remote: target,
+                                                remote: path,
                                             },
                                             &event_proxy_recv,
                                         );
@@ -4850,14 +4888,19 @@ async fn run_checker(
                 // Same guard the history drain below already applies for the same reason; the relay fan-out that follows is the delivery path for these peers and is deliberately left outside the `if`.
                 if !crate::network::traverse::gather::is_bogus_addr(&request.peer_addr) {
                     // Route thru PT - handles UDP, TCP after 1s, relay fallback
-                    let pt_bytes = {
+                    let (pt_bytes, refused) = {
                         let mut pt_mgr = pt.lock().unwrap();
-                        pt_mgr.send_with_pubkey(
+                        let refused = pt_mgr.refuses(request.peer_addr, None, msg_bytes.len());
+                        let bytes = pt_mgr.send_with_pubkey(
                             request.peer_addr,
                             msg_bytes.clone(),
                             Some(request.recipient_pubkey),
-                        )
+                        );
+                        (bytes, refused)
                     };
+                    if refused {
+                        relay_refused_send("chat", &keypair, request.peer_addr, request.recipient_pubkey, &request.relay_to, &msg_bytes);
+                    }
                     // PT returns the first wire bytes to send, or EMPTY if this packet queued behind an in-flight one for this peer (stop-and-wait) — in that case tick() sends it once the head is acked. Don't emit an empty datagram.
                     if !pt_bytes.is_empty() {
                         udp::send(&socket, &pt_bytes, request.peer_addr).await;
@@ -4889,16 +4932,21 @@ async fn run_checker(
         while let Ok(request) = history_rx.try_recv() {
             // A peer with no reachable direct address rides the relay IMMEDIATELY (whole frame down the pipe, like chat's relay_to) — PT's ladder-then-relay needs ~31s of failures, longer than the history requester's expiry, so relay-only pairs starved forever on it.
             if !request.peer_addr.ip().is_unspecified() {
-                let pt_bytes = {
+                let (pt_bytes, refused) = {
                     let mut pt_mgr = pt.lock().unwrap();
-                    pt_mgr.send_tagged(
+                    let refused = pt_mgr.refuses(request.peer_addr, None, request.vsf_bytes.len());
+                    let bytes = pt_mgr.send_tagged(
                         request.peer_addr,
                         None,
                         request.vsf_bytes.clone(),
                         Some(request.recipient_pubkey),
                         request.tag,
-                    )
+                    );
+                    (bytes, refused)
                 };
+                if refused {
+                    relay_refused_send("history", &keypair, request.peer_addr, request.recipient_pubkey, &request.relay_to, &request.vsf_bytes);
+                }
                 if !pt_bytes.is_empty() {
                     udp::send(&socket, &pt_bytes, request.peer_addr).await;
                     if let Some(alt) = request.alt_addr {
@@ -4961,14 +5009,19 @@ async fn run_checker(
                 // `relay_to` below is this ACK's real path (that is exactly what the field is for), so the guard costs nothing here.
                 if !crate::network::traverse::gather::is_bogus_addr(&request.peer_addr) {
                     // Route thru PT - handles UDP, TCP after 1s, relay fallback
-                    let pt_bytes = {
+                    let (pt_bytes, refused) = {
                         let mut pt_mgr = pt.lock().unwrap();
-                        pt_mgr.send_with_pubkey(
+                        let refused = pt_mgr.refuses(request.peer_addr, None, msg_bytes.len());
+                        let bytes = pt_mgr.send_with_pubkey(
                             request.peer_addr,
                             msg_bytes.clone(),
                             Some(request.recipient_pubkey),
-                        )
+                        );
+                        (bytes, refused)
                     };
+                    if refused {
+                        relay_refused_send("ack", &keypair, request.peer_addr, request.recipient_pubkey, &request.relay_to, &msg_bytes);
+                    }
                     // Empty = queued behind an in-flight packet (stop-and-wait); tick() will send it.
                     if !pt_bytes.is_empty() {
                         udp::send(&socket, &pt_bytes, request.peer_addr).await;
@@ -5132,15 +5185,20 @@ async fn run_checker(
             }
 
             // Send via PT - handles retries/fallback internally. Races LAN vs WAN if alt given.
-            let bytes_to_send = {
+            let (bytes_to_send, refused) = {
                 let mut pt_mgr = pt.lock().unwrap();
-                pt_mgr.send_with_pubkey_and_alt(
+                let refused = pt_mgr.refuses(request.peer_addr, request.alt_addr, vsf_bytes.len());
+                let bytes = pt_mgr.send_with_pubkey_and_alt(
                     request.peer_addr,
                     request.alt_addr,
                     vsf_bytes.clone(),
                     Some(request.recipient_pubkey),
-                )
+                );
+                (bytes, refused)
             };
+            if refused {
+                relay_refused_send("ceremony step", &keypair, request.peer_addr, request.recipient_pubkey, &request.relay_to, &vsf_bytes);
+            }
             udp::send(&socket, &bytes_to_send, request.peer_addr).await;
             if let Some(alt) = request.alt_addr {
                 udp::send(&socket, &bytes_to_send, alt).await;
@@ -5200,15 +5258,20 @@ async fn run_checker(
             }
 
             // Send via PT - handles retries/fallback internally. Races LAN vs WAN if alt given.
-            let bytes_to_send = {
+            let (bytes_to_send, refused) = {
                 let mut pt_mgr = pt.lock().unwrap();
-                pt_mgr.send_with_pubkey_and_alt(
+                let refused = pt_mgr.refuses(request.peer_addr, request.alt_addr, vsf_bytes.len());
+                let bytes = pt_mgr.send_with_pubkey_and_alt(
                     request.peer_addr,
                     request.alt_addr,
                     vsf_bytes.clone(),
                     Some(request.recipient_pubkey),
-                )
+                );
+                (bytes, refused)
             };
+            if refused {
+                relay_refused_send("ceremony step", &keypair, request.peer_addr, request.recipient_pubkey, &request.relay_to, &vsf_bytes);
+            }
             udp::send(&socket, &bytes_to_send, request.peer_addr).await;
             if let Some(alt) = request.alt_addr {
                 udp::send(&socket, &bytes_to_send, alt).await;
@@ -5254,15 +5317,20 @@ async fn run_checker(
             }
 
             // Send via PT - handles retries/fallback internally. Races LAN vs WAN if alt given. (Complete proof is small and sent directly, so racing here is just dual UDP send.)
-            let bytes_to_send = {
+            let (bytes_to_send, refused) = {
                 let mut pt_mgr = pt.lock().unwrap();
-                pt_mgr.send_with_pubkey_and_alt(
+                let refused = pt_mgr.refuses(request.peer_addr, request.alt_addr, vsf_bytes.len());
+                let bytes = pt_mgr.send_with_pubkey_and_alt(
                     request.peer_addr,
                     request.alt_addr,
                     vsf_bytes.clone(),
                     Some(request.recipient_pubkey),
-                )
+                );
+                (bytes, refused)
             };
+            if refused {
+                relay_refused_send("ceremony step", &keypair, request.peer_addr, request.recipient_pubkey, &request.relay_to, &vsf_bytes);
+            }
             udp::send(&socket, &bytes_to_send, request.peer_addr).await;
             if let Some(alt) = request.alt_addr {
                 udp::send(&socket, &bytes_to_send, alt).await;

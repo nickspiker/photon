@@ -4574,14 +4574,23 @@ fn relay_unless_direct_trusted(
     our_lan_v4: Option<std::net::Ipv4Addr>,
 ) -> Vec<[u8; 32]> {
     use crate::network::traverse::gather::is_foreign_peer_lan;
-    let direct_trusted = c
-        .validated_path
-        .map_or(false, |(a, _)| !is_foreign_peer_lan(&a, our_lan_v4));
+    // A held path earns the relay's place only once a message the peer confirmed has crossed it (`direct_confirmed`): a probe answer alone held the relay off while every photon went to an address nothing read (Brittany 2026-11-12, 25 minutes late).
+    // Direct stays first either way; until the confirmation lands the relay copy rides beside it.
+    let canon = crate::network::udp::canon_socketaddr;
+    let direct_trusted = c.validated_path.map_or(false, |(a, _)| {
+        !is_foreign_peer_lan(&a, our_lan_v4) && c.direct_confirmed.is_some_and(|d| canon(d) == canon(a))
+    });
     if direct_trusted {
         Vec::new()
     } else {
         c.relay_device_list()
     }
+}
+
+/// True when a delivery ACK that arrived from `ack_src` proves the validated `path` carries messages: it came direct (never the relay sentinel) and from that very address.
+fn direct_ack_confirms(path: std::net::SocketAddr, ack_src: std::net::SocketAddr) -> bool {
+    let canon = crate::network::udp::canon_socketaddr;
+    !crate::network::traverse::gather::is_bogus_addr(&ack_src) && canon(path) == canon(ack_src)
 }
 
 /// The conversation a contact row stands for, found by participant-set id. A FREE function on the conversations slice, not a `&self` method, so render scopes holding a `&mut chrome` field borrow can still resolve it thru disjoint field paths.
@@ -5303,5 +5312,33 @@ mod about_line_tests {
         for raw in ["", "no-version-here", "v1.2 \u{00b7} short", "vX.Y.Z \u{00b7} a \u{00b7} b c"] {
             assert_eq!(super::about_line_display(raw), raw);
         }
+    }
+}
+
+#[cfg(test)]
+mod relay_trust_tests {
+    use crate::types::{Contact, DevicePubkey, HandleText};
+
+    /// A probe answer alone never stands the relay down: only a delivery ACK that came back direct from the validated path's own address does, and a new path starts unconfirmed again (Brittany 2026-11-12, a photon sent to an address nothing read for 25 minutes).
+    #[test]
+    fn the_relay_stands_down_only_for_a_path_a_confirmed_photon_crossed() {
+        let dev = [9u8; 32];
+        let mut c = Contact::new(HandleText::new("friend"), [0x33; 32], DevicePubkey::from_bytes(dev));
+        let probed: std::net::SocketAddr = "[2600:1012:b379::1]:4383".parse().unwrap();
+        let other: std::net::SocketAddr = "[2600:100e:10d8::1]:4383".parse().unwrap();
+        c.validated_path = Some((probed, std::time::Instant::now()));
+        assert_eq!(super::relay_unless_direct_trusted(&c, None), vec![dev], "validated by a probe answer only: the relay copy rides");
+        assert!(!super::direct_ack_confirms(probed, crate::network::status::RELAY_ADDR), "an ACK over the relay proves nothing about the direct path");
+        assert!(!super::direct_ack_confirms(probed, other), "an ACK from another address proves another address");
+        assert!(super::direct_ack_confirms(probed, probed));
+        let v4: std::net::SocketAddr = "70.214.59.205:3825".parse().unwrap();
+        let mapped: std::net::SocketAddr = "[::ffff:70.214.59.205]:3825".parse().unwrap();
+        assert!(super::direct_ack_confirms(v4, mapped), "the same address in its v4-mapped form");
+        c.direct_confirmed = Some(probed);
+        assert!(super::relay_unless_direct_trusted(&c, None).is_empty(), "a confirmed path carries the send alone, direct first");
+        c.validated_path = Some((other, std::time::Instant::now()));
+        assert_eq!(super::relay_unless_direct_trusted(&c, None), vec![dev], "the confirmation was for another address");
+        c.validated_path = None;
+        assert_eq!(super::relay_unless_direct_trusted(&c, None), vec![dev]);
     }
 }

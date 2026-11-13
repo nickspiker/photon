@@ -118,12 +118,39 @@ impl PendingProbes {
     }
 }
 
+/// The direct path a probe answer validates: the address the answer CAME FROM, the one address proven both ways.
+/// The probed `target` is kept as-is when the answer came from it (the same address in either v4 form), so an unchanged path keeps its byte form; any other source is credited canonically.
+/// A probe at one of a phone's addresses answered from another (two carrier IPv6 prefixes, field 2026-11-12) proves the source, not the target.
+pub fn answered_path(target: SocketAddr, answer_src: SocketAddr) -> SocketAddr {
+    let src = crate::network::udp::canon_socketaddr(answer_src);
+    if crate::network::udp::canon_socketaddr(target) == src {
+        target
+    } else {
+        src
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn addr(s: &str) -> SocketAddr {
         s.parse().unwrap()
+    }
+
+    /// An answer from the probed address keeps the probed address (in its own byte form); an answer from another address credits the answer's source, never the target.
+    #[test]
+    fn a_probe_answer_credits_the_address_it_came_from() {
+        let target = addr("[2600:100e:10d8::1]:4383");
+        let other = addr("[2600:1012:b379::1]:4383");
+        assert_eq!(answered_path(target, target), target);
+        assert_eq!(answered_path(target, other), other, "the probed address is not proven by an answer from elsewhere");
+        let v4 = addr("203.0.113.9:4383");
+        let mapped = addr("[::ffff:203.0.113.9]:4383");
+        assert_eq!(answered_path(v4, mapped), v4, "a v4-mapped echo of the target is the target");
+        assert_eq!(answered_path(mapped, addr("198.51.100.7:4383")), addr("198.51.100.7:4383"));
+        let other_port = addr("203.0.113.9:51000");
+        assert_eq!(answered_path(v4, other_port), other_port, "a NAT that answers from another port: that port is the path");
     }
 
     #[test]

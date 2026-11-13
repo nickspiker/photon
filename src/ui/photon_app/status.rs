@@ -705,7 +705,9 @@ impl PhotonApp {
                                                 });
                                         }
                                         // SENDER-SIDE RE-SERVE (Nick's go, 2026-08-20) — the delivery-side fix the pull-gate comment above promises. The pending list only retransmits rows it still holds; a row implied-delivered by a FLEET ack that THIS peer device never received leaves their lane wedged forever — they gap-buffer every later row (twice on 2026-08-20 that hostage was a wave ANSWER). The sealed tip is per-device cryptographic testimony of what they hold contiguously, and their row_count deficit is content-level evidence they lack rows — so when WE are strictly ahead, re-serve the oldest rows above the tip from the DURABLE store at their ORIGINAL stamps (the lane-rotation flush's proven semantics). The receiver's row-store dedup absorbs anything it already had and Re-ACKs it, clearing the fresh pending; a genuinely missing row processes normally and un-jams the gap cascade.
-                                        if n_rows > record.row_count {
+                                        // ONLY THE FRIEND'S OWN WORD: one of our own devices holding fewer rows of this conversation is a fleet-replication gap, not evidence the friend lacks anything, and its tip for our lane is its view, not theirs.
+                                        // A MacBook's record re-encrypted four old rows onto the live lane toward Brittany in two minutes, and the next new photon went unacknowledged (2026-11-12, 01:37-01:39).
+                                        if n_rows > record.row_count && !responder_is_sibling {
                                             // Cap = rows TRANSMITTED per testimony, not bursts attempted (2026-09-01): the serial-send gate lets ~1 row out per burst, so a burst-attempt cap of 2 parked any hole deeper than ~2 rows forever ('re-serving 8 → re-served 1' in the field log). 16 covers the deficit window; the deferred loop below charges actual transmits.
                                             const RESERVE_ROWS_PER_TESTIMONY: u8 = 16;
                                             const RESERVE_ROWS_PER_BURST: usize = 8;
@@ -1516,6 +1518,11 @@ impl PhotonApp {
                             } else {
                                 crate::logf!("CHAT: Skipping duplicate from {} (eagle_time {}) — row not held here and no stored ack_hash", crate::fp(&from_handle_hash), timestamp);
                             }
+                            // UNPLACEABLE, NOT DROPPED: a frame for a row we hold whose predecessor is not our head is either a retransmit of a frame already placed (behind) or a re-serve of the row at a NEW lane position that arrived before its predecessor (ahead), and the two look alike here.
+                            // The re-ACK above names the frame we placed for this row, never this one, so the sender reads it as "row held, this frame not placed" and implies nothing from it (process_ack_by).
+                            // Dropping the frame left an ahead re-serve's position empty for good, so every later frame gap-buffered behind it unacknowledged (Brittany 2026-11-12, 01:39): it waits here for its predecessor instead, and the lane follows it when that lands.
+                            // A behind frame's predecessor is a hash the head has already passed and never meets again, so it waits harmlessly until the bounded buffer drops it.
+                            chains.buffer_for_gap(prev_msg_hp, lane, timestamp, ciphertext.clone(), sender_addr, sender_pubkey.key);
                             continue;
                         }
 
@@ -1650,6 +1657,7 @@ impl PhotonApp {
                     acked_eagle_time,
                     plaintext_hash,
                     sender_pubkey,
+                    sender_addr,
                 } => {
                     // GROUP ACK (docs/molecules.md step 4): a group's token routes to the per-member ledger and never touches the friendship path below.
                     if let Some(gid) = self.friendship_chains.iter().find(|(_, c)| c.molecule && c.conversation_token == conversation_token).map(|(id, _)| crate::types::molecule::MoleculeId(*id.as_bytes())) {
@@ -1718,6 +1726,17 @@ impl PhotonApp {
                         if !self.contacts[contact_idx].knows_device(&sender_pubkey) || self.contacts[contact_idx].locked_out {
                             crate::logf!("CHAT: ACK from {} dropped — signer {}... is not a trusted device of this conversation", crate::fp(&from_handle_hash), hex::encode(&sender_pubkey[..8]));
                             continue;
+                        }
+                        // THE DIRECT PATH'S PROOF: the receiver ACKs direct only a frame that reached it direct, so a signed ACK arriving from the validated path's own address means a message crossed that path and the peer confirmed it.
+                        // Only now may the path stand in for the relay (relay_unless_direct_trusted).
+                        {
+                            let c = &mut self.contacts[contact_idx];
+                            if let Some((path, _)) = c.validated_path.filter(|(p, _)| super::direct_ack_confirms(*p, sender_addr)) {
+                                if c.direct_confirmed != Some(path) {
+                                    c.direct_confirmed = Some(path);
+                                    crate::logf!("TRAVERSE: {} confirmed a photon over the direct path {} — the relay copy stands down", crate::fp(&c.handle_proof), path);
+                                }
+                            }
                         }
 
                         crate::logf!(
@@ -3821,6 +3840,15 @@ impl PhotonApp {
                     fetch_none_after.push((content_hash, sender_pubkey.key));
                 }
                 StatusUpdate::PeerUnreachable { addr, device } => {
+                    // The transport's death edge for an address ends any trust in it as a message path: the relay copy rides again from the next send (the 21:05 photon of 2026-11-12 went to an address PT had declared dead 86 minutes earlier).
+                    if let Some(dead) = addr.map(crate::network::udp::canon_socketaddr) {
+                        for c in self.contacts.iter_mut() {
+                            if c.direct_confirmed.is_some_and(|d| crate::network::udp::canon_socketaddr(d) == dead) {
+                                c.direct_confirmed = None;
+                                crate::logf!("TRAVERSE: {} direct path {} stopped answering — relay copies resume", crate::fp(&c.handle_proof), dead);
+                            }
+                        }
+                    }
                     fetch_unreachable_after.push((addr, device));
                 }
                 // An unknown device answered for a device we know: whoever owns `pinged` has a fleet our fold has not caught up with — refresh that one fold, once per responder (the edge that would have healed Emma's new device in seconds instead of hours, 2026-10-21).
@@ -5277,6 +5305,8 @@ impl PhotonApp {
                                 );
                                 contact.validated_path = Some((remote, now));
                                 contact.validated_path_lan = remote_is_lan;
+                                // A freshly validated path has carried no message yet: the relay copy rides until one is confirmed across it.
+                                contact.direct_confirmed = None;
                                 // Path-up EDGE doubles as the parked ceremony's second chance: the one offer send may have raced only dead records (carrier-NAT LAN + a stale registry address) before this path proved out — and the pong-driven re-send never fires for a peer whose pongs don't flow. Only when the peer's own offer hasn't arrived either (a present offer means the exchange is moving; duplicates would just burn a half-MB transfer).
                                 if !contact.is_sibling
                                     && contact.clutch_state == crate::types::ClutchState::Pending
@@ -5304,6 +5334,7 @@ impl PhotonApp {
                                 );
                                 contact.validated_path = Some((remote, now));
                                 contact.validated_path_lan = true;
+                                contact.direct_confirmed = None;
                             }
                             Some(_) => { /* a different candidate acked; keep the first-won path */
                             }

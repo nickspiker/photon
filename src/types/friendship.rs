@@ -1684,20 +1684,31 @@ impl FriendshipChains {
         self.pending_messages.iter().find(|m| m.eagle_time == eagle_time && !m.targets.is_empty()).map(|m| m.targets.iter().filter(|p| !m.acked_by.contains(p)).copied().collect())
     }
 
-    /// Drop every pending AT OR BELOW the peer's contiguous lane tip: their sync record testified "everything up to here, received in order", so these rows are delivered — and holding them can wedge the in-flight window PERMANENTLY when the rows predate ack_hash persistence (the peer can never re-ACK them; the ACK that would imply-clear them needs a fresh send the full window blocks — round-5's chicken-and-egg, 'flushed 0/4', field 2026-08-16). Same testimony `rearm_pending_after` already trusts to pick what to RESEND; this just stops pretending the delivered half is still in flight. Device-local, no mutated_osc stamp (siblings never adopt pendings).
+    /// Drop every pending the peer's contiguous lane tip proves placed: their sync record testified "everything up to here, received in order", so these rows are delivered — and holding them can wedge the in-flight window PERMANENTLY when the rows predate ack_hash persistence (the peer can never re-ACK them; the ACK that would imply-clear them needs a fresh send the full window blocks — round-5's chicken-and-egg, 'flushed 0/4', field 2026-08-16). Same testimony `rearm_pending_after` already trusts to pick what to RESEND; this just stops pretending the delivered half is still in flight. Device-local, no mutated_osc stamp (siblings never adopt pendings).
+    /// THE TIP NAMES A FRAME, NOT A TIME: it is the stamp of the newest frame the peer placed on our lane, and a re-serve rides the lane at its row's ORIGINAL (older) stamp, so a stamp below the tip says nothing about whether that frame was placed.
+    /// Only the pending carrying the tip's own stamp is a frame the peer provably placed, and the in-order lane places everything sent before it (list order = send order = lane position); with no such pending nothing is cleared, and each row waits for its own ACK.
+    /// Clearing every stamp at or below the tip marked four re-served rows delivered with no ACK from the friend, while her chain had not followed them (Brittany 2026-11-12, 01:37-01:39).
     pub fn clear_pending_up_to(&mut self, tip_osc: i64) -> usize {
-        let before = self.pending_messages.len();
-        self.pending_messages.retain(|m| m.eagle_time > tip_osc);
-        before - self.pending_messages.len()
+        match self.tip_frame_index(tip_osc) {
+            Some(i) => self.pending_messages.drain(..=i).count(),
+            None => 0,
+        }
+    }
+
+    /// The pending the peer's lane tip names: the FIRST one carrying the tip's stamp, since that frame or one before it set the tip, and naming an earlier frame only ever clears less.
+    fn tip_frame_index(&self, tip_osc: i64) -> Option<usize> {
+        self.pending_messages.iter().position(|m| m.eagle_time == tip_osc)
     }
 
     /// Re-arm (reset the retransmit backoff for) pending messages NEWER than the peer's contiguous tip `tip_osc` that have already EXHAUSTED `MAX_SEND_ATTEMPTS`. Drives stall recovery: a receiver stalled on a gap keeps advertising its contiguous tip (its `last_received_osc`) in every ping's sync record; if the gap-filling message was one the sender already gave up on, this revives it so `collect_due_retransmits` will send it again. Without this, a message lost past 8 attempts is permanently undelivered and the receiver stays stuck forever. Non-exhausted pendings are left alone (their normal backoff already covers them). Returns how many were re-armed.
     ///
-    /// `tip_osc` is the peer's newest CONTIGUOUS eagle_time ("I have everything up to here, in order"), so anything with `eagle_time > tip_osc` is fair game to resend — it's either the missing message or a successor the peer is buffering behind it.
+    /// `tip_osc` is the stamp of the peer's newest CONTIGUOUS frame on our lane, so everything SENT after the pending carrying that stamp is fair game to resend: the missing message or a successor the peer is buffering behind it.
+    /// Sent after, never stamped after: a re-serve rides the lane at its row's original older stamp, and judging by stamp left an unplaced re-serve below the tip never resent (see `clear_pending_up_to`). With no pending at the tip's stamp, none is proven placed and every given-up one is revived.
     pub fn rearm_pending_after(&mut self, tip_osc: i64, now_osc: i64) -> usize {
         let mut rearmed = 0;
-        for msg in self.pending_messages.iter_mut() {
-            if msg.eagle_time > tip_osc && msg.attempts >= MAX_SEND_ATTEMPTS {
+        let from = self.tip_frame_index(tip_osc).map_or(0, |i| i + 1);
+        for msg in self.pending_messages.iter_mut().skip(from) {
+            if msg.attempts >= MAX_SEND_ATTEMPTS {
                 msg.attempts = 0;
                 msg.next_retry_osc = now_osc; // due immediately
                 rearmed += 1;
@@ -1983,19 +1994,23 @@ impl FriendshipChains {
         self.pending_messages.iter().find(|m| m.eagle_time == eagle_time).map(|m| (m.acked_by.len(), m.targets.len()))
     }
 
-    /// THE ACK LEDGER, any size (docs/conversations.md Phase 2): mark `acker` on the row and — because a receiver processes OUR lane strictly in order — on every OLDER pending too (the implied-ACK rule, per party); a pending clears when its acked set covers its targets, and one that names no targets (written before every conversation carried them, or an ACK with no attributed party) clears on any ACK, as a pair's always did.
-    /// Matched on eagle_time ALONE: a device physically cannot emit two messages at the same 704 ps tick (braid.md §1.5). The plaintext hash is a logged soft-check, never a gate — it covers the random pad, so any re-encryption of one message changes it (field 2026-08-08: a hard hash gate leaked the pending and the message retransmitted forever while the peer re-ACKed each copy).
+    /// THE ACK LEDGER, any size (docs/conversations.md Phase 2): mark `acker` on the row and — because a receiver processes OUR lane strictly in order — on every pending SENT before it too, when the ACK's hash names this very frame (the implied-ACK rule, per party); a pending clears when its acked set covers its targets, and one that names no targets (written before every conversation carried them, or an ACK with no attributed party) clears on any ACK, as a pair's always did.
+    /// Matched on eagle_time ALONE: a device physically cannot emit two messages at the same 704 ps tick (braid.md §1.5). The plaintext hash never gates the row itself, only what it implies about the rows before it — it covers the random pad, so any re-encryption of one message changes it (field 2026-08-08: a hard hash gate leaked the pending and the message retransmitted forever while the peer re-ACKed each copy).
     /// Returns the eagle times that just completed (their rows flip `delivered`). Under advance-on-send the ACK is a pure receipt: it never advances the chain.
     pub fn process_ack_by(&mut self, acked_eagle_time: i64, acker: Option<crate::types::PartyId>, acked_plaintext_hash: Option<&[u8; 32]>) -> Vec<i64> {
         let Some(idx) = self.pending_messages.iter().position(|m| m.eagle_time == acked_eagle_time) else {
             return Vec::new();
         };
-        if acked_plaintext_hash.is_some_and(|h| self.pending_messages[idx].plaintext_hash != *h) {
-            crate::logf!("CHAT: ACK hash mismatch for eagle_time {} — clearing on eagle_time (the pad differs or a re-encrypt raced); the message is delivered either way", acked_eagle_time);
+        // WHAT THE ACK PROVES. Its hash is the hash of the frame the receiver PLACED for that row: this very frame when the hashes match (the pad makes every encryption's hash its own), a different frame or a content stand-in when they differ.
+        // A mismatch is a receiver that holds the row but answered from storage without placing this frame (a re-serve that arrived out of order, Brittany 2026-11-12): the row is delivered, but nothing about the lane positions before it follows.
+        let placed = acked_plaintext_hash.map_or(true, |h| self.pending_messages[idx].plaintext_hash == *h);
+        if !placed {
+            crate::logf!("CHAT: ACK hash mismatch for eagle_time {} — the peer holds the row but did not place this frame; clearing this row only, no earlier pending implied", acked_eagle_time);
         }
         let mut done = Vec::new();
         let mut targeted = false;
-        for m in self.pending_messages.iter_mut().filter(|m| m.eagle_time <= acked_eagle_time) {
+        // The in-order lane implies every pending SENT before a placed frame, by list position (send order), never by stamp: a re-serve at an older stamp sits later on the lane than the rows stamped after it.
+        for m in self.pending_messages.iter_mut().enumerate().filter(|(i, _)| *i == idx || (placed && *i < idx)).map(|(_, m)| m) {
             if let Some(a) = acker.filter(|a| !m.acked_by.contains(a)) {
                 m.acked_by.push(a);
                 m.acked_by.sort_unstable();
@@ -2087,7 +2102,7 @@ impl FriendshipChains {
 
     // ==================== GAP BUFFER METHODS ====================
 
-    /// Buffer a message received out of order (its `prev_msg_hp` doesn't match what we've received so far). Keyed on the awaited `prev_msg_hp`; deduped on (sender, eagle_time) since `msg_hp` is unknown pre-decrypt.
+    /// Buffer a message received out of order (its `prev_msg_hp` doesn't match what we've received so far). Keyed on the awaited `prev_msg_hp`; deduped on (lane, eagle_time, prev_msg_hp) since `msg_hp` is unknown pre-decrypt.
     pub fn buffer_for_gap(
         &mut self,
         prev_msg_hp: [u8; 32],
@@ -2097,12 +2112,11 @@ impl FriendshipChains {
         sender_addr: std::net::SocketAddr,
         sender_pubkey: [u8; 32],
     ) {
-        // Don't buffer duplicates (same sender + same 704ps tick = the same message).
-        if self
-            .gap_buffer
-            .iter()
-            .any(|b| b.sender_handle_hash == sender_handle_hash && b.eagle_time == eagle_time)
-        {
+        // Don't buffer duplicates: the same lane, tick AND predecessor is the same frame.
+        // The predecessor is part of the key because a re-serve carries its row's original tick at a NEW lane position: keyed on the tick alone, a buffered earlier copy of the row swallowed the re-serve, and the lane never followed it.
+        if self.gap_buffer.iter().any(|b| {
+            b.sender_handle_hash == sender_handle_hash && b.eagle_time == eagle_time && b.prev_msg_hp == prev_msg_hp
+        }) {
             return;
         }
 
@@ -2860,6 +2874,25 @@ mod tests {
         assert_eq!(chains.gap_buffer_count(), 0);
     }
 
+    /// One row at two lane positions is two frames: a re-serve carries its row's original stamp behind a different predecessor, so the buffer holds both and releases whichever predecessor fills (Brittany 2026-11-12: a re-serve that beat its predecessor was dropped, and the lane never followed it).
+    #[test]
+    fn the_gap_buffer_keeps_a_re_serve_beside_an_earlier_copy_of_its_row() {
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut chains = FriendshipChains::from_clutch(&[[1u8; 32], [2u8; 32]], &eggs);
+        let addr: std::net::SocketAddr = "127.0.0.1:9000".parse().unwrap();
+        let lane = [0x1Au8; 32];
+        let (original_prev, reserve_prev) = ([0xA1u8; 32], [0xB2u8; 32]);
+        chains.buffer_for_gap(original_prev, lane, 1000, vec![1], addr, [7; 32]);
+        chains.buffer_for_gap(reserve_prev, lane, 1000, vec![2], addr, [7; 32]);
+        assert_eq!(chains.gap_buffer_count(), 2, "the re-serve is a different frame of the same row");
+        chains.buffer_for_gap(reserve_prev, lane, 1000, vec![2], addr, [7; 32]);
+        assert_eq!(chains.gap_buffer_count(), 2, "its own retransmit is the same frame");
+        let ready = chains.take_buffered_for(&reserve_prev);
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].ciphertext, vec![2], "the re-serve replays once its predecessor is the head");
+        assert_eq!(chains.gap_buffer_count(), 1);
+    }
+
     /// Two blobs run a cutover from one shared pending era: both land on the same root/index/tag, the old era is RETIRED (still decrypts), our lane and pendings reset, and dropping the retired era zeroizes it and removes its lanes.
     #[test]
     fn cutover_retires_the_old_era_readable_then_drops_it() {
@@ -3291,6 +3324,58 @@ mod tests {
 
         // Re-arming past the newest tip revives nothing.
         assert_eq!(chains.rearm_pending_after(t0 + 10 * one_s, far), 0);
+    }
+
+    /// RE-SERVES RIDE THE LANE AT OLD STAMPS (Brittany 2026-11-12, 01:37-01:39): a row re-served after a fresh one sits LATER on the lane with an EARLIER stamp, so the peer's tip says nothing about it.
+    /// Only the pending carrying the tip's own stamp, and what was sent before it, is proven placed; the re-serve waits for its own ACK, and stall recovery resends it although its stamp is below the tip.
+    #[test]
+    fn the_peer_tip_clears_by_send_position_never_by_stamp() {
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut sender = FriendshipChains::from_clutch(&[[1u8; 32], [2u8; 32]], &eggs);
+        let one_s = vsf::OSCILLATIONS_PER_SECOND as i64;
+        let fresh = 1_000_000_000i64;
+        let old = fresh - 3_600 * one_s;
+        sender.prepare_send(b"fresh".to_vec(), b"fresh".to_vec(), fresh, vec![]).unwrap();
+        sender.prepare_send(b"old".to_vec(), b"old".to_vec(), old, vec![]).unwrap();
+        let stamps = |c: &FriendshipChains| c.pending_messages.iter().map(|m| m.eagle_time).collect::<Vec<i64>>();
+        assert_eq!(sender.clear_pending_up_to(fresh + one_s), 0, "a tip naming no frame of ours proves no frame placed");
+        assert_eq!(stamps(&sender), vec![fresh, old]);
+        assert_eq!(sender.clear_pending_up_to(fresh), 1, "the tip's own frame is placed");
+        assert_eq!(stamps(&sender), vec![old], "the re-serve sent after it is not, though its stamp is older");
+        for k in 1..20 {
+            sender.collect_due_retransmits(fresh + one_s * 60 * k);
+        }
+        let far = fresh + one_s * 1_000_000;
+        assert!(sender.collect_due_retransmits(far).is_empty(), "exhausted");
+        assert_eq!(sender.rearm_pending_after(fresh, far), 1, "stall recovery resends the unplaced re-serve below the tip");
+        assert_eq!(sender.collect_due_retransmits(far).len(), 1);
+        for k in 1..20 {
+            sender.collect_due_retransmits(far + one_s * 60 * k);
+        }
+        let farther = far + one_s * 1_000_000;
+        assert!(sender.collect_due_retransmits(farther).is_empty(), "exhausted again");
+        assert_eq!(sender.rearm_pending_after(old, farther), 0, "its own stamp as the tip proves it placed");
+    }
+
+    /// The implied-ACK rule runs by send position and only from an ACK whose hash names the very frame we sent: a re-served row's storage re-ACK (the hash of the frame the peer placed long ago) delivers that row alone (Brittany 2026-11-12).
+    #[test]
+    fn an_ack_implies_earlier_sends_only_when_it_names_this_frame() {
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut sender = FriendshipChains::from_clutch(&[[1u8; 32], [2u8; 32]], &eggs);
+        let one_s = vsf::OSCILLATIONS_PER_SECOND as i64;
+        let fresh = 1_000_000_000i64;
+        let old = fresh - 3_600 * one_s;
+        let (_, _, _, ph_fresh, _) = sender.prepare_send(b"fresh".to_vec(), b"fresh".to_vec(), fresh, vec![]).unwrap();
+        sender.prepare_send(b"old".to_vec(), b"old".to_vec(), old, vec![]).unwrap();
+        sender.prepare_send(b"next".to_vec(), b"next".to_vec(), fresh + one_s, vec![]).unwrap();
+        let stamps = |c: &FriendshipChains| c.pending_messages.iter().map(|m| m.eagle_time).collect::<Vec<i64>>();
+        assert!(sender.process_ack(fresh, &ph_fresh));
+        assert_eq!(stamps(&sender), vec![old, fresh + one_s], "the re-serve sent after the fresh row is not implied by its ACK, whatever its stamp");
+        assert!(sender.process_ack(fresh + one_s, &[0xEE; 32]));
+        assert_eq!(stamps(&sender), vec![old], "a storage re-ACK delivers its own row and implies nothing sent before it");
+        let (_, _, _, ph_last, _) = sender.prepare_send(b"last".to_vec(), b"last".to_vec(), fresh + 2 * one_s, vec![]).unwrap();
+        assert!(sender.process_ack(fresh + 2 * one_s, &ph_last));
+        assert!(sender.pending_messages.is_empty(), "an ACK naming the frame placed delivers every frame sent before it");
     }
 
     /// The anchor-wedge detector: peer-at-anchor is HEALTHY while our oldest pending still links there (a first burst the retransmit can deliver), and a WEDGE only once the oldest exhausted pending builds mid-chain — the peer needs a frame we no longer hold, so no retransmit can ever be accepted (the 2026-08-09 field wedge: receiver lost the lane state, sender days deep, 2,913 retransmit lines overnight).

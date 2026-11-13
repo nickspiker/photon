@@ -777,6 +777,10 @@ pub struct Contact {
     pub validated_path: Option<(SocketAddr, std::time::Instant)>,
     /// Runtime-only, judged ONCE at the validation edge: the validated path is genuinely OUR LAN (private address on our own subnet, or a live WFD group) — not merely RFC-private. Carrier-grade NAT hands out 10.x to cellular devices, and a validated 10.x path across Verizon's CGNAT round-trips fine while being nothing like "same room" (field 2026-08-30: the cyan ring for a peer hundreds of miles away). Render reads this flag; it never re-derives from the address.
     pub validated_path_lan: bool,
+    /// Runtime-only: the validated path a peer-confirmed message has already crossed, both ways — set when a delivery ACK for one of our rows arrives DIRECT from that very address (the receiver ACKs direct only a frame it got direct).
+    /// A probe answer proves a datagram came back, not that a message lands: until this names the current `validated_path`, every send keeps its relay copy (Brittany 2026-11-12, a probe answered from another address held the relay off and a photon went nowhere for 25 minutes).
+    /// Forgotten when the path is replaced or newly validated, and when the transport declares the address dead.
+    pub direct_confirmed: Option<SocketAddr>,
     /// Runtime-only graceful-failure counter: consecutive ping cycles where an ONLINE contact was punched but never validated a direct path (the symmetric↔symmetric case). Past [`PUNCH_UNREACHABLE_THRESHOLD`] the peer is treated as direct-unreachable — the hook the relay milestone (M2) reads, and the seed-registry resolve's "this contact needs fresh addresses" signal. Reset to 0 on any validation.
     pub punch_unvalidated_cycles: u8,
     /// Runtime-only reachability clock (docs/reachability-doorbell.md): the last time ANY signed traffic from this contact's devices reached us — pong, punch ack, chat frame. "The guard's eyes are open." `None` since boot = never heard. Drives the dozed classification: silence past the dozed threshold plus undeliverable traffic = ring the doorbell.
@@ -952,6 +956,7 @@ impl Contact {
             chain_advanced_by_ack: false, // Our TX chain not yet ACK-advanced
             validated_path: None,         // No punch-validated direct path yet
             validated_path_lan: false,    // …so no same-LAN judgment either
+            direct_confirmed: None,       // …and no message has crossed one
             punch_unvalidated_cycles: 0,  // No failed punch cycles yet
             clutch_offer_stall_cycles: 0, // No stalled-offer cycles yet
             last_heard: None,             // No signed traffic from them yet this session
