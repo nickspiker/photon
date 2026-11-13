@@ -4805,8 +4805,8 @@ impl PhotonApp {
                                 crate::logf!("CLUTCH: preserved in-flight round for {} across resume (no willy-nilly re-key)", crate::fp(&c.handle_proof));
                             }
                         }
-                        // Fleet siblings load from their own index (they never enter the contacts index).
-                        {
+                        // Fleet siblings load from their own index (they never enter the contacts index); on the alias alone there are none (PHOTON.md M3), and a row the fleet reconcile wrote there before 2026-11-13 is left unread.
+                        if remembered.is_some() {
                             let siblings = crate::storage::contacts::load_all_siblings(
                                 our_hp,
                                 &s,
@@ -5031,7 +5031,10 @@ impl PhotonApp {
                             .filter(|c| !c.is_sibling)
                             .map(|c| c.handle_proof)
                             .collect();
-                        hps.push(our_hp);
+                        // Our own fleet only where Photon is a member of it (a session); on the alias alone its fleet is the identity service's (PHOTON.md M3).
+                        if remembered.is_some() {
+                            hps.push(our_hp);
+                        }
                         hps.sort_unstable();
                         hps.dedup();
                         self.spawn_contact_fleet_refresh(hps);

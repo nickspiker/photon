@@ -1714,6 +1714,10 @@ impl PhotonApp {
 
     /// Reconcile OUR OWN folded fleet membership into sibling contacts (the fleet weave). For each member device that isn't us and has no sibling contact yet: create one as `ClutchState::Pending` — the serialized keygen queue picks it up and the full CLUTCH ceremony + weave runs against it exactly like a friend. For each sibling contact whose device fell out of the fold: remove it and delete its state + chains (revocation hygiene — an ex-member must not stay ceremony-eligible). Idempotent; triggered from attest/resume, our-hp `fleet` events, and the Add machine's refold after an add.
     pub(super) fn reconcile_fleet_siblings(&mut self, members: &[[u8; 32]]) {
+        // On the alias alone (ferros, PHOTON.md M3) Photon is never a member of the fleet: the fleet's devices are the identity service's, not other Photons, so none becomes a sibling (the 8a's own identity device showed up as a "Pending…" row, 2026-11-13). Photon's siblings there come from the alias's device list.
+        if self.photon_keys.as_ref().is_some_and(|k| k.legacy_seed.is_none()) {
+            return;
+        }
         let Some(our_device) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) else {
             return;
         };
