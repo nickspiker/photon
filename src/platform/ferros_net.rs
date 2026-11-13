@@ -265,6 +265,12 @@ fn recv_once(port: u16, id: u32, buf: &mut [u8], deadline: u64) -> io::Result<Op
     Ok(Some((len, from)))
 }
 
+/// Open `port` at the ip server (a RECV opens it, at once) as reader `id`: a datagram no reader waits for is taken and dropped (one that came before the socket), never another reader's copy (fgtw's on 4383 and 4384).
+fn open_port(port: u16, id: u32) -> io::Result<()> {
+    let mut buf = [0u8; 0];
+    recv_once(port, id, &mut buf, 0).map(|_| ())
+}
+
 fn family_and_bytes(ip: IpAddr) -> (u8, [u8; 16]) {
     let mut b = [0u8; 16];
     match ip {
@@ -293,10 +299,7 @@ impl UdpSocket {
     /// Open `addr`'s port (the address is the device's one address; 0 picks a port from the dynamic range).
     pub async fn bind(addr: SocketAddr) -> io::Result<Self> {
         let port = if addr.port() == 0 { 49152 + (ferros_counter() % 16384) as u16 } else { addr.port() };
-        // A RECV opens the port on the server side (on a fresh port nothing waits for it to take).
-        let mut reply = [0u8; 64];
-        let req = [2u8, (port >> 8) as u8, port as u8];
-        call(&req, &mut reply)?;
+        open_port(port, watch_id())?;
         watch_add(port);
         Ok(UdpSocket { port, peer: Mutex::new(None) })
     }
@@ -432,15 +435,15 @@ impl Drop for StdUdpSocket {
 impl StdUdpSocket {
     pub fn bind<A: std::net::ToSocketAddrs>(addr: A) -> io::Result<Self> {
         let addr = addr.to_socket_addrs()?.next().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no address to bind"))?;
+        let id = reader_id();
         // A named port is a listening one: a RECV opens it on the server side now, so what comes before the first receive is kept. An unnamed one is opened by its first send or receive: the routing look-ups (`get_local_ip_toward`) bind one, connect and read the address, and opened at the bind each took one of the server's eight kept ports from a socket that listens.
         let port = if addr.port() == 0 {
             49152 + (ferros_counter() % 16384) as u16
         } else {
-            let mut reply = [0u8; 64];
-            call(&[2, (addr.port() >> 8) as u8, addr.port() as u8], &mut reply)?;
+            open_port(addr.port(), id)?;
             addr.port()
         };
-        Ok(StdUdpSocket { port, id: reader_id(), watched: false.into(), peer: Mutex::new(None), read_timeout: Mutex::new(None) })
+        Ok(StdUdpSocket { port, id, watched: false.into(), peer: Mutex::new(None), read_timeout: Mutex::new(None) })
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
