@@ -12,3 +12,5 @@ Owner report 2026-11-13 01:40 UTC. Desktop = device 469e79b8 (also the 2026-11-1
 Side: Nick pings c9b5f417, a Brittany key no longer in her fleet (~880 lines); her phone asked history for 4 unknown conversations ~1,380 times.
 
 **How to apply:** messaging code (Photon), not FGTW. Ask the owner for order; get Brittany's log for #0. None of it is from v151 or this week's changes.
+
+**Landed 2026-11-13 (photon e0953fce, unverified in the field):** fixes #1 (answered_path credits the datagram source; Contact::direct_confirmed keeps the relay copy until a direct-path delivery ACK; PTManager::refuses -> relay fallback for chat/ACK/history/ceremony) and #0 (re-serves only on the friend's own report; clear/rearm/ack judged by send order, not stamp; a mismatched-frame ACK clears only its row; out-of-order re-served frames kept in the gap buffer). Open: #2 own-fleet era split (needs Brittany's log), gap buffer not persisted across a restart (a head-hash in the status report would close it = wire change, owner's call), sync.rs ~1568 / wave_ui direct_ok / ping relay still decide on "a path is held".
