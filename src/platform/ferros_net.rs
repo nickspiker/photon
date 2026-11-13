@@ -235,13 +235,11 @@ impl Future for News {
     }
 }
 
-/// One RECV on `port` (op 2), the datagram into `buf`: Some((length, sender)), or None when nothing waits. `hold`: a deadline on the counter the server holds the call to (0 none) when nothing waits; None answers at once.
-fn recv_once(port: u16, buf: &mut [u8], hold: Option<u64>) -> io::Result<Option<(usize, SocketAddr)>> {
-    let mut req = vec![2u8, (port >> 8) as u8, port as u8];
-    if let Some(d) = hold {
-        req.push(0);
-        req.extend_from_slice(&d.to_be_bytes());
-    }
+/// One RECV on `port` (op 2), as reader `id` (a watch's: the server keeps each datagram of a port several processes watch until each has taken it, so fgtw's copy of a fleet frame is not Photon's to take), the datagram into `buf`: Some((length, sender)), or None when nothing waits. `deadline`: on the counter, the server holds the call to it while nothing waits (0 at once, u64::MAX until a datagram comes).
+fn recv_once(port: u16, id: u32, buf: &mut [u8], deadline: u64) -> io::Result<Option<(usize, SocketAddr)>> {
+    let mut req = vec![2u8, (port >> 8) as u8, port as u8, 0];
+    req.extend_from_slice(&deadline.to_be_bytes());
+    req.extend_from_slice(&id.to_be_bytes());
     let mut reply = vec![0u8; 21 + buf.len().min(65536)];
     let n = call(&req, &mut reply)?;
     if n < 21 {
@@ -325,7 +323,7 @@ impl UdpSocket {
         loop {
             // The port's news count before the RECV: news after it ends the wait at once.
             let seen = watch_news(self.port);
-            if let Some(got) = recv_once(self.port, buf, None)? {
+            if let Some(got) = recv_once(self.port, watch_id(), buf, 0)? {
                 return Ok(got);
             }
             match seen {
@@ -398,6 +396,8 @@ impl TcpStream {
 /// The blocking shape of a UDP socket (std's), for the threads that talk without tokio: the query worker, the LAN announcer. The same port on the ip server as the async type; `UdpSocket::from_std` hands it over, as tokio's does.
 pub struct StdUdpSocket {
     port: u16,
+    /// Its reader id at the ip server (its own watch's, apart from the process's watcher's, so the two never answer each other's calls); a socket made async reads as the process's watcher.
+    id: u32,
     peer: Mutex<Option<SocketAddr>>,
     read_timeout: Mutex<Option<std::time::Duration>>,
 }
@@ -413,7 +413,7 @@ impl StdUdpSocket {
             call(&[2, (addr.port() >> 8) as u8, addr.port() as u8], &mut reply)?;
             addr.port()
         };
-        Ok(StdUdpSocket { port, peer: Mutex::new(None), read_timeout: Mutex::new(None) })
+        Ok(StdUdpSocket { port, id: watch_id() ^ (counter() as u32).rotate_left(8) ^ 1, peer: Mutex::new(None), read_timeout: Mutex::new(None) })
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -427,7 +427,7 @@ impl StdUdpSocket {
     }
 
     pub fn try_clone(&self) -> io::Result<Self> {
-        Ok(StdUdpSocket { port: self.port, peer: Mutex::new(*self.peer.lock().unwrap()), read_timeout: Mutex::new(*self.read_timeout.lock().unwrap()) })
+        Ok(StdUdpSocket { port: self.port, id: self.id, peer: Mutex::new(*self.peer.lock().unwrap()), read_timeout: Mutex::new(*self.read_timeout.lock().unwrap()) })
     }
 
     pub fn set_read_timeout(&self, t: Option<std::time::Duration>) -> io::Result<()> {
@@ -487,20 +487,20 @@ impl StdUdpSocket {
     pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
         let timeout = *self.read_timeout.lock().unwrap();
         if timeout == Some(std::time::Duration::ZERO) {
-            return recv_once(self.port, buf, None)?.ok_or_else(|| io::Error::new(io::ErrorKind::WouldBlock, "no datagram"));
+            return recv_once(self.port, self.id, buf, 0)?.ok_or_else(|| io::Error::new(io::ErrorKind::WouldBlock, "no datagram"));
         }
-        // 0: no deadline, held until a datagram comes.
-        let deadline = timeout.map_or(0, deadline_after);
-        // This thread's watch id, apart from the process's watcher's.
-        let id = watch_id() ^ (counter() as u32).rotate_left(8) ^ 1;
+        // u64::MAX: no timeout, held until a datagram comes.
+        let deadline = timeout.map_or(u64::MAX, deadline_after);
         loop {
-            if let Some(got) = recv_once(self.port, buf, Some(deadline))? {
+            if let Some(got) = recv_once(self.port, self.id, buf, deadline)? {
                 return Ok(got);
             }
-            if deadline != 0 && counter() >= deadline {
+            if counter() >= deadline {
                 return Err(io::Error::new(io::ErrorKind::TimedOut, "no datagram"));
             }
-            if watch_call(true, info_flags(), id, 0, deadline, &[self.port]).is_none() {
+            // The watch's deadline: 0 is none at the server.
+            let until = if deadline == u64::MAX { 0 } else { deadline };
+            if watch_call(true, info_flags(), self.id, 0, until, &[self.port]).is_none() {
                 // An ip server without WATCH (nor deadlines): asked again 2 ms on, as before.
                 std::thread::sleep(std::time::Duration::from_millis(2));
             }
