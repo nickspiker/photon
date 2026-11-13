@@ -153,9 +153,15 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
             // Attempts SURVIVE restarts: exhaustion is cumulative evidence about the LANE (the anchor-wedge detector's arming gate).
             f("attempts", uint(p.attempts as u64)),
         ];
+        // An empty list is left out, never written as an empty `hR`: its length field (len - 1) wraps to usize::MAX, and vsf's reader (since VSF-01, 2026-11-02) refuses the whole document ("length overflows").
+        // A group row nobody has acknowledged yet has no acks, so every save in that window wrote a chains document no reader could open again (group a2174ec2, 2026-11-07 and 2026-11-13). The reader already takes a missing field as empty.
         if chains.molecule {
-            rec.push(f("targets", VsfType::hR(p.targets.iter().flatten().copied().collect())));
-            rec.push(f("acked", VsfType::hR(p.acked_by.iter().flatten().copied().collect())));
+            if !p.targets.is_empty() {
+                rec.push(f("targets", VsfType::hR(p.targets.iter().flatten().copied().collect())));
+            }
+            if !p.acked_by.is_empty() {
+                rec.push(f("acked", VsfType::hR(p.acked_by.iter().flatten().copied().collect())));
+            }
         }
         doc = doc.add_section(PENDING_SECTION, rec);
     }
@@ -665,6 +671,22 @@ mod tests {
         assert_eq!(back.pending_unacked(77), Some(vec![[2u8; 32]]));
         let subset = chains.replication_subset(&[ours]);
         assert_eq!(subset.molecule_roster(), &[0xAB; 40][..], "replication carries membership with the keys");
+    }
+
+    /// A group row nobody has acknowledged yet (and one with no targets) saves and reads back: an empty list is left out, never written as an empty `hR` the reader refuses.
+    #[test]
+    fn a_group_row_with_no_acks_yet_survives_a_save() {
+        let gid = crate::types::molecule::MoleculeId::from_nonce(&[0x2Au8; 32]);
+        let root = [0x11u8; 32];
+        let members = [[1u8; 32], [2u8; 32], [3u8; 32]];
+        let mut chains = FriendshipChains::from_molecule_root(gid, &members, root, [0x22u8; 32], 0, crate::crypto::clutch::era_lineage(&root));
+        chains.mint_our_lane().expect("lane mints off the delivered root");
+        chains.prepare_send(b"hi".to_vec(), b"hi".to_vec(), 77, vec![]).unwrap();
+        chains.set_pending_targets(77, vec![[2u8; 32], [3u8; 32]]);
+        let back = chains_from_vsf_bytes(&chains_to_vsf_bytes(&chains).expect("encode")).expect("a row with no acks reads back");
+        assert_eq!(back.pending_progress(77), Some((0, 2)));
+        chains.prepare_send(b"yo".to_vec(), b"yo".to_vec(), 78, vec![]).unwrap();
+        chains_from_vsf_bytes(&chains_to_vsf_bytes(&chains).expect("encode")).expect("a row with no targets reads back");
     }
 
     /// A FRIENDSHIP blob carries no group state: no group flag, no KEM custody sections — and every lane is its own record section.
