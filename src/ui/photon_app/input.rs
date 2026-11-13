@@ -12,13 +12,28 @@ impl PhotonApp {
         }
     }
 
+    /// How far below the attest block the launch screen draws something the soft keyboard must not cover, in pixels: the permanence warning under the button while it asks for the handle a second time (`LaunchState::Confirm`), else 0. Added to the keyboard's rows for `LaunchLayout::lifted`, so the block rides high enough that the warning's last line clears the keys too (ferros, 2026-11-12: the system keyboard covered the warning's last three lines, the ones that say what minting means). The same line metrics as render's permanence block.
+    pub(super) fn launch_lift_below(&self, buf_w: usize, buf_h: usize, ru: f32) -> f32 {
+        if self.ime_lift() <= 0.0 || self.launch_add_mode || !matches!(self.state, AppState::Launch(LaunchState::Confirm)) {
+            return 0.0;
+        }
+        let block = LaunchLayout::compute(buf_w, buf_h, ru).attest_block;
+        let attest = AttestBlockLayout::compute(block);
+        let tb_h = (attest.textbox.y1 - attest.textbox.y0) as f32;
+        let line_h = (tb_h * 0.45).min(buf_w as f32 / 22.0);
+        let lines = tr(Msg::PermanenceWarning).lines().count() as f32;
+        let bottom = attest.attest.y1 as f32 + line_h * (1.6 + 1.35 * lines);
+        // WHY the comparison: a warning that ends inside the block needs nothing more, and its negative extent would lower the block's own lift into the keys.
+        if bottom > block.y1 as f32 { bottom - block.y1 as f32 } else { 0.0 }
+    }
+
     /// Recompute the launch-screen widget geometry from the current viewport. Called from `init` once after construction and from `on_resize` on every viewport/zoom change. Font size and stroke ride `effective_span()` (= span × ru) so widgets grow/shrink with Ctrl+/Ctrl-/Ctrl+scroll zoom in lockstep with chrome.
     pub(super) fn update_widget_layout(&mut self, ctx: &mut Context) {
         let buf_w = ctx.viewport.width_px as usize;
         let buf_h = ctx.viewport.height_px as usize;
         // Launch form squishes above the soft keyboard (ime_lift = keyboard px, 0 on desktop/closed); the 0.4 floor keeps a monster keyboard from crushing the form to nothing. The IME-inset watch in tick() re-runs this layout on every inset change.
         let ime_lift = self.ime_lift();
-        let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru).lifted(ime_lift, buf_h);
+        let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru).lifted(ime_lift + self.launch_lift_below(buf_w, buf_h, ctx.viewport.ru), buf_h);
         let attest = AttestBlockLayout::compute(layout.attest_block);
         // Font size = textbox-slot height × 0.75. Derived from the pill so the text-to-pill ratio stays constant at any viewport — span/24 sized text via the harmonic-mean span which scales differently from pill_h (pill_h is linear in viewport_h, span is biased toward the narrower dim), so on a tall narrow phone the pill grew faster than the text and a soft-keyboard show/hide jumped the ratio. Pill-derived sizing keeps padding around the text proportional, so descenders + ascenders never crowd the squircle edge. Same scalar drives the attest button and the resting ∞ so they read as a matched set.
         let textbox_h = (attest.textbox.y1 as f32) - (attest.textbox.y0 as f32);

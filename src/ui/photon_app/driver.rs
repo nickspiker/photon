@@ -3412,9 +3412,11 @@ impl FluorApp<Px> for PhotonApp {
             }
         }
 
-        // The host's keyboard watch (ferros, `on_keyboard_inset`): as Android's above, the frame never resizes for the keyboard, so a change of its rows lays the bottom-anchored widgets out again here. Never set on a host without a composited keyboard, so it stays 0 there.
-        if self.keyboard_rows != self.keyboard_rows_laid {
+        // The host's keyboard watch (ferros, `on_keyboard_inset`): as Android's above, the frame never resizes for the keyboard, so a change of its rows lays the bottom-anchored widgets out again here; and so does the launch form's extra lift coming or going (the permanence warning under the button, `launch_lift_below`), which can change with the keyboard already up. The rows are never set on a host without a composited keyboard, so they stay 0 there.
+        let lift_below = self.launch_lift_below(ctx.viewport.width_px as usize, ctx.viewport.height_px as usize, ctx.viewport.ru);
+        if self.keyboard_rows != self.keyboard_rows_laid || lift_below != self.lift_below_laid {
             self.keyboard_rows_laid = self.keyboard_rows;
+            self.lift_below_laid = lift_below;
             self.update_widget_layout(ctx);
             self.scene_dirty = true;
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }

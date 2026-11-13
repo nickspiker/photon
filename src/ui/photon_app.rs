@@ -2610,6 +2610,8 @@ pub struct PhotonApp {
     keyboard_rows: u32,
     /// The `keyboard_rows` the layout was last made for: the tick lays out again when they differ.
     keyboard_rows_laid: u32,
+    /// The launch form's extra lift (`launch_lift_below`) the layout was last made for.
+    lift_below_laid: f32,
     /// One-shot per session: the settings + roster re-push once hp/keypair/fleet-key are ALL available. Saves made before the keys settled bailed silently (see spawn_settings_push), and nothing ever retried — so the fleet slot could sit stale/empty forever (the empty-profile restore, 2026-07-26).
     settings_repushed: bool,
     /// Rate limit for the pong-seal reseed triggered by unopenable tails (self-heal for ordering races on a fresh device).
@@ -3548,6 +3550,7 @@ impl PhotonApp {
             last_ime_inset: 0,
             keyboard_rows: 0,
             keyboard_rows_laid: 0,
+            lift_below_laid: 0.,
             settings_repushed: false,
             last_fleet_sweep: None,
             chain_pushed_osc: crate::linear_map::LinearMap::new(),
