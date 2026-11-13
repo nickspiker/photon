@@ -19,16 +19,17 @@ impl PhotonApp {
         self.ready_toast_screen = None;
     }
 
-    /// Pixels of the screen bottom currently covered by the Android soft keyboard (0 elsewhere / closed). The surface NEVER resizes for the IME (adjustNothing — so the full-screen harmonic mean IS the scale, by construction, no pinning); bottom-anchored interactive strips (the conversation compose bar + message list) subtract this to ride above the keyboard.
+    /// Pixels of the screen bottom currently covered by the soft keyboard: Android's IME, or a keyboard the host composites over the frame (ferros, `on_keyboard_inset`); 0 elsewhere / closed. The surface NEVER resizes for the IME (adjustNothing — so the full-screen harmonic mean IS the scale, by construction, no pinning); bottom-anchored interactive strips (the conversation compose bar + message list) subtract this to ride above the keyboard.
     pub(super) fn ime_lift(&self) -> f32 {
         #[cfg(target_os = "android")]
         {
             // Edge to edge (2026-09-16): with no keyboard the gesture-nav bar is the bottom obstruction, and the compose box lifts above it exactly as it lifts above the keyboard; the keyboard's raw inset already covers the bar it sits on.
             crate::platform::jni_android::ime_inset_px().max(crate::platform::jni_android::bottom_inset_px()) as f32
         }
+        // Elsewhere the rows a host's composited keyboard covers (ferros's system keyboard, `on_keyboard_inset`), 0 on a host that has none.
         #[cfg(not(target_os = "android"))]
         {
-            0.0
+            self.keyboard_rows as f32
         }
     }
 

@@ -145,6 +145,9 @@ pub fn lower_this_thread() {
 pub mod net;
 #[cfg(target_os = "ferros")]
 pub mod ferros_net;
+// Plain HTTP over the ip server's client TCP: FGTW's calls to fgtw.org from ferros.
+#[cfg(target_os = "ferros")]
+pub mod ferros_http;
 
 // ferros: no window system, no tray, no login items, no local control socket — the display server owns the panel and the shell decides what runs at boot. These are the desktop modules' answers on the phone.
 #[cfg(target_os = "ferros")]

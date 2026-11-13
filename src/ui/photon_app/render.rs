@@ -434,6 +434,8 @@ impl PhotonApp {
         let settings_pages = self.settings_pages();
         // Same hoist for the IME inset (Android keyboard height): read it before the chrome borrow so the conversation block can use it without re-borrowing self.
         let ime_lift = self.ime_lift();
+        // The launch form's lift: the keyboard, plus the permanence warning under the button while it shows (input.rs `launch_lift_below`).
+        let launch_lift = ime_lift + self.launch_lift_below(buf_w, buf_h, ctx.viewport.ru);
         // Same hoist for the Fleet page's locked set (treat-as-stolen rows): the row loop can't re-borrow self.
         let fleet_locked_set = self.locked_devices();
         let fleet_schemes = self.fleet_schemes.clone();
@@ -772,7 +774,7 @@ impl PhotonApp {
             (None, None, scroll_offset)
         };
         // Launch layout: faithful proportional slicing port from legacy `Layout::new` — spectrum near the top, logo wordmark overlapping its bottom, attest block (textbox + hint + button) below. Compute every frame; cheap and lets resize flow thru without a separate cache.
-        let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru).lifted(ime_lift, buf_h);
+        let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru).lifted(launch_lift, buf_h);
         // Chromatic wave phase has two summands: * Scroll-driven base (`bg_scroll * 1/128 rad/scroll-unit`) — one wheel-notch ≈ 8 units → ~1/16 rad shift; user-tunable by changing the shift exponent.
         // * `attest_anim_phase` (advanced in `tick()` while `LaunchState::Attesting`) — the "query in flight" cue, 1 cycle/sec.
         // Summing them means the wave responds to BOTH inputs simultaneously: a user scrolling during an attestation still nudges the phase on top of the animation.
@@ -1411,7 +1413,7 @@ impl PhotonApp {
         // Launch-screen widgets paint UNDER the chord hint (so the hint always wins over the textbox) and OVER chrome (so the pill sits on top of the spectrum strip / wordmark). Same target buffer as the chord hint; widgets stamp their hit IDs into chrome's shared `hit_test_map`. Only paint when the launch screen is the active state — Ready/Searching/Conversation get their own widgets later.
         if let AppState::Launch(launch_state) = &self.state {
             let layout =
-                LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru).lifted(ime_lift, buf_h);
+                LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru).lifted(launch_lift, buf_h);
             let attest = AttestBlockLayout::compute(layout.attest_block);
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
 

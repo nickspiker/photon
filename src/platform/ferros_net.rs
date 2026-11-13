@@ -36,7 +36,7 @@ fn cap(slot: u64) -> u64 {
 }
 
 /// One call to the ip server: the reply's length, or an io error when the kernel refused the call.
-fn call(req: &[u8], reply: &mut [u8]) -> io::Result<usize> {
+pub(crate) fn call(req: &[u8], reply: &mut [u8]) -> io::Result<usize> {
     let n = svc(CALL, cap(UDP_SLOT), off(req.as_ptr()), req.len() as u64, off(reply.as_mut_ptr()), reply.len() as u64);
     if n == ERR { Err(io::Error::new(io::ErrorKind::Other, "the ip server refused the call")) } else { Ok(n as usize) }
 }
