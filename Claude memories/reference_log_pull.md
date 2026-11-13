@@ -7,7 +7,7 @@ metadata:
 
 **Pulling:**
 - `photonlog --pull --session` pulls THIS machine's submitted logs from the live tohu registers — preferred, no handle typed.
-- `photonlog --pull --handle <handle>` for anyone else. **MAP-COLUMN TRAP:** `keys/claude-pseudonym-map.txt` is `<handle> = <petname>` — the secret handle is the LEFT column. Passing the petname derives a garbage tag that "finds nothing" (cost an hour, 2026-08-21). Extract the left column mechanically into a shell var; never echo it.
+- Since M6 (2026-11-13) logs are filed under the handle proof and sealed to keys/photon-log-key.vsf; `photonlog --mailbox` lists who submitted when (release key). `photonlog --pull --handle <handle>` for anyone else. **MAP-COLUMN TRAP:** `keys/claude-pseudonym-map.txt` is `<handle> = <petname>` — the secret handle is the LEFT column. Passing the petname derives a garbage tag that "finds nothing" (cost an hour, 2026-08-21). Extract the left column mechanically into a shell var; never echo it.
 - PULL TO A FILE FIRST (`> /tmp/x.log`), then grep: submissions are swept within 24 h and can vanish between pulls.
 - Use `target/debug/photonlog` after `./scripts/dev.sh` (release builds are disabled; `target/release/photonlog` is stale). Gripes: `--gripes` / `--gripe-status`.
 - One identity covers every device's submissions; submissions are whole-log snapshots split by `── photon-logs/<tag>/<eagle>-dev<id>.vsf ──`; the log rotates at 16 MiB.
