@@ -316,7 +316,7 @@ impl PhotonApp {
                 conv.insert_message_sorted(row);
             }
             self.persist_conversation_async(id);
-            let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: None, wrap: None, deliver: None };
+            let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: None, wrap: None, deliver: None, answer: None };
             return self.molecule_transmit(gid, "", eagle_time, None, None, Some(&wire), Some(&control));
         }
         match self.pair_contact_of(id) {
@@ -334,7 +334,7 @@ impl PhotonApp {
             let Some(our_pid) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
                 return false;
             };
-            let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: None, wrap: None, deliver: None };
+            let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: None, wrap: None, deliver: None, answer: None };
             return self.molecule_transmit(gid, &row.content, ts, row.reference, None, Some(&wire), row.control.as_ref());
         }
         let Some(ci) = self.pair_contact_of(id) else {
@@ -1485,6 +1485,8 @@ impl PhotonApp {
         let mut fork_friend_rekey: Option<usize> = None;
         // A two-member CONVERSATION whose keys diverged (docs/conversations.md §7): its era is re-delivered whole over the bond — a re-CLUTCH re-keys only the bond.
         let mut fork_conversation: Option<crate::types::FriendshipId> = None;
+        // A garbage streak on a device that does not own the ceremony: the evidence goes to the owner (bonds.rs `ask_owner`), never only a wait.
+        let mut fork_ask_owner: Option<crate::types::FriendshipId> = None;
         let mut sibling_push: Option<(Option<usize>, ChatMessage)> = None;
         // A friend deleted their group offer (their undo of an invite we declined): the offer row's eagle time, so the parked offer is forgotten after the borrow.
         let mut offer_undone: Option<(usize, i64)> = None;
@@ -1693,8 +1695,10 @@ impl PhotonApp {
                             && contact.ceremony_owner != Some(our_device_pubkey)
                         {
                             // Mirror of the gap-streak rule: a non-owner's garbage streak is stale-era evidence about ITSELF, not the friendship — only the ceremony owner may re-key (§4.2), everyone else waits for the owner's chain-sync.
-                            crate::logf!("CHAIN FORK: garbage streak but this device does not own the ceremony — stale era suspected, awaiting sibling chain-sync");
+                            // A wait alone never ended (2026-11-12, Brittany's 22:10 lane: the desktop waited on a chain-sync that could not fix a lane both fleets held at one era): the owner is told, and acts as it would on its own garbage.
+                            crate::logf!("CHAIN FORK: garbage streak but this device does not own the ceremony — stale era suspected, asking the owner to act and awaiting sibling chain-sync");
                             contact.chain_fail_streak = 0;
+                            fork_ask_owner = Some(chains.friendship_id);
                         } else if contact.chain_fail_streak >= 3 && !contact.is_sibling {
                             crate::logf!("CHAIN FORK SUSPECTED: {} — {} consecutive garbage decrypts past chain-link verify — initiating friend re-key", crate::fp(&contact.handle_proof), contact.chain_fail_streak);
                             if chains.bond {
@@ -1820,6 +1824,8 @@ impl PhotonApp {
                 }
                 break 'commit;
             }
+            // The receive half of the sender's CHAIN WEAVE line: the same frame's woven rows as this side resolved them, fingerprints only.
+            crate::logf!("CHAIN WEAVE (recv): {} lane {}... eagle_time {} wove {}", hex::encode(&chains.friendship_id.as_bytes()[..4]), hex::encode(&lane[..4]), timestamp, super::messaging::weave_fingerprints(&woven_times, &woven_strands));
             let strand_refs: Vec<&[u8]> = woven_strands.iter().map(|s| s.as_slice()).collect();
 
             // Update the lane's last_plaintext for the next message's salt — the x-text ONLY (must match what the sender stored: salt source is text, never the full payload/pad).
@@ -2452,6 +2458,11 @@ impl PhotonApp {
         }
         if let Some(conv) = fork_conversation {
             self.redeliver_pair_era(conv, "garbage decrypts");
+        }
+        if let Some(fid) = fork_ask_owner {
+            // The fleet first, as before (a stale era here is caught up by chain-sync), and the owner hears the garbage.
+            self.pull_era_from_fleet(fid);
+            self.ask_owner(fid, crate::network::fgtw::protocol::OwnerAsk { friend_tag: None, fork: true });
         }
         if let Some(idx) = fork_friend_rekey {
             self.initiate_friend_rekey(idx);
@@ -3116,6 +3127,8 @@ impl PhotonApp {
                 self.catch_up_alert(conv_pos, &fresh, from_sibling);
                 self.clear_unread_on_reply(conv_pos, &fresh);
             }
+            // The row's frame still waiting in the gap buffer is ACKed now that its content is held (Brittany 2026-11-13, 01:39: she held the photon 0.3 s after it was sent, and every sender device gave it up as undelivered).
+            self.ack_rows_waiting_in_gap(idx, &conversation_token, &fresh);
             // A LIVE PHOTON THAT CAME BY HISTORY (2026-11-01, Emma's Pixel: screen off, Nick's photon five seconds later, nothing): it arrived ahead of its chain, waited in the gap buffer, and the history walk delivered its row — where every friend row lands already flagged as recovered, so it never rang. A row the gap buffer saw arrive live rings as a live one does, unless this conversation is being looked at.
             if !from_sibling {
                 let conv_id = self.conversations[conv_pos].id();
@@ -3508,6 +3521,36 @@ impl PhotonApp {
         });
         true
     }
+
+    /// ACK every friend row in `rows` whose frame is still waiting in this conversation's gap buffer: the row's content is held now (a history page, a sibling's page), so the sender may stop retrying it.
+    /// The ACK carries a stand-in hash (`stand_in_ack_hash`), which never equals the frame's own hash, so the sender clears that one row and implies nothing about any other (process_ack_by).
+    /// The frame itself stays buffered so the lane can still follow it when its predecessor lands.
+    pub(super) fn ack_rows_waiting_in_gap(&mut self, ci: usize, token: &[u8; 32], rows: &[crate::types::ChatMessage]) {
+        let Some(chains) = self.friendship_chains.iter().find(|(_, c)| c.conversation_token == *token).map(|(_, c)| c) else {
+            return;
+        };
+        let mut acks: Vec<AckRequest> = Vec::new();
+        let relay_to = self.contacts.get(ci).map(|c| c.relay_device_list()).unwrap_or_default();
+        for m in rows.iter().filter(|m| !m.is_outgoing) {
+            let stand_in = stand_in_ack_hash(m);
+            for (addr, device) in chains.gap_waiting_for(m.timestamp) {
+                acks.push(AckRequest { peer_addr: addr, recipient_pubkey: device, conversation_token: *token, acked_eagle_time: m.timestamp, plaintext_hash: stand_in, relay_to: relay_to.clone() });
+            }
+        }
+        let Some(checker) = self.status_checker.as_ref() else {
+            return;
+        };
+        for a in acks {
+            crate::logf!("CHAT: ACKed eagle_time {} to device {} with a stand-in hash — its row arrived by page while the frame waits in the gap buffer", a.acked_eagle_time, crate::fp(&a.recipient_pubkey));
+            checker.send_ack(a);
+        }
+    }
+}
+
+/// The stand-in an ACK carries for a row we hold but did not place from this frame (it came by a page): a hash of the row's ONE typed identity (`ident_typed`), never of the text's own bytes.
+/// It can never equal the frame's hash (that one covers the random pad), so the sender reads it as "row held, this frame not placed": it clears that one row and implies nothing about any other (process_ack_by).
+pub(super) fn stand_in_ack_hash(m: &crate::types::ChatMessage) -> [u8; 32] {
+    *blake3::hash(&m.ident_bytes()).as_bytes()
 }
 
 /// Which era the friend is on, between ours and a sibling's pushed one (2026-11-01, Nick's fleet and Emma): `Some(true)` adopt the incoming, `Some(false)` refuse it, `None` no evidence either way (the era order decides).

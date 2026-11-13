@@ -1089,6 +1089,8 @@ impl PhotonApp {
                 }
             }
             if changed {
+                // A fold moved: a device still answered for by a sibling device after this is news again, so its refresh edge re-arms.
+                self.cross_answer_refreshed.clear();
                 self.reseed_contact_pubkeys(); // rebuild answerable set BEFORE persist: an in-flight pong this tick already sees the revoked device gone
                 { needs_redraw = true; self.note_redraw(line!()); }
             }

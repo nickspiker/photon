@@ -942,7 +942,7 @@ impl PhotonApp {
             let wire = match molecule {
                 Some(w) => w,
                 None => {
-                    own_wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: None, wrap: None, deliver: None };
+                    own_wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: None, wrap: None, deliver: None, answer: None };
                     &own_wire
                 }
             };
@@ -1173,6 +1173,9 @@ impl PhotonApp {
             let strands = chosen.into_iter().map(|(t, c)| crate::crypto::chain::strand_bytes(braid, t, c)).collect();
             (strands, times)
         };
+        // THE WEAVE, NAMED (2026-11-13, Brittany's 22:10 lane: same era both sides, garbage after the first row, suspected woven rows resolving differently): the receiver logs the same line, so a divergence names the row whose strand differs.
+        // Fingerprints only: the first 4 bytes of BLAKE3 over each strand, never the strand, a key or any content.
+        crate::logf!("CHAIN WEAVE (send): {} eagle_time {} wove {}", hex::encode(&friendship_id.as_bytes()[..4]), eagle_time, weave_fingerprints(&woven_times, &woven_strands));
 
         // Build the MESSAGE PACKAGE the receiver parses: a complete framed VSF document (AGENT.md "COMPLETE VSF FILES ONLY") — body, incorporated hp, woven strand times, the typed reference, and a random pad, every one a named schema field. Describing something new about a message is adding a field, never an encoding trick.
         // ENCRYPT-IN-FLIGHT GATE: one braid encrypt per friendship at a time — a second dispatch would mint a second frame at the SAME lane position, and the commit CAS would void it. Returning false keeps the row held-undelivered (the bubble stays); the commit edge re-fires it thru resend_held_messages.
@@ -1398,4 +1401,16 @@ impl PhotonApp {
         // Last, past every contact borrow: flush anything the user typed while the chain was missing (a re-key in flight). Those rows were HELD, not withdrawn, so they go out now with their ORIGINAL timestamps — the row identity stays one fleet-wide and the friend dedups a resend.
         self.resend_held_messages(contact_idx);
     }
+}
+
+/// The woven rows of one braid step, for the log: each woven eagle time beside the first 4 bytes of BLAKE3 over its strand.
+/// Both sides print it for the same frame, so a lane that diverges names the row whose strand resolved differently; never a strand, a key or any content.
+pub(super) fn weave_fingerprints(times: &[i64], strands: &[Vec<u8>]) -> String {
+    if times.is_empty() {
+        return "nothing (anchor)".to_string();
+    }
+    let mut sorted = times.to_vec();
+    sorted.sort_unstable();
+    let parts: Vec<String> = sorted.iter().zip(strands.iter()).map(|(t, s)| format!("{} #{}", t, hex::encode(&blake3::hash(s).as_bytes()[..4]))).collect();
+    format!("[{}]", parts.join(", "))
 }

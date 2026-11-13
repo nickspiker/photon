@@ -356,7 +356,7 @@ impl PhotonApp {
                 return false;
             }
         };
-        let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: Some(blob), wrap: None, deliver: None };
+        let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: Some(blob), wrap: None, deliver: None, answer: None };
         let ts = vsf::eagle_time_oscillations();
         let sent = self.bond_transmit_with(ci, ts, None, Some(&wire), &crate::types::RowControl::Molecule(MoleculeSignal::Join));
         if sent {
@@ -494,7 +494,7 @@ impl PhotonApp {
         let wrap = crate::network::message_package::BondWrapWire { recipient_device: bundle.device, bundle_id: bundle.pubkeys().bundle_id(), era, era_lineage: lineage, nonce, sealed };
         // The join answer carries the group's WHOLE current roster: the invitation's snapshot may predate other joins, and the records that named them rode an era the joiner never held (Nick 2026-10-25: his rows went to Emma alone, Brittany unknown to him).
         let roster = self.molecule_rosters.iter().find(|(g, _)| *g == gid).and_then(|(_, r)| crate::storage::molecule::roster_to_vsf_bytes(&gid, r).ok());
-        let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: roster, wrap: Some(wrap), deliver: None };
+        let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: roster, wrap: Some(wrap), deliver: None, answer: None };
         let ts = vsf::eagle_time_oscillations();
         let sent = self.bond_transmit_with(ci, ts, Some(&cts), Some(&wire), &crate::types::RowControl::Molecule(MoleculeSignal::Wrap));
         crate::logf!("MOLECULE: wrap (era {}) for device {} {} over the friendship", era, hex::encode(&bundle.device[..4]), if sent { "sent" } else { "NOT sent — the next edge retries" });
@@ -815,14 +815,14 @@ impl PhotonApp {
         if !self.fleet_device_acts(None) || !self.era_heals.insert((fid, tag, 0)) {
             return;
         }
-        let Some((era, lineage)) = self.friendship_chains.iter().find(|(id, _)| *id == fid).map(|(_, c)| (c.era_index, c.era_lineage)) else {
+        let Some(lineage) = self.friendship_chains.iter().find(|(id, _)| *id == fid).map(|(_, c)| c.era_lineage) else {
             return;
         };
-        let peer_index = self.peer_era_seen.iter().filter(|((f, _), _)| *f == fid).map(|(_, (idx, _))| *idx).max().unwrap_or(0);
-        let next = era.max(peer_index) + 1;
+        let next = self.era_index_floor(fid) + 1;
         let (root, hk): ([u8; 32], [u8; 32]) = (rand::random(), rand::random());
+        let new_tag = crate::crypto::clutch::era_tag(&root);
         if let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid) {
-            chains.install_pending(crate::types::friendship::PendingEra { era_index: next, lane_root: root, history_key: Some(hk), tag: crate::crypto::clutch::era_tag(&root), resp_osc: None });
+            chains.install_pending(crate::types::friendship::PendingEra { era_index: next, lane_root: root, history_key: Some(hk), tag: new_tag, resp_osc: None });
         }
         self.pending_minter.insert(fid, us);
         self.persist_chains_async(&fid);
@@ -830,7 +830,10 @@ impl PhotonApp {
         secret.extend_from_slice(&root);
         secret.extend_from_slice(&hk);
         let nonce: [u8; 32] = rand::random();
-        let wire = crate::network::message_package::MoleculeWire { from: us, woven_authors: Vec::new(), blob: None, wrap: None, deliver: Some(crate::network::message_package::EraDeliveryWire { conversation: fid.0, era: next, era_lineage: lineage, nonce, secret }) };
+        // The first member's accept cuts the group over (bonds.rs `on_era_answer`); a delivery's ACK never does (2026-11-13).
+        self.era_offers.retain(|o| o.conv != fid);
+        self.era_offers.push(super::bonds::EraOffer { conv: fid, nonce, tag: new_tag });
+        let wire = crate::network::message_package::MoleculeWire { from: us, woven_authors: Vec::new(), blob: None, wrap: None, deliver: Some(crate::network::message_package::EraDeliveryWire { conversation: fid.0, era: next, era_lineage: lineage, nonce, secret, prior_tag: None }), answer: None };
         let members: Vec<usize> = (0..self.contacts.len()).filter(|&ci| !self.contacts[ci].is_sibling && self.contacts[ci].handle_hash != us && standing.contains(&self.contacts[ci].handle_hash)).collect();
         let mut sent = 0usize;
         for ci in members {
@@ -1048,7 +1051,7 @@ impl PhotonApp {
                 }
             }
         };
-        let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: Some(blob), wrap: None, deliver: None };
+        let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: Some(blob), wrap: None, deliver: None, answer: None };
         let ts = crate::network::time_base::stamp_osc();
         // The offer rides the BOND (docs/conversations.md §7): its row lands in the bond's hidden conversation first, then goes on the wire — nothing lands in any chat; the invitee sees it as an invitation row.
         let invitee = self.contacts[ci].handle_hash;
@@ -1098,7 +1101,7 @@ impl PhotonApp {
         let Some(our_pid) = self.our_party_id(&self.contacts[ci]) else {
             return false;
         };
-        let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: Some(gid.0.to_vec()), wrap: None, deliver: None };
+        let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: Some(gid.0.to_vec()), wrap: None, deliver: None, answer: None };
         let ts = crate::network::time_base::stamp_osc();
         let sent = self.send_bond_row(ci, crate::types::RowControl::Molecule(MoleculeSignal::Decline), Some(&wire), ts);
         crate::logf!("MOLECULE: declined {} — {} {}", hex::encode(&gid.0[..4]), if sent { "the undo sent to" } else { "the undo NOT sent (the next edge retries) to" }, crate::fp(&self.contacts[ci].handle_proof));
@@ -1571,7 +1574,7 @@ impl PhotonApp {
                     (String::new(), ts, None, Some(control))
                 }
             };
-            let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: post.blob.clone(), wrap: post.wrap.clone(), deliver: None };
+            let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: post.blob.clone(), wrap: post.wrap.clone(), deliver: None, answer: None };
             if self.molecule_transmit(gid, &text, ts, reference, post.kem.as_ref(), Some(&wire), control.as_ref()) {
                 sent_any = true;
                 if post.text.is_none() {

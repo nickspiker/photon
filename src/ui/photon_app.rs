@@ -1909,8 +1909,18 @@ pub struct PhotonApp {
     molecule_parked: Vec<(crate::types::molecule::MoleculeId, crate::types::molecule::Roster, bool)>,
     /// (chains registry size, contact count) at the last bond check — `ensure_bonds` runs on the edge either moves.
     bonds_checked: (usize, usize),
-    /// Conversation eras we delivered over a bond and await the ACK of: (bond chains id, the Deliver row's eagle time, the conversation) — the first ACK is the minter's cutover edge (docs/conversations.md §0).
+    /// Conversation eras we delivered over a bond and await the ACK of: (bond chains id, the Deliver row's eagle time, the conversation) — a delivery still on its way; its ACK is transport only, never the cutover edge (2026-11-13).
     deliveries_in_flight: Vec<(crate::types::FriendshipId, i64, crate::types::FriendshipId)>,
+    /// Eras we offered as our PENDING and await an answer for: the peer's accept (or its first frame on the era) is the minter's cutover edge, its refusal drops the pending (bonds.rs `on_era_answer`). RAM only: a restart forgets the offer and the next mint or heal offers afresh.
+    era_offers: Vec<bonds::EraOffer>,
+    /// Friends seen answering an era delivery this session (handle proofs): a friend not on it is taken to run a build from before era answers, whose plain bond ACK still cuts us over (bonds.rs `on_bond_ack`, OLD-PEER ERA CUTOVER).
+    era_answerers: Vec<[u8; 32]>,
+    /// The highest era index ever seen for each conversation (adverts, deliveries, answers): a newly minted era goes past every one of them (bonds.rs `era_index_floor`). RAM only, refilled by the next advert.
+    era_index_seen: crate::linear_map::LinearMap<crate::types::FriendshipId, u64>,
+    /// (chains id, era tag) of frames dropped for an era we do not hold that already went to the era-mismatch heal: one heal per new unknown tag, never one per frame.
+    era_unknown_frames: crate::linear_map::LinearSet<(crate::types::FriendshipId, u32)>,
+    /// Evidence already handed to (or acted on for) the ceremony owner: (chains id, the friend's tag or our own for a garbage report, our era tag) — once per disagreement as we stand.
+    owner_asks: crate::linear_map::LinearSet<(crate::types::FriendshipId, u32, u32)>,
     /// Who minted each conversation's pending era — two members minting the same index converge on the LOWER party's.
     pending_minter: crate::linear_map::LinearMap<crate::types::FriendshipId, [u8; 32]>,
     /// Groups whose next mint waits for the pending era to cut over (a leave or cadence edge that landed mid-mint): minted in `after_molecule_cutover`.
@@ -2564,6 +2574,8 @@ pub struct PhotonApp {
     unknown_verdict_logged: crate::linear_map::SortedSet<[u8; 32]>,
     /// Responders already used to refresh a stale friend fold (StatusUpdate::ForeignResponder): one refresh per unknown device per session, never a storm.
     stale_fold_refreshed: crate::linear_map::SortedSet<[u8; 32]>,
+    /// Devices we pinged whose pongs a KNOWN other device of the same friend answered, already used to refresh that friend's fold: one refresh per such device until a fold changes (the edge), never one per pong.
+    cross_answer_refreshed: crate::linear_map::SortedSet<[u8; 32]>,
     /// Friends whose era deadlock this session already healed with a fresh ceremony (era.rs): the stranded-peer re-key runs once per contact, never in a loop.
     era_reclutched: crate::linear_map::LinearSet<[u8; 32]>,
     /// Hit id for the selected message's "copy" pill inside the details strip.
@@ -3213,6 +3225,11 @@ impl PhotonApp {
             molecule_parked: Vec::new(),
             bonds_checked: (0, 0),
             deliveries_in_flight: Vec::new(),
+            era_offers: Vec::new(),
+            era_answerers: Vec::new(),
+            era_index_seen: crate::linear_map::LinearMap::new(),
+            era_unknown_frames: crate::linear_map::LinearSet::new(),
+            owner_asks: crate::linear_map::LinearSet::new(),
             pending_minter: crate::linear_map::LinearMap::new(),
             molecule_mint_after_cutover: crate::linear_map::LinearSet::new(),
             era_heals: crate::linear_map::LinearSet::new(),
@@ -3520,6 +3537,7 @@ impl PhotonApp {
             chain_heads_sent: crate::linear_map::LinearMap::new(),
             unknown_verdict_logged: crate::linear_map::SortedSet::new(),
             stale_fold_refreshed: crate::linear_map::SortedSet::new(),
+            cross_answer_refreshed: crate::linear_map::SortedSet::new(),
             era_reclutched: crate::linear_map::LinearSet::new(),
             msg_copy_id: HIT_NONE,
             msg_action_base: HIT_NONE,

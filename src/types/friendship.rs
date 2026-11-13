@@ -1461,6 +1461,11 @@ impl FriendshipChains {
             return true;
         }
         let mut changed = false;
+        // ONE ERA, ONE INDEX (2026-11-13): a sibling that relabelled this very era past every index the friend showed (bonds.rs `deliver_own_era_whole`) carries the higher index, and ours follows so the fleet advertises and mints from the same one.
+        if self.lane_root.is_some() && self.lane_root == other.lane_root && other.era_index > self.era_index {
+            self.era_index = other.era_index;
+            changed = true;
+        }
         // A pending era the sibling holds and we don't (the owner minted it; siblings hold it so the peer's first frame on it decrypts anywhere).
         if let Some(p) = other.pending.as_ref() {
             if p.era_index > self.era_index && self.pending.as_ref().map_or(true, |mine| mine.era_index < p.era_index) {
@@ -2160,6 +2165,17 @@ impl FriendshipChains {
     /// Clear all buffered messages (e.g., on resync).
     pub fn clear_gap_buffer(&mut self) {
         self.gap_buffer.clear();
+    }
+
+    /// The signers (address, device) of every frame waiting in the gap buffer for the row stamped `eagle_time`, one entry per device: who to ACK once that row's content is held by another path.
+    pub fn gap_waiting_for(&self, eagle_time: i64) -> Vec<(std::net::SocketAddr, [u8; 32])> {
+        let mut out: Vec<(std::net::SocketAddr, [u8; 32])> = Vec::new();
+        for b in self.gap_buffer.iter().filter(|b| b.eagle_time == eagle_time) {
+            if !out.iter().any(|(_, d)| *d == b.sender_pubkey) {
+                out.push((b.sender_addr, b.sender_pubkey));
+            }
+        }
+        out
     }
 }
 

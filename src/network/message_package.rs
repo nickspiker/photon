@@ -46,6 +46,57 @@ pub struct MoleculeWire {
     pub wrap: Option<BondWrapWire>,
     /// A conversation era delivered over a BOND (docs/conversations.md §0) — on a Deliver row only.
     pub deliver: Option<EraDeliveryWire>,
+    /// The recipient's ANSWER to a delivered era (2026-11-13), back over the same bond on a Deliver row that carries no delivery: the minter cuts over only on an accept, never on the bond row's ordinary ACK.
+    /// A build from before it finds a Deliver row without its delivery fields and ignores it.
+    pub answer: Option<EraAnswerWire>,
+}
+
+/// What a recipient did with a delivered era (2026-11-13, Brittany's era split: the desktop refused her era 13 in silence, ACKed the row anyway, and her phone cut over to an era the desktop never held).
+/// Typed fields beside a Deliver control row: which conversation, which delivery (its nonce), the verdict, and the era the answering side holds, so a refused minter learns the index and tag it has to go past.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EraAnswerWire {
+    pub conversation: [u8; 32],
+    /// The answered delivery's own nonce: the minter matches it to the era it offered, never by index.
+    pub nonce: [u8; 32],
+    pub verdict: EraVerdict,
+    /// The era the answering side holds as current after its verdict.
+    pub held_era: u64,
+    pub held_tag: u32,
+}
+
+/// An era answer's verdict, a typed unsigned on the wire (`dav`): 1 accept, 2 refuse; any other value is malformed and the answer is dropped.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EraVerdict {
+    /// The delivered era is installed (or already held): the minter may cut over to it.
+    #[default]
+    Accept,
+    /// The delivered era is not taken: the minter drops it and stays on the era it holds.
+    Refuse,
+}
+
+impl EraVerdict {
+    pub fn code(self) -> u8 {
+        match self {
+            EraVerdict::Accept => 1,
+            EraVerdict::Refuse => 2,
+        }
+    }
+
+    /// The verdict as the log names it.
+    pub fn word(self) -> &'static str {
+        match self {
+            EraVerdict::Accept => "accept",
+            EraVerdict::Refuse => "refuse",
+        }
+    }
+
+    pub fn from_code(c: u64) -> Option<EraVerdict> {
+        match c {
+            1 => Some(EraVerdict::Accept),
+            2 => Some(EraVerdict::Refuse),
+            _ => None,
+        }
+    }
 }
 
 /// A conversation ERA delivered over a BOND (docs/conversations.md §0, §7): which conversation, which era, its lineage and the minter's nonce, and the secret — `root ‖ history_key` whole (a founding, or a member who never held the era before) or `fresh` (a mint: the recipient derives N+1 from the era it holds). The bond's own encryption carries it, so no KEM rides beside it. Typed fields, consumed at ingress, never part of the row; zeroized on drop.
@@ -56,6 +107,8 @@ pub struct EraDeliveryWire {
     pub era_lineage: [u8; 32],
     pub nonce: [u8; 32],
     pub secret: Vec<u8>,
+    /// A FRESH mint's base (2026-11-13): the tag of the era the minter derived it from. A recipient on another era at that index cannot derive the same keys and refuses instead of installing garbage. Absent from a whole era and from a build before it.
+    pub prior_tag: Option<u32>,
 }
 
 impl Drop for EraDeliveryWire {
@@ -184,6 +237,12 @@ fn msg_schema() -> SectionSchema {
         .field("dlin", TypeConstraint::AnyHash) // hb 32 delivery: the era lineage
         .field("dnonce", TypeConstraint::AnyHash) // hb 32 delivery: the minter's nonce
         .field("dsec", TypeConstraint::Any) // hR delivery: the era secret, carried by the bond's encryption — consumed at ingress, never stored in the row
+        .field("dprior", TypeConstraint::AnyUnsigned) // fresh delivery: the tag of the era the mint derives from (2026-11-13); old parsers discard the unknown name
+        .field("daconv", TypeConstraint::AnyHash) // hb 32 era answer: the conversation the answered delivery was for
+        .field("danonce", TypeConstraint::AnyHash) // hb 32 era answer: the answered delivery's nonce
+        .field("dav", TypeConstraint::AnyUnsigned) // era answer verdict: 1 accept, 2 refuse
+        .field("daheld", TypeConstraint::AnyUnsigned) // era answer: the era index the answering side holds
+        .field("daheldt", TypeConstraint::AnyUnsigned) // era answer: the tag of the era the answering side holds
 }
 
 /// Encode a message package as a complete VSF document. The caller supplies the pad (already random) so this layer stays deterministic-in, deterministic-out.
@@ -338,6 +397,16 @@ pub fn build_message_package_era(
             builder = builder.set("dlin", VsfType::hb(d.era_lineage.to_vec())).map_err(|e| e.to_string())?;
             builder = builder.set("dnonce", VsfType::hb(d.nonce.to_vec())).map_err(|e| e.to_string())?;
             builder = builder.set("dsec", VsfType::hR(d.secret.clone())).map_err(|e| e.to_string())?;
+            if let Some(p) = d.prior_tag {
+                builder = builder.set("dprior", VsfType::u(p as usize, false)).map_err(|e| e.to_string())?;
+            }
+        }
+        if let Some(a) = g.answer.as_ref() {
+            builder = builder.set("daconv", VsfType::hb(a.conversation.to_vec())).map_err(|e| e.to_string())?;
+            builder = builder.set("danonce", VsfType::hb(a.nonce.to_vec())).map_err(|e| e.to_string())?;
+            builder = builder.set("dav", VsfType::u(a.verdict.code() as usize, false)).map_err(|e| e.to_string())?;
+            builder = builder.set("daheld", VsfType::u(a.held_era as usize, false)).map_err(|e| e.to_string())?;
+            builder = builder.set("daheldt", VsfType::u(a.held_tag as usize, false)).map_err(|e| e.to_string())?;
         }
     }
     if let Some(c) = control {
@@ -557,7 +626,12 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
             // The delivery set is all-or-nothing the same way.
             let secret = bytes_field("dsec");
             let deliver = match (hash32("dconv"), u_field("dera"), hash32("dlin"), hash32("dnonce"), !secret.is_empty()) {
-                (Some(conversation), Some(era), Some(era_lineage), Some(nonce), true) => Some(EraDeliveryWire { conversation, era, era_lineage, nonce, secret }),
+                (Some(conversation), Some(era), Some(era_lineage), Some(nonce), true) => Some(EraDeliveryWire { conversation, era, era_lineage, nonce, secret, prior_tag: u_field("dprior").and_then(|t| u32::try_from(t).ok()) }),
+                _ => None,
+            };
+            // The answer set is all-or-nothing too, and an unknown verdict is malformed, never a guess.
+            let answer = match (hash32("daconv"), hash32("danonce"), u_field("dav").and_then(EraVerdict::from_code), u_field("daheld"), u_field("daheldt").and_then(|t| u32::try_from(t).ok())) {
+                (Some(conversation), Some(nonce), Some(verdict), Some(held_era), Some(held_tag)) => Some(EraAnswerWire { conversation, nonce, verdict, held_era, held_tag }),
                 _ => None,
             };
             MoleculeWire {
@@ -566,6 +640,7 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
                 blob: (!blob.is_empty()).then_some(blob),
                 wrap,
                 deliver,
+                answer,
             }
         });
     let control = crate::types::row_control::get_control(&section);
@@ -606,7 +681,7 @@ mod tests {
     /// The group extras ride typed beside the text (the era-KEM doctrine): attribution, paired weave authors, the record blob — absent on every friendship row, and a wa/wt count mismatch drops the authors while the times keep driving the braid.
     #[test]
     fn group_wire_rides_and_is_absent_on_plain_rows() {
-        let g = MoleculeWire { from: [0xAA; 32], woven_authors: vec![[0xB1; 32], [0xB2; 32]], blob: Some(vec![7u8; 300]), wrap: None, deliver: None };
+        let g = MoleculeWire { from: [0xAA; 32], woven_authors: vec![[0xB1; 32], [0xB2; 32]], blob: Some(vec![7u8; 300]), wrap: None, deliver: None, answer: None };
         let built = build_message_package_era("", &[0u8; 32], &[5, 9], None, None, &[], &[], None, None, Some(&g), Some(&crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Records)), None).unwrap();
         let pkg = parse_message_package(&built).unwrap();
         assert_eq!(pkg.molecule, Some(g.clone()));
@@ -614,7 +689,7 @@ mod tests {
         let plain = build_message_package("hi", &[0u8; 32], &[], None, None, &[], &[]).unwrap();
         assert_eq!(parse_message_package(&plain).unwrap().molecule, None);
         // Mismatched pairing: one author for two times — authors drop, attribution and blob stay.
-        let bad = MoleculeWire { from: [0xAA; 32], woven_authors: vec![[0xB1; 32]], blob: None, wrap: None, deliver: None };
+        let bad = MoleculeWire { from: [0xAA; 32], woven_authors: vec![[0xB1; 32]], blob: None, wrap: None, deliver: None, answer: None };
         let built = build_message_package_era("x", &[0u8; 32], &[5, 9], None, None, &[], &[], None, None, Some(&bad), None, None).unwrap();
         let pkg = parse_message_package(&built).unwrap();
         assert_eq!(pkg.molecule.as_ref().unwrap().from, [0xAA; 32]);
@@ -627,7 +702,7 @@ mod tests {
     fn group_wrap_rides_typed_never_in_text() {
         let w = BondWrapWire { recipient_device: [0x11; 32], bundle_id: [0x22; 32], era: 300, era_lineage: [0x33; 32], nonce: [0x44; 32], sealed: vec![0x55; 80] };
         let kem = crate::crypto::era::EraKemWire { mlkem: vec![1; 8], x25519: vec![2; 32], hqc: vec![3; 8] };
-        let g = MoleculeWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: None, wrap: Some(w.clone()), deliver: None };
+        let g = MoleculeWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: None, wrap: Some(w.clone()), deliver: None, answer: None };
         let ctl = crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Wrap);
         let built = build_message_package_era("", &[0u8; 32], &[], None, None, &[], &[], Some(&kem), None, Some(&g), Some(&ctl), None).unwrap();
         let pkg = parse_message_package(&built).unwrap();
@@ -636,7 +711,7 @@ mod tests {
         assert_eq!(pkg.body, "", "a control row carries no text");
         assert_eq!(pkg.control, Some(ctl.clone()));
         // A partial set (attribution without the wrap fields) is no wrap at all.
-        let plain = build_message_package_era("", &[0u8; 32], &[], None, None, &[], &[], None, None, Some(&MoleculeWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: None, wrap: None, deliver: None }), Some(&ctl), None).unwrap();
+        let plain = build_message_package_era("", &[0u8; 32], &[], None, None, &[], &[], None, None, Some(&MoleculeWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: None, wrap: None, deliver: None, answer: None }), Some(&ctl), None).unwrap();
         assert_eq!(parse_message_package(&plain).unwrap().molecule.as_ref().unwrap().wrap, None);
     }
 
@@ -644,15 +719,37 @@ mod tests {
     /// An era DELIVERED over a bond (docs/conversations.md §0) rides typed fields — all five or none — and never the text; no KEM rides beside it.
     #[test]
     fn era_delivery_rides_typed_never_in_text() {
-        let d = EraDeliveryWire { conversation: [0x0C; 32], era: 7, era_lineage: [0x1A; 32], nonce: [0x2B; 32], secret: vec![0x3C; 64] };
-        let g = MoleculeWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: None, wrap: None, deliver: Some(d.clone()) };
+        let d = EraDeliveryWire { conversation: [0x0C; 32], era: 7, era_lineage: [0x1A; 32], nonce: [0x2B; 32], secret: vec![0x3C; 64], prior_tag: None };
+        let g = MoleculeWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: None, wrap: None, deliver: Some(d.clone()), answer: None };
         let ctl = crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Deliver);
         let built = build_message_package_era("", &[0u8; 32], &[], None, None, &[], &[], None, None, Some(&g), Some(&ctl), None).unwrap();
         let pkg = parse_message_package(&built).unwrap();
         assert_eq!(pkg.molecule.as_ref().unwrap().deliver, Some(d));
+        assert_eq!(pkg.molecule.as_ref().unwrap().answer, None, "a delivery carries no answer");
         assert_eq!(pkg.era_kem, None, "the bond's own encryption carries it");
         assert_eq!(pkg.body, "");
+        assert_eq!(pkg.control, Some(ctl.clone()));
+        // A fresh mint names the era it derives from.
+        let f = EraDeliveryWire { conversation: [0x0C; 32], era: 8, era_lineage: [0x1A; 32], nonce: [0x2C; 32], secret: vec![0x3D; 32], prior_tag: Some(0x4325_596e) };
+        let g = MoleculeWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: None, wrap: None, deliver: Some(f.clone()), answer: None };
+        let built = build_message_package_era("", &[0u8; 32], &[], None, None, &[], &[], None, None, Some(&g), Some(&ctl), None).unwrap();
+        assert_eq!(parse_message_package(&built).unwrap().molecule.unwrap().deliver, Some(f));
+    }
+
+    /// An era ANSWER (2026-11-13) rides typed fields on a Deliver row with no delivery set: a parser that predates it sees a Deliver row without its delivery and nothing else, and an unknown verdict is dropped.
+    #[test]
+    fn era_answer_rides_typed_beside_no_delivery() {
+        let a = EraAnswerWire { conversation: [0x0C; 32], nonce: [0x2B; 32], verdict: EraVerdict::Refuse, held_era: 13, held_tag: 0x4325_596e };
+        let g = MoleculeWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: None, wrap: None, deliver: None, answer: Some(a.clone()) };
+        let ctl = crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Deliver);
+        let built = build_message_package_era("", &[0u8; 32], &[], None, None, &[], &[], None, None, Some(&g), Some(&ctl), None).unwrap();
+        let pkg = parse_message_package(&built).unwrap();
+        let m = pkg.molecule.unwrap();
+        assert_eq!(m.answer, Some(a));
+        assert_eq!(m.deliver, None, "an old build reads a Deliver row without its delivery fields and ignores it");
         assert_eq!(pkg.control, Some(ctl));
+        assert_eq!(EraVerdict::from_code(1), Some(EraVerdict::Accept));
+        assert_eq!(EraVerdict::from_code(3), None);
     }
     /// Round-trip: every field survives, the reference travels typed, empty body and zero wovens are legal, and garbage is ONE clean error (fork-detector food, never a panic).
     #[test]

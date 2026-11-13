@@ -506,6 +506,8 @@ pub enum StatusUpdate {
         held_era: Option<u64>,
         /// The asker's era tag beside the index (2026-09-10): same index + same tag = the same era = a miss, never a serve.
         held_tag: Option<u32>,
+        /// What the asker saw and hands the ceremony owner to act on (2026-11-13): empty on a plain era_pull and from an older build.
+        ask: crate::network::fgtw::protocol::OwnerAsk,
     },
     /// A sibling's negative answer to our chain_pull: it holds no chains for this token either. All live siblings missing = the fleet truly has nothing, re-key is legitimate.
     ChainPullMissReceived {
@@ -2896,7 +2898,7 @@ async fn run_checker(
                                 continue;
                             }
                             // Fleet chain-pull request/miss (a fresh sibling asking before it re-keys). Same mandatory packet-ack.
-                            if let Ok((conversation_token, sender_pubkey, held_era, held_tag)) =
+                            if let Ok((conversation_token, sender_pubkey, held_era, held_tag, ask)) =
                                 crate::network::fgtw::protocol::parse_chain_pull_vsf(msg_bytes)
                             {
                                 {
@@ -2913,6 +2915,7 @@ async fn run_checker(
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                         held_era,
                                         held_tag,
+                                        ask,
                                     },
                                     &event_proxy_recv,
                                 );

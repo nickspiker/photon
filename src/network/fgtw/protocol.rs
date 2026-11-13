@@ -2280,6 +2280,16 @@ pub fn parse_friend_knock_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32]), 
     Ok((token, sender_pubkey))
 }
 
+/// What a device that does not own the ceremony saw and hands the owner on an era_pull (2026-11-13, Brittany's era split: the desktop saw her frames on an era it never held and only waited).
+/// Additive fields on the `chain_pull`: an owner that predates them reads a plain era_pull.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OwnerAsk {
+    /// The friend's own device wrote on this era, which the asker does not hold (`ftag`).
+    pub friend_tag: Option<u32>,
+    /// The friend's frames on the era the asker shares with the owner decrypt to garbage (`fork`).
+    pub fork: bool,
+}
+
 /// Build a `chain_pull` — a sibling-to-sibling ASK for a friendship's chain state, fired by a device holding a Complete contact with NO chains (the freshly-added-device case) BEFORE it may declare wipe debris and re-key. A sibling holding the chains answers by clearing its push watermarks for that friendship (the normal chain_sync re-push serves everyone); a sibling without them answers `chain_pull_miss`.
 pub fn build_chain_pull_vsf(
     conversation_token: &[u8; 32],
@@ -2287,6 +2297,18 @@ pub fn build_chain_pull_vsf(
     device_secret: &[u8; 32],
     held_era: Option<u64>,
     held_tag: Option<u32>,
+) -> Result<Vec<u8>, String> {
+    build_chain_pull_ask_vsf(conversation_token, device_pubkey, device_secret, held_era, held_tag, OwnerAsk::default())
+}
+
+/// A `chain_pull` that also hands the ceremony owner the evidence it should act on (`OwnerAsk`).
+pub fn build_chain_pull_ask_vsf(
+    conversation_token: &[u8; 32],
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+    held_era: Option<u64>,
+    held_tag: Option<u32>,
+    ask: OwnerAsk,
 ) -> Result<Vec<u8>, String> {
     use vsf::file_format::VsfSection;
     use vsf::VsfBuilder;
@@ -2300,6 +2322,13 @@ pub fn build_chain_pull_vsf(
     if let Some(t) = held_tag {
         section.add_field("tag", VsfType::u(t as usize, false));
     }
+    // The owner ask (2026-11-13): what a non-owner saw, for the ceremony owner to act on.
+    if let Some(t) = ask.friend_tag {
+        section.add_field("ftag", VsfType::u(t as usize, false));
+    }
+    if ask.fork {
+        section.add_field("fork", VsfType::u0(true));
+    }
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
@@ -2310,7 +2339,7 @@ pub fn build_chain_pull_vsf(
 }
 
 /// Parse + verify a `chain_pull`. Returns (conversation token, sender device pubkey). The receiver authorizes by sibling membership (knows_device), exactly like ckpt_req.
-pub fn parse_chain_pull_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32], Option<u64>, Option<u32>), String> {
+pub fn parse_chain_pull_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32], Option<u64>, Option<u32>, OwnerAsk), String> {
     let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
         .map_err(|e| format!("chain_pull verification failed: {}", e))?;
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
@@ -2322,7 +2351,11 @@ pub fn parse_chain_pull_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32], Opt
         .ok_or("chain_pull missing tok")?;
     let held_era = field_u64(&section.fields, "era");
     let held_tag = field_u64(&section.fields, "tag").map(|t| t as u32);
-    Ok((token, sender_pubkey, held_era, held_tag))
+    let ask = OwnerAsk {
+        friend_tag: field_u64(&section.fields, "ftag").and_then(|t| u32::try_from(t).ok()),
+        fork: section.fields.iter().find(|f| f.name == "fork").and_then(|f| f.values.first()).is_some_and(|v| matches!(v, VsfType::u0(true))),
+    };
+    Ok((token, sender_pubkey, held_era, held_tag, ask))
 }
 
 // ── The fleet's frames between devices: the departure request, the membership chain and fan-out over the mesh (docs/peers-are-fgtw.md), and the binding request handed straight to a sponsor (docs/pairing-v2.md over the mesh). Their codec is fgtw's (`fgtw::protocol`, fgtw MIGRATION.md step 5, 2026-10-31) — one codec for photon, ferros and every other fleet client; these are photon's call shapes over it, the device's installed signer chosen as `sign_device_envelope` chooses it, stamped now. ──
@@ -4400,10 +4433,15 @@ mod pong_seal_tests {
         let tok = [0x42u8; 32];
         let with = build_chain_pull_vsf(&tok, &pk, &sk, Some(5), Some(0xdead_beef)).unwrap();
         let without = build_chain_pull_vsf(&tok, &pk, &sk, None, None).unwrap();
-        let (t1, p1, e1, g1) = parse_chain_pull_vsf(&with).unwrap();
-        assert_eq!((t1, p1, e1, g1), (tok, pk, Some(5), Some(0xdead_beef)));
-        let (_, _, e0, g0) = parse_chain_pull_vsf(&without).unwrap();
-        assert_eq!((e0, g0), (None, None), "the legacy ask carries no era and no tag");
+        let (t1, p1, e1, g1, a1) = parse_chain_pull_vsf(&with).unwrap();
+        assert_eq!((t1, p1, e1, g1, a1), (tok, pk, Some(5), Some(0xdead_beef), OwnerAsk::default()));
+        let (_, _, e0, g0, a0) = parse_chain_pull_vsf(&without).unwrap();
+        assert_eq!((e0, g0, a0), (None, None, OwnerAsk::default()), "the legacy ask carries no era, no tag and no owner ask");
+        // The owner ask rides additive fields beside the era_pull's own.
+        let ask = OwnerAsk { friend_tag: Some(0x8010_78d0), fork: true };
+        let asked = build_chain_pull_ask_vsf(&tok, &pk, &sk, Some(13), Some(0x4325_596e), ask).unwrap();
+        let (_, _, e2, g2, a2) = parse_chain_pull_vsf(&asked).unwrap();
+        assert_eq!((e2, g2, a2), (Some(13), Some(0x4325_596e), ask));
     }
 
     #[test]

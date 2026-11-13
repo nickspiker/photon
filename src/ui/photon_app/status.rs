@@ -456,7 +456,7 @@ impl PhotonApp {
         // Snapshot of the pursuit map for the in-loop gate (the loop holds &mut self.contacts; the map lives on self).
         let stale_fold_claims = self.fleet_tip_pursuit.clone();
         // chain_pull request/miss events, deferred past the checker borrow (their handling mutates watermarks / re-keys).
-        let mut chain_pull_reqs_after: Vec<([u8; 32], [u8; 32], Option<u64>, Option<u32>)> = Vec::new();
+        let mut chain_pull_reqs_after: Vec<([u8; 32], [u8; 32], Option<u64>, Option<u32>, crate::network::fgtw::protocol::OwnerAsk)> = Vec::new();
         // Era observations from the pong loop (which holds the chains borrow) — dispatched after it (era ratchet stage 2).
         let mut era_triggers_after: Vec<(crate::types::friendship::FriendshipId, super::era::RepairTrigger)> = Vec::new();
         // Pigeon progress words, applied after the drain (on_pigeon_ack takes &mut self).
@@ -593,6 +593,9 @@ impl PhotonApp {
                             }
                             if record.era_tag != 0 {
                                 let seen = self.peer_era_seen.insert((*fid, peer_pubkey.key), (record.era_index, record.era_tag));
+                                // Every index ever advertised for this conversation: the next era we mint goes past all of them (bonds.rs `era_index_floor`).
+                                let high = self.era_index_seen.entry(*fid).or_insert(0);
+                                *high = (*high).max(record.era_index);
                                 let ours_tag = chains.era_tag();
                                 if seen != Some((record.era_index, record.era_tag)) && ours_tag != Some(record.era_tag) {
                                     let ours_s = ours_tag.map(|t| format!("{t:08x}")).unwrap_or_else(|| "none".into());
@@ -1348,6 +1351,14 @@ impl PhotonApp {
                                 let ret = chains.retired_era().map(|r| format!("{:08x}", r.tag)).unwrap_or_else(|| "none".into());
                                 let pen = chains.pending_era().map(|p| format!("{:08x}", p.tag)).unwrap_or_else(|| "none".into());
                                 crate::logf!("CHAT: frame tagged era {:08x} from {} — ours {}, retired {}, pending {} — dropped (stale/unknown era, not fork evidence)", era.unwrap_or(0), crate::fp(&sender_pubkey.key), ours, ret, pen);
+                                // AN UNKNOWN ERA IS AN OBSERVATION (2026-11-13, Brittany's era split: 154 of her frames were dropped here over a day while the heal waited on a pong advert that never changed).
+                                // The friend's own device writing on an era we do not hold goes to the era-mismatch heal, once per new tag; the post-loop checks the signer is the friend's device and the heal decides who acts.
+                                let from_our_fleet = self.contacts.iter().any(|c| c.is_sibling && c.knows_device(&sender_pubkey.key));
+                                if let Some(t) = era.filter(|_| !chains.molecule && !from_our_fleet) {
+                                    if self.era_unknown_frames.insert((*fid_ref, t)) {
+                                        era_heals_after.push((*fid_ref, sender_pubkey.key, t));
+                                    }
+                                }
                                 // A GROUP frame on an era we do not hold (docs/molecules.md §10.1 Catching up): the wrap for this device is still in flight or re-serve — say so in the header until it lands.
                                 // HELD, not dropped (Brittany 2026-10-25: a member's era-2 frame beat its wrap by 50 ms and waited out a retransmit): the era installing replays it.
                                 if chains.molecule {
@@ -1529,6 +1540,29 @@ impl PhotonApp {
                         // Strict in-order processing (Layer 1). The receiver decrypts at CURRENT_KEY_INDEX, which is only correct when this message is the immediate successor of the last one we processed. So verify_chain_link is now HARD: on a mismatch the message is "ahead" (its predecessor hasn't arrived yet) — buffer it on the `prev_msg_hp` it awaits and SKIP decrypt. It gets replayed when that predecessor lands (see the gap-buffer drain after a successful advance below). "Behind"/duplicate is already handled by is_duplicate above; an unrelated stale prev_msg_hp simply waits in the buffer (and the retransmit path re-sends).
                         if let Err(expected) = chains.verify_chain_link(&lane, &prev_msg_hp) {
                             crate::logf!("CHAT: Hash chain gap from {} - expected prev {}..., got {}... — buffering (ahead of us)", crate::fp(&from_handle_hash), hex::encode(&expected[..8]), hex::encode(&prev_msg_hp[..8]));
+                            // HELD BY HISTORY, STILL WAITING HERE (Brittany 2026-11-13, 01:39): the row already reached us by a history page and rang, but this frame of it waits for its predecessor, and the duplicate gate skips recovered rows, so nobody ever ACKed it and the sender gave it up as undelivered.
+                            // The row is held, so it is ACKed now with a stand-in hash, as the duplicate gate does; the frame still waits in the buffer below so the lane can follow when its predecessor lands.
+                            // The stand-in never equals the frame's own hash, so the sender clears this one row and implies nothing about any other (process_ack_by).
+                            if let Some((content_hash, recipient_pubkey)) = self.conversations[conv_pos]
+                                .messages
+                                .iter()
+                                .find(|m| !m.is_outgoing && m.timestamp == timestamp)
+                                .map(super::conversation::stand_in_ack_hash)
+                                .and_then(|h| ack_target.as_ref().map(|(k, _)| (h, *k)))
+                            {
+                                if let Some(ref checker) = self.status_checker {
+                                    let relay_to = ack_target.as_ref().map(|(_, r)| r.clone()).unwrap_or_default();
+                                    checker.send_ack(AckRequest {
+                                        peer_addr: sender_addr,
+                                        recipient_pubkey,
+                                        conversation_token,
+                                        acked_eagle_time: timestamp,
+                                        plaintext_hash: content_hash,
+                                        relay_to,
+                                    });
+                                    crate::logf!("CHAT: ACKed {}'s eagle_time {} with a stand-in hash — the row came by history while this frame waits for its predecessor", crate::fp(&from_handle_hash), timestamp);
+                                }
+                            }
                             // A friend's frame seen arriving LIVE: if the history walk ends up delivering its row, that row rings as live (conversation.rs) — it is news, not recovery.
                             // WHY: the list must stay bounded — a frame whose row never arrives by history is never removed — so the oldest goes past 64 (a gap buffer that deep is already a lane in trouble).
                             if contact_idx.is_some_and(|ci| !self.contacts[ci].is_sibling) {
@@ -3866,6 +3900,19 @@ impl PhotonApp {
                             );
                             stale_folds_after.push(c.handle_proof);
                         }
+                    } else if let Some(c) = self.contacts.iter().find(|c| !c.is_sibling && c.knows_device(&pinged.key) && c.knows_device(&responder.key)) {
+                        // A KNOWN device of the same friend keeps answering for the one we pinged: the pinged key may be one their fleet has released, which only a fresh fold drops (Brittany 2026-11-12: 865 pongs for c9b5f417 answered by 9ffdecc9, never re-read because both were known).
+                        // The edge is the first such answer for this pinged device since a fold last changed; the fold drain clears it.
+                        if self.cross_answer_refreshed.insert(pinged.key) {
+                            crate::logf!(
+                                "FLEET: {}'s device {} answered for their device {} — refreshing {}'s fleet in case that key was released",
+                                c.display_name(),
+                                crate::fp(&responder.key),
+                                crate::fp(&pinged.key),
+                                c.display_name()
+                            );
+                            stale_folds_after.push(c.handle_proof);
+                        }
                     }
                 }
                 // Departure have-set exchange (holdings.rs): only a live member of OUR fleet may ask what we hold, or answer our ask.
@@ -4332,12 +4379,13 @@ impl PhotonApp {
                     sender_pubkey,
                     held_era,
                     held_tag,
+                    ask,
                 } => {
                     // Sibling authorization, exactly the ckpt_req gate; the serve/miss work mutates watermarks so it defers past the checker borrow.
                     if self.contacts.iter().any(|c| {
                         c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
                     }) {
-                        chain_pull_reqs_after.push((conversation_token, sender_pubkey.key, held_era, held_tag));
+                        chain_pull_reqs_after.push((conversation_token, sender_pubkey.key, held_era, held_tag, ask));
                     }
                 }
                 StatusUpdate::ChainPullMissReceived {
@@ -5561,7 +5609,11 @@ impl PhotonApp {
         }
 
         // chain_pull serves (deferred past the checker borrow): a sibling asked for chains it lacks. Holding them = clear this friendship's push watermarks so drive_chain_replication re-pushes every lane checkpoint fleet-wide (the asker adopts, everyone else no-ops). Not holding them = answer miss.
-        for (token, sender_key, held_era, held_tag) in chain_pull_reqs_after {
+        for (token, sender_key, held_era, held_tag, ask) in chain_pull_reqs_after {
+            // A sibling that does not own the ceremony handed us what it saw (bonds.rs `on_owner_ask`); the serve or miss below answers its pull as before.
+            if ask != crate::network::fgtw::protocol::OwnerAsk::default() {
+                self.on_owner_ask(token, sender_key, held_tag, ask);
+            }
             // SAME ERA = MISS (2026-09-10): fresh ceremonies all mint index 0, so "era_index >= held" served the asker its OWN era back and the pull never concluded ("era_pull in flight" for the rest of the session on Nick's phone). The asker's tag settles it: same index and same tag is the era it already holds.
             let same_era_as_asker = held_era.is_some_and(|h| {
                 self.friendship_chains.iter().any(|(_, c)| c.conversation_token == token && c.era_index == h && held_tag.is_some_and(|t| c.era_tag() == Some(t)))
