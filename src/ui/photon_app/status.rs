@@ -543,6 +543,7 @@ impl PhotonApp {
                     about,
                     fleet_tip,
                     braid,
+                    profile_records,
                 } => {
                     // A pong is the edge a fetch aimed at this device moves on at when its answer was lost (fetch_pong_from, applied after the batch).
                     if is_online {
@@ -972,8 +973,20 @@ impl PhotonApp {
                                     changed = true;
                                 }
                             }
+                            // PROFILE RECORDS first (FLOWS.md "Profile" P1): each is checked against this contact's identity and fold, and only one newer than the copy held moves the shown name or pin; an older or replayed copy changes nothing.
+                            // Our own fields reach a sibling row thru the fleet settings, never a pong.
+                            if !contact.is_sibling {
+                                for rec in profile_records.iter().cloned() {
+                                    let (field, rev) = (rec.field, rec.rev);
+                                    if contact.offer_profile_record(rec) {
+                                        crate::logf!("CONTACT: {} profile {} record adopted (revision {}, via device {})", crate::fp(&contact.handle_proof), field.label(), rev, crate::fp(&peer_pubkey.key));
+                                        changed = true;
+                                    }
+                                }
+                            }
+                            // MIGRATION-EXPIRES: 2027-02-01 — the bare name and pin from a build that sends no records, taken only while no record is held for the field; delete once every build in the field signs its profile.
                             // Always-granted name slot off the pong: adopt the friend's chosen display name. Persisted below via the state-save the name-change marks.
-                            if let Some(name) = display_name.as_ref() {
+                            if let Some(name) = display_name.as_ref().filter(|_| !contact.holds_record(fgtw::profile::Field::Name)) {
                                 if !contact.is_sibling && contact.published_name != *name {
                                     crate::logf!(
                                         "CONTACT: {} published name {} -> {}",
@@ -989,7 +1002,7 @@ impl PhotonApp {
                                 }
                             }
                             // Always-granted AVATAR slot off the pong: adopt the friend's avatar pin (random key ‖ lookup). This is the ONLY way a friend learns the pin — it's never handle-derivable — so it arrives here, gated by the pong only answering authenticated contacts. A new/changed pin marks the contact for a fresh avatar fetch.
-                            if let Some(pin) = avatar_pin.as_ref() {
+                            if let Some(pin) = avatar_pin.as_ref().filter(|_| !contact.holds_record(fgtw::profile::Field::AvatarPin)) {
                                 if !contact.is_sibling && contact.avatar_pin != *pin {
                                     crate::logf!(
                                         "CONTACT: {} avatar pin adopted",

@@ -385,6 +385,7 @@ impl PhotonApp {
     /// Push our avatar pin into the status thread's pong slot, so friends receive the friend-gated avatar capability on their next ping cycle. Called on avatar set, on settings load, and when a sibling's merged edit lands.
     pub(super) fn publish_avatar_pin(&mut self) {
         // READONLY, deliberately: publishing must never mint. The minting variant ran inside ensure_fleet_settings' lazy load — 4ms BEFORE the fstate merge delivered the slot's real pin, which then lost LWW to the mint it had just enabled. Every wiped boot re-minted, the wall copy stayed one pin behind, and the avatar never recovered (caught by the FSTATE fingerprints, 2026-08-02). A pin now exists ONLY when an avatar set rotates one in — a pin with no image behind it was never worth announcing.
+        self.publish_profile_records();
         if let Some(pin) = self.ensure_avatar_pin_readonly() {
             crate::network::status::set_avatar_pin(&pin);
             // A new pin is a new avatar: every contact hears it now, not at its next ping (docs/phonebook-web.md "Changes travel to the people who care").
@@ -471,9 +472,60 @@ impl PhotonApp {
             .and_then(crate::storage::fleet_settings::as_text)
             .unwrap_or_default();
         crate::network::status::set_profile_name(&name);
+        self.publish_profile_records();
         if self.published_name.replace(name.clone()).is_some_and(|old| old != name) {
             self.announce_profile();
         }
+    }
+
+    /// Our own name and avatar pin as owner-signed records (fgtw FLOWS.md "Profile" P1), kept in step with the fleet settings and handed to the status thread, whose pongs carry them beside the bare fields.
+    /// Called wherever the name or pin is published: on settings load, on our own edits, and when a sibling's merged settings land.
+    pub(super) fn publish_profile_records(&mut self) {
+        use fgtw::profile::Field;
+        let value_of = |fs: &crate::storage::fleet_settings::FleetSettings, key: &str| fs.effective(key).cloned();
+        let Some((name, pin)) = self.fleet_settings.as_ref().map(|fs| (value_of(fs, "profile.name"), value_of(fs, "profile.avatar_pin"))) else {
+            return;
+        };
+        let mut records = Vec::new();
+        if let Some(name) = name.as_ref().and_then(crate::storage::fleet_settings::as_text) {
+            records.extend(self.ensure_own_record(Field::Name, "profile.name", name.into_bytes()));
+        }
+        // WHY: the same 64-byte gate ensure_avatar_pin_readonly applies; a settings value of another length is no pin, and a record of it would be refused by every receiver (Contact::offer_profile_record).
+        if let Some(pin) = pin.as_ref().and_then(crate::storage::fleet_settings::as_bytes).filter(|p| p.len() == 64) {
+            records.extend(self.ensure_own_record(Field::AvatarPin, "profile.avatar_pin", pin));
+        }
+        crate::network::status::set_profile_records(records);
+    }
+
+    /// The fleet-settings key our own record for `field` lives under, beside the bare value, so every device of ours carries the one signed copy, revision and all.
+    pub(super) fn own_record_key(field: fgtw::profile::Field) -> &'static str {
+        match field {
+            fgtw::profile::Field::Name => "profile_record.name",
+            fgtw::profile::Field::AvatarPin => "profile_record.avatar_pin",
+        }
+    }
+
+    /// Our own record for `field`, in step with `value` (the fleet settings' `value_key`): a held record for that value is kept as it is, whichever of our devices signed it, its revision unchanged; a held record newer than the value is kept too.
+    /// Otherwise this device signs one whose revision is the moment the value was set (the setting's own stamp, never a later one) and keeps it in the fleet settings at that same stamp.
+    /// None while there is no identity, device key or value yet.
+    fn ensure_own_record(&mut self, field: fgtw::profile::Field, value_key: &str, value: Vec<u8>) -> Option<fgtw::profile::ProfileRecord> {
+        use fgtw::profile::ProfileRecord;
+        let hp = self.our_handle_proof()?;
+        let kp = self.device_keypair.clone()?;
+        let key = Self::own_record_key(field);
+        let fs = self.fleet_settings.as_ref()?;
+        let set_at = fs.effective_stamp(value_key)?;
+        let held = fs.effective(key).and_then(|v| ProfileRecord::from_value(v).ok()).filter(|r| r.subject == hp && r.field == field);
+        if let Some(h) = held.filter(|h| h.value == value || h.rev >= set_at) {
+            return Some(h);
+        }
+        // Signed with the device's Ed25519 key alone: the record rides every pong, one datagram, where a SPHINCS+ egg would add some 8 KB per record, and a record's verify reads the Ed25519 egg only.
+        let rec = ProfileRecord::sign(&kp, &hp, field, value, set_at);
+        crate::logf!("PROFILE: own {} record signed at revision {}", field.label(), set_at);
+        if self.fleet_settings.as_mut()?.set(key, rec.to_value(), set_at) {
+            self.persist_and_push_settings();
+        }
+        Some(rec)
     }
 
     /// A profile change (avatar or name) goes to every contact now: each contact device is owed one announce pong, the unsolicited pong whose sealed tail carries the name and the avatar pin, and a ping round goes out at once to deliver it.

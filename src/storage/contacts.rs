@@ -166,6 +166,7 @@ fn contact_state_schema() -> SectionSchema {
         .field("hist_oldest", TypeConstraint::Any) // e6 eagle-time cursor: oldest recovered row so far (i64::MAX = head page pending). Absent = history recovery never ran for this contact.
         .field("hist_complete", TypeConstraint::AnyUnsigned) // bool: friend-history backfill finished (server said no-more, or early-stop). Absent = false.
         .field("published_name", TypeConstraint::AnyString) // The friend's chosen display name, adopted from their pong (always-granted name slot). Absent = never received.
+        .field("profile", TypeConstraint::Any) // multi: one owner-signed profile record (fgtw::profile, the `vP` wrapped section) per field held. Absent = none (a friend on an older build, or a document written before records).
         .field("sibling", TypeConstraint::AnyUnsigned) // bool: this entry is one of OUR OWN fleet devices (fleet weave), keyed by sibling party id. Absent = false (a friend).
         .field("blind", TypeConstraint::Any) // multi-value per deposited blind: (depositor device ke, 64B blob tensor, deposited-at e6). Friend-side storage of OTP-blinded S blobs; absent = none.
         .field("blind_deposited", TypeConstraint::AnyUnsigned) // bool: OUR blind is disk-confirmed at this friend (their blind_ack arrived). Absent = false.
@@ -281,6 +282,12 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
         // The friend's pong-adopted display name — written only when received (absent = never).
         builder = builder
             .set("published_name", VsfType::x(contact.published_name.clone()))
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    // The friend's owner-signed profile records, one field value each; none held writes no field at all (never an empty one).
+    for rec in &contact.profile_records {
+        builder = builder
+            .append_multi("profile", vec![rec.to_value()])
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
     if contact.is_sibling {
@@ -466,6 +473,27 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
     }
     if let Ok(name) = section.get_value::<String>("published_name") {
         contact.published_name = name;
+    }
+    // Held profile records: verified when they were adopted, so read back as held; a value that is not a record this build knows is skipped.
+    for f in section.get_fields("profile") {
+        for v in &f.values {
+            if let Ok(rec) = fgtw::profile::ProfileRecord::from_value(v) {
+                fgtw::profile::merge(&mut contact.profile_records, rec);
+            }
+        }
+    }
+    // A held record is the field's truth: the shown name and the pin (which the index row carries, written apart from this document) show its value.
+    use fgtw::profile::Field;
+    if let Some(name) = fgtw::profile::current(&contact.profile_records, &contact.handle_proof, Field::Name).and_then(|r| r.name()) {
+        contact.published_name = name.to_string();
+    }
+    if let Some(rec) = fgtw::profile::current(&contact.profile_records, &contact.handle_proof, Field::AvatarPin) {
+        // WHY/PROOF: file data; copy_from_slice panics on any length but 64, and only 64 bytes or empty were ever adopted (Contact::offer_profile_record), so anything else is a damaged document and leaves the index pin standing.
+        if rec.value.len() == 64 {
+            contact.avatar_pin.copy_from_slice(&rec.value);
+        } else if rec.value.is_empty() {
+            contact.avatar_pin = [0u8; 64];
+        }
     }
     if let Ok(seed) = section.get_value::<[u8; 32]>("seed") {
         contact.relationship_seed = Some(Seed::from_bytes(seed));
@@ -2039,6 +2067,61 @@ mod tests {
         fresh.consent_mutual = false;
         apply_contact_state(&mut fresh, &legacy).unwrap();
         assert!(fresh.consent_mutual, "absent consent field = grandfathered mutual");
+
+        if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {
+            remove_test_ring_file(primary);
+            remove_test_ring_file(shadow);
+        }
+    }
+
+    /// Held profile records survive a vault close/reopen and show their values over the document's own name and the index pin; a document without the field reads as no records, and an empty pin record writes a record, never an empty field.
+    #[test]
+    fn profile_records_round_trip_and_absent_loads_none() {
+        use crate::types::HandleText;
+        use fgtw::profile::{Field, ProfileRecord};
+
+        let device_secret = [47u8; 32];
+        let vault_seed = *ihi::handle_to_hash("me-profile-test").as_bytes();
+        crate::storage::isolate_test_storage();
+        let app = crate::storage::APP;
+
+        let friend_dev = fgtw::keys::Keypair::from_seed(&[0x61; 32]);
+        let hp = [0x89; 32];
+        let mut c = Contact::new(HandleText::new("flora"), hp, DevicePubkey::from_bytes(friend_dev.public.to_bytes()));
+        assert!(c.offer_profile_record(ProfileRecord::sign(&friend_dev, &hp, Field::Name, "Flower".as_bytes().to_vec(), 500)));
+        assert!(c.offer_profile_record(ProfileRecord::sign(&friend_dev, &hp, Field::AvatarPin, vec![0x5A; 64], 501)));
+        let held = c.profile_records.clone();
+        // The document's bare name and the index pin are stale: the records must win on load.
+        c.published_name = "Weed".to_string();
+
+        {
+            let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
+            save_contact_state(&c, &storage).unwrap();
+        }
+        let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
+        let identity = ContactIdentity {
+            handle_proof: hp,
+            party_id: crate::crypto::clutch::identity_party_id(&crate::types::Handle::to_identity_seed("flora")),
+            avatar_pin: [0x11; 64],
+        };
+        let loaded = load_contact_state(&identity, &storage).unwrap();
+        assert_eq!(loaded.profile_records, held, "every held record survives a restart");
+        assert_eq!(loaded.published_name, "Flower");
+        assert_eq!(loaded.avatar_pin, [0x5A; 64], "the record's pin outranks the index row");
+
+        // An empty pin (a removed avatar) is a real record: it rides as a wrapped record, never an empty field.
+        let mut gone = Contact::new(HandleText::new("flora"), hp, DevicePubkey::from_bytes(friend_dev.public.to_bytes()));
+        assert!(gone.offer_profile_record(ProfileRecord::sign(&friend_dev, &hp, Field::AvatarPin, Vec::new(), 600)));
+        save_contact_state(&gone, &storage).unwrap();
+        let loaded = load_contact_state(&identity, &storage).unwrap();
+        assert_eq!(loaded.profile_records, gone.profile_records);
+        assert_eq!(loaded.avatar_pin, [0u8; 64]);
+
+        // A document written before records reads as none.
+        let legacy = contact_state_schema().build().set("clutch_state", 0u8).unwrap().encode().unwrap();
+        let mut fresh = Contact::new(HandleText::new("flora"), hp, DevicePubkey::from_bytes(friend_dev.public.to_bytes()));
+        apply_contact_state(&mut fresh, &legacy).unwrap();
+        assert!(fresh.profile_records.is_empty());
 
         if let Ok([primary, shadow]) = kete::vault_ring_paths(app, &vault_seed, &device_secret) {
             remove_test_ring_file(primary);

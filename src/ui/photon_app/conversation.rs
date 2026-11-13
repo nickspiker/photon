@@ -3327,7 +3327,9 @@ impl PhotonApp {
                             .and_then(|fs| fs.effective("profile.name"))
                             .and_then(crate::storage::fleet_settings::as_text)
                             .map_or(true, |n| n.is_empty());
-                        if blank {
+                        // A signed record of our name in the fleet settings is newer testimony than the wall blob's unsigned slot: the blob only heals a fleet that holds neither.
+                        let signed = self.fleet_settings.as_ref().and_then(|fs| fs.effective(Self::own_record_key(fgtw::profile::Field::Name))).is_some();
+                        if blank && !signed {
                             crate::logf!("Avatar: preferred name recovered from the wall blob (\"{}\") — restoring into fstate", name);
                             self.settings_set("profile.name", vsf::VsfType::x(name));
                             self.publish_profile_name();
@@ -3340,7 +3342,8 @@ impl PhotonApp {
                             .iter()
                             .position(|c| !c.is_sibling && c.handle_proof == owner_hp)
                         {
-                            if self.contacts[pos].published_name != name {
+                            // The blob's name slot is unsigned and as old as the last upload, so it never overwrites a name its owner signed (FLOWS.md "Profile" P1).
+                            if self.contacts[pos].published_name != name && !self.contacts[pos].holds_record(fgtw::profile::Field::Name) {
                                 self.contacts[pos].published_name = name;
                                 self.contacts[pos].published_name_dirty = true;
                                 self.scene_dirty = true;

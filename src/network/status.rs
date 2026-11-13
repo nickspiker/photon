@@ -126,6 +126,20 @@ pub fn set_avatar_pin(pin: &[u8; 64]) {
     }
 }
 
+/// Our own profile records (the name and avatar pin as this identity's owner signed them), carried in every sealed pong tail beside the bare fields. Written by the UI thread whenever the fleet settings hold a new one; read by the status thread per pong.
+static PROFILE_RECORDS: std::sync::Mutex<Vec<fgtw::profile::ProfileRecord>> = std::sync::Mutex::new(Vec::new());
+
+/// Publish our own profile records for outgoing pongs.
+pub fn set_profile_records(records: Vec<fgtw::profile::ProfileRecord>) {
+    if let Ok(mut r) = PROFILE_RECORDS.lock() {
+        *r = records;
+    }
+}
+
+fn profile_records() -> Vec<fgtw::profile::ProfileRecord> {
+    PROFILE_RECORDS.lock().map(|r| r.clone()).unwrap_or_default()
+}
+
 /// Our fleet's locked-out devices (treat-as-stolen), carried in every sealed pong tail as the reported-stolen signal. Written by the UI thread on lock edges and locked-set adopts; read by the status thread per pong.
 static LOCKED_REPORT: std::sync::Mutex<Vec<[u8; 32]>> = std::sync::Mutex::new(Vec::new());
 
@@ -427,6 +441,8 @@ pub enum StatusUpdate {
         fleet_tip: Option<i64>,
         /// The responding device's newest braid from the sealed tail. None = legacy/tail-less/no-tail arms (no verdict, the stored capability stands).
         braid: Option<u8>,
+        /// The responder identity's owner-signed profile records from the sealed tail, unverified (the UI thread checks each against the contact's fold). They verify themselves, so they ride every opened tail, a pong answered for another device included. Empty on pings, timeouts, older builds and tail-less pongs.
+        profile_records: Vec<fgtw::profile::ProfileRecord>,
     },
     // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED Full 8-primitive CLUTCH uses ClutchOfferReceived and ClutchKemResponseReceived See docs/clutch.md Section 4.2 for the slot-based ceremony protocol.
     /// Encrypted chat message received (CHAIN format)
@@ -3599,6 +3615,7 @@ async fn run_checker(
                                             about: None,
                                             fleet_tip: None,
                                             braid: None,
+                                            profile_records: Vec::new(),
                                         },
                                         &event_proxy_recv,
                                     );
@@ -3631,6 +3648,7 @@ async fn run_checker(
                                                 // Sent unconditionally: the membership chain is public, the tip discloses nothing; the RECEIVER gates the compare (friend-only, folded-once, not superseded).
                                                 fleet_tip: own_fleet_tip(),
                                                 braid: Some(crate::crypto::chain::BRAID_CURRENT),
+                                                profile: profile_records(),
                                             },
                                             &key,
                                         ) {
@@ -3738,10 +3756,10 @@ async fn run_checker(
                                                             crate::network::fgtw::protocol::open_pong_sensitive(blob, &k).ok()
                                                         })
                                                     })
-                                                    .map(|t| (t.sync_records, t.about, t.fleet_tip, t.braid, t.display_name, t.avatar_pin))
+                                                    .map(|t| (t.sync_records, t.about, t.fleet_tip, t.braid, t.display_name, t.avatar_pin, t.profile))
                                                     .unwrap_or_default();
                                                 // The name and avatar pin ride the salvage too (2026-11-10): an announce pong is how a profile change reaches a friend now rather than at its next ping, and the tail is sealed to this device pair and stamp-bounded above.
-                                                let (salvaged, about, fleet_tip, braid, salvaged_name, salvaged_pin) = salvaged;
+                                                let (salvaged, about, fleet_tip, braid, salvaged_name, salvaged_pin, salvaged_profile) = salvaged;
                                                 crate::logf!("Status: unmatched pong from {} ({}) — liveness + {} sync record(s) (late/twin/announce; no addr adoption)", crate::fp(responder_pubkey.as_bytes()), src_addr, salvaged.len());
                                                 send_status_update(
                                                     &status_tx_recv,
@@ -3759,6 +3777,8 @@ async fn run_checker(
                                                         // The boot ANNOUNCE lands in THIS arm (zero provenance never matches a pending ping) — the highest-value tripwire carrier: a fleet that just grew announces on the new sibling's first cycle.
                                                         fleet_tip,
                                                         braid,
+                                                        // Owner-signed, so replay-safe in a way the bare fields are not: a replayed older record loses to the held newer one.
+                                                        profile_records: salvaged_profile,
                                                     },
                                                     &event_proxy_recv,
                                                 );
@@ -3784,7 +3804,8 @@ async fn run_checker(
                                                     k != responder_pubkey.as_bytes()
                                                 });
                                             }
-                                            // Same salvage as the unmatched arm: the RESPONDER's sealed tail is its own authenticated testimony — a fleet answering fan-out pings from devices we didn't name was the ONLY pong source some sessions ever saw, and 'liveness only' meant zero sync records all session (round-8 field, 2026-08-17). Tips/digests only; name/pin/locked wait for a matched pong.
+                                            // Same salvage as the unmatched arm: the RESPONDER's sealed tail is its own authenticated testimony — a fleet answering fan-out pings from devices we didn't name was the ONLY pong source some sessions ever saw, and 'liveness only' meant zero sync records all session (round-8 field, 2026-08-17). Tips/digests only; the bare name/pin/locked wait for a matched pong.
+                                            // The profile RECORDS ride it (FLOWS.md "Profile" P1): they verify themselves against the owner's fold, so who carried them does not matter, and dropping them here is how a friend's avatar pin went missing (Brittany 2026-11-13, ~877 of her pongs answered by another device).
                                             let salvaged = sealed
                                                 .as_ref()
                                                 .and_then(|blob| {
@@ -3797,9 +3818,9 @@ async fn run_checker(
                                                         crate::network::fgtw::protocol::open_pong_sensitive(blob, &k).ok()
                                                     })
                                                 })
-                                                .map(|t| (t.sync_records, t.about, t.fleet_tip, t.braid))
+                                                .map(|t| (t.sync_records, t.about, t.fleet_tip, t.braid, t.profile))
                                                 .unwrap_or_default();
-                                            let (salvaged, about, fleet_tip, braid) = salvaged;
+                                            let (salvaged, about, fleet_tip, braid, salvaged_profile) = salvaged;
                                             // The responder answered for `pinged`: if no fold knows it, the UI refreshes the fold of whoever owns `pinged`.
                                             send_status_update(
                                                 &status_tx_recv,
@@ -3824,6 +3845,7 @@ async fn run_checker(
                                                     about,
                                                     fleet_tip,
                                                     braid,
+                                                    profile_records: salvaged_profile,
                                                 },
                                                 &event_proxy_recv,
                                             );
@@ -3964,6 +3986,7 @@ async fn run_checker(
                                             about: tail.about,
                                             fleet_tip: tail.fleet_tip,
                                             braid: tail.braid,
+                                            profile_records: tail.profile,
                                         },
                                         &event_proxy_recv,
                                     );
@@ -4039,6 +4062,7 @@ async fn run_checker(
                                             about: None,
                                             fleet_tip: None,
                                             braid: None,
+                                            profile_records: Vec::new(),
                                         },
                                         &event_proxy_recv,
                                     );
@@ -4111,6 +4135,7 @@ async fn run_checker(
                                             about: None,
                                             fleet_tip: None,
                                             braid: None,
+                                            profile_records: Vec::new(),
                                         },
                                         &event_proxy_recv,
                                     );
@@ -4681,6 +4706,7 @@ async fn run_checker(
                                 about,
                                 fleet_tip: own_fleet_tip(),
                                 braid: Some(crate::crypto::chain::BRAID_CURRENT),
+                                profile: profile_records(),
                             },
                             &key,
                         )
@@ -4831,6 +4857,7 @@ async fn run_checker(
                             about: None,
                             fleet_tip: None,
                             braid: None,
+                            profile_records: Vec::new(),
                         },
                         &event_proxy,
                     );

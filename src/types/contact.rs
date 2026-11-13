@@ -625,12 +625,15 @@ pub struct Contact {
     pub id: ContactId,
     /// The friend's published profile name, adopted from their pong's always-granted name slot and synced across OUR fleet via the roster (PRST4). Empty renders the keyed voca pseudonym; carries zero trust — the pinned key does. Never defaulted to the typed handle: the handle string derives the identity seed, so storing it anywhere re-creates the honeypot (docs/identity-profile.md).
     pub published_name: String,
-    /// Runtime: `published_name` changed since the last state save — the status drain sets it, the post-drain sweep persists + clears it (persisting inside the drain would fight the contacts borrow).
+    /// Runtime: `published_name` or a held profile record changed since the last state save — the status drain sets it, the post-drain sweep persists + clears it (persisting inside the drain would fight the contacts borrow).
     pub published_name_dirty: bool,
     /// Runtime: `avatar_pin` adopted from a pong since the last save — the post-drain sweep persists the contact list + fetches the avatar, then clears it.
     pub avatar_pin_dirty: bool,
     /// The avatar-wall pin, derived at first-met before the seed dropped: AES key (32) ‖ FGTW lookup hash (32). All zeroes = not pinned (siblings and self use the session-seed path).
     pub avatar_pin: [u8; 64],
+    /// The friend's profile fields as their owner signed them (fgtw FLOWS.md "Profile"), newest revision per field: while one is held for a field, `published_name` / `avatar_pin` show its value and nothing unsigned overwrites them (a bare pong field, the roster, the avatar blob's name slot).
+    /// Persisted in the contact document; empty for a friend whose build sends none yet.
+    pub profile_records: Vec<fgtw::profile::ProfileRecord>,
     pub handle_proof: [u8; 32], // Cached handle_proof (expensive to compute - ~1 second) - PUBLIC
     /// The PARTY ID: the friend's pinned identity PUBKEY (device-derived pid for siblings). Every ceremony/braid derivation keys on this opaque 32-byte id; it holds no signing power. (Pre-pin-set this was BLAKE3(handle) — the friend's identity SEED.)
     pub handle_hash: [u8; 32],
@@ -874,6 +877,7 @@ impl Contact {
             published_name_dirty: false,
             avatar_pin_dirty: false,
             avatar_pin,
+            profile_records: Vec::new(),
             handle_proof,
             handle_hash: party_id,
             public_identity,
@@ -1164,6 +1168,67 @@ impl Contact {
     /// True once the CLUTCH ceremony is Complete — which is cryptographically impossible unless BOTH parties ran it, so it doubles as the mutual-consent signal ("we each added the other"). Used to gate friend-only behaviour like the direct peer-to-peer avatar exchange.
     pub fn is_mutual(&self) -> bool {
         self.clutch_state == ClutchState::Complete
+    }
+
+    /// Whether an owner-signed record is held for `field`: while one is, nothing unsigned (a bare pong field, the roster, the avatar blob's name slot) overwrites the value it shows.
+    pub fn holds_record(&self, field: fgtw::profile::Field) -> bool {
+        fgtw::profile::current(&self.profile_records, &self.handle_proof, field).is_some()
+    }
+
+    /// Take a newer roster entry's bare name and pin where they may fill: a field holding an owner-signed record is never overwritten by the roster, whose one clock consent, ceremony and era edits bump too (FLOWS.md "Profile" P1; the records join the roster codec in P2).
+    /// An empty name or a zero pin is a stub entry's "never received", not "erase yours". A changed pin marks the avatar for a save and a fetch.
+    pub fn fill_from_roster(&mut self, name: &str, pin: &[u8; 64]) {
+        use fgtw::profile::Field;
+        if self.published_name != name && !name.is_empty() && !self.holds_record(Field::Name) {
+            self.published_name = name.to_string();
+        }
+        if self.avatar_pin != *pin && *pin != [0u8; 64] && !self.holds_record(Field::AvatarPin) {
+            self.avatar_pin = *pin;
+            self.avatar_pin_dirty = true;
+        }
+    }
+
+    /// Offer a profile record, whoever carried it (a pong from any of the friend's devices, answered for whichever one was pinged): it is held only when it names this contact's identity, its device is one this contact's fold knows, its eggs verify, and it is newer than the copy held.
+    /// An adopted record shows its value at once and marks the contact for a save (the record lives in the contact document); a changed pin also marks the avatar for a fetch.
+    /// Returns true when the record was adopted.
+    pub fn offer_profile_record(&mut self, rec: fgtw::profile::ProfileRecord) -> bool {
+        use fgtw::profile::{Field, Merged};
+        // WHY: the value is a peer's bytes; a pin is a 64-byte key ‖ lookup or empty (a removed avatar), and a name is UTF-8.
+        // PROOF: a pin of any other length would be copied into a [u8; 64] below and a non-UTF-8 name has no text to show, so either is malformed input and never held.
+        let well_formed = match rec.field {
+            Field::AvatarPin => rec.value.is_empty() || rec.value.len() == 64,
+            Field::Name => rec.name().is_some(),
+        };
+        if !well_formed {
+            return false;
+        }
+        let hp = self.handle_proof;
+        let mut held = std::mem::take(&mut self.profile_records);
+        let merged = fgtw::profile::accept(&mut held, rec, |subject, device, _rev| *subject == hp && self.knows_device(device));
+        self.profile_records = held;
+        if merged != Some(Merged::Adopted) {
+            return false;
+        }
+        // The record itself is new state for the contact document, whether or not the shown value moved.
+        self.published_name_dirty = true;
+        if let Some(name) = fgtw::profile::current(&self.profile_records, &hp, Field::Name).and_then(|r| r.name()) {
+            if self.published_name != name {
+                self.published_name = name.to_string();
+                self.roster_updated = vsf::eagle_time_oscillations();
+            }
+        }
+        if let Some(rec) = fgtw::profile::current(&self.profile_records, &hp, Field::AvatarPin) {
+            let mut pin = [0u8; 64];
+            if !rec.value.is_empty() {
+                pin.copy_from_slice(&rec.value);
+            }
+            if self.avatar_pin != pin {
+                self.avatar_pin = pin;
+                self.avatar_pin_dirty = true;
+                self.roster_updated = vsf::eagle_time_oscillations();
+            }
+        }
+        true
     }
 
     /// Does `device_pubkey` belong to this contact's identity? Trust respects the fold.
@@ -1633,4 +1698,111 @@ pub fn merge_delivered_to(into: &mut Vec<crate::types::PartyId>, from: &[crate::
         }
     }
     into.len() != before
+}
+
+#[cfg(test)]
+mod profile_record_tests {
+    use super::*;
+    use fgtw::profile::{Field, ProfileRecord};
+
+    const HP: [u8; 32] = [0x44; 32];
+
+    /// A friend whose fleet holds `phone` and `laptop`, folded.
+    fn friend(phone: &fgtw::keys::Keypair, laptop: &fgtw::keys::Keypair) -> Contact {
+        let mut c = Contact::new(HandleText::new("bloom"), HP, DevicePubkey::from_bytes(phone.public.to_bytes()));
+        c.fleet_members = vec![phone.public.to_bytes(), laptop.public.to_bytes()];
+        c.fleet_folded_once = true;
+        c
+    }
+
+    #[test]
+    fn a_newer_record_wins_and_an_older_or_bare_one_never_overwrites() {
+        let phone = fgtw::keys::Keypair::from_seed(&[1; 32]);
+        let laptop = fgtw::keys::Keypair::from_seed(&[2; 32]);
+        let mut c = friend(&phone, &laptop);
+        assert!(!c.holds_record(Field::Name), "no record yet: the bare field may still fill (an older build)");
+        assert!(c.offer_profile_record(ProfileRecord::sign(&phone, &HP, Field::Name, b"Bloom".to_vec(), 100)));
+        assert_eq!(c.published_name, "Bloom");
+        assert!(c.published_name_dirty, "an adopted record is owed a save");
+        c.published_name_dirty = false;
+        assert!(c.offer_profile_record(ProfileRecord::sign(&laptop, &HP, Field::Name, b"Blossom".to_vec(), 200)));
+        assert_eq!(c.published_name, "Blossom");
+        c.published_name_dirty = false;
+        assert!(!c.offer_profile_record(ProfileRecord::sign(&phone, &HP, Field::Name, b"Bloom".to_vec(), 100)), "an older copy is never adopted");
+        assert!(!c.offer_profile_record(ProfileRecord::sign(&phone, &HP, Field::Name, Vec::new(), 150)), "nor an older empty one");
+        assert_eq!(c.published_name, "Blossom");
+        assert!(!c.published_name_dirty, "a kept copy changes nothing");
+        assert!(c.holds_record(Field::Name), "the bare pong name is now refused for this field");
+
+        let pin = [0x33; 64];
+        assert!(c.offer_profile_record(ProfileRecord::sign(&phone, &HP, Field::AvatarPin, pin.to_vec(), 300)));
+        assert_eq!(c.avatar_pin, pin);
+        assert!(c.avatar_pin_dirty, "a new pin is owed a fetch");
+        assert!(!c.offer_profile_record(ProfileRecord::sign(&phone, &HP, Field::AvatarPin, vec![0x77; 64], 299)));
+        assert_eq!(c.avatar_pin, pin);
+        // An empty pin is a real value, a removed avatar, when its owner signed it newer.
+        assert!(c.offer_profile_record(ProfileRecord::sign(&laptop, &HP, Field::AvatarPin, Vec::new(), 400)));
+        assert_eq!(c.avatar_pin, [0u8; 64]);
+    }
+
+    #[test]
+    fn a_record_is_held_only_from_the_contacts_own_fold_and_identity() {
+        let phone = fgtw::keys::Keypair::from_seed(&[1; 32]);
+        let laptop = fgtw::keys::Keypair::from_seed(&[2; 32]);
+        let stranger = fgtw::keys::Keypair::from_seed(&[3; 32]);
+        let mut c = friend(&phone, &laptop);
+        assert!(!c.offer_profile_record(ProfileRecord::sign(&stranger, &HP, Field::Name, b"Weed".to_vec(), 900)), "a device outside the fold");
+        assert!(!c.offer_profile_record(ProfileRecord::sign(&phone, &[0x45; 32], Field::Name, b"Weed".to_vec(), 900)), "another identity's field");
+        assert!(!c.offer_profile_record(ProfileRecord::sign(&phone, &HP, Field::AvatarPin, vec![1; 32], 900)), "a pin of the wrong length");
+        let mut forged = ProfileRecord::sign(&phone, &HP, Field::Name, b"Bloom".to_vec(), 100);
+        forged.rev = 9_000;
+        assert!(!c.offer_profile_record(forged), "a carrier cannot re-stamp a record");
+        assert!(c.profile_records.is_empty());
+        assert_eq!(c.published_name, "");
+    }
+
+    /// The pong answered by the laptop when we pinged the phone: its sealed tail carries a record the phone signed, and it is adopted all the same, since the record verifies itself.
+    #[test]
+    fn a_record_carried_by_another_devices_pong_is_adopted() {
+        use crate::network::fgtw::protocol::{open_pong_sensitive, seal_pong_sensitive, PongTail};
+        let phone = fgtw::keys::Keypair::from_seed(&[1; 32]);
+        let laptop = fgtw::keys::Keypair::from_seed(&[2; 32]);
+        let mut c = friend(&phone, &laptop);
+        let name = ProfileRecord::sign(&phone, &HP, Field::Name, "Zoë".as_bytes().to_vec(), 700);
+        let pin = ProfileRecord::sign(&phone, &HP, Field::AvatarPin, vec![0x5A; 64], 701);
+        let key = [0x42u8; 32];
+        let sealed = seal_pong_sensitive(&PongTail { display_name: Some("Zoë".into()), avatar_pin: Some([0x5A; 64]), profile: vec![name.clone(), pin.clone()], ..Default::default() }, &key).unwrap();
+        let tail = open_pong_sensitive(&sealed, &key).unwrap();
+        assert_eq!(tail.profile, vec![name, pin], "the records ride the tail beside the bare fields");
+        assert_eq!(tail.display_name.as_deref(), Some("Zoë"), "the bare fields stay for an older reader");
+        for rec in tail.profile {
+            assert!(c.offer_profile_record(rec));
+        }
+        assert_eq!(c.published_name, "Zoë");
+        assert_eq!(c.avatar_pin, [0x5A; 64]);
+        // A tail from an older build carries none, and reads as none.
+        let old = seal_pong_sensitive(&PongTail { display_name: Some("Zoë".into()), ..Default::default() }, &key).unwrap();
+        assert!(open_pong_sensitive(&old, &key).unwrap().profile.is_empty());
+    }
+
+    #[test]
+    fn the_roster_never_overwrites_a_recorded_field() {
+        let phone = fgtw::keys::Keypair::from_seed(&[1; 32]);
+        let laptop = fgtw::keys::Keypair::from_seed(&[2; 32]);
+        let mut c = friend(&phone, &laptop);
+        // With no record the roster fills, and an empty or zero entry never erases.
+        c.fill_from_roster("Bloom", &[0x10; 64]);
+        assert_eq!((c.published_name.as_str(), c.avatar_pin), ("Bloom", [0x10; 64]));
+        c.avatar_pin_dirty = false;
+        c.fill_from_roster("", &[0u8; 64]);
+        assert_eq!((c.published_name.as_str(), c.avatar_pin), ("Bloom", [0x10; 64]));
+        // Once the owner's records are held, a newer roster entry (its clock bumped by a consent or ceremony edit) changes neither field.
+        assert!(c.offer_profile_record(ProfileRecord::sign(&phone, &HP, Field::Name, b"Flower".to_vec(), 100)));
+        assert!(c.offer_profile_record(ProfileRecord::sign(&phone, &HP, Field::AvatarPin, vec![0x20; 64], 100)));
+        c.avatar_pin_dirty = false;
+        c.fill_from_roster("Mandelbrot", &[0x30; 64]);
+        assert_eq!(c.published_name, "Flower");
+        assert_eq!(c.avatar_pin, [0x20; 64]);
+        assert!(!c.avatar_pin_dirty);
+    }
 }

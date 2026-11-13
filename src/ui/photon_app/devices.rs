@@ -2209,15 +2209,8 @@ impl PhotonApp {
                     continue;
                 }
                 let c = &mut self.contacts[pos];
-                let pin_changed = c.avatar_pin != e.avatar_pin && e.avatar_pin != [0u8; 64];
-                // The friend's chosen name rides the roster like the pin does (PRST4), so a fresh sibling shows real names without waiting for each friend's pong. Same empty-guard as the pin: a stub entry (re-attest re-push, empty fields, fresh LWW clock) means "never received", not "erase yours".
-                if c.published_name != e.published_name && !e.published_name.is_empty() {
-                    c.published_name = e.published_name.clone();
-                }
-                if pin_changed {
-                    c.avatar_pin = e.avatar_pin;
-                    c.avatar_pin_dirty = true; // post-drain sweep persists the index + refetches the avatar
-                }
+                // The friend's chosen name and pin ride the roster (PRST4), so a fresh sibling shows real names without waiting for each friend's pong; they fill only a field holding no owner-signed record (Contact::fill_from_roster).
+                c.fill_from_roster(&e.published_name, &e.avatar_pin);
                 // Trust rides the same last-writer-wins clock as the fields above (PRST3): a trust decision belongs to the identity, not to whichever device it was typed on. We are already past the `e.updated` gate, so a strictly-newer entry wins and ties keep ours.
                 c.trust_level = crate::storage::cloud::u8_to_trust_level(e.trust_level);
                 // §4.2 claim + the owner's completion, newest entry wins (same LWW as the fields above).

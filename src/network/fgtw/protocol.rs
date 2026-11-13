@@ -1247,10 +1247,12 @@ pub struct PongTail {
     pub fleet_tip: Option<i64>,
     /// The newest braid the sending build weaves (crypto::chain::BRAID_*). None = an older build (v1). Sealed with the rest: a capability is a build fingerprint, so only the paired device reads it.
     pub braid: Option<u8>,
+    /// The sender identity's profile fields as its owner signed them (fgtw::profile, FLOWS.md "Profile"), beside the bare `name` / `apin` an older build still reads. Empty = an older build, or an owner who has set nothing yet.
+    pub profile: Vec<fgtw::profile::ProfileRecord>,
 }
 
 fn add_pong_sensitive_fields(section: &mut vsf::VsfSection, tail: &PongTail) {
-    let PongTail { sync_records, display_name, avatar_pin, locked, about, fleet_tip, braid } = tail;
+    let PongTail { sync_records, display_name, avatar_pin, locked, about, fleet_tip, braid, profile } = tail;
     // One native multi-value `sync` row per conversation record — (hb token, e6 last_received). No counts, no numbered names.
     for record in sync_records {
         section.add_field_multi(
@@ -1312,6 +1314,10 @@ fn add_pong_sensitive_fields(section: &mut vsf::VsfSection, tail: &PongTail) {
     if let Some(b) = braid {
         section.add_field_multi("brd", vec![VsfType::u(*b as usize, false)]);
     }
+    // PROFILE RECORDS (2026-11-12, FLOWS.md "Profile" P1): one `prof` row per signed field, the record as its own wrapped value; a new field name an older parser skips, while the bare `name` / `apin` above stay for it.
+    for rec in profile {
+        section.add_field_multi("prof", vec![rec.to_value()]);
+    }
 }
 
 /// Build + AEAD-seal a pong's sensitive tail under the PAIRWISE pong key: the per-conversation sync rows (who-talks-to-whom metadata), the display name, and the 64-byte avatar pin (a bearer capability). Plaintext is an inner `pongsec` VSF section (encode_encrypted — the headerless form made for exactly this), sealed with kete ChaCha20-Poly1305 like history pages and the log seal. The key comes from the caller's PongSealKeys map, derived on the UI thread — this codec never sees an identity seed.
@@ -1360,6 +1366,13 @@ pub fn open_pong_sensitive(
         fleet_tip: section.eagle("ftip"),
         // Width-agnostic; a value past u8 is no braid this build knows and reads as absent.
         braid: section.get_field("brd").and_then(|f| f.values.first()).and_then(|v| v.as_u64()).and_then(|v| u8::try_from(v).ok()),
+        // Each `prof` row read by its wrapped record's marker; a row that is no record this build knows (a newer field) is skipped. Verification is the receiver's: the codec only reads.
+        profile: section
+            .get_fields("prof")
+            .iter()
+            .flat_map(|f| f.values.iter())
+            .filter_map(|v| fgtw::profile::ProfileRecord::from_value(v).ok())
+            .collect(),
     })
 }
 

@@ -1300,8 +1300,11 @@ fn adopt_server_avatar(
     let mut key = [0u8; 32];
     key.copy_from_slice(&avatar_pin[..32]);
     let name = avatar_name_with_key(vsf_data, &key);
+    // The adopted copy keeps the wall copy's own stamp: re-stamped with now, it read as newer than the wall on the next sync and was uploaded back, and every device bounced it (15 adopts and 15 publishes in one log).
+    // A copy that decodes has a verified header (extract below reads it), so the stamp is there; now stands in only for a header without one.
+    let at = avatar_vsf_timestamp(vsf_data).unwrap_or_else(vsf::eagle_time_oscillations);
     let cached = match extract_av1_data_with_key(vsf_data, &key) {
-        Ok(av1) => save_avatar_from_seed(&av1, identity_seed, storage).is_ok(),
+        Ok(av1) => save_avatar_from_seed_at(&av1, identity_seed, storage, at).is_ok(),
         Err(_) => false,
     };
     (cached, name)

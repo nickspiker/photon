@@ -131,6 +131,17 @@ impl FleetSettings {
         }
     }
 
+    /// When the value [`FleetSettings::effective`] returns was set: the stamp of the entry it came from, resolved the same way.
+    pub fn effective_stamp(&self, key: &str) -> Option<i64> {
+        match self.our_entry(key) {
+            Some(e) if !e.linked => Some(e.updated),
+            own => self
+                .global_entry(key)
+                .map(|g| g.updated)
+                .or(own.map(|e| e.updated)),
+        }
+    }
+
     /// This DEVICE's own value for a key, ignoring the fleet global entirely — `None` if this device has never set one.
     /// For settings that are ergonomics rather than preferences: zoom is tied to the physical monitor in front of you, so inheriting another device's value is always wrong. `effective` deliberately falls back to the global for a born-linked key, which is right for "how do my devices behave" and wrong for "how big is this screen". Reading zoom thru `effective` is what let a fresh device adopt a 4K desktop's zoom seconds after launch.
     pub fn device_local(&self, key: &str) -> Option<&VsfType> {
