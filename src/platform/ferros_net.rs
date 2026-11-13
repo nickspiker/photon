@@ -112,6 +112,12 @@ fn watch_id() -> u32 {
     *ID.get_or_init(|| (counter() as u32) ^ ((arc_base() >> 12) as u32).rotate_left(16))
 }
 
+/// A blocking socket's reader id: the process's id with a sequence number a socket folded in, so no two of this process's sockets (nor one and the watcher, number 0) share one.
+fn reader_id() -> u32 {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(1);
+    watch_id() ^ NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed).rotate_left(16)
+}
+
 /// A socket on `port`: the port named in the watch from now on. A port new to it while the watcher's call is held is told with a KICK (op 12), which ends that call so the next names it.
 fn watch_add(port: u16) {
     let kick = {
@@ -155,15 +161,20 @@ fn watch_drop(port: u16) {
 fn watcher() {
     let id = watch_id();
     let mut seen = 0u32;
+    // The port set's generation last said to be past sixteen: said once a change, not once a call.
+    let mut said: Option<u64> = None;
     loop {
         let (ports, flags) = {
             let mut w = WATCHER.lock().unwrap();
             w.held = Some(w.gen);
             let mut ports: Vec<u16> = w.ports.iter().map(|p| p.port).collect();
-            // The server watches sixteen ports a call (payloads/ip WATCH_PORTS); Photon binds a handful. A seventeenth would never wake its receives: said loudly, every time the set changes past it.
+            // The server watches sixteen ports a call (payloads/ip WATCH_PORTS); Photon binds a handful. A seventeenth would never wake its receives: said loudly, once each time the set changes while past sixteen.
             if ports.len() > 16 {
-                crate::logf!("ferros net: {} ports bound, the ip server watches 16 a call: the receives on port {} and those after it will not wake", ports.len(), ports[16]);
-                debug_assert!(false, "more than 16 ports watched at the ip server");
+                if said != Some(w.gen) {
+                    said = Some(w.gen);
+                    crate::logf!("ferros net: {} ports bound, the ip server watches 16 a call: the receives on port {} and those after it will not wake", ports.len(), ports[16]);
+                    debug_assert!(false, "more than 16 ports watched at the ip server");
+                }
                 ports.truncate(16);
             }
             (ports, w.flags)
@@ -429,7 +440,7 @@ impl StdUdpSocket {
             call(&[2, (addr.port() >> 8) as u8, addr.port() as u8], &mut reply)?;
             addr.port()
         };
-        Ok(StdUdpSocket { port, id: watch_id() ^ (counter() as u32).rotate_left(8) ^ 1, watched: false.into(), peer: Mutex::new(None), read_timeout: Mutex::new(None) })
+        Ok(StdUdpSocket { port, id: reader_id(), watched: false.into(), peer: Mutex::new(None), read_timeout: Mutex::new(None) })
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -442,8 +453,9 @@ impl StdUdpSocket {
         Ok(SocketAddr::new(ip, self.port))
     }
 
+    /// The clone reads under an id of its own: two blocking receives on one port are two readers, each its own copy of each datagram once it watches, and dropping one never retires the other (UNWATCH names the id).
     pub fn try_clone(&self) -> io::Result<Self> {
-        Ok(StdUdpSocket { port: self.port, id: self.id, watched: false.into(), peer: Mutex::new(*self.peer.lock().unwrap()), read_timeout: Mutex::new(*self.read_timeout.lock().unwrap()) })
+        Ok(StdUdpSocket { port: self.port, id: reader_id(), watched: false.into(), peer: Mutex::new(*self.peer.lock().unwrap()), read_timeout: Mutex::new(*self.read_timeout.lock().unwrap()) })
     }
 
     pub fn set_read_timeout(&self, t: Option<std::time::Duration>) -> io::Result<()> {
