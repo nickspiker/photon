@@ -16,3 +16,5 @@ Findings (traced, nothing fixed yet; no (b) store loss or (c) verify refusal pro
 6. Cloud contacts backup overwritten whole; restore fills only missing contacts, never blank names.
 
 **How to apply:** the fix is the Profile machine/record in fgtw (FLOWS.md stage 7, owner-approved direction [[feedback_fgtw_out_of_photon]]): ProfileRecord (party, field, value, revision, signer, sig verified vs fold), newest-per-field merge, per-field roster, ask/answer ops, reader grant per folded device; Photon carries it (pong tail, member record, backup), forwards, asks, falls back. Wait for the owner's go after the findings.
+
+**Owner go, 2026-11-13:** "Please. then once we get it resolved, run a full deploy.sh for all." Order: Brittany findings -> fix the own-fleet key/era split -> build the Profile record (fgtw first, per [[feedback_fgtw_out_of_photon]]) -> full deploy.sh (Nick asked in that message; the deploy waits until these are resolved and tested). Trigger seen: Brittany's flower avatar now the Mandelbrot placeholder on Nick's side; names/avatars disappearing generally.
