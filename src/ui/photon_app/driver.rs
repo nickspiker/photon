@@ -900,10 +900,10 @@ impl FluorApp<Px> for PhotonApp {
             if matches!(self.state, AppState::Settings(_)) {
                 self.change_focus(None);
                 // Back returns to the screen the orb opened settings FROM: Ready when attested, else the Launch/attest screen (pre-attest the orb opens About/Updates over Launch, so back must land there, not a Ready that doesn't exist yet).
-                self.state = if self.session.is_some() {
+                self.state = if self.signed_in() {
                     AppState::Ready
                 } else {
-                    AppState::Launch(LaunchState::Fresh)
+                    self.not_signed_in_screen()
                 };
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
@@ -2750,10 +2750,10 @@ impl FluorApp<Px> for PhotonApp {
                         if matches!(self.state, AppState::Settings(_)) {
                             // Mirror the panel's Back affordance: Settings closes to the contacts screen (post-attest) or the launch screen.
                             self.change_focus(None);
-                            self.state = if self.session.is_some() {
+                            self.state = if self.signed_in() {
                                 AppState::Ready
                             } else {
-                                AppState::Launch(LaunchState::Fresh)
+                                self.not_signed_in_screen()
                             };
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
@@ -3190,7 +3190,7 @@ impl FluorApp<Px> for PhotonApp {
         }
 
         // A NOTIFICATION TAP opens the conversation it named (latched by the Activity, or by a clicked desktop notification, and taken here where &mut self lives). Only once signed in; until then it stays latched for the first signed-in tick.
-        if self.session.is_some() {
+        if self.signed_in() {
             #[cfg(target_os = "android")]
             let tapped = crate::platform::jni_android::take_open_conversation();
             #[cfg(not(target_os = "android"))]
@@ -3382,7 +3382,7 @@ impl FluorApp<Px> for PhotonApp {
 
         // The fleet-history sweep: re-arm history recovery for every conversation so devices converge even when an edge-triggered kick (a roster merge, a sibling online) was missed.
         // EDGES, NOT A CADENCE (Nick 2026-11-07, "no timer unless proof"): the sweep runs once per session and again after the network changes under us (a moved reflexive on the desktop, ConnectivityManager on Android, each clearing `last_fleet_sweep`); every other kick is its own edge (a sibling online, a roster merge, a gap). The ~5-minute repeat cost 1,142 history requests in six idle hours.
-        if self.session.is_some() {
+        if self.signed_in() {
             let due = self.last_fleet_sweep.is_none();
             if due {
                 self.last_fleet_sweep = Some(now);
@@ -4680,25 +4680,14 @@ impl PhotonApp {
 
         // Auto-resume from the remembered session roots. If tohu has this login's roots (persisted on a prior, FGTW-confirmed attest), paint Ready IMMEDIATELY from local state — we already own this identity, so there is no reason to block the first frame on the network. The avatar comes from a local cache file (no vault, no network); contacts + peer presence + cloud-merge arrive a beat later via the background `query_resume` and merge in thru `on_query_result`. A rejection (handle claimed by another device) bails back to the attest screen; a transient network error leaves the local session on Ready untouched. None (first run / post-logout) falls thru to the normal typed-attest flow.
         // ferros (PHOTON.md step 4): the person came in as PhotonKeys with no identity seed, so there is no handle screen and no FGTW part here: the vault opens under the messenger root, off the UI thread as below, and the resume lands Photon on its contacts.
-        if let Some(root) = self.photon_keys.as_ref().filter(|k| k.legacy_seed.is_none()).map(|k| k.messenger_root()) {
-            if let Some(kp) = &self.device_keypair {
-                let device_secret = *kp.secret.as_bytes();
-                let t_boot = std::time::Instant::now();
-                let (tx, rx) = std::sync::mpsc::channel();
-                let spawned = std::thread::Builder::new()
-                    .name("vault-open".into())
-                    .spawn(move || {
-                        crate::log_err!(tx.send(crate::storage::open_session_vault(root, root, device_secret)), "the opened vault to the UI thread");
-                    })
-                    .is_ok();
-                if spawned {
-                    self.resume_vault_rx = Some((rx, None, t_boot));
-                    crate::log("RESUME: PhotonKeys in hand; the vault opens under the messenger root");
-                } else {
-                    let opened = crate::storage::open_session_vault(root, root, device_secret);
-                    self.finish_resume_load(None, opened, t_boot);
-                }
-            }
+        // ferros has no handle screen: without its keys Photon waits on one line until std/photon hands them in (set_photon_keys opens the vault then).
+        #[cfg(target_os = "ferros")]
+        if self.photon_keys.is_none() {
+            crate::log("RESUME: no PhotonKeys yet; waiting for the identity service");
+            self.state = AppState::Launch(LaunchState::WaitingForIdentity);
+        }
+        if self.photon_keys.as_ref().is_some_and(|k| k.legacy_seed.is_none()) {
+            self.open_with_photon_keys();
         } else if let Some(remembered) = tohu::session() {
             // Blob name key + the one-time v0→v1 filename re-key walk — BEFORE the first Ready frame, so render-path blob_present reads work immediately (and the plaintext-hash possession oracle is closed the moment a seed exists).
             crate::storage::blob_init_names(&remembered.identity_seed);
@@ -4745,7 +4734,7 @@ impl PhotonApp {
 
 impl PhotonApp {
     /// The resume's back half, once the vault handle lands (or inline when no worker thread could be spawned): every load that used to sit on the UI thread behind the open — contacts, messages, chains, keypairs, settings — then Ready, the announce and the first pings.
-    fn finish_resume_load(&mut self, remembered: Option<tohu::SessionIdentity>, opened: Result<std::sync::Arc<crate::storage::FlatStorage>, crate::storage::StorageError>, t_boot: std::time::Instant) {
+    pub(super) fn finish_resume_load(&mut self, remembered: Option<tohu::SessionIdentity>, opened: Result<std::sync::Arc<crate::storage::FlatStorage>, crate::storage::StorageError>, t_boot: std::time::Instant) {
         // The person this resume opens for: the session's on the desktop and Android, PhotonKeys' on ferros, where there is no session (PHOTON.md step 4).
         let (Some(our_hp), Some(our_root)) = (self.our_handle_proof(), self.messenger_root()) else {
             crate::log("RESUME: neither a session nor PhotonKeys; nothing to open for");

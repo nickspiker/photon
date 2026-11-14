@@ -126,6 +126,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             _ => "Nilo-load ang mga usapan mo…".into(),
         },
         Msg::RevokedByFleet => "BINAWI ng armada mo ang device na ito\nhindi na ito puwedeng kumilos bilang ikaw. Ibalik ito mula sa isa pang device mo para magamit ulit.".into(),
+        Msg::WaitingForIdentity => "hinihintay ang iyong pagkakakilanlan".into(),
         Msg::IdentityCarriedHint => "may dala nang pagkakakilanlan ang device na ito".into(),
         Msg::PermanenceWarning => "Bumubuo ito ng permanenteng pagkakakilanlan.\nWalang password. Walang reset. Walang pagbabalik.\nSa unang taong magpapatotoo ito mapupunta.\nMapapalitan ang mga device. Ang pagkakakilanlan, hindi.\nI-type ulit ang pangalan, saka pindutin kung totoo ang loob mo.".into(),
         Msg::KnownHandleWarning => "May sumasagot na sa pangalang ito.".into(),

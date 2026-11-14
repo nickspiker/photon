@@ -126,6 +126,19 @@ impl PhotonApp {
         }
     }
 
+    /// Signed in: a session (the desktop and Android) or PhotonKeys handed in (ferros, which never has a session). Every screen routing that asked `session.is_some()` asks this, or ferros Photon fell to the handle screen on a Back from Settings (2026-11-14).
+    pub(super) fn signed_in(&self) -> bool {
+        self.session.is_some() || self.photon_keys.is_some()
+    }
+
+    /// Where a Photon not signed in lands: the handle screen, except on ferros, which has none and waits for its keys.
+    pub(super) fn not_signed_in_screen(&self) -> super::AppState {
+        #[cfg(target_os = "ferros")]
+        return super::AppState::Launch(super::LaunchState::WaitingForIdentity);
+        #[cfg(not(target_os = "ferros"))]
+        super::AppState::Launch(super::LaunchState::Fresh)
+    }
+
     /// The devices the alias's list names (this device among them).
     pub(super) fn alias_listed_devices(&self) -> Vec<[u8; 32]> {
         self.alias_list.as_ref().map(|(_, l)| l.devices.clone()).unwrap_or_default()
@@ -167,6 +180,32 @@ impl PhotonApp {
         if generation != self.alias_net_generation {
             self.alias_net_generation = generation;
             self.alias_retry_edge("the network changed");
+        }
+    }
+
+    /// ferros (PHOTON.md step 4): the person came in as PhotonKeys with no identity seed, so there is no handle screen and no FGTW part here: the vault opens under the messenger root, off the UI thread, and the resume lands Photon on its contacts. At init when the keys came before it, or when they come later to a Photon waiting for them (set_photon_keys).
+    pub(super) fn open_with_photon_keys(&mut self) {
+        let Some(root) = self.photon_keys.as_ref().filter(|k| k.legacy_seed.is_none()).map(|k| k.messenger_root()) else {
+            return;
+        };
+        let Some(kp) = &self.device_keypair else {
+            return;
+        };
+        let device_secret = *kp.secret.as_bytes();
+        let t_boot = std::time::Instant::now();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("vault-open".into())
+            .spawn(move || {
+                crate::log_err!(tx.send(crate::storage::open_session_vault(root, root, device_secret)), "the opened vault to the UI thread");
+            })
+            .is_ok();
+        if spawned {
+            self.resume_vault_rx = Some((rx, None, t_boot));
+            crate::log("RESUME: PhotonKeys in hand; the vault opens under the messenger root");
+        } else {
+            let opened = crate::storage::open_session_vault(root, root, device_secret);
+            self.finish_resume_load(None, opened, t_boot);
         }
     }
 }

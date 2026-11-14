@@ -188,6 +188,8 @@ pub enum Msg<'a> {
     /// What the attest is doing now (handle_query::ATTEST_STAGE): 0 proving the handle, 1 checking this device is ours, 2 asking fgtw.org, 3 opening the vault, 4 loading conversations.
     AttestStage(u8),
     RevokedByFleet,
+    /// ferros: Photon was not handed its keys (be you) yet, so there is no screen to show but this one; never a handle screen there.
+    WaitingForIdentity,
     IdentityCarriedHint,
     // '\n'-joined passage; the call site iterates .lines() and gives the FIRST line the headline (error) colour.
     PermanenceWarning,

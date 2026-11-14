@@ -125,6 +125,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             _ => "Deine Unterhaltungen werden geladen…".into(),
         },
         Msg::RevokedByFleet => "deine Flotte hat dieses Gerät WIDERRUFEN\nes kann nicht mehr als du handeln. Lass es von einem anderen deiner Geräte wieder zu, um es erneut zu nutzen.".into(),
+        Msg::WaitingForIdentity => "warte auf deine Identität".into(),
         Msg::IdentityCarriedHint => "dieses Gerät trägt bereits eine Identität".into(),
         Msg::PermanenceWarning => "Das prägt eine dauerhafte Identität.\nKein Passwort. Kein Zurücksetzen. Keine Wiederherstellung.\nDer erste Mensch, der sie bezeugt, besitzt sie.\nGeräte lassen sich ersetzen. Die Identität nicht.\nTippe den Namen noch einmal, dann drücke, wenn du es ernst meinst.".into(),
         Msg::KnownHandleWarning => "Auf diesen Namen hört schon jemand.".into(),

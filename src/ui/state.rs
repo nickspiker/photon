@@ -212,12 +212,15 @@ pub enum LaunchState {
 
     /// The worker refused the announce because this device is fleet-locked (treat-as-stolen). A terminal brick, NOT an editable error: the handle is correct and the identity is real, but the fleet owner marked this hardware stolen, so no handle re-type helps — only the owner unlocking it from another device does. The screen is a dead end (no textbox, no button), and because the worker is the authority this state re-appears on every attest even after a local wipe.
     Locked,
+
+    /// ferros: Photon has not been handed its keys (PhotonKeys, be you) and has no handle screen there, so it shows one line and waits; std/photon calls set_photon_keys once the identity service answers, and the vault opens then.
+    WaitingForIdentity,
 }
 
 impl LaunchState {
     /// Check if we're in a state where the user can type in the handle textbox
     pub fn can_edit_handle(&self) -> bool {
-        !matches!(self, LaunchState::Attesting | LaunchState::Locked)
+        !matches!(self, LaunchState::Attesting | LaunchState::Locked | LaunchState::WaitingForIdentity)
     }
 
     /// Check if we're waiting for a network response

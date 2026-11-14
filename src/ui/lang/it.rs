@@ -128,6 +128,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             _ => "Caricamento delle tue conversazioni…".into(),
         },
         Msg::RevokedByFleet => "la tua flotta ha REVOCATO questo dispositivo\nnon può più agire come te. Ripristinalo da un altro dei tuoi dispositivi per tornare a usarlo.".into(),
+        Msg::WaitingForIdentity => "in attesa della tua identità".into(),
         Msg::IdentityCarriedHint => "questo dispositivo porta già un’identità".into(),
         Msg::PermanenceWarning => "Questo conia un’identità permanente.\nNessuna password. Nessun reset. Nessun recupero.\nLa prima persona che la attesta ne è il proprietario.\nI dispositivi si possono sostituire. L’identità no.\nRiscrivi il nome, poi premi se lo intendi davvero.".into(),
         Msg::KnownHandleWarning => "Qualcuno risponde già a questo nome.".into(),

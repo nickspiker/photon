@@ -1457,6 +1457,7 @@ impl PhotonApp {
                             tr(Msg::RevokedByFleet),
                             (*theme::ERROR_TEXT_COLOUR),
                         )),
+                        LaunchState::WaitingForIdentity => Some((tr(Msg::WaitingForIdentity), (*theme::STATUS_TEXT_COLOUR))),
                         // Up-front hint: a bound device in Fresh gets the resume-or-wipe line in the STATUS colour (not error-red) so the restriction is visible before any submit.
                         // Confirm/KnownHandle fall thru to None and keep their own bands.
                         LaunchState::Fresh if device_bound => Some((
@@ -1822,7 +1823,7 @@ impl PhotonApp {
                     .map(|tb| Some(tb.hit_id()) == self.focused)
                     .unwrap_or(false);
                 // Locked is a terminal brick: suppress the ∞ placeholder AND the handle field entirely, so the screen is just the red "locked by your fleet" line with nothing that invites input (the Attest button is already gated off by handle_entered, which is false on the cleared field).
-                let launch_locked = matches!(launch_state, LaunchState::Locked);
+                let launch_locked = matches!(launch_state, LaunchState::Locked | LaunchState::WaitingForIdentity);
 
                 // Dormant infinity centred IN the handle textbox — it sits where the typed handle will appear, a half-brightness grey placeholder for the resting field, shown only while the field is empty AND unfocused. Painted BEFORE the textbox: fluor's under-blend is "topmost paints first; later opaque dst wins", so the glyph must precede the textbox's empty-pill fill to survive (same ordering the contacts plus-button uses). The instant the user focuses (cursor in) or a character lands, the gate goes false and the textbox owns the slot alone. Anchor and size come straight off the textbox (`center_x/center_y/font_size`), so the glyph lands pixel-identical to where a typed character would — the textbox draws its own glyphs via `draw_text_center_u32` at the same anchor, so matching it here keeps the ∞ from sitting high or scaling differently.
                 if !handle_entered && !textbox_active && !launch_locked {

@@ -147,7 +147,7 @@ impl PhotonApp {
         use crate::crypto::clutch::derive_conversation_token;
 
         let mut changed = false;
-        if self.session.is_none() {
+        if !self.signed_in() {
             return changed;
         }
 
@@ -947,7 +947,7 @@ impl PhotonApp {
         use crate::types::ClutchState;
 
         let mut changed = false;
-        if self.session.is_none() {
+        if !self.signed_in() {
             return changed;
         }
         let device_pubkey = *self

@@ -3791,7 +3791,13 @@ impl PhotonApp {
     pub fn set_photon_keys(&mut self, keys: crate::crypto::photon_keys::PhotonKeys) {
         let alias = fgtw::alias::bundle(&keys.alias).public().ed25519();
         match fgtw::binding::Binding::from_vsf_bytes(&keys.binding) {
-            Ok(b) if b.alias_key() == alias && b.handle_proof == keys.handle_proof => self.photon_keys = Some(keys),
+            Ok(b) if b.alias_key() == alias && b.handle_proof == keys.handle_proof => {
+                self.photon_keys = Some(keys);
+                // Handed in after init, to a Photon waiting for them (ferros): the vault opens now.
+                if matches!(self.state, AppState::Launch(LaunchState::WaitingForIdentity)) {
+                    self.open_with_photon_keys();
+                }
+            }
             Ok(_) => crate::log("PHOTON KEYS: refused, the binding names another alias or person"),
             Err(e) => crate::logf!("PHOTON KEYS: refused, the binding does not read ({})", e),
         }

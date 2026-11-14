@@ -778,7 +778,7 @@ impl PhotonApp {
             self.replicate_metered = metered;
             self.replicate_dirty |= !metered;
         }
-        if !std::mem::take(&mut self.replicate_dirty) || self.session.is_none() {
+        if !std::mem::take(&mut self.replicate_dirty) || !self.signed_in() {
             return;
         }
         if !self.rewrap_gate() {

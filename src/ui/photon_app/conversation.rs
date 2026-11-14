@@ -886,7 +886,7 @@ impl PhotonApp {
 
     /// Spawn at most ONE CLUTCH keygen, for the first Pending contact that needs keypairs, but only if no keygen is already running. McEliece keygen is heavy; running several in parallel (e.g. after a multi-contact cloud merge on launch) starves the UI thread. Serializing to one-at-a-time keeps the app responsive — each completion frees the slot and `tick()` calls this again to start the next. Returns true if a keygen was spawned.
     pub(super) fn spawn_next_pending_keygen(&mut self) -> bool {
-        if self.session.is_none() {
+        if !self.signed_in() {
             return false;
         }
         // A pickup scan, not a latency path: at every vsync it recomputed the ceremony owners 117 times a second on an idle phone (0.4 ms a tick, 2026-09-10 profile). Four times a second is more than a keygen's own seconds-long cadence needs.

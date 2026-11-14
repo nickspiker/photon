@@ -127,6 +127,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             _ => "Sohbetlerin yükleniyor…".into(),
         },
         Msg::RevokedByFleet => "filon bu cihazı YASAKLADI\nartık senin adına hareket edemez.Tekrar kullanmak için başka bir cihazından yasağı kaldır.".into(),
+        Msg::WaitingForIdentity => "kimliğin bekleniyor".into(),
         Msg::IdentityCarriedHint => "bu cihaz zaten bir kimlik taşıyor".into(),
         Msg::PermanenceWarning => "Bu, kalıcı bir kimlik basar.\nParola yok. Sıfırlama yok. Kurtarma yok.\nTasdikleyen ilk insan onun sahibidir.\nCihazlar değiştirilebilir. Kimlik değiştirilemez.\nAdı tekrar yaz, ciddiysen bas.".into(),
         Msg::KnownHandleWarning => "Bu ada zaten biri cevap veriyor.".into(),
