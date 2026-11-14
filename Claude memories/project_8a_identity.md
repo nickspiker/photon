@@ -1,10 +1,10 @@
 ---
 name: project_8a_identity
-description: The ferros 8a test phone runs the owner's WIFE's identity, not the owner's; its Photon syncs from her devices, never his
+description: ferros test phones: the 8a runs Brittany's identity (the owner's wife), the Pro runs Nick's; each Photon fills only from its own person's devices
 metadata:
   type: project
 ---
-Owner, 2026-11-13: "the 8a is my wife's identity, not mine." The Pixel 8a running ferros attests as the owner's wife; its Photon (on the alias, PhotonKeys) belongs to that identity.
+Owner, 2026-11-13: "the 8a is my wife's identity, not mine." Owner, 2026-11-14: "Brittany on the 8a and Nick on the Pro." So two ferros devices: the 8a (Brittany) and the Pro (Nick, the owner's identity); the Pro's Photon fills from Nick's desktop, Pixel and MacBook. The Pixel 8a running ferros attests as the owner's wife; its Photon (on the alias, PhotonKeys) belongs to that identity.
 
 **Why:** I told the owner the 8a's Photon would fill from "your desktop and Pixel"; wrong person. A ferros Photon's siblings, people, avatar and history all come from ITS identity's own devices and people.
 
