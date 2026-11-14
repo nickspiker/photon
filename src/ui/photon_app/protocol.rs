@@ -860,6 +860,13 @@ impl PhotonApp {
                     }
                     continue;
                 }
+                if *kind == "alias" {
+                    // Our alias's device list changed at fgtw.org (a Photon of ours joined, PHOTON.md M3): the settle fetches it, checks it against our chain and keeps it, so a new Photon is a sibling within a second, not at the next launch.
+                    if our_hp == Some(*evt_hp) {
+                        self.spawn_alias_settle("the device list changed");
+                    }
+                    continue;
+                }
                 if *kind == "idea" {
                     // A public idea landed or its status moved (docs/ideas.md): fetch the list when the ticker is on or the Ideas page is open — nobody else needs it.
                     if self.ideas_ticker || self.state == AppState::Settings(SettingsPage::Ideas) {

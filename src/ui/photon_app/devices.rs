@@ -1298,6 +1298,7 @@ impl PhotonApp {
                                                 "release" => "release",
                                                 "idea" => "idea",
                                                 "request" => "request",
+                                                "alias" => "alias",
                                                 _ => continue,
                                             };
                                             if tx.send((k, evt_hp)).is_err() {
