@@ -32,7 +32,7 @@ use crate::network::http::SEED_HTTPS as FGTW_URL;
 // ── Transport injection: the crate owns the FGTW protocol; photon supplies the raw HTTP (pooled reqwest, warm TLS, short "No connection to FGTW" errors) and the roster AEAD (kete). ──
 
 /// Photon's HTTP reach to FGTW: POST via the shared pooled client, hand the crate back `{status, body}` so it owns the `error`-frame reason / success interpretation.
-struct PhotonTransport;
+pub(crate) struct PhotonTransport;
 impl FgtwTransport for PhotonTransport {
     /// ferros has no TLS: the same POST over plain HTTP on port 80, which fgtw.org answers as it answers HTTPS (every body a signed VSF document, folded and verified here). The peers still come first (the held chains above); fgtw.org stays the mirror asked last.
     #[cfg(target_os = "ferros")]

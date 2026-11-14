@@ -67,6 +67,7 @@ mod group_avatar;
 pub mod root_conversion;
 mod devices;
 mod holdings;
+mod alias;
 mod space;
 mod ideas;
 mod octopus;
@@ -2968,6 +2969,10 @@ pub struct PhotonApp {
     release_when_copied: bool,
     /// KEEP A SHARE OF THE DISK FREE (space.rs): the look in flight, one more look owed, below the floor now, the eviction ask in flight, and the recordings evicted here (device-local `space.evicted`).
     space_rx: Option<std::sync::mpsc::Receiver<Option<space::SpaceReading>>>,
+    /// The alias settle running off the UI thread (photon_app/alias.rs).
+    alias_rx: Option<std::sync::mpsc::Receiver<Result<crate::network::fgtw::alias::AliasReady, String>>>,
+    /// The alias's device list as last checked, beside its binding: the devices that are this person's Photons (PHOTON.md M3).
+    alias_list: Option<(Vec<u8>, fgtw::alias_devices::DeviceList)>,
     space_recheck: bool,
     space_short: bool,
     space_sweep: Option<space::SpaceSweep>,
@@ -3742,6 +3747,8 @@ impl PhotonApp {
             holdings_pulls: Vec::new(),
             release_when_copied: false,
             space_rx: None,
+            alias_rx: None,
+            alias_list: None,
             space_recheck: false,
             space_short: false,
             space_sweep: None,

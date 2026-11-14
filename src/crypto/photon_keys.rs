@@ -4,6 +4,8 @@
 
 /// The domain the messenger root is hashed from the alias under.
 const MESSENGER_ROOT_CONTEXT: &str = "photon 2026-11-13 messenger root from the alias";
+/// The domain the sibling secret is hashed from the alias under.
+const SIBLING_ROOT_CONTEXT: &str = "photon 2026-11-14 sibling secret from the alias";
 
 /// The person, as Photon's messenger knows them.
 #[derive(Clone)]
@@ -24,6 +26,11 @@ impl PhotonKeys {
     /// The keys as the platform hands them in: ferros's std/photon from the kernel's alias and the identity service's proof and binding (no legacy seed); the desktop and Android from Photon's FGTW part.
     pub fn new(alias: [u8; 32], handle_proof: [u8; 32], identity_pub: [u8; 32], binding: Vec<u8>, legacy_seed: Option<[u8; 32]>) -> Self {
         PhotonKeys { alias, handle_proof, identity_pub, binding, legacy_seed }
+    }
+
+    /// The secret this device's Photon shares with a sibling Photon that is not a member of the fleet (a ferros Photon, PHOTON.md M3), where siblings that are members share the identity seed: hashed from the alias, which every Photon of the person's holds and nobody else does. Mixed into their ceremony and their pong seal.
+    pub fn sibling_root(&self) -> [u8; 32] {
+        blake3::derive_key(SIBLING_ROOT_CONTEXT, &self.alias)
     }
 
     /// The root the messenger's own records derive from (PHOTON.md groups 2, 3, 4 and 6: vault addresses, blob names, the own avatar, notes to self): the identity seed while this device still holds one, so nothing moves before it speaks the alias, and otherwise a key hashed from the alias, the same on every device of the person's.

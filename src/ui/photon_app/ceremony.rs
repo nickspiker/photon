@@ -1242,6 +1242,11 @@ impl PhotonApp {
             }
         };
 
+        // An alias sibling (a Photon of ours outside the fleet, PHOTON.md M3: a ferros one) shares the alias's sibling secret instead of the identity seed; both ends hold it, and the ferros end holds no identity seed. Asked before the contact is borrowed mutably; WHY the .get: the same index the get_mut below reads, which returns on None.
+        let alias_root = self.contacts.get(contact_idx).filter(|c| c.is_sibling).and_then(|c| c.device_key()).and_then(|d| {
+            let fleet = self.fleet_members_held();
+            self.alias_sibling_root(&d, &fleet)
+        });
         // Extract data from contact to avoid borrow issues
         let contact = match self.contacts.get_mut(contact_idx) {
             Some(c) => c,
@@ -1417,8 +1422,9 @@ impl PhotonApp {
             .public
             .as_bytes();
         // The SECRET identity binding for the eggs (docs/identity-profile.md): friends = static identity DH against their pinned identity pubkey (the party id); siblings share the identity seed itself (their party ids aren't curve points). A pin that isn't a valid point is an old-format contact row — flag-day: fail loudly, re-add the friend.
-        let Some(our_seed) = self.session.as_ref().map(|s| s.identity_seed) else {
-            crate::log("CLUTCH: no session — cannot derive friendship secret");
+        let session_seed = self.session.as_ref().map(|s| s.identity_seed);
+        let Some(our_seed) = alias_root.or(session_seed) else {
+            crate::log("CLUTCH: no session and no alias sibling — cannot derive friendship secret");
             return;
         };
         let friendship_secret = if contact_is_sibling {

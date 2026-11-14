@@ -1714,9 +1714,13 @@ impl PhotonApp {
 
     /// Reconcile OUR OWN folded fleet membership into sibling contacts (the fleet weave). For each member device that isn't us and has no sibling contact yet: create one as `ClutchState::Pending` — the serialized keygen queue picks it up and the full CLUTCH ceremony + weave runs against it exactly like a friend. For each sibling contact whose device fell out of the fold: remove it and delete its state + chains (revocation hygiene — an ex-member must not stay ceremony-eligible). Idempotent; triggered from attest/resume, our-hp `fleet` events, and the Add machine's refold after an add.
     pub(super) fn reconcile_fleet_siblings(&mut self, members: &[[u8; 32]]) {
-        // On the alias alone (ferros, PHOTON.md M3) Photon is never a member of the fleet: the fleet's devices are the identity service's, not other Photons, so none becomes a sibling (the 8a's own identity device showed up as a "Pending…" row, 2026-11-13). Photon's siblings there come from the alias's device list.
-        if self.photon_keys.as_ref().is_some_and(|k| k.legacy_seed.is_none()) {
-            return;
+        // Photon's siblings are its person's other Photons: the fleet's members where Photon is a member itself, and every device the alias's list names (PHOTON.md M3: a ferros Photon is in the list only). On the alias alone (ferros) Photon is never a member, so the fleet's devices are the identity service's and only the list counts (the 8a's own identity device showed up as a "Pending…" row, 2026-11-13).
+        let alias_only = self.photon_keys.as_ref().is_some_and(|k| k.legacy_seed.is_none());
+        let mut wanted: Vec<[u8; 32]> = if alias_only { Vec::new() } else { members.to_vec() };
+        for d in self.alias_listed_devices() {
+            if !wanted.contains(&d) {
+                wanted.push(d);
+            }
         }
         let Some(our_device) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) else {
             return;
@@ -1727,8 +1731,8 @@ impl PhotonApp {
         let mut changed = false;
         let mut added_sibling = false;
 
-        // Add newly-folded members.
-        for device in members {
+        // Add newly-folded members and newly listed devices.
+        for device in &wanted {
             if *device == our_device {
                 continue;
             }
@@ -1758,18 +1762,21 @@ impl PhotonApp {
         }
 
         // The Depart machine (fgtw::flow) learns the fold: when our own request stands and this fold no longer lists us, it completes the local half, the wipe.
-        self.depart_members(members);
-        if self.session.is_none() {
-            return;
+        // Both are fleet work, which Photon on the alias alone never does; there the list alone decides, and a row it does not name goes below.
+        if !alias_only {
+            self.depart_members(members);
+            if self.session.is_none() {
+                return;
+            }
+            // The Add machine (fgtw::flow) learns it too: who may be added, who the grow leaves out, and whether this device may add at all.
+            self.add_members(members);
         }
-        // The Add machine (fgtw::flow) learns it too: who may be added, who the grow leaves out, and whether this device may add at all.
-        self.add_members(members);
 
         // Drop de-folded members (device removed from OUR chain) — AND keyless sibling rows (2026-09-01, the ocean-phone ghost): a sibling contact whose device key is None (or stale-era) can never be pinged, never earns a presence verdict, and the old is_some_and kept it forever — where it wedged the fleet-first keygen gate for every friend ceremony. The fold is the authority; a sibling row it can't vouch for is debris.
         // A sibling row carrying OUR OWN key goes too: the Android root conversion's old device folded the chain that already held the new key and rowed it before exiting, and the carried vault handed that row to the new device, which then relayed history to itself (2026-11-02, "recipient is OUR OWN device — echo refused" ×14).
         let mut removed: Vec<crate::types::Contact> = Vec::new();
         self.contacts.retain(|c| {
-            if c.is_sibling && c.device_key().map_or(true, |k| !members.contains(&k) || k == our_device) {
+            if c.is_sibling && c.device_key().map_or(true, |k| !wanted.contains(&k) || k == our_device) {
                 removed.push(c.clone());
                 false
             } else {
@@ -3188,34 +3195,31 @@ impl PhotonApp {
             return;
         };
         keys.clear();
-        // No session (pre-attest / post-logout) or no device key = nothing derivable; the cleared map makes every pong go out tail-less, which is the safe direction.
-        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
-            return;
-        };
+        // No device key = nothing derivable; the cleared map makes every pong go out tail-less, which is the safe direction. Without a session only the alias's siblings have a key (ferros: no identity seed, no friends' DH yet).
         let Some(our_device) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) else {
             return;
         };
-        let our_party = crate::crypto::clutch::identity_party_id(&seed);
+        let seed = self.session.as_ref().map(|s| s.identity_seed);
+        let fleet = self.fleet_members_held();
+        let our_party = self.own_party_id();
         for c in &self.contacts {
             // A sibling row or a zero-remote conversation answers with OUR OWN devices, so those pongs seal under the sibling key; everyone else gets the friendship secret.
-            if c.is_sibling || c.remote_count(&our_party) == 0 {
+            if c.is_sibling || our_party.is_some_and(|p| c.remote_count(&p) == 0) {
                 for pk in c.answerable_pubkeys() {
-                    // Spine present → the epoch-riding key (rotates per checkpoint, the B-arc pong re-seal); pre-spine → the v0 static derivation until bootstrap mints. ckpt_tick reseeds this map on every spine advance, so both ends flip keys on the same edge.
-                    let key = match self.fleet_epoch.as_ref() {
-                        Some((_, epoch)) => crate::network::status::sibling_pong_seal_key_epoch(
-                            epoch,
-                            &our_device,
-                            &pk,
-                        ),
-                        None => {
-                            crate::network::status::sibling_pong_seal_key(&seed, &our_device, &pk)
+                    // An alias sibling (a Photon of ours outside the fleet, PHOTON.md M3) seals under the alias's sibling secret, the one both ends hold; a member sibling under the spine's epoch key when there is one (rotates per checkpoint, the B-arc pong re-seal), else the v0 static derivation until bootstrap mints. ckpt_tick reseeds this map on every spine advance, so both ends flip keys on the same edge.
+                    let key = match (self.alias_sibling_root(&pk, &fleet), self.fleet_epoch.as_ref(), seed) {
+                        (Some(mut root), _, _) => {
+                            let k = crate::network::status::sibling_pong_seal_key(&root, &our_device, &pk);
+                            root.zeroize();
+                            k
                         }
+                        (None, Some((_, epoch)), _) => crate::network::status::sibling_pong_seal_key_epoch(epoch, &our_device, &pk),
+                        (None, None, Some(seed)) => crate::network::status::sibling_pong_seal_key(&seed, &our_device, &pk),
+                        (None, None, None) => continue,
                     };
                     keys.insert(pk, key);
                 }
-            } else if let Some(mut fs) =
-                crate::crypto::clutch::identity_friendship_secret(&seed, &c.handle_hash)
-            {
+            } else if let Some(mut fs) = seed.and_then(|seed| crate::crypto::clutch::identity_friendship_secret(&seed, &c.handle_hash)) {
                 let key = crate::network::status::friend_pong_seal_key(&fs);
                 // The DH output is live pairwise secret material — scrub the intermediate once the derived key exists.
                 fs.zeroize();

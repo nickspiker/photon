@@ -1,5 +1,6 @@
 pub mod blob;
 pub mod bootstrap;
+pub mod alias;
 pub mod fingerprint;
 pub mod fleet;
 pub mod octopus;

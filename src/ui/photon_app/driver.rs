@@ -3774,6 +3774,10 @@ impl FluorApp<Px> for PhotonApp {
             self.scene_dirty = true;
             ctx.window.request_redraw();
         }
+        if self.drain_alias() {
+            self.scene_dirty = true;
+            ctx.window.request_redraw();
+        }
         self.drain_space();
         // Bonds edits go out on the edge of leaving the page (molecules.rs).
         self.commit_bonds_if_left();
@@ -4801,8 +4805,8 @@ impl PhotonApp {
                                 crate::logf!("CLUTCH: preserved in-flight round for {} across resume (no willy-nilly re-key)", crate::fp(&c.handle_proof));
                             }
                         }
-                        // Fleet siblings load from their own index (they never enter the contacts index); on the alias alone there are none (PHOTON.md M3), and a row the fleet reconcile wrote there before 2026-11-13 is left unread.
-                        if remembered.is_some() {
+                        // Fleet siblings load from their own index (they never enter the contacts index); on the alias alone they are the alias list's devices, and the reconcile below drops any row the list does not name.
+                        {
                             let siblings = crate::storage::contacts::load_all_siblings(
                                 our_hp,
                                 &s,
@@ -5065,6 +5069,12 @@ impl PhotonApp {
                         let ms_keypairs = t_phase.elapsed().as_millis();
                         self.storage = Some(s);
                         self.merge_people();
+                        // The alias's device list as kept, so its devices are siblings before the network answers; then the settle (the list joined, and on the desktop and Android the person key and binding) runs off the UI thread.
+                        self.load_alias_list();
+                        if self.photon_keys.as_ref().is_some_and(|k| k.legacy_seed.is_none()) {
+                            self.reconcile_fleet_siblings(&[]);
+                        }
+                        self.spawn_alias_settle("resume");
                         // Frame one owns the persisted ergonomics: fleet_settings live on disk, but nothing read them at boot — every ensure_fleet_settings caller was a user action or the network merge drain, so the zoom restore waited ~5s for the first fleet pull (and forever offline), painting every launch at default scale (Nick, 2026-08-12).
                         let t_phase = std::time::Instant::now();
                         self.ensure_fleet_settings();
