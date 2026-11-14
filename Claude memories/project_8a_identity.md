@@ -9,6 +9,7 @@ Owner, 2026-11-13: "the 8a is my wife's identity, not mine." Owner, 2026-11-14: 
 **Why:** I told the owner the 8a's Photon would fill from "your desktop and Pixel"; wrong person. A ferros Photon's siblings, people, avatar and history all come from ITS identity's own devices and people.
 
 **Written to her identity 2026-11-13, before this was known** (by the ferros session): her person key minted on the 8a (first-device mint), Photon's be-you and people answers given, two test kists stowed and unstowed. Her other Photons must FIND that person key (only mint after a completed empty pull); check the 8a sealed it into her fleet space before her devices run alias code.
+**Nick's person key (2026-11-14, ferros-54):** none exists yet; the Pro was flashed before person-key merged and never minted. The first of Nick's devices to complete a first pull of his space mints it; every device (ferros, desktop, Android) mints only after a completed pull finds none, and fgtw::person takes the first minted, so they converge.
 **Rule (owner's, shared with ferros):** nothing is written to her identity (people added, answers changed, kists stowed, anything minted) without the owner's go.
 
 **How to apply:** when reasoning about the 8a (ferros field tests, blank contacts, missing avatar), its fleet is the wife's devices; the owner's desktop/Pixel/MacBook are a different identity (a friend of it at most). Never write a handle; no name is recorded here. Related: [[project_photon_alias_migration]].
