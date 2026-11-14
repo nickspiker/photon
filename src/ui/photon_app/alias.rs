@@ -98,7 +98,12 @@ impl PhotonApp {
         }
         crate::logf!("ALIAS: device list revision {} holds {} device(s)", list.revision, list.devices.len());
         self.alias_list = Some((binding, list));
-        let members = self.own_fleet_devices();
+        // The fleet's members as the held chain folds them, never the sibling rows: a locked-out device keeps its row but answers for nothing, and reconciling against the rows dropped it as "left the fold" (1be949c1, 2026-11-14).
+        let members = self.fleet_members_held();
+        // A member Photon whose chain is not held yet reads no members, and a reconcile then would drop every member sibling: it waits for the fold's own reconcile. This device is always a member, so empty means not held.
+        if members.is_empty() && !self.photon_keys.as_ref().is_some_and(|k| k.legacy_seed.is_none()) {
+            return;
+        }
         self.reconcile_fleet_siblings(&members);
     }
 
