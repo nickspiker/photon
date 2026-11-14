@@ -3786,15 +3786,16 @@ impl PhotonApp {
         self.signing_bundle = Some(bundle);
     }
 
-    /// Hand in the person as the messenger knows them, before `init` (ferros's std/photon, PHOTON.md step 4): the alias, the handle proof, the pinned identity key and the binding.
-    /// The binding is taken only when it names this alias and this handle proof; one that does not is refused loudly and Photon runs as before, on its own handle screen.
+    /// Hand in the person as the messenger knows them (ferros's std/photon, PHOTON.md step 4): the alias, the handle proof, the pinned identity key and the binding. Before `init`, or later, when the identity service answers.
+    /// The binding is taken only when it names this alias and this handle proof; one that does not is refused loudly, and on ferros Photon keeps waiting for its identity.
     pub fn set_photon_keys(&mut self, keys: crate::crypto::photon_keys::PhotonKeys) {
         let alias = fgtw::alias::bundle(&keys.alias).public().ed25519();
         match fgtw::binding::Binding::from_vsf_bytes(&keys.binding) {
             Ok(b) if b.alias_key() == alias && b.handle_proof == keys.handle_proof => {
+                let was_signed_in = self.signed_in();
                 self.photon_keys = Some(keys);
-                // Handed in after init, to a Photon waiting for them (ferros): the vault opens now.
-                if matches!(self.state, AppState::Launch(LaunchState::WaitingForIdentity)) {
+                // Handed in after init (core_init made the HandleQuery) to a Photon not signed in yet, whatever screen is up (the person may be in Settings): the vault opens now, and the resume lands on the contacts. Before init, init opens it.
+                if !was_signed_in && self.handle_query.is_some() && self.storage.is_none() && self.resume_vault_rx.is_none() {
                     self.open_with_photon_keys();
                 }
             }

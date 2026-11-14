@@ -5123,7 +5123,10 @@ impl PhotonApp {
                         self.vault_data_lost = true;
                     }
                 }
-            self.state = AppState::Ready;
+            // The contacts, from the launch or waiting screen; a person already elsewhere (Settings, while ferros's keys arrived) stays there and finds the contacts on Back.
+            if matches!(self.state, AppState::Launch(_)) {
+                self.state = AppState::Ready;
+            }
             if let Some(hq) = self.handle_query.as_ref() {
                 crate::log("UI: resumed to Ready from local session roots (tohu) — FGTW announce + presence run in background");
                 if let Some(remembered) = remembered {
