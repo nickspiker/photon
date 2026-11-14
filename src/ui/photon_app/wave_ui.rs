@@ -808,6 +808,7 @@ impl PhotonApp {
     #[cfg(target_os = "android")]
     pub(super) fn on_network_changed(&mut self) {
         crate::log("NET: interface changed — forgetting our LAN and public addresses, relearning from the next pong");
+        self.alias_retry_edge("the network changed");
         self.our_lan_ip = None;
         self.our_lan_ips.clear();
         self.our_reflexive = None;

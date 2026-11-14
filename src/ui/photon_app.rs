@@ -2973,6 +2973,13 @@ pub struct PhotonApp {
     alias_rx: Option<std::sync::mpsc::Receiver<Result<crate::network::fgtw::alias::AliasReady, String>>>,
     /// The alias's device list as last checked, beside its binding: the devices that are this person's Photons (PHOTON.md M3).
     alias_list: Option<(Vec<u8>, fgtw::alias_devices::DeviceList)>,
+    /// A settle owed to fgtw.org after one did not reach it: (tries so far, not before this Eagle time), tried again on the next network edge.
+    alias_retry: Option<(u32, i64)>,
+    /// A peer answered since the tick last looked: a network edge for an owed alias settle.
+    alias_peer_answered: bool,
+    /// ferros's network generation as the tick last saw it.
+    #[cfg(target_os = "ferros")]
+    alias_net_generation: u64,
     space_recheck: bool,
     space_short: bool,
     space_sweep: Option<space::SpaceSweep>,
@@ -3749,6 +3756,10 @@ impl PhotonApp {
             space_rx: None,
             alias_rx: None,
             alias_list: None,
+            alias_retry: None,
+            alias_peer_answered: false,
+            #[cfg(target_os = "ferros")]
+            alias_net_generation: 0,
             space_recheck: false,
             space_short: false,
             space_sweep: None,

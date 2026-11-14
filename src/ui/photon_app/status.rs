@@ -542,6 +542,8 @@ impl PhotonApp {
                     braid,
                     profile_records,
                 } => {
+                    // A peer answered: the network is up, so an alias settle owed to fgtw.org may go again (taken by the tick: the checker is borrowed here).
+                    self.alias_peer_answered = true;
                     // A pong is the edge a fetch aimed at this device moves on at when its answer was lost (fetch_pong_from, applied after the batch).
                     if is_online {
                         fetch_pongs_after.push(peer_pubkey.key);

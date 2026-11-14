@@ -65,6 +65,7 @@ impl PhotonApp {
             Ok(ready) => ready,
             Err(e) => {
                 crate::logf!("ALIAS: not settled: {}", e);
+                self.alias_owe();
                 return true;
             }
         };
@@ -72,8 +73,12 @@ impl PhotonApp {
         if self.photon_keys.is_none() {
             self.set_photon_keys(ready.keys);
         }
-        if let Some((binding, list)) = ready.list {
-            self.keep_alias_list(binding, list);
+        match ready.list {
+            Some((binding, list)) => {
+                self.alias_retry = None;
+                self.keep_alias_list(binding, list);
+            }
+            None => self.alias_owe(),
         }
         true
     }
@@ -138,5 +143,30 @@ impl PhotonApp {
     pub(super) fn alias_sibling_root(&self, device: &[u8; 32], fleet: &[[u8; 32]]) -> Option<[u8; 32]> {
         let keys = self.photon_keys.as_ref()?;
         (keys.legacy_seed.is_none() || !fleet.contains(device)).then(|| keys.sibling_root())
+    }
+
+    /// A settle or join that did not reach fgtw.org (ferros's Pro lost its WiFi at the one moment it tried, 2026-11-14): owed again on the next network edge, each try at least twice as far from the last as the one before, so a down fgtw.org is never hammered. Nothing waits on a clock: an edge that comes too soon is let pass, the next one tries.
+    fn alias_owe(&mut self) {
+        let failures = self.alias_retry.map_or(1, |(f, _)| f + 1);
+        // WHY the min: the shift's amount must stay under the counter's width; past 2^6 seconds the gap stops growing (an edge is still what tries).
+        let gap = (crate::OSC_PER_SEC as i64) << (failures - 1).min(6);
+        self.alias_retry = Some((failures, crate::network::time_base::now_osc() + gap));
+    }
+
+    /// A network edge (a peer answered, the interface changed, ferros's route flags moved): an owed settle runs now if its gap has passed.
+    pub(super) fn alias_retry_edge(&mut self, why: &str) {
+        if self.alias_retry.is_some_and(|(_, not_before)| crate::network::time_base::now_osc() >= not_before) {
+            self.spawn_alias_settle(why);
+        }
+    }
+
+    /// ferros's network edge: the ip server's flags changed since the last tick looked.
+    #[cfg(target_os = "ferros")]
+    pub(super) fn alias_net_tick(&mut self) {
+        let generation = crate::platform::ferros_net::network_generation();
+        if generation != self.alias_net_generation {
+            self.alias_net_generation = generation;
+            self.alias_retry_edge("the network changed");
+        }
     }
 }

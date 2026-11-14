@@ -200,6 +200,9 @@ fn watcher() {
         w.none = false;
         seen = upto;
         let all = flags != w.flags;
+        if all {
+            NET_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
         w.flags = flags;
         for p in w.ports.iter_mut().filter(|p| all || named.contains(&p.port)) {
             p.news += 1;
@@ -208,6 +211,14 @@ fn watcher() {
             }
         }
     }
+}
+
+/// How many times the ip server's flags have changed (a route come or gone, a person back): the app reads it as its network edge, a join owed to fgtw.org tried again on it (photon_app/alias.rs).
+static NET_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The network's generation: changes exactly when the ip server's flags do.
+pub fn network_generation() -> u64 {
+    NET_GENERATION.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// The news count of `port` before a receive looks, or None while the server has no watch.

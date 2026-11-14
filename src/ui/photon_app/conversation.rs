@@ -3420,6 +3420,10 @@ impl PhotonApp {
 
     /// Kick a one-shot fleet-inbox drain off-thread (blocking HTTPS). Pulls this identity's pending worker-observed events (bind-attempt alerts) and posts them over `inbox_check_tx`; `drain_fleet_inbox` surfaces them on a later tick. No-op without a handle_proof + device key (not yet attested).
     pub(super) fn spawn_inbox_drain(&self) {
+        // The fleet's inbox is fleet work (bind-attempt alerts for the fleet's members): Photon on the alias alone is no member, and on ferros the identity service holds that inbox ("INBOX: drain failed: no fgtw.org from ferros", 2026-11-14).
+        if self.photon_keys.as_ref().is_some_and(|k| k.legacy_seed.is_none()) {
+            return;
+        }
         if let (Some(hp), Some(kp), tx) = (
             self.our_handle_proof(),
             self.device_keypair.clone(),

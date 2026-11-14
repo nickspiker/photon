@@ -3774,6 +3774,11 @@ impl FluorApp<Px> for PhotonApp {
             self.scene_dirty = true;
             ctx.window.request_redraw();
         }
+        #[cfg(target_os = "ferros")]
+        self.alias_net_tick();
+        if std::mem::take(&mut self.alias_peer_answered) {
+            self.alias_retry_edge("a peer answered");
+        }
         if self.drain_alias() {
             self.scene_dirty = true;
             ctx.window.request_redraw();
