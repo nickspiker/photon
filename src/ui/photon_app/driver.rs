@@ -3599,9 +3599,8 @@ impl FluorApp<Px> for PhotonApp {
             self.last_wave_redraw = None;
         }
 
-        // Rubber-band spring: any scroll axis stretched past its bounds eases back exponentially (overshoot × e^(−8t) — C∞ in time, ~90% recovered in 0.3 s), snapping the final sub-third-pixel so the animation terminates. Runs only while an axis is out of range, so steady-state ticks are free. Scroll moves content (and its hit stamps), so a spring frame is a full scene frame with chrome invalidated — same as the wheel handler's frames.
+        // Rubber-band spring: any scroll axis stretched past its bounds closes half the way back each frame, the ferros convention (Nick 2026-11-14: "100px away, we move 50, then 25, then 12"): whole pixels, the magnitude shifted right by one, so it floors toward the bound and lands exactly on it. The shift is on the magnitude with the sign put back, since an arithmetic shift of a negative floors away from zero (-1 >> 1 is -1) and the top end would never land. The e^(-8t) ease this replaces stuck past the top: the contacts offset is whole pixels, and below about 4 px of overshoot the eased value rounded back to the same pixel every frame. Runs only while an axis is out of range, so steady-state ticks are free. Scroll moves content (and its hit stamps), so a spring frame is a full scene frame with chrome invalidated — same as the wheel handler's frames.
         {
-            let decay = (-delta_time * (1 << 3) as f32).exp();
             let relax = |v: &mut f32, hi: f32| -> bool {
                 let bound = if *v < 0.0 {
                     0.0
@@ -3610,12 +3609,9 @@ impl FluorApp<Px> for PhotonApp {
                 } else {
                     return false;
                 };
-                let over = (*v - bound) * decay;
-                *v = if over.abs() < 0.3 {
-                    bound
-                } else {
-                    bound + over
-                };
+                // The cast drops the fraction: an overshoot under a pixel lands at once.
+                let over = (*v - bound) as i32;
+                *v = bound + ((over.abs() >> 1) * over.signum()) as f32;
                 true
             };
             dirty_checkpoint!();
@@ -3713,7 +3709,7 @@ impl FluorApp<Px> for PhotonApp {
                 self.note_redraw(line!() + 100_000);
             }
             dirty_checkpoint!();
-            // Textbox TEXT-pan spring: any box carried past its scroll bounds eases home the same way. Skip the box still under the finger (the drag owns it until release). Narrow damage — the box's own text_cache_dirty → damage_rect covers the repaint, so no scene_dirty needed.
+            // Textbox TEXT-pan spring: any box carried past its scroll bounds closes half the way home each frame, as the panes do (fluor's spring takes the factor; its offset is not whole pixels, so its sub-third-pixel snap ends it). Skip the box still under the finger (the drag owns it until release). Narrow damage — the box's own text_cache_dirty → damage_rect covers the repaint, so no scene_dirty needed.
             let panning = if self.pointer_down {
                 self.drag_select_hit
             } else {
@@ -3721,7 +3717,7 @@ impl FluorApp<Px> for PhotonApp {
             };
             let mut tb_spring = false;
             for (_, tb) in self.textboxes_mut() {
-                if tb.hit_id() != panning && tb.spring_scroll(decay) {
+                if tb.hit_id() != panning && tb.spring_scroll(0.5) {
                     tb_spring = true;
                 }
             }
