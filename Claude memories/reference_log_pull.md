@@ -14,7 +14,7 @@ metadata:
 
 **Local desktop log:** volatile tmpfs `/tmp/photon-<user>/photon.log.vsf` (decode with photonlog, `-g` grep, `-l` level). Soft mode batches in RAM and reaches disk only on edges (panic/background/submit/threshold/quit/update re-exec); a successful submit clears it by design.
 
-**Nick's devices** (Nick = the user's test identity, handed over for debugging 2026-07-23 — delete this line if asked): desktop Leviathan 90e571bf; MacBook fe46a74b; Pixel cacbc223; 1be949c1 = the old, locked-out phone (ghost).
+**Nick's devices** (Nick = the user's test identity, handed over for debugging 2026-07-23 — delete this line if asked; re-checked 2026-11-16 by folding his chain from fgtw.org): desktop Leviathan 469e79b8 (TPM-papers root; its retired key was 90e571bf); MacBook fe46a74b; Android 132bdf93 (its retired key cacbc223); baf3dec7 (a fifth member, not yet identified); 1be949c1 = the old, locked-out phone (ghost). Keys move at root conversions: fold the chain before trusting this line.
 
 **Naming traps:**
 1. Ceremony/punch/status lines print `fp(contact.handle_proof)`; a SIBLING contact carries OUR OWN hp, so sibling ceremonies log as "our own hp".
