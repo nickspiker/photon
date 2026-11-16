@@ -1653,6 +1653,78 @@ impl PhotonApp {
         }
     }
 
+    /// Our own group records signed by a device that has since left our fleet, signed again here with the same content and posted into the group.
+    /// A root conversion moves a device to a new key (the desktop's 90e571bf became 469e79b8, 2026-11): our own devices still take a record its old key signed, as signed in the fleet of its day, but a friend judges every record against our CURRENT fold and refuses it ("signed by a device outside its subject's fold"). Jon, invited to a group, saw its members but no content, and his acceptance never showed here: our vouches for three members were the old key's (2026-11-16).
+    /// Newest wins everywhere, so the re-signed record replaces the old one for every member; our own devices converge, since once one has re-signed the signer is a member and the rest find nothing to do.
+    /// A bundle is not re-signed: it is a device's own era keys, and the departed device's bundle is rightly unused.
+    pub(super) fn resign_departed_own_records(&mut self) {
+        let (Some(us), Some(seed)) = (self.own_party_id(), self.device_seed()) else {
+            return;
+        };
+        let fold = self.fleet_members_held();
+        // No held chain, no judgement: a record is never re-signed on a fold we do not hold.
+        if fold.is_empty() {
+            return;
+        }
+        let departed = |d: &[u8; 32]| !fold.contains(d);
+        let gids: Vec<MoleculeId> = self.molecule_rosters.iter().map(|(g, _)| *g).collect();
+        for gid in gids {
+            let Some(pos) = self.molecule_rosters.iter().position(|(g, _)| *g == gid) else {
+                continue;
+            };
+            let roster = &self.molecule_rosters[pos].1;
+            let mut posted = Roster::default();
+            // The genesis in place while the records merge (the founder's self-vouch is taken only against it), out again before the post, as a rename does.
+            posted.genesis = roster.genesis.clone();
+            let mut count = 0usize;
+            if let Some(m) = roster.members.get(&us).filter(|m| departed(&m.signer_device)) {
+                posted.merge_member(crate::types::molecule::join_record(us, m.handle_proof, &m.name, m.avatar_pin, m.sponsor, &seed));
+                count += 1;
+            }
+            for ((voucher, subject), recs) in roster.vouches.iter() {
+                // The list is sorted by its signed moment: the last is the vouch that stands.
+                if let Some(v) = recs.last().filter(|v| *voucher == us && departed(&v.signer_device)) {
+                    posted.merge_vouch(crate::types::molecule::vouch_record(us, *subject, v.withdrawn, &seed));
+                    count += 1;
+                }
+            }
+            if let Some(t) = roster.title.as_ref().filter(|t| t.party == us && departed(&t.signer_device)) {
+                posted.merge_title(crate::types::molecule::title_record(us, &t.title, &seed));
+                count += 1;
+            }
+            if let Some(a) = roster.avatar.as_ref().filter(|a| a.party == us && departed(&a.signer_device)) {
+                posted.merge_avatar(crate::types::molecule::avatar_record(us, a.image, &seed));
+                count += 1;
+            }
+            posted.genesis = None;
+            if count == 0 {
+                continue;
+            }
+            {
+                // The founder's self-vouch merges only against the genesis, so the held roster takes the records with its own genesis in place.
+                let roster = &mut self.molecule_rosters[pos].1;
+                for m in posted.members.values() {
+                    roster.merge_member(m.clone());
+                }
+                for recs in posted.vouches.values() {
+                    for v in recs {
+                        roster.merge_vouch(v.clone());
+                    }
+                }
+                if let Some(t) = posted.title.clone() {
+                    roster.merge_title(t);
+                }
+                if let Some(a) = posted.avatar.clone() {
+                    roster.merge_avatar(a);
+                }
+            }
+            self.persist_molecule(&gid);
+            let blob = crate::storage::molecule::roster_to_vsf_bytes(&gid, &posted).ok();
+            self.queue_molecule_post(MoleculePost { gid, signal: MoleculeSignal::Records, blob, wrap: None, kem: None, text: None, queued: self.tick_serial, control: false });
+            crate::logf!("MOLECULE: {} — {} of our record(s) signed by a device that left our fleet, signed again here and posted", hex::encode(&gid.0[..4]), count);
+        }
+    }
+
     /// RENAME (D7): a title record signed by us, merged here and posted into the group; newest wins everywhere.
     pub(super) fn rename_molecule(&mut self, gid: MoleculeId, title: &str) -> bool {
         // A name is byte-precise (Nick 2026-10-27: "could be a line return, tab, space, something"): never trimmed, only an empty one refused.

@@ -962,6 +962,8 @@ impl PhotonApp {
                     // The held copy of our chain is current: keep it in the vault for the next launch (docs/peers-are-fgtw.md).
                     self.fleet_chain_store();
                     self.reconcile_fleet_siblings(&members);
+                    // Our records in our groups that a departed device of ours signed go out again under a current one (a friend refuses the old signer).
+                    self.resign_departed_own_records();
                     // The chain moved: re-read what it says about schemes (a Declare, a Lock, a join) for the Fleet page.
                     self.spawn_scheme_refresh(&hp);
                     // Cutover: OUR fold is the primary registry's truth — converge on the fold-change edge (any member may; writes are idempotent and epoch-guarded, so racing siblings settle).
