@@ -3557,9 +3557,10 @@ impl PhotonApp {
                                         }) {
                                             Ok(vsf_bytes) => {
                                                 crate::logf!(
-                                                    "HISTORY: serving page ({} rows, more={}) to {}",
+                                                    "HISTORY: serving page ({} rows, more={}) for token {} to {}",
                                                     page.rows.len(),
                                                     page.more,
+                                                    crate::fp(&conversation_token),
                                                     sender_addr
                                                 );
                                                 crate::log_err!(dispatch.send(
@@ -4710,8 +4711,9 @@ impl PhotonApp {
                     if key.is_none() || !routable {
                         // Torch the drop: a page dying here is indistinguishable from "sync doesn't work" in the field ("fleet sync with self is not working", 2026-07-26 — every drop in this arm was silent).
                         crate::logf!(
-                            "HISTORY: page from {} DROPPED — {} (from_sibling={})",
+                            "HISTORY: page from {} for token {} DROPPED — {} (from_sibling={})",
                             crate::fp(&sender_pubkey.key),
+                            crate::fp(&conversation_token),
                             if key.is_none() {
                                 "no key (fleet key missing, or no chain/history_key for this token)"
                             } else {
