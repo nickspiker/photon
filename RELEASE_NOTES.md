@@ -6,6 +6,11 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Friends see your groups again after a device changes keys.** When one of your devices moved to a new key, the group records it had signed were refused by your friends, so a friend you invited could see the members but none of the messages; your devices now sign those records again with a current key.
+- **Logs you send are for the developer only.** A log you submit is now sealed so only the Photon developer can open it, and it is filed under your identity so it can be found without you passing anything along; before, anyone who knew your handle could read it.
+- **Scrolling past the top springs back.** A list pulled past its top now settles back like it does at the bottom, instead of sticking a few pixels out.
+- **Signing uses far less memory.** Photon's signatures need about a third of the working memory they did, which avoids a crash on devices that give each task only a little.
+- **Groundwork for Photon on ferros.** Photon now has a key of its own for you, the same on every one of your devices, so a Photon on ferros can join your other devices; nothing changes in how you use it today.
 
 ## v152
 - **Names and pictures stay put.** Your name and avatar now carry your own signature and the moment you set them, so every device keeps the newest one; an older or empty copy can no longer replace a friend's picture with the placeholder or wipe their name.
