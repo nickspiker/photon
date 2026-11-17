@@ -958,7 +958,8 @@ impl PhotonApp {
             paint::draw_chord_hint(&mut canvas, ctx.text, CHORD_HINTS, span);
         }
         // The CHROME LAYER (orb, controls strip, title, window buttons) goes in NOW, before any content: fluor is front to back, so it stays on top of everything the screens draw — rows scrolled up under the title strip, the full-screen wave panel. Its bg layer (the speckle) is flattened LAST, under all content (`flatten_bg_into` below).
-        chrome.flatten_chrome_into(target, buf_w, buf_h, None);
+        // Over the damage only: outside it the frame already holds last frame's composite, chrome included, and a chrome change is chrome damage that widens the frame's damage (damage_rect).
+        chrome.flatten_chrome_into(target, buf_w, buf_h, Some(fluor::paint::Clip::new(ctx.damage_clip.x0, ctx.damage_clip.y0, ctx.damage_clip.x1, ctx.damage_clip.y1)));
 
         // WAVE OVERLAY (docs/waves.md) — retained fluor Buttons (no hand-rolled pills), painted HERE, EARLY, so under-blend keeps them above every screen's body (the whole point: a ring must be visible + answerable from wherever the user is). A live wave shows the status chip + action bar; an open callable conversation with no wave shows the ☎ start pill. Pixels land now (hit_map = None); the hit rects are RE-STAMPED at the very end via `stamp_hit_into` because each screen re-stamps its own hit_test_map region and would otherwise wipe this. Hover/press/dispatch ride `visit_app_widgets`. y sits just below the chrome title-bar band.
         {
