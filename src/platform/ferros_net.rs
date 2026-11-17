@@ -282,8 +282,13 @@ fn open_port(port: u16, id: u32) -> io::Result<()> {
     recv_once(port, id, &mut buf, 0).map(|_| ())
 }
 
+/// The ip server's (family, address bytes). An IPv4 address written in IPv6's mapped form (::ffff:a.b.c.d, which udp::send makes of every v4 destination for dual-stack sockets) goes as IPv4: the ip server took it as a real IPv6 destination no host holds, and every ping, pong and offer Photon sent from ferros was lost (2026-11-17).
 fn family_and_bytes(ip: IpAddr) -> (u8, [u8; 16]) {
     let mut b = [0u8; 16];
+    let ip = match ip {
+        IpAddr::V6(a) => a.to_ipv4_mapped().map_or(IpAddr::V6(a), IpAddr::V4),
+        v4 => v4,
+    };
     match ip {
         IpAddr::V4(a) => {
             b[..4].copy_from_slice(&a.octets());

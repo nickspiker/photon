@@ -767,6 +767,8 @@ pub enum StatusUpdate {
         handle_proof: [u8; 32],
         local_ip: Ipv4Addr,
         port: u16,
+        /// Heard on the multicast listener (a beacon sent to everyone), not unicast on the frame port (an answer to one of ours): answers are never answered again, or two devices ping-pong beacons forever (the desktop and the Pro, 2026-11-17, every 100 ms).
+        via_multicast: bool,
     },
     /// Our own reflexive (public) address, learned+adopted from peer-echoed reflection (pong `observed_addr` or a `ReflectResponse`). The app stores it as `PhotonApp.our_reflexive`, feeding candidate gathering and the FGTW announce (so our published address is the one seen on the live UDP data socket, not fgtw.org's cone-only TLS view).
     ReflexiveLearned { addr: SocketAddr },
@@ -1546,7 +1548,7 @@ async fn run_checker(
                         let packet = &buf[..len];
                         // Only process pt_disc packets (LAN discovery)
                         if let Some(lan_update) =
-                            parse_lan_discovery(packet, src_addr, &our_device_pk)
+                            parse_lan_discovery(packet, src_addr, &our_device_pk, true)
                         {
                             crate::logf!("LAN: Discovered peer via multicast: {}", src_addr);
                             send_status_update(&status_tx_mcast, lan_update, &event_proxy_mcast);
@@ -1695,7 +1697,7 @@ async fn run_checker(
                         crate::logf!("LAN: IPv6 Multicast RX {} bytes from {}", len, src_addr);
                         let packet = &buf[..len];
                         if let Some(lan_update) =
-                            parse_lan_discovery(packet, src_addr, &our_device_pk)
+                            parse_lan_discovery(packet, src_addr, &our_device_pk, true)
                         {
                             crate::logf!("LAN: Discovered peer via IPv6 multicast: {}", src_addr);
                             send_status_update(&status_tx_mcast6, lan_update, &event_proxy_mcast6);
@@ -2633,7 +2635,7 @@ async fn run_checker(
 
                     // Handle LAN discovery packets (same port as main socket now)
                     if let Some(lan_update) =
-                        parse_lan_discovery(msg_bytes, src_addr, &our_device_pk)
+                        parse_lan_discovery(msg_bytes, src_addr, &our_device_pk, false)
                     {
                         send_status_update(&status_tx_recv, lan_update, &event_proxy_recv);
                         continue;
@@ -5770,6 +5772,7 @@ fn parse_lan_discovery(
     packet: &[u8],
     src_addr: SocketAddr,
     our_device_pubkey: &[u8; 32],
+    via_multicast: bool,
 ) -> Option<StatusUpdate> {
     let (handle_proof, local_ip, port, beacon_device) = udp::parse_lan_discovery(packet, src_addr)?;
     // Our own beacon loops back to us (multicast loopback + broadcast self-delivery). Pre-fleet that was harmless — our own handle_proof was never a contact — but the self-conversation makes our handle a contact, so accepting our own beacon overwrites that contact's LAN address with OUR OWN IP and every send boomerangs back to ourselves (observed: phone retransmitting to itself for 20+ minutes). The fleet shares one handle_proof, so self is detected by the beacon's device key; the source-IP test is only the fallback for pre-ke beacons, and it misses on multi-homed devices (Android wifi + cellular CLAT have different IPs and get_local_ip sees the cellular one).
@@ -5797,6 +5800,7 @@ fn parse_lan_discovery(
         handle_proof,
         local_ip,
         port,
+        via_multicast,
     })
 }
 

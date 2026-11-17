@@ -3155,6 +3155,7 @@ impl PhotonApp {
                     handle_proof,
                     local_ip,
                     port,
+                    via_multicast,
                 } => {
                     // THE ANSWER THAT REPLACES THE CADENCE (Nick 2026-11-07, "no timer unless proof"): a device first heard on this network gets one beacon back, straight to it, so two devices find each other in one exchange and nobody beacons on a clock.
                     // Ours goes out at session start and after a network change; everything after that is an answer.
@@ -3265,9 +3266,10 @@ impl PhotonApp {
                             }
                         }
                     }
-                    // A beacon under our own handle while one of our Photon siblings has no proven path is answered with ours, every time: a session-start beacon reaches only the devices up at that moment, so two Photons that started apart (the desktop reloading while the Pro's Photon beaconed, 2026-11-17) would otherwise never meet. The answers stop once every sibling has a path.
-                    if Some(handle_proof) == self.our_handle_proof()
-                        && self.contacts.iter().any(|c| c.is_sibling && !c.locked_out && c.validated_path.is_none() && !self.sibling_awaits_list(c))
+                    // A multicast beacon from a Photon sibling of ours with no proven path is answered with ours, every time: a session-start beacon reaches only the devices up at that moment, so two Photons that started apart (the desktop reloading while the Pro's Photon beaconed, 2026-11-17) would otherwise never meet. Only that sender, only while its path is unproven, and never a unicast beacon, which is itself an answer: answering answers made the desktop and the Pro ping-pong beacons every 100 ms (2026-11-17).
+                    if via_multicast
+                        && Some(handle_proof) == self.our_handle_proof()
+                        && device_pubkey.is_some_and(|dk| self.contacts.iter().any(|c| c.is_sibling && c.device_key() == Some(dk) && !c.locked_out && c.validated_path.is_none() && !self.sibling_awaits_list(c)))
                     {
                         let to = std::net::SocketAddr::from((local_ip, port));
                         if !joiner_beacon_reply.contains(&to) {
