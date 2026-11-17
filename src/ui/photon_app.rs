@@ -4108,21 +4108,15 @@ fn dev_gradient_orb() -> fluor::host::icon::Icon {
     fluor::host::icon::Icon { width: N, height: N, pixels }
 }
 
-/// EVERY AVATAR IS ONE 256 SQUARE (the owner 2026-11-17: "ALL should be rendered 256x256 ... it should always be a resample from the 256x256 to the dest, then the nice pixel perfect crop applied, ring, etc."): a default mark is rendered once per identity at this side, never at any other size, and every size it is drawn at is a resample of it with the circle cut at that size, as a photo's is.
+/// EVERY AVATAR IS ONE 256 SQUARE (the owner 2026-11-17: "ALL should be rendered 256x256 ... upon the mint of the attest, that should be rendered and used, can be done locally since it will be identical, no need to recompute ... it should always be a resample from the 256x256 to the dest, then the nice pixel perfect crop applied, ring, etc."): a default mark is a photo in all but origin, its 256 square rendered once per identity, kept in the vault as AV1 like a photo, and every size it is drawn at is that square resampled and cut to the circle there, exactly as a photo is.
 const MARK_SIDE: usize = crate::ui::avatar::AVATAR_SIZE;
 
 /// Resampled avatars kept for reuse, newest last: the draw paths ask for the same (seed, diameter) every frame. A linear search over at most `AVATAR_CACHE` entries; the oldest is dropped when full.
 static AVATAR_CACHE_STORE: std::sync::Mutex<Vec<((u64, usize), std::sync::Arc<Vec<u8>>)>> = std::sync::Mutex::new(Vec::new());
 const AVATAR_CACHE: usize = 1 << 6;
 
-/// Each mark's 256 square as visible γ2 RGB (the texture route, as a photo's pixels), by seed: black past the disc.
+/// Each mark's 256 square as visible γ2 RGB (a photo's display pixels), by seed: black past the disc.
 static MARK_RGB_STORE: std::sync::Mutex<Vec<(u64, std::sync::Arc<Vec<u8>>)>> = std::sync::Mutex::new(Vec::new());
-
-/// Each mark's 256 square at Photon's depth, by seed: the disc over opaque black (everything past it black), padded by one black column and row for [`crate::ui::depth::resample_padded`].
-static MARK_BASE_STORE: std::sync::Mutex<Vec<(u64, std::sync::Arc<Vec<Px>>)>> = std::sync::Mutex::new(Vec::new());
-
-/// A mark resampled to a diameter at Photon's depth, by (seed, diameter), newest last; the circle is cut at draw time.
-static AVATAR_DISC_STORE: std::sync::Mutex<Vec<((u64, usize), std::sync::Arc<Vec<Px>>)>> = std::sync::Mutex::new(Vec::new());
 
 /// Keep `v` under `key` in a newest-last store of at most `AVATAR_CACHE` entries.
 fn keep_newest<K: PartialEq, V: Clone>(store: &std::sync::Mutex<Vec<(K, V)>>, key: K, v: V) -> V {
@@ -4134,16 +4128,13 @@ fn keep_newest<K: PartialEq, V: Clone>(store: &std::sync::Mutex<Vec<(K, V)>>, ke
     v
 }
 
-/// The salt a seed's mark is drawn from.
+/// The salt a seed's mark is drawn from (and the scope of its vault address).
 fn mark_salt(seed: u64) -> [u8; 32] {
     *blake3::Hasher::new().update(b"photon avatar").update(&seed.to_le_bytes()).finalize().as_bytes()
 }
 
-/// A mark's 256 square as visible γ2 RGB, rendered once per seed.
-fn mark_rgb(seed: u64) -> std::sync::Arc<Vec<u8>> {
-    if let Some((_, rgb)) = MARK_RGB_STORE.lock().unwrap().iter().find(|(k, _)| *k == seed) {
-        return rgb.clone();
-    }
+/// A mark's 256 square rendered: tapuwae's disc as visible γ2 RGB, black past it.
+fn mark_render_rgb(seed: u64) -> Vec<u8> {
     let mut out = vec![0u8; MARK_SIDE * MARK_SIDE * 3];
     for (i, p) in tapuwae_pixels(&mark_salt(seed), MARK_SIDE).into_iter().enumerate() {
         // α + darkness, premultiplied: visible = α − darkness per channel, so past the disc (α 0) is black.
@@ -4152,36 +4143,68 @@ fn mark_rgb(seed: u64) -> std::sync::Arc<Vec<u8>> {
         out[i * 3 + 1] = (a - ((p >> 8) & 0xFF)) as u8;
         out[i * 3 + 2] = (a - (p & 0xFF)) as u8;
     }
-    keep_newest(&MARK_RGB_STORE, seed, std::sync::Arc::new(out))
+    out
 }
 
-/// A mark's 256 square at Photon's depth, rendered once per seed: the disc over opaque black, padded by one black column and row. None at a depth that takes the mark thru the texture route (8 bits).
-fn mark_base(seed: u64) -> Option<std::sync::Arc<Vec<Px>>> {
-    if let Some((_, b)) = MARK_BASE_STORE.lock().unwrap().iter().find(|(k, _)| *k == seed) {
-        return Some(b.clone());
+/// A mark's 256 square for drawing: the one this process holds, or (on a draw that comes before the worker's) rendered here once and held; the vault is the worker's (`prewarm_marks`), never the drawing thread's.
+fn mark_rgb(seed: u64) -> std::sync::Arc<Vec<u8>> {
+    if let Some((_, rgb)) = MARK_RGB_STORE.lock().unwrap().iter().find(|(k, _)| *k == seed) {
+        return rgb.clone();
     }
-    let disc = Px::mark_disc(&mark_salt(seed), MARK_SIDE)?;
-    let black = Px::from_channels(Px::ONE, [Px::ONE; 3]);
-    let mut padded = vec![black; (MARK_SIDE + 1) * (MARK_SIDE + 1)];
-    for (y, row) in disc.chunks_exact(MARK_SIDE).enumerate() {
-        for (x, p) in row.iter().enumerate() {
-            padded[y * (MARK_SIDE + 1) + x] = fluor::pixel::Blend::under(*p, black, fluor::pixel::BlendMode::Normal);
+    keep_newest(&MARK_RGB_STORE, seed, std::sync::Arc::new(mark_render_rgb(seed)))
+}
+
+/// A kept mark's document: an "image" section whose "pixels" field is the AV1 (`v'a'`); a mark is public, so it is not sealed again inside the vault.
+fn mark_doc_schema() -> vsf::schema::SectionSchema {
+    vsf::schema::SectionSchema::new("image").field("pixels", vsf::schema::TypeConstraint::Wrapped(b'a'))
+}
+
+/// The mark kept in the vault for `seed`, decoded to its 256 square (worker only: a vault read and an AV1 decode).
+fn mark_from_vault(seed: u64) -> Option<Vec<u8>> {
+    let bytes = crate::storage::device_vault()?.read_addr(&crate::storage::vault_key("mark", &mark_salt(seed))).ok().flatten()?;
+    let section = vsf::schema::SectionBuilder::parse_document(mark_doc_schema(), &bytes, None).ok()?;
+    let av1 = match section.get("pixels").ok()?.first()? {
+        vsf::VsfType::v(b'a', av1) => av1.clone(),
+        _ => return None,
+    };
+    crate::ui::avatar::decode_avatar_av1_to_display(&av1).filter(|(side, _)| *side == MARK_SIDE).map(|(_, rgb)| rgb)
+}
+
+/// Keep `rgb` (a mark's 256 square) in the vault as AV1, as a photo is kept (worker only: an AV1 encode and a vault write).
+fn mark_to_vault(seed: u64, rgb: &[u8]) {
+    let Some(vault) = crate::storage::device_vault() else { return };
+    let f32s: Vec<f32> = rgb.iter().map(|&b| b as f32 * (1. / 255.)).collect();
+    let av1 = match crate::ui::avatar::encode_avatar_rgb_f32(&f32s) {
+        Ok(a) => a,
+        Err(e) => return crate::logf!("MARK: the AV1 encode failed ({})", e),
+    };
+    let doc = vsf::vsf_builder::VsfBuilder::new().creation_time_oscillations(vsf::eagle_time_oscillations()).add_section("image", vec![("pixels".to_string(), vsf::VsfType::v(b'a', av1))]).build();
+    match doc {
+        Ok(d) => {
+            crate::log_err!(vault.write_addr(&crate::storage::vault_key("mark", &mark_salt(seed)), &d), "keep a mark in the vault");
         }
+        Err(e) => crate::logf!("MARK: the mark document did not build ({})", e),
     }
-    Some(keep_newest(&MARK_BASE_STORE, seed, std::sync::Arc::new(padded)))
 }
 
-/// Render the marks of `seeds` off the UI thread, so the first frame that shows them finds them ready (each is rendered once per process, whoever asks first).
+/// Every mark of `seeds` made ready off the UI thread, one after another: the vault's copy where it holds one, else rendered once at 256 and kept there (the mint), so no later launch renders it again.
 pub(crate) fn prewarm_marks(seeds: Vec<u64>) {
     crate::log_err!(std::thread::Builder::new().name("marks".into()).spawn(move || {
         for s in seeds {
-            if Px::DEPTH == 8 {
-                mark_rgb(s);
-            } else {
-                mark_base(s);
+            if MARK_RGB_STORE.lock().unwrap().iter().any(|(k, _)| *k == s) {
+                continue;
             }
+            let rgb = match mark_from_vault(s) {
+                Some(rgb) => rgb,
+                None => {
+                    let rgb = mark_render_rgb(s);
+                    mark_to_vault(s, &rgb);
+                    rgb
+                }
+            };
+            keep_newest(&MARK_RGB_STORE, s, std::sync::Arc::new(rgb));
         }
-    }), "spawn the mark renders");
+    }), "spawn the mark worker");
 }
 
 /// The default UNSET avatar: a deterministic per-identity tapuwae mark (salted from the public seed, so identical on every device that knows it), as a `diam×diam×3` visible-RGB buffer for `draw_avatar`: the mark's 256 square resampled as a photo's is. Black outside the disc, which `draw_avatar` masks away.
@@ -4193,25 +4216,10 @@ fn gradient_avatar_rgb(seed: u64, diam: usize) -> Vec<u8> {
     keep_newest(&AVATAR_CACHE_STORE, (seed, diam), std::sync::Arc::new(out)).to_vec()
 }
 
-/// Draw the default UNSET avatar for `seed` at (`cx`, `cy`), radius `r`: its 256 square resampled to the diameter, the circle cut at that size (`draw_avatar_px`, as `draw_avatar` cuts a photo's), under what is on the canvas. At 8 bits the texture route, as a photo.
+/// Draw the default UNSET avatar for `seed` at (`cx`, `cy`), radius `r`: its 256 square resampled to the diameter and cut to the circle there (`draw_avatar`), as a photo is.
 fn draw_gradient_avatar(canvas: &mut Canvas, cx: f32, cy: f32, r: f32, seed: u64, clip: Option<fluor::paint::Clip>) {
     let gd = render::disk_px(r * 2.0);
-    // A disc under two pixels shows nothing, and the resample has no span to work across there.
-    if gd < 2 {
-        return;
-    }
-    let cached = AVATAR_DISC_STORE.lock().unwrap().iter().find(|(k, _)| *k == (seed, gd)).map(|(_, d)| d.clone());
-    let disc = match cached {
-        Some(d) => d,
-        None => {
-            let Some(base) = mark_base(seed) else {
-                crate::ui::avatar_render::draw_avatar(canvas, cx, cy, r, &gradient_avatar_rgb(seed, gd), gd, clip);
-                return;
-            };
-            keep_newest(&AVATAR_DISC_STORE, (seed, gd), std::sync::Arc::new(crate::ui::depth::resample_padded(&base, MARK_SIDE, gd)))
-        }
-    };
-    crate::ui::avatar_render::draw_avatar_px(canvas, cx, cy, r, &disc, gd, clip);
+    crate::ui::avatar_render::draw_avatar(canvas, cx, cy, r, &gradient_avatar_rgb(seed, gd), gd, clip);
 }
 
 /// Seed a gradient from a 32-byte public proof (`handle_proof`) — deterministic per identity.

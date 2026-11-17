@@ -123,47 +123,6 @@ pub fn draw_avatar<P: Depth>(
     }
 }
 
-/// [`draw_avatar`] for a picture already at the canvas's depth: `src` is a `d × d` square, premultiplied and opaque (a mark's 256 square resampled to `d`, black past its disc), drawn centred on (`cx`, `cy`) with the circle of `radius` cut at this size, its rim anti-aliased over one pixel, under what is on the canvas.
-pub fn draw_avatar_px<P: Depth>(canvas: &mut Canvas<P>, cx: Coord, cy: Coord, radius: Coord, src: &[P], d: usize, clip: Option<Clip>) {
-    let (width, height) = (canvas.width, canvas.height);
-    if radius <= 0.0 || d == 0 {
-        return;
-    }
-    let r_in = (radius - 0.5).max(0.0); // the algorithm: the anti-aliased rim's inner radius; a disk under half a pixel has no solid interior
-    let r_out = radius + 0.5;
-    let (r_in2, r_out2) = (r_in * r_in, r_out * r_out);
-    let inv_diff = 1.0 / (r_out2 - r_in2);
-    let Some((x_start, y_start, x_end, y_end)) = Clip::intersect_bbox(clip, width, height, (cx - r_out) as i32, (cx + r_out + 1.0) as i32, (cy - r_out) as i32, (cy + r_out + 1.0) as i32) else {
-        return;
-    };
-    canvas.damage.add_bounds(x_start, y_start, x_end, y_end);
-    // Square texels per canvas pixel: the square spans the circle's diameter.
-    let scale = d as Coord / (2.0 * radius);
-    let black = P::from_channels(P::ONE, [P::ONE; 3]);
-    let one = P::ONE as u64;
-    for py in y_start..y_end {
-        let dy = (py as Coord + 0.5) - cy;
-        let ty = ((dy + radius) * scale).floor() as isize;
-        for px in x_start..x_end {
-            let dx = (px as Coord + 0.5) - cx;
-            let dist2 = dx * dx + dy * dy;
-            if dist2 >= r_out2 {
-                continue;
-            }
-            let cov = if dist2 <= r_in2 { P::ONE } else { P::cov((r_out2 - dist2) * inv_diff) };
-            if cov == 0 {
-                continue;
-            }
-            let tx = ((dx + radius) * scale).floor() as isize;
-            // The rim reaches half a pixel past the radius, which is past the square's edge there: the square is black past its disc, so a texel beyond its edge IS black, by the square's own definition.
-            let s = if tx >= 0 && ty >= 0 && (tx as usize) < d && (ty as usize) < d { src[ty as usize * d + tx as usize] } else { black };
-            let c = cov as u64;
-            let p = P::from_channels((s.alpha() as u64 * c / one) as u32, s.channels().map(|ch| (ch as u64 * c / one) as u32));
-            let idx = py * width + px;
-            canvas.pixels[idx] = canvas.pixels[idx].under(p, BlendMode::Normal);
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
@@ -184,25 +143,6 @@ mod tests {
         let mut px16 = vec![0u64; 16 * 16];
         let mut canvas = Canvas::new(&mut px16, 16, 16, &mut dmg);
         draw_avatar(&mut canvas, 8.0, 8.0, 4.0, &[], 8, None);
-    }
-
-    /// A square at the canvas's depth cut to its circle at the drawn size: nothing outside it, the picture whole at its centre, a rim pixel partly covered.
-    #[test]
-    fn a_square_is_cut_to_its_circle_where_it_is_drawn() {
-        use fluor::pixel::{G2t16, Pixel};
-        let d = 20;
-        let colour = G2t16::from_channels(G2t16::ONE, [0x2000, 0x4000, 0x8000]);
-        let src = vec![colour; d * d];
-        let mut dmg = fluor::canvas::Damage::default();
-        let mut px = vec![G2t16::EMPTY; 32 * 32];
-        draw_avatar_px(&mut Canvas::new(&mut px, 32, 32, &mut dmg), 16.0, 16.0, 10.0, &src, d, None);
-        // Whole at the centre: exactly what the picture under an empty canvas is (the kernel's own rounding).
-        assert_eq!(px[16 * 32 + 16], fluor::pixel::Blend::under(G2t16::EMPTY, colour, BlendMode::Normal));
-        assert_eq!(px[0], G2t16::EMPTY);
-        assert_eq!(px[16 * 32 + 3], G2t16::EMPTY);
-        // The pixel whose centre sits exactly on the radius is half covered.
-        let rim = px[16 * 32 + 25];
-        assert!(rim.alpha() > 0 && rim.alpha() < G2t16::ONE, "{rim:?}");
     }
 
     /// The same avatar at both depths, read back at 8 bits: α within a step, darkness at most one step under and three over the 8-bit render — fluor's 8-bit kernels divide by 256 where 255 is meant (the deliberate dark bias its own cross-check pins), which a partly covered rim pixel shows as up to 2 steps.

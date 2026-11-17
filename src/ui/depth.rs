@@ -83,31 +83,6 @@ impl Depth for G2t16 {
     }
 }
 
-/// A quick `d × d` copy of a square picture, bilinear (continuous in the scale, so a mark eases thru a pinch rather than stepping): `src` is `s × s` premultiplied with one extra empty column and row on its right and bottom (`(s + 1)²` pixels), and the corners of the copy sample the corners of the picture.
-/// For drawing while the zoom moves; the settled frame renders the picture properly at its own size.
-pub fn resample_padded<P: Pixel>(src: &[P], s: usize, d: usize) -> Vec<P> {
-    let sp = s + 1;
-    // Corner-aligned: destination 0 and d − 1 land on source 0 and s − 1, so x0 ≤ s − 1 and x0 + 1 ≤ s, inside the padded row (the caller sends d ≥ 2).
-    let step = (s - 1) as f32 / (d - 1) as f32;
-    let mut out = Vec::with_capacity(d * d);
-    for y in 0..d {
-        let fy = y as f32 * step;
-        let (y0, wy) = (fy as usize, fy.fract());
-        for x in 0..d {
-            let fx = x as f32 * step;
-            let (x0, wx) = (fx as usize, fx.fract());
-            let (a, b, c, e) = (src[y0 * sp + x0], src[y0 * sp + x0 + 1], src[(y0 + 1) * sp + x0], src[(y0 + 1) * sp + x0 + 1]);
-            let mix = |pa: u32, pb: u32, pc: u32, pe: u32| -> u32 {
-                let top = pa as f32 + (pb as f32 - pa as f32) * wx;
-                let bot = pc as f32 + (pe as f32 - pc as f32) * wx;
-                (top + (bot - top) * wy + 0.5) as u32
-            };
-            let (ca, cb, cc, ce) = (a.channels(), b.channels(), c.channels(), e.channels());
-            out.push(P::from_channels(mix(a.alpha(), b.alpha(), c.alpha(), e.alpha()), [0, 1, 2].map(|i| mix(ca[i], cb[i], cc[i], ce[i]))));
-        }
-    }
-    out
-}
 
 /// The marks' pictures already worked out, one per salt: a contact, a group or this build's orb.
 static MARK_PARAMS: std::sync::Mutex<Vec<([u8; 32], tapuwae::Params)>> = std::sync::Mutex::new(Vec::new());
@@ -191,29 +166,6 @@ mod tests {
                 assert!(((d16 >> 8) as i32 - d8 as i32).abs() <= 1, "{v:06x}: {d16} against {d8}");
             }
         }
-    }
-
-    /// The quick resample keeps an even picture even, takes the picture's corners to the copy's, and never reads past the padding, shrinking or growing.
-    #[test]
-    fn the_quick_resample_keeps_corners_and_flats() {
-        let s = 8;
-        let flat = G2t16::from_channels(G2t16::ONE, [0x1234, 0x8000, 0xFEDC]);
-        let mut src = vec![G2t16::EMPTY; (s + 1) * (s + 1)];
-        for y in 0..s {
-            for x in 0..s {
-                src[y * (s + 1) + x] = flat;
-            }
-        }
-        for d in [2, 5, 8, 13, 64] {
-            let out = resample_padded(&src, s, d);
-            assert_eq!(out.len(), d * d);
-            assert!(out.iter().all(|p| *p == flat), "{d}");
-        }
-        src[0] = G2t16::from_channels(G2t16::ONE, [1, 2, 3]);
-        src[(s - 1) * (s + 1) + s - 1] = G2t16::EMPTY;
-        let out = resample_padded(&src, s, 5);
-        assert_eq!(out[0], src[0]);
-        assert_eq!(out[5 * 5 - 1], G2t16::EMPTY);
     }
 
     /// Widening keeps empty empty, opaque colours where `from_g2t8` puts them, and darkness ≤ α at every α.
