@@ -630,6 +630,8 @@ impl PhotonApp {
         self.apply_device_picks();
         // Settings → Beam (per device unless it follows the fleet) into the senders.
         self.load_beam_settings();
+        // The Vault page's limits (keep.rs; per device unless it follows the fleet): a change trims.
+        self.load_keep_settings();
         // The phone's voice processing: device-local, absent = OFF.
         // Absent = OFF on the phone (the raw earpiece sounds best and runs 50 ms sooner), ON on the Mac (Nick 2026-10-03: a MacBook's mic is next to its speakers; the unit's gain control is off there, so nothing of ours is lost).
         let voice_dsp = self
@@ -852,8 +854,11 @@ impl PhotonApp {
                 }
                 let (sz, cat) = if let Some(f) = m.file.as_ref() {
                     let size = f.size;
-                    if f.role == crate::types::AttachRole::WaveAudio {
+                    // By role first: a wave's sound and envelope are the wave's, its kept video the beam's (neither carries a head with a kind).
+                    if matches!(f.role, crate::types::AttachRole::WaveAudio | crate::types::AttachRole::WaveEnv) {
                         (size, VaultFilter::Waves)
+                    } else if f.role == crate::types::AttachRole::BeamVideo {
+                        (size, VaultFilter::Beams)
                     } else {
                         match m.attach.map(|a| a.kind) {
                             Some(AttachKind::Image) | Some(AttachKind::RawImage) => (size, VaultFilter::Pictures),

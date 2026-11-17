@@ -677,6 +677,22 @@ pub enum Msg<'a> {
     /// One breakdown row: a conversation's total for the active filter, its name, and its row count.
     VaultConvLine { size: &'a str, name: &'a str, count: &'a str },
     VaultBinEmpty,
+    /// The Vault page's beam-video bin (keep.rs counts a beam's video as its own kind).
+    VaultFilterBeams,
+    // ---- What this device keeps (the Vault page's limits, keep.rs) ----
+    KeepHead,
+    KeepIntro,
+    KeepWaves,
+    KeepBeams,
+    KeepPigeons,
+    /// An age limit's line: the age the kind is kept for.
+    KeepAge(&'a str),
+    KeepAgeForever,
+    /// A size limit's line: the most the kind may hold here in all.
+    KeepSize(&'a str),
+    KeepSizeAny,
+    /// A count of whole days (an age limit in a base that writes ages in units).
+    KeepDays(&'a str),
     // ---- the Wave page ----
     // ---- the Beam settings page (docs/beams.md "Settings") ----
     BeamIntro,

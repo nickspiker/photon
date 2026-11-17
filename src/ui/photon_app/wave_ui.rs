@@ -2118,6 +2118,7 @@ impl PhotonApp {
                             kept.secs
                         );
                         self.space_check("a recording kept");
+                        self.keep_trim("a recording kept");
                     }
                 }
                 None => {

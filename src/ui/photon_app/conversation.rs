@@ -3139,7 +3139,7 @@ impl PhotonApp {
                 {
                     let recs: Vec<[u8; 32]> = fresh
                         .iter()
-                        .filter(|m| !m.deleted && m.is_wave_recording())
+                        .filter(|m| !m.deleted && m.is_wave_recording() && self.keep_wants(m))
                         .filter_map(|m| m.file.as_ref().map(|f| f.addr()))
                         .filter(|h| self.recording_wanted(h) && crate::storage::blob_present_known(h) == Some(false))
                         .collect();

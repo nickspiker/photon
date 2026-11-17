@@ -1295,6 +1295,7 @@ impl PhotonApp {
         self.persist_and_push_rows(id, &pushed);
         crate::logf!("WAVE: group recording kept — {} bytes as blob {}…, {} s", kept.size, hex::encode(&kept.hash[..4]), kept.secs);
         self.space_check("a group recording kept");
+        self.keep_trim("a group recording kept");
         self.scene_dirty = true;
     }
 

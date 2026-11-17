@@ -649,6 +649,17 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::VaultFilterKept => "\u{2605} kept".into(),
         Msg::VaultConvLine { size, name, count } => format!("{size} \u{00b7} {name} ({count})").into(),
         Msg::VaultBinEmpty => "nothing in this bin yet".into(),
+        Msg::VaultFilterBeams => "beams".into(),
+        Msg::KeepHead => "What this device keeps".into(),
+        Msg::KeepIntro => "Past either limit, the oldest let their bytes go on this device, whichever trims more. The photon, its preview and its waveform stay, and \u{2605} kept ones never go. Whatever another of your devices still holds can be played or saved from there again.".into(),
+        Msg::KeepWaves => "Waves (their sound)".into(),
+        Msg::KeepBeams => "Beams (their video)".into(),
+        Msg::KeepPigeons => "Pigeons (files and pictures)".into(),
+        Msg::KeepAge(a) => format!("kept for {a}").into(),
+        Msg::KeepAgeForever => "kept however old".into(),
+        Msg::KeepSize(s) => format!("up to {s} in all").into(),
+        Msg::KeepSizeAny => "any total size".into(),
+        Msg::KeepDays(n) => format!("{n} days").into(),
         // ---- the Wave page ----
         // ---- the Beam settings page ----
         Msg::BeamIntro => "What this device asks of the beams it sends, and test patterns for checking this screen's HDR and banding.".into(),

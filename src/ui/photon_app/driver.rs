@@ -364,6 +364,8 @@ impl FluorApp<Px> for PhotonApp {
             1.,
             0.5,
         ));
+        // The Vault page's limits (keep.rs): an age and a size per kind, all at their right ends (no limit) until the settings load.
+        self.keep_sliders = (0..keep::KEEP_KEYS.len()).map(|_| fluor::widgets::Slider::new(&mut self.hit_counter, 0., 0., 1., 1., 1.)).collect();
         self.relabel_for_language();
         reserve_hits(&mut self.hit_counter, 1);
         self.link_consent_base = self.hit_counter;
@@ -1294,11 +1296,16 @@ impl FluorApp<Px> for PhotonApp {
                         self.request_vault_stats();
                         self.compute_vault_breakdown();
                         ctx.window.request_redraw();
-                    } else if (1..=6).contains(&slot) {
-                        // Breakdown filter pills: everything / waves / pictures / songs / files / kept.
+                    } else if (1..=7).contains(&slot) {
+                        // Breakdown filter pills: everything / waves / pictures / songs / files / kept, and beams (slot 7, drawn after waves).
                         use super::VaultFilter;
-                        self.vault_filter = [VaultFilter::All, VaultFilter::Waves, VaultFilter::Pictures, VaultFilter::Songs, VaultFilter::Files, VaultFilter::Kept][(slot - 1) as usize];
+                        self.vault_filter = [VaultFilter::All, VaultFilter::Waves, VaultFilter::Pictures, VaultFilter::Songs, VaultFilter::Files, VaultFilter::Kept, VaultFilter::Beams][(slot - 1) as usize];
                         self.compute_vault_breakdown();
+                        ctx.window.request_redraw();
+                    } else if slot == 8 || slot == 9 {
+                        // What this device keeps: its own limits, or the fleet's (keep.rs).
+                        self.set_keep_follow(slot == 9);
+                        self.scene_dirty = true;
                         ctx.window.request_redraw();
                     }
                 } else if page == SettingsPage::Octopus {
@@ -2158,6 +2165,14 @@ impl FluorApp<Px> for PhotonApp {
                         changed = true;
                     }
                 }
+                // A keep limit's slider under the finger follows it (its label redraws with it; the write waits for release).
+                if let Some(i) = self.keep_drag {
+                    self.keep_sliders[i].set_value_from_x(ctx.cursor_x as f32);
+                    if self.keep_sliders[i].take_change() {
+                        self.scene_dirty = true;
+                        changed = true;
+                    }
+                }
                 self.cursor_in_window = true;
                 if self.apply_hover(new_hit, false) {
                     changed = true;
@@ -2535,6 +2550,14 @@ impl FluorApp<Px> for PhotonApp {
                     ctx.window.request_redraw();
                     return EventResponse::Handled;
                 }
+                // A keep limit's slider follows the finger until release, which writes it (keep.rs).
+                if let Some(i) = self.keep_sliders.iter().position(|sl| sl.hit_id() == hit_id) {
+                    self.keep_drag = Some(i);
+                    self.keep_sliders[i].set_value_from_x(ctx.cursor_x as f32);
+                    self.scene_dirty = true;
+                    ctx.window.request_redraw();
+                    return EventResponse::Handled;
+                }
                 // Every OTHER item — contacts, pills, nav, orb, back, avatar, start-fresh, the Buttons — activates on RELEASE over the same element (fluor's PointerArbiter → `on_activate`); a drag-off before release cancels. So the press arm does NO activation and NO focus change for them: focusing on press left a button stuck in its dark focused tint after a drag-off (and swallowed hover).
                 // DRAG ANYWHERE MOVES THE WINDOW (Nick 2026-09-25): only text boxes, the waveform scrub, the viewer and sliders own a drag (all claimed above); a press on anything else arms a window move. The host commits it past the OS drag threshold and then cancels this press's activation, so a still click still clicks and a drag never fires the button. Hosts without a movable window (Android) ignore the response.
                 ctx.window.request_redraw();
@@ -2564,6 +2587,13 @@ impl FluorApp<Px> for PhotonApp {
                 // A drag that ends with no fling to follow settles now (see the fling's end): one full repaint after memmove frames.
                 if self.drag_px > 0 && self.list_fling == 0 {
                     self.scene_dirty = true;
+                }
+                // A keep limit's release is its write edge (keep.rs): the limit lands in the settings and the trim runs once.
+                if let Some(i) = self.keep_drag.take() {
+                    self.keep_sliders[i].set_value_from_x(ctx.cursor_x as f32);
+                    self.commit_keep_slider(i);
+                    self.scene_dirty = true;
+                    ctx.window.request_redraw();
                 }
                 // Waveform scrub release = THE seek edge: play from the carried fraction (a release anywhere lands where the playhead was carried to — no timer, no debounce).
                 if let Some(s) = self.wave_scrub.take() {
@@ -3798,6 +3828,7 @@ impl FluorApp<Px> for PhotonApp {
             ctx.window.request_redraw();
         }
         self.drain_space();
+        self.drain_keep();
         // Bonds edits go out on the edge of leaving the page (molecules.rs).
         self.commit_bonds_if_left();
         // Every friend holds a bond beside its conversation (docs/conversations.md §7): split the missing ones on the edge the registry moved.
@@ -4313,6 +4344,10 @@ impl PhotonApp {
             }
             // A live textbox pan owns the gesture: the finger is carrying the TEXT, so the pane must not also scroll under it (Android's touch-drag synthesizes wheel events alongside the CursorMoved the pan rides).
             if self.pointer_down && self.drag_select_hit != HIT_NONE {
+                return EventResponse::Handled;
+            }
+            // So does a keep limit's slider: the finger carries the handle, not the page.
+            if self.keep_drag.is_some() {
                 return EventResponse::Handled;
             }
             // Rubber-band scrolling on every axis, every platform: past either end the step is asymptotically resisted (never further than `reach` past the bound), and `tick()` eases the overshoot back once the wheel stops. `reach` scales with the window so the give feels the same on a watch and an 8K panel.

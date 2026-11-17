@@ -50,6 +50,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [HDR stack](project_hdr_stack.md) — peak metric open · [New-device history walk](project_new_device_history_walk.md)
 - [Phonebook strict anchor](project_phonebook_strict_anchor.md) — FIXED · [Removal safety](project_device_removal_safety.md) — phases 2-3 BUILT
 - [Fleet holds everything](project_fleet_holds_everything.md) — DOCTRINE · [Scroll as memmove](project_scroll_memmove.md) — BUILT
+- [Retention limits](project_retention_winnow.md) — keep.rs per-kind age+size sliders BUILT 2026-11-17; photon trim needs a digest floor
 - [Ideas page](project_ideas_gripes.md) — BUILT 2026-10-28 · [Braid salt codec](project_braid_salt_codec.md) — CONVICTED
 - [Ceremony claim-first](project_ceremony_claim_first.md) — BUILT, OPEN bits · [Consent order deadlock](project_consent_order_deadlock.md) — FIXED 2026-10-29
 - [Notification tap](project_notification_tap_unwired.md) — BUILT · [Strip selection](project_strip_selection_model.md) — manual only

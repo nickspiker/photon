@@ -69,6 +69,7 @@ mod devices;
 mod holdings;
 mod alias;
 mod space;
+mod keep;
 mod ideas;
 mod octopus;
 mod driver;
@@ -1084,6 +1085,8 @@ pub(crate) enum VaultFilter {
     #[default]
     All,
     Waves,
+    /// A wave's kept beam video (its own kind on the Vault page's limits, keep.rs).
+    Beams,
     Pictures,
     Songs,
     Files,
@@ -2989,6 +2992,12 @@ pub struct PhotonApp {
     space_short: bool,
     space_sweep: Option<space::SpaceSweep>,
     space_evicted: crate::linear_map::SortedSet<[u8; 32]>,
+    /// WHAT THIS DEVICE KEEPS (keep.rs): the Vault page's six limit sliders (age, size per kind), the one under the finger, the limits as loaded, and the trim in flight (another edge during it runs one more).
+    keep_sliders: Vec<fluor::widgets::Slider>,
+    keep_drag: Option<usize>,
+    keep_limits: keep::KeepLimits,
+    keep_rx: Option<std::sync::mpsc::Receiver<Vec<keep::KeepRow>>>,
+    keep_again: bool,
     space_launch_checked: bool,
     /// Fetches aimed at one device first — a pull asks the leaver, who holds the only copy (attach_fetch ranks it ahead of everyone).
     attach_fetch_prefer: crate::linear_map::SortedMap<[u8; 32], [u8; 32]>,
@@ -3773,6 +3782,11 @@ impl PhotonApp {
             space_short: false,
             space_sweep: None,
             space_evicted: crate::linear_map::SortedSet::new(),
+            keep_sliders: Vec::new(),
+            keep_drag: None,
+            keep_limits: keep::KeepLimits::default(),
+            keep_rx: None,
+            keep_again: false,
             space_launch_checked: false,
             attach_fetch_prefer: crate::linear_map::SortedMap::new(),
             dialed_wave_ids: Default::default(),
@@ -4446,6 +4460,11 @@ impl PhotonApp {
                 SettingsPage::Octopus => {
                     if let Some(tb) = self.octopus_search_textbox.as_mut() {
                         f(tb);
+                    }
+                }
+                SettingsPage::Vault => {
+                    for sl in self.keep_sliders.iter_mut() {
+                        f(sl);
                     }
                 }
                 SettingsPage::Diagnostics => {

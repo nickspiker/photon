@@ -753,6 +753,8 @@ impl PhotonApp {
         // Our party id, asked before the chrome borrow for the same reason.
         let own_pid = self.own_party_id();
         let messenger_root = self.messenger_root();
+        // The Vault page's limits switch (keep.rs), asked before the chrome borrow likewise.
+        let keep_follows = self.keep_follows_fleet();
         let Some(chrome) = self.chrome.as_mut() else {
             return;
         };
@@ -6772,17 +6774,20 @@ impl PhotonApp {
                     // WHAT HOLDS THE SPACE (Nick 2026-09-14): per-conversation totals for the active filter, largest first — a row-record walk, no disk. The active pill wears the found-green fill; the sizes ride dms_size like everything above.
                     flow.gap(hspan2 * 0.6);
                     flow.line(&mut canvas, ctx.text, &tr(Msg::VaultSpaceHead), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
+                    // Each pill's slot as driver.rs dispatches it: beams came later (slot 7) and draws beside waves.
                     let fvals = [
-                        super::VaultFilter::All,
-                        super::VaultFilter::Waves,
-                        super::VaultFilter::Pictures,
-                        super::VaultFilter::Songs,
-                        super::VaultFilter::Files,
-                        super::VaultFilter::Kept,
+                        (super::VaultFilter::All, 1),
+                        (super::VaultFilter::Waves, 2),
+                        (super::VaultFilter::Beams, 7),
+                        (super::VaultFilter::Pictures, 3),
+                        (super::VaultFilter::Songs, 4),
+                        (super::VaultFilter::Files, 5),
+                        (super::VaultFilter::Kept, 6),
                     ];
-                    let labels: [String; 6] = [
+                    let labels: [String; 7] = [
                         tr(Msg::VaultFilterAll).into_owned(),
                         tr(Msg::VaultFilterWaves).into_owned(),
+                        tr(Msg::VaultFilterBeams).into_owned(),
                         tr(Msg::VaultFilterPictures).into_owned(),
                         tr(Msg::VaultFilterSongs).into_owned(),
                         tr(Msg::VaultFilterFiles).into_owned(),
@@ -6792,8 +6797,7 @@ impl PhotonApp {
                     let pills: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = fvals
                         .iter()
                         .zip(labels.iter())
-                        .enumerate()
-                        .map(|(i, (f, l))| (l.as_str(), (btn_base + 1 + i as u16), true, (self.vault_filter == *f).then_some(active_fill)))
+                        .map(|((f, slot), l)| (l.as_str(), (btn_base + *slot), true, (self.vault_filter == *f).then_some(active_fill)))
                         .collect();
                     flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.8, &pills, "Open Sans");
                     match self.vault_breakdown.as_ref() {
@@ -6812,6 +6816,41 @@ impl PhotonApp {
                     flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
                         (&tr(Msg::VaultRefresh), (btn_base + 0), true, None),
                     ], "Open Sans");
+                    // WHAT THIS DEVICE KEEPS (keep.rs, Nick 2026-11-17): this device's limits or the fleet's, then an age and a size slider per kind, each labelled from where its handle sits now (so the label follows a drag before the release writes it).
+                    flow.gap(hspan2 * 0.8);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::KeepHead), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.prose(&mut canvas, ctx.text, &tr(Msg::KeepIntro), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                    flow.gap(hspan2 * 0.3);
+                    let follows = keep_follows;
+                    flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.85, &[
+                        (&tr(Msg::BeamThisDevice), (btn_base + 8), true, (!follows).then_some(active_fill)),
+                        (&tr(Msg::BeamFollowFleet), (btn_base + 9), true, follows.then_some(active_fill)),
+                    ], "Open Sans");
+                    for (k, kind) in super::keep::KeepKind::ALL.iter().enumerate() {
+                        flow.gap(hspan2 * 0.5);
+                        let head = match kind {
+                            super::keep::KeepKind::Wave => tr(Msg::KeepWaves),
+                            super::keep::KeepKind::Beam => tr(Msg::KeepBeams),
+                            super::keep::KeepKind::Pigeon => tr(Msg::KeepPigeons),
+                        };
+                        flow.line(&mut canvas, ctx.text, &head, hspan2 * 0.95, *theme::CONTACT_NAME_COLOUR, 600);
+                        for (j, age) in [true, false].into_iter().enumerate() {
+                            let i = k * 2 + j;
+                            let v = self.keep_sliders[i].value();
+                            let line = match (age, super::keep::limit_from_slider(age, v)) {
+                                (true, Some(osc)) => tr(Msg::KeepAge(&super::keep::age_label(osc))).into_owned(),
+                                (true, None) => tr(Msg::KeepAgeForever).into_owned(),
+                                (false, Some(n)) => tr(Msg::KeepSize(&format!("{} ({})", crate::dms_size(n), crate::byte_count(n)))).into_owned(),
+                                (false, None) => tr(Msg::KeepSizeAny).into_owned(),
+                            };
+                            flow.line(&mut canvas, ctx.text, &line, hspan2 * 0.85, *theme::LABEL_COLOUR, 400);
+                            let band = flow.band(hspan2 * 1.4);
+                            let sl = &mut self.keep_sliders[i];
+                            sl.set_rect(band.center_x(), band.center_y(), band.w * 0.9, hspan2 * 0.8);
+                            let id = sl.hit_id();
+                            sl.render_content_into(&mut canvas, Some(&mut chrome.hit_test_map), id);
+                        }
+                    }
                     flow.gap(hspan2);
                     measured_extent = Some((flow.used(), inset.h));
                 }

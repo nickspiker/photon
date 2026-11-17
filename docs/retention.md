@@ -51,3 +51,15 @@ Per-conversation totals, largest first, filters everything / waves / pictures / 
 - **Eviction** (the category horizons above) compares `last_wanted` against the device's window, drops the BYTES only, and leaves the photon's pointer; the file re-fetches by hash from any holder. Re-sending a file is how a person keeps it alive everywhere.
 - **The timeline** shows "here since …" beside "on this device" in the file's details.
 
+
+## The limits, built 2026-11-17 (keep.rs)
+
+Nick 2026-11-17, superseding the 2026-10-21 "free-space floor only" call: *"would be nice to have the sliders for audio, video, pigeons and photons adjustable... I really don't need to keep record of every single frame of a beam I made from 6 months ago."*
+
+- **Limits.** Waves (their sound), beams (their video) and pigeons (files and pictures) each have an age limit and a total-size limit; whichever trims more wins. The Vault page draws six sliders, continuous in doublings (age: a day to about eleven years; size: 64 MiB to 1 TiB), the right end of each being no limit. Keys `keep.<kind>.age` (oscillations) and `keep.<kind>.size` (bytes), absent or `u0(false)` = no limit. A slider writes on release.
+- **Whose limits.** This device's own, or the fleet's when it follows the fleet (the Beam page's "This device only" / "Follow my fleet" switch over the same per-key link). Either way the device trims to them without asking a sibling for a second copy: following the fleet means the fleet's limit is the limit everywhere that follows it, and a device kept independent (a desktop archive set to keep everything) is the owner's call.
+- **What goes.** Only the bytes, oldest first, never a starred (★ kept) row, never a wave's envelope. The photon, its preview and its waveform stay. Blob bytes never enter key material (the braid weaves a row's pointer), so a trim leaves every braid intact. A trimmed hash joins `space.evicted`: automatic fetches skip it, and they skip anything past this device's age limit; a deliberate Play or Save fetches it again from any holder.
+- **Edges.** Session up, a limit changed (here or arriving from the fleet), a recording kept, any bytes landing. The choice runs on a worker that probes what is held here, so sizes count only what this device actually holds.
+- **Ages** count from the row's time; the receipt record above is still unbuilt.
+
+**Photons are not trimmed yet.** The weave reaches back into rows: a sender weaves two of the peer's newest 256 non-control rows, and the receiver resolves each woven time across all its rows, holding the frame and walking history if one is missing. So a device must keep at least the newest rows each peer may still weave against, which while a peer is offline can be more than 256. The larger obstacle is convergence: the anti-entropy digest and the settled root hash every non-deleted row, so a row pruned on one device is re-served to it by its siblings and the history sweep. Trimming photons needs a per-conversation "pruned below T" floor that the digest, the merge, the backfill server and the sibling sync all respect, with a floor of kept rows above the weave window. Designed when built.

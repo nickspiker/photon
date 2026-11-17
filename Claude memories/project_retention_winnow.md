@@ -1,6 +1,6 @@
 ---
 name: project_retention_winnow
-description: "Retention SETTLED 2026-09-14 (docs/retention.md): the WINNOW waits for device-sync; first rungs shipped (sync law, keep, loft v1, Vault breakdown); eviction keys on RECEIPT (2026-10-07)"
+description: "Retention: docs/retention.md; the WINNOW = per-kind age+size sliders (keep.rs, BUILT 2026-11-17 for waves/beams/pigeons, follow-fleet or this-device); photon row trim blocked on a digest floor; free-space floor in space.rs"
 metadata:
   type: project
 ---
@@ -18,3 +18,5 @@ Shipped 2026-09-14:
 
 **2026-10-21 DECIDED (Nick): retention is PER DEVICE, budget = "a reasonable amount of current free space"** — no per-category size numbers; a free-space floor per device, eviction at the write edge (oldest by arrival, unstarred; beams, then waves). Recorded in TICKETS.md retention entry. Beam video recording waits for this (see [[project_beams]]).
 **2026-10-21 BUILT v1 (space.rs):** floor = disk_free + 2×vault dead space ≥ volume/8 (vault grows by doubling, never shrinks, mirrored ×2). Edges: session up, recording kept, recording landed. Below floor: recordings stop replicating in (`recording_wanted`), and oldest unstarred recordings are evicted ONLY after a sibling answers a holdings Ask saying it holds them (reuses holdings.rs frames; `space_answer` routed before `holdings_answer`). Evicted hashes → device-local `space.evicted` (hR); any `attach_fetch` (deliberate) un-evicts. Single device / no sibling online → keeps everything. Beams join when beam recording exists.
+
+**2026-11-17 SUPERSEDED the "no per-category size numbers" call (Nick):** sliders per kind, an age AND a size limit each, whichever trims more. "Follow my fleet" (checked) = the fleet's limits, past them gone, no sibling copy check; "This device only" = its own limits (a desktop archive at 1 TB is the owner's call). BUILT for waves/beams/pigeons in keep.rs (bytes only; rows, previews, envelopes stay; ★ exempt; trimmed hashes join space.evicted). Photon rows NOT trimmed: the weave resolves woven rows by time with no window and the digest/settled root hash every row, so pruning needs a per-conversation floor the digest, merge, backfill and sibling sync respect (docs/retention.md "The limits"). Nick's guess "minimum 1024 kept" is about the weave; convergence is the real blocker.

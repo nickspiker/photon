@@ -800,8 +800,8 @@ impl PhotonApp {
                         .iter()
                         .filter(|m| !m.deleted)
                         .flat_map(|m| {
-                            // A recording also waits while the disk is below its floor, and never returns once evicted here (space.rs).
-                            let original = m.file.as_ref().filter(|f| !metered && (!m.is_wave_recording() || self.recording_wanted(&f.addr()))).map(|f| f.addr());
+                            // A recording also waits while the disk is below its floor, and never returns once evicted here (space.rs); no kind is fetched past this device's age limit or once trimmed here (keep.rs).
+                            let original = m.file.as_ref().filter(|f| !metered && self.keep_wants(m) && (!m.is_wave_recording() || self.recording_wanted(&f.addr()))).map(|f| f.addr());
                             let head = m.file.as_ref().and_then(|f| f.head);
                             original.into_iter().chain(head)
                         })
@@ -1100,6 +1100,8 @@ impl PhotonApp {
             if self.conversations.iter().flat_map(|c| c.messages.iter()).any(|m| m.is_wave_recording() && m.file.as_ref().is_some_and(|f| f.addr() == r.content_hash)) {
                 self.space_check("a recording landed");
             }
+            // Any held kind landing may put its kind over a size limit (keep.rs).
+            self.keep_trim("bytes landed");
             if let (Some(kp), Some(checker)) =
                 (self.device_keypair.as_ref(), self.status_checker.as_ref())
             {

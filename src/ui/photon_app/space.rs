@@ -96,6 +96,7 @@ impl PhotonApp {
         if !self.space_launch_checked && self.session.is_some() && self.fleet_settings.is_some() {
             self.space_launch_checked = true;
             self.space_check("session up");
+            self.keep_trim("session up");
         }
         let landed = match self.space_rx.as_ref().map(|rx| rx.try_recv()) {
             Some(Ok(r)) => Some(r),
@@ -233,7 +234,7 @@ impl PhotonApp {
         }
     }
 
-    fn persist_space_evicted(&mut self) {
+    pub(super) fn persist_space_evicted(&mut self) {
         if !self.ensure_fleet_settings() {
             return;
         }
