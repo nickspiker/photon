@@ -131,6 +131,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [relay pipe](project_nat_traversal_relay_gap.md) · [roster clobber](project_wiped_device_roster_clobber.md) · [FGTW key desync](project_fgtw_key_desync.md) · [glow](project_contacts_glow_damage.md) · [two-machine git](project_two_machine_git_divergence.md)
 
 ## References
+- [fluor test features](reference_fluor_test_features.md) — cargo test --features rayon,icon or chrome + golden_chrome never run
 - [log pull](reference_log_pull.md) — photonlog --pull; pull to a file first · [desktop trails spirix](project_desktop_trails_spirix.md) · [MacBook trails remote](macbook-trails-remote.md)
 - [not fmt-clean](photon-not-fmt-clean.md) · [VSF primary section](reference_vsf_primary_section.md) · [ihi primitives](reference_ihi_primitives.md) · [claude unguard](reference_claude_unguard.md)
 - [aarch64 cross libs](reference_aarch64_cross_libs.md) · [Windows arm64 toolchain](reference_windows_arm64_toolchain.md) · [mingw features shim](reference_mingw_features_shim.md)
