@@ -2034,6 +2034,11 @@ impl PhotonApp {
                                 continue;
                             }
                         };
+                    // Photon on the alias alone runs no friend ceremony (the keygen pick's gate, conversation.rs): a friend's offer waits for the friend CLUTCH on the alias.
+                    if self.session.is_none() && !self.contacts[matched_ci].is_sibling {
+                        crate::logf!("CLUTCH: offer from friend {} — no friend ceremony on the alias alone yet, dropped", crate::fp(&their_handle_hash));
+                        continue;
+                    }
 
                     crate::logf!(
                         "CLUTCH: Received full offer (VSF verified) from {} tok={}...",
@@ -2734,6 +2739,11 @@ impl PhotonApp {
                                 continue;
                             }
                         };
+                    // Photon on the alias alone runs no friend ceremony (the keygen pick's gate, conversation.rs): a friend's answer to an offer sent before that gate is dropped.
+                    if self.session.is_none() && self.contacts.iter().any(|c| c.handle_hash == their_handle_hash && !c.is_sibling) {
+                        crate::logf!("CLUTCH: KEM response from friend {} — no friend ceremony on the alias alone yet, dropped", crate::fp(&their_handle_hash));
+                        continue;
+                    }
 
                     crate::logf!(
                         "CLUTCH: Received KEM response (VSF verified) from {} tok={}...",

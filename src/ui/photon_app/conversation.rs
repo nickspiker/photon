@@ -954,6 +954,8 @@ impl PhotonApp {
                 && c.clutch_state == crate::types::ClutchState::Pending
                 // THE CONSENT GATE, here too (Jeff's log 2026-10-01): this queue picked a Pending friend thirty-five milliseconds after the add and the keygen result sent the full 548 KB offer, before anyone had added us back — the gate at the wire only guards the pong-driven re-send. A friend's keygen waits for mutuality (their knock, or their offer as evidence); a sibling needs no consent.
                 && (c.is_sibling || c.consent_mutual)
+                // NO FRIEND CEREMONY WITHOUT A SESSION (ferros Pro 2026-11-17: a keygen and a 560 KB offer to every friend in the roster it was handed, McEliece on the UI's cores the whole time): Photon on the alias alone holds its friends' lanes thru its siblings until the friend CLUTCH on the alias lands (PHOTON.md group 0); its siblings still weave.
+                && (c.is_sibling || self.session.is_some())
                 && c.clutch_our_keypairs.is_none()
                 && !c.clutch_keygen_in_progress
                 && !c.locked_out
