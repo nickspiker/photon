@@ -6736,11 +6736,13 @@ impl PhotonApp {
                             // manifestus invariants, read in one librarian call: the plow never trails the reap, and live blocks are a subset of the occupied ones.
                             let occupied_blocks = v.engine.plow - v.engine.reap;
                             let dead_blocks = occupied_blocks - v.engine.live_blocks;
-                            let cap = crate::dms_size(v.engine.tract_blocks * bb);
-                            let odo = crate::dms_size(v.engine.plow * bb);
-                            let now = crate::dms_size(occupied_blocks * bb);
-                            let live = crate::dms_size(v.engine.live_blocks * bb);
-                            let dead = crate::dms_size(dead_blocks * bb);
+                            // Each size as its doubling count and its exact byte count (Nick 2026-11-17: "doesn't show sizes in bytecounts").
+                            let sized = |n: u64| format!("{} ({})", crate::dms_size(n), crate::byte_count(n));
+                            let cap = sized(v.engine.tract_blocks * bb);
+                            let odo = sized(v.engine.plow * bb);
+                            let now = sized(occupied_blocks * bb);
+                            let live = sized(v.engine.live_blocks * bb);
+                            let dead = sized(dead_blocks * bb);
                             let entries = crate::fmt_num64(v.engine.live_entries);
                             let commits = crate::fmt_num64(v.engine.generation);
                             for line in [
@@ -6797,7 +6799,7 @@ impl PhotonApp {
                     match self.vault_breakdown.as_ref() {
                         Some(rows) if !rows.is_empty() => {
                             for (name, bytes, count) in rows {
-                                let size = crate::dms_size(*bytes);
+                                let size = format!("{} ({})", crate::dms_size(*bytes), crate::byte_count(*bytes));
                                 let n = crate::fmt_num64(*count);
                                 flow.line(&mut canvas, ctx.text, &tr(Msg::VaultConvLine { size: &size, name, count: &n }), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
                             }

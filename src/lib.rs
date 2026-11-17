@@ -360,6 +360,21 @@ pub fn dms_ui() -> bool {
 }
 
 /// HEX is LINEAR (Nick 2026-09-10: "for coders"): ages are the plain seconds count in hex (a minute 3C, an hour E10), sizes the plain BIT count in hex (a megabyte 800000). Dozenal keeps the logarithmic DMS below.
+/// An exact BYTE COUNT in the current base, its digits grouped from the right by narrow no-break spaces (threes, fours in hex) and the byte's symbol after (Nick 2026-11-17: the Vault page showed doublings, not bytes).
+pub fn byte_count(n: u64) -> String {
+    let digits: Vec<char> = fmt_num64(n).chars().collect();
+    let group = if num_base() == NumBase::Hex { 4 } else { 3 };
+    let mut out = String::new();
+    for (i, c) in digits.iter().enumerate() {
+        if i > 0 && (digits.len() - i) % group == 0 {
+            out.push('\u{202F}');
+        }
+        out.push(*c);
+    }
+    out.push_str("\u{00A0}B");
+    out
+}
+
 pub fn hex_linear(n: u64) -> String {
     format!("{n:X}")
 }
