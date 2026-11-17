@@ -3151,10 +3151,12 @@ impl PhotonApp {
                 }
 
                 // LAN peer discovered via broadcast (NAT hairpinning workaround)
-                // A sibling of ours answered from this LAN address while its row holds none (the pong could not be matched: a ferros Photon behind its identity service's address answers pings meant for that service). The address is a candidate, pinged now; only a matched pong ever validates it.
+                // A sibling of ours answered from this LAN address while its row holds no proven path (the pong could not be matched: a ferros Photon behind its identity service's address answers pings meant for that service). The address is a candidate, pinged now; only a matched pong ever validates it.
                 StatusUpdate::SiblingHeardAt { device, addr } => {
-                    if let Some(idx) = self.contacts.iter().position(|c| c.is_sibling && c.device_key() == Some(device) && c.validated_path.is_none() && c.local_ip.is_none() && c.p2p_addr.is_none()) {
-                        if let std::net::SocketAddr::V4(v4) = addr {
+                    // An address held but never proven (an older beacon's: the Pro moved .208, .164, .181 across reboots, 2026-11-17) gives way to where the sibling answers now; a proven path is never overwritten.
+                    if let (Some(idx), std::net::SocketAddr::V4(v4)) = (self.contacts.iter().position(|c| c.is_sibling && c.device_key() == Some(device) && c.validated_path.is_none() && c.p2p_addr.is_none()), addr) {
+                        // Only a move is news: the same unproven address again is already being pinged.
+                        if (self.contacts[idx].local_ip, self.contacts[idx].local_port) != (Some(*v4.ip()), Some(v4.port())) {
                             self.contacts[idx].local_ip = Some(*v4.ip());
                             self.contacts[idx].local_port = Some(v4.port());
                             if !lan_ping_indices.contains(&idx) {
