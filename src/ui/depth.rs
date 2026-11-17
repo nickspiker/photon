@@ -78,9 +78,22 @@ impl Depth for G2t16 {
     fn mark_disc(salt: &[u8; 32], diam: usize) -> Option<Vec<Self>> {
         let mut px = vec![Self::EMPTY; diam * diam];
         let r = diam as f32 * 0.5;
-        tapuwae::render_disc_g2t16(&mut px, diam, r, r, r, &tapuwae::Params::new(salt, ""), &tapuwae::Look::default());
+        tapuwae::render_disc_g2t16(&mut px, diam, r, r, r, &mark_params(salt), &tapuwae::Look::default());
         Some(px)
     }
+}
+
+/// The marks' pictures already worked out, one per salt: a contact, a group or this build's orb.
+static MARK_PARAMS: std::sync::Mutex<Vec<([u8; 32], tapuwae::Params)>> = std::sync::Mutex::new(Vec::new());
+
+/// A salt's tapuwae picture, worked out once (`Params::new` places and lights the set from the salt, about 1.5 ms, and every re-render at a new size asked again: a pinch step re-rendered every mark on screen; ferros coordinator 2026-11-17). A linear search: there are as many entries as identities shown.
+pub fn mark_params(salt: &[u8; 32]) -> tapuwae::Params {
+    if let Some((_, p)) = MARK_PARAMS.lock().unwrap().iter().find(|(s, _)| s == salt) {
+        return *p;
+    }
+    let p = tapuwae::Params::new(salt, "");
+    MARK_PARAMS.lock().unwrap().push((*salt, p));
+    p
 }
 
 /// A premultiplied `sw × sh` picture (a fluor layer: built by `under` from empty, or a disc packed premultiplied) under what is on `canvas`, its top-left at (`ox`, `oy`), within `clip`.

@@ -4071,7 +4071,7 @@ impl PhotonApp {
 fn tapuwae_pixels(salt: &[u8; 32], diam: usize) -> Vec<u32> {
     let mut px = vec![0u32; diam * diam];
     let r = diam as f32 * 0.5;
-    tapuwae::render_disc(&mut px, diam, r, r, r, &tapuwae::Params::new(salt, ""), &tapuwae::Look::default());
+    tapuwae::render_disc(&mut px, diam, r, r, r, &crate::ui::depth::mark_params(salt), &tapuwae::Look::default());
     px
 }
 
