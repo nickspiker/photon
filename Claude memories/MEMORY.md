@@ -7,7 +7,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [one build per check](feedback-one-build-per-check.md) — capture once to scratchpad, grep the capture
 - [test discipline](feedback_test_discipline.md) — ONE full cargo test per batch; never --lib alone
 - [render never touches vault](feedback_render_never_touches_vault.md) — HARD: UI thread makes no vault call
-- [no reload mid-ceremony](feedback_reload_mid_ceremony.md) — HARD: never dev.sh/deploy mid-CLUTCH or mid-WAVE; check the log
+- [reload timing](feedback_reload_mid_ceremony.md) — default: reload when no round is progressing and no wave is live; a stuck round may be dropped (owner 2026-11-17, not a hard rule)
 - [commit trailer](commit-trailer-built-with.md) — "Built with Claude <model>"; never Co-Authored-By
 - [quote commit ids](feedback_quote_commit_ids.md) — copy ids from git output in the same turn; never type one from memory
 - [Nick publishes](nick-publishes.md) — Nick initiates; when asked, deploy.sh + RELEASE_NOTES.md

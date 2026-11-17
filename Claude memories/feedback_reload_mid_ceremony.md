@@ -1,15 +1,11 @@
 ---
 name: feedback_reload_mid_ceremony
-description: "HARD RULE: never reload the desktop (dev.sh / deploy.sh) mid-CLUTCH (era split + lane fork, 2026-09-10) OR mid-WAVE (kills the wave, 2026-10-28); check the log for both before every reload"
+description: "Default, not a hard rule: prefer to reload the desktop when no CLUTCH round is progressing and no WAVE is live; a STUCK round may be dropped by a restart or update (owner 2026-11-17)"
 metadata:
   type: feedback
 ---
+**Owner correction 2026-11-17** (via the ferros session): "Never had a don't interrupt handshake rule ... it is beneficial in most cases to wait until that's complete to do, say a restart or update but if it's stuck then that's kinda the point." So: waiting is the sensible default for a round that is PROGRESSING, never a hard rule, and a stuck round is exactly what a restart or update may drop.
 
-A desktop reload while the desktop is mid-CLUTCH with a friend (offer / KEM / completion, ~2 quiet minutes after a boot: 35 s owner election, then the round) loses OUR side's completion while the peer completes and moves era. Result 2026-09-10: Emma on the new era, the desktop never persisted it, her copy of Nick's lane decrypted to garbage at pos 2 ("LANE FORK (single-writer!)"), every later row buffered "ahead of us", a message stuck for hours. My rebuild cadence (a dev.sh per fix, each reloading the desktop) caused two such splits in one afternoon (15:42:47, 15:49:22).
+What waiting protects, from the field: a desktop reload while a friend's round was mid-completion lost OUR side's completion while the peer completed and moved era (2026-09-10, Emma: a lane fork, rows buffered "ahead of us" for hours); and a reload during a live wave killed the wave (2026-10-28).
 
-**Why:** the desktop is the fleet's ceremony owner; a completion that never persists cannot be replayed, and the peer keeps the era she minted.
-**How to apply:** before ANY dev.sh / deploy.sh reload, check the desktop log for a round in flight (`CLUTCH: Sent offer / Received KEM / Awaiting proof` without a following `secret minted with friend`) and wait; batch fixes so reloads are rare; cargo check for compile checks; coordinate with any sibling session repairing eras. See [[project_clutch_completion_rebroadcast]].
-
-**Also a live WAVE (2026-10-28):** dev.sh at 20:41:44 UTC swapped the binary three minutes into Nick's wave with a friend on cellular — the wave died and the next process recovered the orphaned spool ("the crash interrupted its keep"). I had checked CLUTCH only. Before any reload also check the desktop log's last minute for `WAVE: trace #` / `WAVE: link —` lines (a wave in progress) and wait for `WAVE: hangup_wave` (or the trace lines stopping) or ask Nick.
-
-**Slip 2026-11-08 22:35 (mine):** I ran the log check and dev.sh in ONE command, so the reload went ahead although the check printed a live round ("Received KEM response" 22:32, friend 8d2d1b2b's weave accepted, parked with a doorbell ring at 22:34). The check is worthless if nothing acts on it: run it as its OWN step, read it, and only then reload in a separate call — or make the command exit non-zero when the check prints anything. After the fact, watch that friend's round for completion vs an era split.
+**How to apply:** before a dev.sh / deploy.sh reload, read the desktop log in its OWN step (a check run in the same command as the reload acts on nothing): if a round is moving (offer, KEM and proof lines within the last minute or two) or a wave is live (`WAVE: trace #` / `WAVE: link —` lines), wait for it to finish; if a round is stuck (parked, "reached NOBODY", or no progress for minutes), reload. Batch fixes so reloads are rare. See [[project_clutch_completion_rebroadcast]].
