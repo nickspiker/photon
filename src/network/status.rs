@@ -760,6 +760,8 @@ pub enum StatusUpdate {
         payload: crate::crypto::clutch::ClutchCompletePayload,
         sender_addr: SocketAddr,
     },
+    /// A sibling device of ours answered (a pong we could not match to a ping of ours) from this LAN address: a candidate address for a sibling row that holds none, pinged there; a matched pong validates it.
+    SiblingHeardAt { device: [u8; 32], addr: SocketAddr },
     /// LAN peer discovered via broadcast (NAT hairpinning workaround)
     LanPeerDiscovered {
         /// The beaconing DEVICE (the frame's `ke` field) — present on every current beacon; None only for pre-ke frames. This is what lets an own-handle beacon mean something: it names WHICH device of the fleet (or which joining candidate) is on this LAN.
@@ -3763,6 +3765,11 @@ async fn run_checker(
                                                 // The name and avatar pin ride the salvage too (2026-11-10): an announce pong is how a profile change reaches a friend now rather than at its next ping, and the tail is sealed to this device pair and stamp-bounded above.
                                                 let (salvaged, about, fleet_tip, braid, salvaged_name, salvaged_pin, salvaged_profile) = salvaged;
                                                 crate::logf!("Status: unmatched pong from {} ({}) — liveness + {} sync record(s) (late/twin/announce; no addr adoption)", crate::fp(responder_pubkey.as_bytes()), src_addr, salvaged.len());
+                                                // A sibling of ours that answers on this LAN with no address held for it (a ferros Photon behind the identity service's address, 2026-11-17): its source is a candidate the UI pings there, and only a matched pong ever validates it.
+                                                let heard = udp::canon_socketaddr(src_addr);
+                                                if is_sibling_device(responder_pubkey.as_bytes()) && crate::network::traverse::is_lan_scope(&heard) {
+                                                    send_status_update(&status_tx_recv, StatusUpdate::SiblingHeardAt { device: *responder_pubkey.as_bytes(), addr: heard }, &event_proxy_recv);
+                                                }
                                                 send_status_update(
                                                     &status_tx_recv,
                                                     StatusUpdate::Online {
@@ -3833,6 +3840,12 @@ async fn run_checker(
                                                 &event_proxy_recv,
                                             );
                                             crate::logf!("Status: pong answered by {} but we pinged {} — responder counted alive + {} sync record(s), ping re-armed for its recipient", crate::fp(responder_pubkey.as_bytes()), crate::fp(pending_ping.recipient_pubkey.as_bytes()), salvaged.len());
+                                            {
+                                                let heard = udp::canon_socketaddr(src_addr);
+                                                if is_sibling_device(responder_pubkey.as_bytes()) && crate::network::traverse::is_lan_scope(&heard) {
+                                                    send_status_update(&status_tx_recv, StatusUpdate::SiblingHeardAt { device: *responder_pubkey.as_bytes(), addr: heard }, &event_proxy_recv);
+                                                }
+                                            }
                                             send_status_update(
                                                 &status_tx_recv,
                                                 StatusUpdate::Online {
