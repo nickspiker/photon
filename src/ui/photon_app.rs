@@ -4140,7 +4140,7 @@ fn gradient_avatar_rgb(seed: u64, diam: usize) -> Vec<u8> {
 /// Marks draw quick this frame: the zoom moved since the last one (a pinch or Ctrl+wheel step), so each mark is its base raster resampled ([`MARK_BASE_STORE`]); the frame after the gesture settles draws them properly. Set by `render_frame`.
 pub(crate) static MARKS_QUICK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-/// Each mark's base raster for the quick frames, by (seed, side), padded by one empty column and row ([`crate::ui::depth::resample_padded`]): the side is the mark's size rounded up to a power of two, at least 2⁸.
+/// Each mark's base raster for the quick frames, by (seed, side), padded by one empty column and row ([`crate::ui::depth::resample_padded`]): one side, 2⁸, for every size.
 static MARK_BASE_STORE: std::sync::Mutex<Vec<((u64, usize), std::sync::Arc<Vec<Px>>)>> = std::sync::Mutex::new(Vec::new());
 
 /// The default avatar's mark drawn straight at Photon's depth, by (seed, diameter), newest last: the [`AVATAR_CACHE_STORE`] of a depth that takes the mark directly ([`Depth::mark_disc`]).
@@ -4156,7 +4156,8 @@ fn draw_gradient_avatar(canvas: &mut Canvas, cx: f32, cy: f32, r: f32, seed: u64
     }
     // WHILE THE ZOOM MOVES (the owner 2026-11-17: "we can do a shit bilinear or nearest of the 256x256 or something of the sort, then once it's the right size it does a proper render"): one base raster per mark, resampled to this frame's size; the settled frame renders it properly below. A disc under two pixels is cheap to render and has no span to resample across.
     if MARKS_QUICK.load(std::sync::atomic::Ordering::Relaxed) && gd >= 2 {
-        let base = gd.next_power_of_two().max(1 << 8);
+        // One side for every size the gesture passes thru, so a pinch never renders a base mid-gesture (the owner: "the 256x256"); larger marks are resampled up until the settled frame.
+        let base = 1 << 8;
         let cached = MARK_BASE_STORE.lock().unwrap().iter().find(|(k, _)| *k == (seed, base)).map(|(_, d)| d.clone());
         let padded = match cached {
             Some(d) => Some(d),

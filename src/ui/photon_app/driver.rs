@@ -4115,7 +4115,8 @@ impl FluorApp<Px> for PhotonApp {
         self.render_frame(target, ctx);
         // RE-RESOLVE HOVER against the map this frame just stamped (Nick 2026-10-24: after a page change no button lit or answered until the mouse moved — hover only re-walked on motion, so the new page's widgets never learned the pointer sat on them).
         // The forced walk is idempotent; only a moved id asks for another frame, so a still pointer settles after one.
-        #[cfg(not(target_os = "android"))]
+        // Touch screens have no hover (Android, ferros): a lifted finger leaves its last point behind, and re-walking it after every frame flipped a row's hover as the list changed under it, a whole frame each time (ferros Pro 2026-11-17: pairs of "a hover change" every few seconds at rest).
+        #[cfg(not(any(target_os = "android", target_os = "ferros")))]
         if self.cursor_in_window {
             let hit = self.chrome.as_ref().map(|c| c.hit_at(ctx.cursor_x, ctx.cursor_y)).unwrap_or(HIT_NONE);
             let chrome_moved = self.chrome.as_mut().is_some_and(|c| c.set_hover(hit));
