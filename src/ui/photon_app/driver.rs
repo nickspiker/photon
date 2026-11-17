@@ -3962,6 +3962,7 @@ impl FluorApp<Px> for PhotonApp {
                 self.tick_stat_dirty = 0;
                 self.redraw_why.clear();
                 self.whole_frames_logged = 0;
+                self.hint_refusals_logged = 0;
                 self.tick_stat_at = Some(now);
             }
         }
@@ -4066,6 +4067,10 @@ impl FluorApp<Px> for PhotonApp {
                     screen, from, self.dirty_blame_line, asks
                 );
             }
+            if !self.scene_dirty && self.whole_frames_logged < 4 && crate::is_dev_build() {
+                self.whole_frames_logged += 1;
+                crate::log("RENDER: whole frame for the chord hint (held or just released)");
+            }
             let mut combined = PixelRect::new(0, 0, vw, vh);
             if chord {
                 combined = combined.union(chord_hint_bbox(viewport, vw, vh));
@@ -4074,16 +4079,26 @@ impl FluorApp<Px> for PhotonApp {
         }
         // Pure widget frame (blinkey flip, drag-select growth): union each active widget's self-reported damage. This walks the SAME `visit_app_widgets` registry as dispatch/hover/render, so the gate AUTOMATICALLY mirrors what's drawn — a new textbox's blinkey/selection damage is claimed with zero hand-list (the recurring "new box's blinkie stacks / forces full-screen redraws" bug). `None` = nothing changed, host skips the render entirely.
         let mut combined: Option<PixelRect> = None;
+        // Who named what, for the idle whole-frame log below (the chrome as id 0).
+        let mut named: Vec<(HitId, PixelRect)> = Vec::new();
         if let Some(chrome) = self.chrome.as_ref() {
             if let Some(r) = chrome.damage_rect() {
                 combined = Some(combined.map_or(r, |c| c.union(r)));
+                named.push((0, r));
             }
         }
         self.visit_app_widgets(&mut |w| {
             if let Some(r) = w.damage_rect(vw, vh) {
                 combined = Some(combined.map_or(r, |c| c.union(r)));
+                named.push((w.id(), r));
             }
         });
+        // The idle whole-frame hunt: a frame the widgets and the chrome made whole, with each one's rect (ferros Pro 2026-11-17: whole frames at rest with no scene_dirty).
+        if combined.is_some_and(|c| c.width() * c.height() >= vw * vh / 2) && self.whole_frames_logged < 4 && crate::is_dev_build() {
+            self.whole_frames_logged += 1;
+            let list: Vec<String> = named.iter().map(|(id, r)| format!("{} {}x{} at {},{}", if *id == 0 { "chrome".to_string() } else { format!("widget {}", id) }, r.width(), r.height(), r.x0, r.y0)).collect();
+            crate::logf!("RENDER: half the frame or more from widget damage on {} — {}", format!("{:?}", self.state), list.join("; "));
+        }
         combined
     }
 
