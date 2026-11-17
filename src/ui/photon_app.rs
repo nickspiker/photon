@@ -3815,7 +3815,8 @@ impl PhotonApp {
     /// Hand in the person as the messenger knows them (ferros's std/photon, PHOTON.md step 4): the alias, the handle proof, the pinned identity key and the binding. Before `init`, or later, when the identity service answers.
     /// The binding is taken only when it names this alias and this handle proof; one that does not is refused loudly, and on ferros Photon keeps waiting for its identity.
     pub fn set_photon_keys(&mut self, keys: crate::crypto::photon_keys::PhotonKeys) {
-        let alias = fgtw::alias::bundle(&keys.alias).public().ed25519();
+        // The Ed25519 half alone: the whole bundle is a Falcon and a SPHINCS+ keygen, about 380 ms at start on ferros.
+        let alias = fgtw::alias::ed25519_public(&keys.alias);
         match fgtw::binding::Binding::from_vsf_bytes(&keys.binding) {
             Ok(b) if b.alias_key() == alias && b.handle_proof == keys.handle_proof => {
                 let was_signed_in = self.signed_in();

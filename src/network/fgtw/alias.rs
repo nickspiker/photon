@@ -134,7 +134,8 @@ pub fn join_list(keys: &PhotonKeys, device: &[u8; 32]) -> Option<(Vec<u8>, Devic
         crate::log("ALIAS: no chain of ours held or fetched; the device list is not joined");
         return None;
     };
-    let alias_signer = fgtw::alias::bundle(&keys.alias);
+    // Derived only when a list must be signed: the bundle is a Falcon and a SPHINCS+ keygen (about 380 ms on ferros), and a device already listed signs nothing.
+    let mut alias_signer: Option<fgtw::pq::SigningBundle> = None;
     let now = crate::network::time_base::now_osc();
     for _ in 0..2 {
         let held_list = match fgtw::client::fetch_alias_devices(&PhotonTransport, &keys.handle_proof) {
@@ -151,7 +152,11 @@ pub fn join_list(keys: &PhotonKeys, device: &[u8; 32]) -> Option<(Vec<u8>, Devic
                 return None;
             }
         };
-        match DeviceList::with_device(held_list.as_ref(), &alias_signer, &keys.handle_proof, *device, now) {
+        if let Some(l) = held_list.as_ref().filter(|l| l.contains(device)) {
+            return Some((keys.binding.clone(), l.clone()));
+        }
+        let signer = alias_signer.get_or_insert_with(|| fgtw::alias::bundle(&keys.alias));
+        match DeviceList::with_device(held_list.as_ref(), signer, &keys.handle_proof, *device, now) {
             None => return held_list.map(|l| (keys.binding.clone(), l)),
             Some(next) => match fgtw::client::publish_alias_devices(&PhotonTransport, &keys.binding, &next, now) {
                 Ok(()) => {
