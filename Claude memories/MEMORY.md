@@ -23,6 +23,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [no wrapped comments](feedback_no_comment_wraps.md) — one sentence per line; comment-gate.sh
 - [edges, not timers](edges-not-timers.md) · [no time-based UI](feedback_no_time_based_ui.md)
 - [direct pixel only](feedback_direct_pixel_no_floaters.md) · [smoothness](feedback_smoothness_for_humans.md) — C¹+ GUI math
+- [avatars: one 256 square](feedback_avatars_one_256_square.md) — HARD: photo or mark, resample the 256 + crop at dest; marks kept in vault as AV1, never rendered at another size
 - [spelling](feedback_spelling.md) — thru/altho; colour British; rest US
 - [no em dashes in UI](feedback_no_em_dashes_ui.md) — HARD: line return where it wraps, punctuation where it is one line
 - [photons are messages](feedback_photons_are_messages.md) · [atoms, not notes](feedback_atoms_not_notes.md) · [self is a contact](feedback_self_is_a_contact.md)
