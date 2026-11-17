@@ -1729,8 +1729,6 @@ pub struct PhotonApp {
     bg_scroll: isize,
     /// The background noise, generated once per frame size and base colour and rolled by each screen's scroll (fluor `NoiseField`; owner 2026-11-08). render_frame lays it under everything at the end of the frame.
     noise: fluor::paint::NoiseField,
-    /// The zoom (`ru`) the last frame drew at: a frame at another one draws its marks quick ([`MARKS_QUICK`]).
-    marks_last_ru: f32,
     /// The chrome's bg layer was left unpainted on a screen that had nothing in it (render_frame's `bg_layer_used`): the next screen that uses it paints it whole first.
     bg_layer_stale: bool,
     /// Whether to paint the top-centre zoom-percentage watermark. The host swallows the zoom events (Ctrl/Cmd + scroll / ± / 0) and updates `ctx.viewport.ru` directly, so we can't observe a zoom event — instead `render` arms this when `ru` changes WHILE a zoom modifier is held, and the `ModifiersChanged` handler clears it the instant the modifier is released. Not time-based: it persists exactly as long as Ctrl/Cmd stays down after a zoom began. (Android pinch — show from two-fingers-down to release — waits on fluor's multi-touch `Touch` event, which doesn't exist yet.)
@@ -3110,7 +3108,6 @@ impl PhotonApp {
             pb_resolve_rx: None,
             bg_scroll: 0,
             noise: fluor::paint::NoiseField::new(),
-            marks_last_ru: 0.,
             bg_layer_stale: true,
             zoom_hint: false,
             last_ru: 1.0,
@@ -4111,101 +4108,110 @@ fn dev_gradient_orb() -> fluor::host::icon::Icon {
     fluor::host::icon::Icon { width: N, height: N, pixels }
 }
 
-/// Rendered avatars kept for reuse, newest last: the draw paths ask for the same (seed, diameter) every frame, and a tapuwae mark takes milliseconds to place and render. A linear search over at most `AVATAR_CACHE` entries; the oldest is dropped when full.
+/// EVERY AVATAR IS ONE 256 SQUARE (the owner 2026-11-17: "ALL should be rendered 256x256 ... it should always be a resample from the 256x256 to the dest, then the nice pixel perfect crop applied, ring, etc."): a default mark is rendered once per identity at this side, never at any other size, and every size it is drawn at is a resample of it with the circle cut at that size, as a photo's is.
+const MARK_SIDE: usize = crate::ui::avatar::AVATAR_SIZE;
+
+/// Resampled avatars kept for reuse, newest last: the draw paths ask for the same (seed, diameter) every frame. A linear search over at most `AVATAR_CACHE` entries; the oldest is dropped when full.
 static AVATAR_CACHE_STORE: std::sync::Mutex<Vec<((u64, usize), std::sync::Arc<Vec<u8>>)>> = std::sync::Mutex::new(Vec::new());
 const AVATAR_CACHE: usize = 1 << 6;
 
-/// The default UNSET avatar: a deterministic per-identity tapuwae mark (salted from the public seed, so identical on every device that knows it), as a `diam×diam×3` visible-RGB buffer for `draw_avatar`. Black outside the disc, which `draw_avatar` masks away.
-fn gradient_avatar_rgb(seed: u64, diam: usize) -> Vec<u8> {
-    if let Some((_, rgb)) = AVATAR_CACHE_STORE.lock().unwrap().iter().find(|(k, _)| *k == (seed, diam)) {
-        return rgb.to_vec();
+/// Each mark's 256 square as visible γ2 RGB (the texture route, as a photo's pixels), by seed: black past the disc.
+static MARK_RGB_STORE: std::sync::Mutex<Vec<(u64, std::sync::Arc<Vec<u8>>)>> = std::sync::Mutex::new(Vec::new());
+
+/// Each mark's 256 square at Photon's depth, by seed: the disc over opaque black (everything past it black), padded by one black column and row for [`crate::ui::depth::resample_padded`].
+static MARK_BASE_STORE: std::sync::Mutex<Vec<(u64, std::sync::Arc<Vec<Px>>)>> = std::sync::Mutex::new(Vec::new());
+
+/// A mark resampled to a diameter at Photon's depth, by (seed, diameter), newest last; the circle is cut at draw time.
+static AVATAR_DISC_STORE: std::sync::Mutex<Vec<((u64, usize), std::sync::Arc<Vec<Px>>)>> = std::sync::Mutex::new(Vec::new());
+
+/// Keep `v` under `key` in a newest-last store of at most `AVATAR_CACHE` entries.
+fn keep_newest<K: PartialEq, V: Clone>(store: &std::sync::Mutex<Vec<(K, V)>>, key: K, v: V) -> V {
+    let mut cache = store.lock().unwrap();
+    if cache.len() >= AVATAR_CACHE {
+        cache.remove(0);
     }
-    let salt = *blake3::Hasher::new().update(b"photon avatar").update(&seed.to_le_bytes()).finalize().as_bytes();
-    let mut out = vec![0u8; diam * diam * 3];
-    for (i, p) in tapuwae_pixels(&salt, diam).into_iter().enumerate() {
-        // α + darkness, premultiplied: visible = α − darkness per channel.
+    cache.push((key, v.clone()));
+    v
+}
+
+/// The salt a seed's mark is drawn from.
+fn mark_salt(seed: u64) -> [u8; 32] {
+    *blake3::Hasher::new().update(b"photon avatar").update(&seed.to_le_bytes()).finalize().as_bytes()
+}
+
+/// A mark's 256 square as visible γ2 RGB, rendered once per seed.
+fn mark_rgb(seed: u64) -> std::sync::Arc<Vec<u8>> {
+    if let Some((_, rgb)) = MARK_RGB_STORE.lock().unwrap().iter().find(|(k, _)| *k == seed) {
+        return rgb.clone();
+    }
+    let mut out = vec![0u8; MARK_SIDE * MARK_SIDE * 3];
+    for (i, p) in tapuwae_pixels(&mark_salt(seed), MARK_SIDE).into_iter().enumerate() {
+        // α + darkness, premultiplied: visible = α − darkness per channel, so past the disc (α 0) is black.
         let a = p >> 24;
         out[i * 3] = (a - ((p >> 16) & 0xFF)) as u8;
         out[i * 3 + 1] = (a - ((p >> 8) & 0xFF)) as u8;
         out[i * 3 + 2] = (a - (p & 0xFF)) as u8;
     }
-    let mut cache = AVATAR_CACHE_STORE.lock().unwrap();
-    if cache.len() >= AVATAR_CACHE {
-        cache.remove(0);
-    }
-    cache.push(((seed, diam), std::sync::Arc::new(out.clone())));
-    out
+    keep_newest(&MARK_RGB_STORE, seed, std::sync::Arc::new(out))
 }
 
-/// Marks draw quick this frame: the zoom moved since the last one (a pinch or Ctrl+wheel step), so each mark is its base raster resampled ([`MARK_BASE_STORE`]); the frame after the gesture settles draws them properly. Set by `render_frame`.
-pub(crate) static MARKS_QUICK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// A mark's 256 square at Photon's depth, rendered once per seed: the disc over opaque black, padded by one black column and row. None at a depth that takes the mark thru the texture route (8 bits).
+fn mark_base(seed: u64) -> Option<std::sync::Arc<Vec<Px>>> {
+    if let Some((_, b)) = MARK_BASE_STORE.lock().unwrap().iter().find(|(k, _)| *k == seed) {
+        return Some(b.clone());
+    }
+    let disc = Px::mark_disc(&mark_salt(seed), MARK_SIDE)?;
+    let black = Px::from_channels(Px::ONE, [Px::ONE; 3]);
+    let mut padded = vec![black; (MARK_SIDE + 1) * (MARK_SIDE + 1)];
+    for (y, row) in disc.chunks_exact(MARK_SIDE).enumerate() {
+        for (x, p) in row.iter().enumerate() {
+            padded[y * (MARK_SIDE + 1) + x] = fluor::pixel::Blend::under(*p, black, fluor::pixel::BlendMode::Normal);
+        }
+    }
+    Some(keep_newest(&MARK_BASE_STORE, seed, std::sync::Arc::new(padded)))
+}
 
-/// Each mark's base raster for the quick frames, by (seed, side), padded by one empty column and row ([`crate::ui::depth::resample_padded`]): one side, 2⁸, for every size.
-static MARK_BASE_STORE: std::sync::Mutex<Vec<((u64, usize), std::sync::Arc<Vec<Px>>)>> = std::sync::Mutex::new(Vec::new());
+/// Render the marks of `seeds` off the UI thread, so the first frame that shows them finds them ready (each is rendered once per process, whoever asks first).
+pub(crate) fn prewarm_marks(seeds: Vec<u64>) {
+    crate::log_err!(std::thread::Builder::new().name("marks".into()).spawn(move || {
+        for s in seeds {
+            if Px::DEPTH == 8 {
+                mark_rgb(s);
+            } else {
+                mark_base(s);
+            }
+        }
+    }), "spawn the mark renders");
+}
 
-/// The default avatar's mark drawn straight at Photon's depth, by (seed, diameter), newest last: the [`AVATAR_CACHE_STORE`] of a depth that takes the mark directly ([`Depth::mark_disc`]).
-static AVATAR_DISC_STORE: std::sync::Mutex<Vec<((u64, usize), std::sync::Arc<Vec<Px>>)>> = std::sync::Mutex::new(Vec::new());
+/// The default UNSET avatar: a deterministic per-identity tapuwae mark (salted from the public seed, so identical on every device that knows it), as a `diam×diam×3` visible-RGB buffer for `draw_avatar`: the mark's 256 square resampled as a photo's is. Black outside the disc, which `draw_avatar` masks away.
+fn gradient_avatar_rgb(seed: u64, diam: usize) -> Vec<u8> {
+    if let Some((_, rgb)) = AVATAR_CACHE_STORE.lock().unwrap().iter().find(|(k, _)| *k == (seed, diam)) {
+        return rgb.to_vec();
+    }
+    let out = crate::ui::avatar_render::update_avatar_scaled(&mark_rgb(seed), MARK_SIDE, diam);
+    keep_newest(&AVATAR_CACHE_STORE, (seed, diam), std::sync::Arc::new(out)).to_vec()
+}
 
-/// Draw the default UNSET avatar for `seed` at (`cx`, `cy`), radius `r`: at 8 bits exactly as before (the γ2 texture of [`gradient_avatar_rgb`] thru `draw_avatar`); at a depth that draws the mark directly, tapuwae's disc at that depth, cached like the textures, under what is on the canvas.
+/// Draw the default UNSET avatar for `seed` at (`cx`, `cy`), radius `r`: its 256 square resampled to the diameter, the circle cut at that size (`draw_avatar_px`, as `draw_avatar` cuts a photo's), under what is on the canvas. At 8 bits the texture route, as a photo.
 fn draw_gradient_avatar(canvas: &mut Canvas, cx: f32, cy: f32, r: f32, seed: u64, clip: Option<fluor::paint::Clip>) {
     let gd = render::disk_px(r * 2.0);
-    // 8 bits draws no mark directly (`Depth::mark_disc` is None there): the texture route, exactly as before, without touching the disc cache.
-    if Px::DEPTH == 8 {
-        crate::ui::avatar_render::draw_avatar(canvas, cx, cy, r, &gradient_avatar_rgb(seed, gd), gd, clip);
+    // A disc under two pixels shows nothing, and the resample has no span to work across there.
+    if gd < 2 {
         return;
-    }
-    // WHILE THE ZOOM MOVES (the owner 2026-11-17: "we can do a shit bilinear or nearest of the 256x256 or something of the sort, then once it's the right size it does a proper render"): one base raster per mark, resampled to this frame's size; the settled frame renders it properly below. A disc under two pixels is cheap to render and has no span to resample across.
-    if MARKS_QUICK.load(std::sync::atomic::Ordering::Relaxed) && gd >= 2 {
-        // One side for every size the gesture passes thru, so a pinch never renders a base mid-gesture (the owner: "the 256x256"); larger marks are resampled up until the settled frame.
-        let base = 1 << 8;
-        let cached = MARK_BASE_STORE.lock().unwrap().iter().find(|(k, _)| *k == (seed, base)).map(|(_, d)| d.clone());
-        let padded = match cached {
-            Some(d) => Some(d),
-            None => {
-                let salt = *blake3::Hasher::new().update(b"photon avatar").update(&seed.to_le_bytes()).finalize().as_bytes();
-                Px::mark_disc(&salt, base).map(|px| {
-                    // One empty column and row past the picture, for the resample's far neighbours.
-                    let mut padded = vec![Px::EMPTY; (base + 1) * (base + 1)];
-                    for (y, row) in px.chunks_exact(base).enumerate() {
-                        padded[y * (base + 1)..y * (base + 1) + base].copy_from_slice(row);
-                    }
-                    let d = std::sync::Arc::new(padded);
-                    let mut cache = MARK_BASE_STORE.lock().unwrap();
-                    if cache.len() >= AVATAR_CACHE {
-                        cache.remove(0);
-                    }
-                    cache.push(((seed, base), d.clone()));
-                    d
-                })
-            }
-        };
-        if let Some(padded) = padded {
-            let disc = crate::ui::depth::resample_padded(&padded, base, gd);
-            let half = gd as f32 * 0.5;
-            crate::ui::depth::blit_premult(canvas, &disc, gd, gd, (cx - half).round() as isize, (cy - half).round() as isize, clip);
-            return;
-        }
     }
     let cached = AVATAR_DISC_STORE.lock().unwrap().iter().find(|(k, _)| *k == (seed, gd)).map(|(_, d)| d.clone());
     let disc = match cached {
         Some(d) => d,
         None => {
-            let salt = *blake3::Hasher::new().update(b"photon avatar").update(&seed.to_le_bytes()).finalize().as_bytes();
-            let Some(px) = Px::mark_disc(&salt, gd) else {
+            let Some(base) = mark_base(seed) else {
                 crate::ui::avatar_render::draw_avatar(canvas, cx, cy, r, &gradient_avatar_rgb(seed, gd), gd, clip);
                 return;
             };
-            let d = std::sync::Arc::new(px);
-            let mut cache = AVATAR_DISC_STORE.lock().unwrap();
-            if cache.len() >= AVATAR_CACHE {
-                cache.remove(0);
-            }
-            cache.push(((seed, gd), d.clone()));
-            d
+            keep_newest(&AVATAR_DISC_STORE, (seed, gd), std::sync::Arc::new(crate::ui::depth::resample_padded(&base, MARK_SIDE, gd)))
         }
     };
-    let half = gd as f32 * 0.5;
-    crate::ui::depth::blit_premult(canvas, &disc, gd, gd, (cx - half).round() as isize, (cy - half).round() as isize, clip);
+    crate::ui::avatar_render::draw_avatar_px(canvas, cx, cy, r, &disc, gd, clip);
 }
 
 /// Seed a gradient from a 32-byte public proof (`handle_proof`) — deterministic per identity.

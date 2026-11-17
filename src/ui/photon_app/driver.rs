@@ -9,8 +9,6 @@ impl FluorApp<Px> for PhotonApp {
         if let Some(v) = r {
             // Seed the persistence tracker with the restored value so launch doesn't immediately re-save what's already on disk.
             self.zoom_saved_ru = v;
-            // A restore is no gesture (no end edge follows), so its frame draws the marks properly.
-            self.marks_last_ru = v;
         }
         r
     }
@@ -662,9 +660,6 @@ impl FluorApp<Px> for PhotonApp {
             self.zoom_saved_ru = ctx.viewport.ru;
             self.save_zoom_setting(ctx.viewport.ru);
         }
-        // The settled frame: the marks the pinch drew quick render properly at their size.
-        self.dirty_from("the host's on_zoom_end");
-        ctx.window.request_redraw();
     }
 
     fn on_zoom(&mut self, factor: f32, _anchor_x: Coord, anchor_y: Coord, ctx: &mut Context) {
@@ -2286,8 +2281,6 @@ impl FluorApp<Px> for PhotonApp {
                     self.zoom_hint = false;
                     // The release edge after a zoom IS the persistence point (event-driven, no debounce timer): save the settled ru as this DEVICE's zoom — per-device (unlinked) but mirrored thru the fleet's device maps like every device setting.
                     self.save_zoom_setting(ctx.viewport.ru);
-                    // The settled frame: the marks the zoom drew quick render properly at their size.
-                    self.scene_dirty = true;
                     // The watermark lives in the bg layer, which `rasterize_bg` only repaints when dirty — invalidate it so the clearing frame actually re-runs the closure without the hint, instead of leaving the stale glyphs painted.
                     if let Some(chrome) = self.chrome.as_mut() {
                         chrome.invalidate_bg();
@@ -4881,6 +4874,8 @@ impl PhotonApp {
                             .collect();
                         let t_phase = std::time::Instant::now();
                         self.contacts = crate::storage::contacts::load_all_contacts(&s);
+                        // Every contact's mark, and ours, rendered once at 256 off this thread (the owner 2026-11-17: rendered at the mint, locally, never again).
+                        super::prewarm_marks(self.contacts.iter().map(|c| super::proof_gradient_seed(&c.handle_proof)).chain(self.our_handle_proof().map(|hp| super::proof_gradient_seed(&hp))).collect());
                         self.apply_locked_set();
                         let ms_contacts = t_phase.elapsed().as_millis();
                         for c in self.contacts.iter_mut() {

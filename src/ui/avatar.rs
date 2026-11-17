@@ -209,47 +209,30 @@ pub fn image_to_avatar_rgb_f32(image_data: &[u8]) -> Result<Vec<f32>, String> {
         .resize(linear_vsf_cropped.as_rgb(), linear_vsf_resized.as_rgb_mut())
         .map_err(|e| format!("Failed to resize: {:?}", e))?;
 
-    // Apply circular mask in linear space and encode to gamma
+    // THE PRE-CROPPED SQUARE (the owner 2026-11-17: "keep it square but just cut it to black with a 3px expand"): the picture is kept out to the circle grown by 3 pixels and is black past it, so the encoder spends nothing on corners no screen shows; no edge is baked in here, the circle is cut at the size each screen draws it (draw_avatar).
     let mut vsf_rgb_f32 = vec![0.0f32; size * size * 3];
-    let center = (size / 2) as isize;
-    let r_outer = (size / 2) as isize + 1;
-    let r_outer2 = r_outer * r_outer;
-    let r_inner = r_outer - 1;
-    let r_inner2 = r_inner * r_inner;
-    let edge_range_f32 = (r_outer2 - r_inner2) as f32;
+    let half = (size / 2) as f32;
+    let keep = half + 3.;
+    let keep2 = keep * keep;
 
     for y in 0..size {
         for x in 0..size {
             let idx = (y * size + x) * 3;
 
-            // Calculate distance from center
-            let dx = x as isize - center;
-            let dy = y as isize - center;
-            let dist2 = dx * dx + dy * dy;
+            // Distance from the centre of the square, pixel centres.
+            let dx = x as f32 + 0.5 - half;
+            let dy = y as f32 + 0.5 - half;
 
-            // Outside outer radius: skip (leave as zero/black)
-            if dist2 > r_outer2 {
+            // Past the grown circle: black (left at zero).
+            if dx * dx + dy * dy > keep2 {
                 continue;
             }
 
-            // Get linear VSF RGB
-            let linear_vsf = [
+            let masked_linear = [
                 linear_vsf_resized[idx],
                 linear_vsf_resized[idx + 1],
                 linear_vsf_resized[idx + 2],
             ];
-
-            // Apply circular mask alpha in linear space
-            let masked_linear = if dist2 <= r_inner2 {
-                linear_vsf
-            } else {
-                let alpha = 1.0 - ((dist2 - r_inner2) as f32 / edge_range_f32);
-                [
-                    linear_vsf[0] * alpha,
-                    linear_vsf[1] * alpha,
-                    linear_vsf[2] * alpha,
-                ]
-            };
 
             // Apply VSF gamma 2 encoding .max(0.) prevents NaN from sqrt() - Lanczos3 ringing can produce negatives
             vsf_rgb_f32[idx] = delinearize_gamma2(masked_linear[0].max(0.)); // the algorithm: out-of-gamut channels come out of the matrix negative, and the gamma curve's √ is undefined there
