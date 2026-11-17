@@ -2469,7 +2469,38 @@ impl PhotonApp {
             Some(sib) => crate::logf!("FLEET: our state ({} B, {} roster entr(ies)) to sibling {}", sealed.len(), state.roster.len(), crate::fp(&sib)),
             None => crate::logf!("FLEET: our state ({} B, {} roster entr(ies)) to every live sibling", sealed.len(), state.roster.len()),
         }
-        self.dispatch_frame_to_sibling(frame, only);
+        // A sibling Photon outside the fleet (ferros's, PHOTON.md M3) holds no fleet key and could not open that seal ("arrived before our fleet key", the Pro, 2026-11-17): it gets the same state sealed under the alias's state key, which every Photon of the person's holds.
+        let fleet = self.fleet_members_held();
+        let alias_sibs: Vec<[u8; 32]> = self
+            .contacts
+            .iter()
+            .filter(|c| c.is_sibling && !c.locked_out)
+            .filter_map(|c| c.device_key())
+            .filter(|d| only.is_none_or(|o| o == *d) && self.alias_sibling_root(d, &fleet).is_some())
+            .collect();
+        let alias_frame = self
+            .photon_keys
+            .as_ref()
+            .filter(|_| !alias_sibs.is_empty())
+            .and_then(|k| crate::network::fgtw::fleet::seal_fstate(&state, &k.alias_state_key()).ok())
+            .and_then(|s| crate::network::fgtw::protocol::build_fstate_push_vsf(&hp, &s, kp.secret.as_bytes()).ok());
+        if alias_sibs.is_empty() {
+            self.dispatch_frame_to_sibling(frame, only);
+            return;
+        }
+        for sib in self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out).filter_map(|c| c.device_key()) {
+            if only.is_some_and(|o| o != sib) {
+                continue;
+            }
+            if alias_sibs.contains(&sib) {
+                if let Some(f) = alias_frame.clone() {
+                    crate::logf!("FLEET: our state to alias sibling {} under the alias's state key", crate::fp(&sib));
+                    self.dispatch_frame_to_sibling(f, Some(sib));
+                }
+            } else {
+                self.dispatch_frame_to_sibling(frame.clone(), Some(sib));
+            }
+        }
     }
 
     /// Spawn a background pull of the fleet roster (debounced: one in flight at a time). The result is drained in `tick` and merged. No-op without a handle_proof + fleet key.

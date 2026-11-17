@@ -6,6 +6,8 @@
 const MESSENGER_ROOT_CONTEXT: &str = "photon 2026-11-13 messenger root from the alias";
 /// The domain the sibling secret is hashed from the alias under.
 const SIBLING_ROOT_CONTEXT: &str = "photon 2026-11-14 sibling secret from the alias";
+/// The domain the alias state key is hashed under.
+const ALIAS_STATE_CONTEXT: &str = "photon 2026-11-17 fleet state between alias siblings";
 
 /// The person, as Photon's messenger knows them.
 #[derive(Clone)]
@@ -31,6 +33,11 @@ impl PhotonKeys {
     /// The secret this device's Photon shares with a sibling Photon that is not a member of the fleet (a ferros Photon, PHOTON.md M3), where siblings that are members share the identity seed: hashed from the alias, which every Photon of the person's holds and nobody else does. Mixed into their ceremony and their pong seal.
     pub fn sibling_root(&self) -> [u8; 32] {
         blake3::derive_key(SIBLING_ROOT_CONTEXT, &self.alias)
+    }
+
+    /// The key our fleet's shared state (roster and settings) is sealed under for a sibling Photon that holds no fleet key (a ferros one, PHOTON.md M3): hashed from the sibling secret, so only the person's own Photons open it. A member sibling still gets the fleet key's seal.
+    pub fn alias_state_key(&self) -> [u8; 32] {
+        blake3::derive_key(ALIAS_STATE_CONTEXT, &self.sibling_root())
     }
 
     /// The root the messenger's own records derive from (PHOTON.md groups 2, 3, 4 and 6: vault addresses, blob names, the own avatar, notes to self): the identity seed while this device still holds one, so nothing moves before it speaks the alias, and otherwise a key hashed from the alias, the same on every device of the person's.

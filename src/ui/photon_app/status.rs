@@ -5877,7 +5877,10 @@ impl PhotonApp {
         }
         // A sibling's state, opened under the fleet key we hold and merged exactly as a slot read would be; one we cannot open waits for the key sync, and the next push or online edge carries it again.
         for (sealed, sender) in fstate_pushes_after {
-            let Some(key) = self.fleet_key_cached() else {
+            // An alias sibling's state is sealed under the alias's state key (a ferros Photon holds no fleet key); a member sibling's under the fleet key.
+            let fleet = self.fleet_members_held();
+            let alias_key = self.alias_sibling_root(&sender, &fleet).and(self.photon_keys.as_ref().map(|k| k.alias_state_key()));
+            let Some(key) = alias_key.or_else(|| self.fleet_key_cached()) else {
                 crate::logf!("FLEET: state from sibling {} arrived before our fleet key — the next push or online edge carries it again", crate::fp(&sender));
                 continue;
             };
