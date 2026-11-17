@@ -3978,7 +3978,14 @@ impl FluorApp<Px> for PhotonApp {
         // A change the service tick made between frames counts too (see `scene_owed`): it was already dirty when this tick began, so the raised-this-tick test alone misses it.
         let raised = (self.scene_dirty && !self.dirty_before_tick) || std::mem::take(&mut self.scene_owed);
         self.scene_dirty |= needs_redraw;
-        let redraw = needs_redraw || blink_redraw || raised;
+        // The contacts screen's title (people online) set here, before the frame's damage: a changed count dirties the chrome alone, and its band is the frame (render.rs ready_title).
+        let title_redraw = if matches!(self.state, AppState::Ready) && !self.wave_screen() {
+            let t = self.ready_title();
+            self.chrome.as_mut().is_some_and(|c| c.set_title(t))
+        } else {
+            false
+        };
+        let redraw = needs_redraw || blink_redraw || raised || title_redraw;
         dirty_checkpoint!();
         self.dirty_blame_line = dirty_blame;
         if redraw {

@@ -74,6 +74,30 @@ fn clip_to_damage(clip: fluor::paint::Clip, hinted: bool, damage: fluor::canvas:
 }
 
 impl PhotonApp {
+    /// The contacts screen's drawn title: how many people are online. Read by the render and by the tick, which sets it on the chrome BEFORE the frame's damage is decided, so a count that moves at rest repaints the title's band alone (a title set during the render landed after the damage and showed only when something else redrew there; ferros Pro 2026-11-17).
+    pub(super) fn ready_title(&self) -> String {
+        let own_hp = self.session.as_ref().map(|s| s.handle_proof);
+        let n = self
+            .handle_query
+            .as_ref()
+            .and_then(|hq| hq.get_transport())
+            // handle_count_excluding, not peer_count: the title counts PEOPLE (unique identities), and the store carries one row per device — a 3-phone friend must read as one peer, and we must not read as one at all.
+            .map(|t| {
+                t.lock()
+                    .map(|s| match &own_hp {
+                        Some(hp) => s.handle_count_excluding(hp),
+                        None => s.handle_count(),
+                    })
+                    .unwrap_or(0)
+            })
+            .unwrap_or(0);
+        // The store only fills by gossip since the announce cutover, so on a fresh session it holds nothing but our own record and `n` is 0 even with the whole network up. The seed's identity count (off the signed ack, minus ourselves) is the floor: the store wins once gossip carries more than the seed remembers, and the max never shows a friend LESS than what either source can vouch for.
+        // WHY: the seed's identity count is 0 until the seed answers.
+        // PROOF: "everyone but us" of nobody is nobody — saturating keeps it 0 where a plain subtraction would wrap to 2^32 − 1 peers online.
+        let n = n.max(self.seed_identity_count.saturating_sub(1) as usize);
+        tr(Msg::PeersOnline(n)).into_owned()
+    }
+
     /// The full frame paint — the body of [`FluorApp::render`], verbatim; the trait method in `driver.rs` delegates here so the paint code can live in its own file.
     pub(super) fn render_frame(&mut self, target: &mut [Px], ctx: &mut Context) {
         // The scene is about to be painted in full: clear the dirty flag NOW, so a flag raised DURING this render (a first-frame measurement that moved the rows) survives to claim the next frame instead of being wiped at the end of this one (field 2026-10-01: the contacts sat under the wrapped filter strip's second line until a scroll forced another frame — the correction frame was asked for and then forgotten).
@@ -227,26 +251,7 @@ impl PhotonApp {
                 .map(|h| h.title.clone())
                 .unwrap_or_else(|| tr(Msg::ConversationTitle).into_owned())
         } else if matches!(self.state, AppState::Ready) {
-            let own_hp = self.session.as_ref().map(|s| s.handle_proof);
-            let n = self
-                .handle_query
-                .as_ref()
-                .and_then(|hq| hq.get_transport())
-                // handle_count_excluding, not peer_count: the title counts PEOPLE (unique identities), and the store carries one row per device — a 3-phone friend must read as one peer, and we must not read as one at all.
-                .map(|t| {
-                    t.lock()
-                        .map(|s| match &own_hp {
-                            Some(hp) => s.handle_count_excluding(hp),
-                            None => s.handle_count(),
-                        })
-                        .unwrap_or(0)
-                })
-                .unwrap_or(0);
-            // The store only fills by gossip since the announce cutover, so on a fresh session it holds nothing but our own record and `n` is 0 even with the whole network up. The seed's identity count (off the signed ack, minus ourselves) is the floor: the store wins once gossip carries more than the seed remembers, and the max never shows a friend LESS than what either source can vouch for.
-            // WHY: the seed's identity count is 0 until the seed answers.
-            // PROOF: "everyone but us" of nobody is nobody — saturating keeps it 0 where a plain subtraction would wrap to 2^32 − 1 peers online.
-            let n = n.max(self.seed_identity_count.saturating_sub(1) as usize);
-            tr(Msg::PeersOnline(n)).into_owned()
+            self.ready_title()
         } else if matches!(self.state, AppState::Settings(_)) {
             // The settings screen draws its own "Settings" heading in the header band — a chrome title would double up behind it (portrait showed "‹ Network" bleeding thru the heading).
             String::new()
