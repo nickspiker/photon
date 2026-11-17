@@ -32,7 +32,7 @@ impl PhotonApp {
     pub(super) fn lan_beacon_due_at(&self, now: Instant) -> Option<Instant> {
         // No `online` gate: that flag means fgtw.org answered, and a LAN beacon is exactly what must work without it.
         let armed = self.last_lan_beacon.is_none()
-            && self.session.is_some()
+            && self.our_handle_proof().is_some()
             && self.handle_query.is_some()
             && self.status_checker.is_some();
         armed.then_some(now)
@@ -106,13 +106,14 @@ impl PhotonApp {
             // ALWAYS-ON LAN BEACON (regression fix 2026-09-02): the demand-driven gate above stopped a BACKGROUNDED device from announcing at all — so a fleet sibling on any non-presence screen went un-findable on the LAN, its address staled, and a self-message to it sprayed dead endpoints thru PT's retransmit ladder (~10s). The LAN multicast is ONE cheap subnet packet (not the unicast ping fan-out, not the WAN punch/relay machinery — those stay demand-driven and off in the background); keeping it on a modest cadence is what makes same-room delivery instant. Fires regardless of foreground while online.
             // EDGES, NOT A CADENCE (Nick 2026-11-07): the beacon goes once per session and once after each network change (both clear `last_lan_beacon`); every device that hears it answers once, straight back (the LanPeerDiscovered arm). It used to repeat every 20-30 s on every screen — 1,458 multicasts in six idle hours.
             if self.lan_beacon_due_at(now).is_some_and(|at| now >= at) {
-                if let (Some(session), Some(hq), Some(checker)) = (
-                    self.session.as_ref(),
+                // The person's handle proof, the session's or (ferros) PhotonKeys': a ferros Photon beacons too, so its siblings on the LAN learn where it is (PHOTON.md M3).
+                if let (Some(hp), Some(hq), Some(checker)) = (
+                    self.our_handle_proof(),
                     self.handle_query.as_ref(),
                     self.status_checker.as_ref(),
                 ) {
                     self.last_lan_beacon = Some(now);
-                    checker.send_lan_broadcast(session.handle_proof, hq.port());
+                    checker.send_lan_broadcast(hp, hq.port());
                 }
             }
         }

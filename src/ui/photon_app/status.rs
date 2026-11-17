@@ -3168,7 +3168,7 @@ impl PhotonApp {
                         }
                     }
                     // An OWN-handle beacon from another device = a machine on this network claiming to be part of (or asking to join) OUR fleet — the proximity evidence the AddDevice tap list runs on. Record it and light any matching candidate immediately; the registry entry it must match is still signature-verified, so a LAN squatter with no valid bindreq never becomes tappable.
-                    let own_hp = self.session.as_ref().map(|s| s.handle_proof);
+                    let own_hp = self.our_handle_proof();
                     if Some(handle_proof) == own_hp {
                         if let Some(dk) = device_pubkey {
                             let now = std::time::Instant::now();
@@ -3263,6 +3263,22 @@ impl PhotonApp {
                                 changed = true;
                                 continue;
                             }
+                        }
+                    }
+                    // A beacon names its device (ke), so an own-handle beacon from one of our sibling devices says which one it is: its source is that sibling's LAN address, and the sibling is pinged there straight away. This is how a ferros Photon, which reaches neither fgtw.org's phonebook nor the relay, and its siblings find each other on one network (2026-11-16: the desktop and the Pro's Photon only ever tried the relay, and neither ever heard the other).
+                    if let Some(dk) = device_pubkey.filter(|_| Some(handle_proof) == self.our_handle_proof()) {
+                        if let Some(idx) = self.contacts.iter().position(|c| c.is_sibling && c.device_key() == Some(dk)) {
+                            let c = &mut self.contacts[idx];
+                            if crate::network::traverse::gather::is_wfd_subnet(local_ip) {
+                                c.p2p_addr = Some(std::net::SocketAddr::new(std::net::IpAddr::V4(local_ip), port));
+                            } else {
+                                c.local_ip = Some(local_ip);
+                                c.local_port = Some(port);
+                            }
+                            if !lan_ping_indices.contains(&idx) {
+                                lan_ping_indices.push(idx);
+                            }
+                            changed = true;
                         }
                     }
                     // Find contact by handle_proof and store their LAN IP + port. Siblings AND the self-contact are skipped — an own-hp broadcast carries only (hp, port) with no device disambiguation, so it can't say WHICH of our devices it came from; sibling addresses flow via FGTW peer rows + pong source addresses instead.
@@ -5865,19 +5881,19 @@ impl PhotonApp {
         }
 
         // Wi-Fi Direct beacon answer-back (the group-up pt_disc exchange's second leg).
-        if let (Some(target), Some(session), Some(hq), Some(checker)) = (
+        if let (Some(target), Some(hp), Some(hq), Some(checker)) = (
             wfd_beacon_reply,
-            self.session.as_ref(),
+            self.our_handle_proof(),
             self.handle_query.as_ref(),
             self.status_checker.as_ref(),
         ) {
-            checker.send_lan_unicast(session.handle_proof, hq.port(), target);
+            checker.send_lan_unicast(hp, hq.port(), target);
         }
         // Beacons answered directly: a device first heard on this network, or a device of ours we have not bound (see the LanPeerDiscovered arm).
-        if let (Some(session), Some(hq), Some(checker)) = (self.session.as_ref(), self.handle_query.as_ref(), self.status_checker.as_ref()) {
+        if let (Some(hp), Some(hq), Some(checker)) = (self.our_handle_proof(), self.handle_query.as_ref(), self.status_checker.as_ref()) {
             for target in joiner_beacon_reply {
                 crate::logf!("LAN: answering a device first heard on this network, directly at {}", target);
-                checker.send_lan_unicast(session.handle_proof, hq.port(), target);
+                checker.send_lan_unicast(hp, hq.port(), target);
             }
         }
 

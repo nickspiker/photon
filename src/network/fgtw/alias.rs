@@ -112,7 +112,14 @@ fn our_chain(handle_proof: &[u8; 32]) -> Option<fgtw::fleet::MembershipBlob> {
     }
     match fgtw::client::fetch(&PhotonTransport, handle_proof) {
         Ok(Some(c)) if c.fold().is_ok() && c.handle_proof() == Some(*handle_proof) => Some(c),
-        Ok(_) => None,
+        Ok(Some(_)) => {
+            crate::log("ALIAS: fgtw.org's chain for us does not fold, or names another identity");
+            None
+        }
+        Ok(None) => {
+            crate::log("ALIAS: fgtw.org holds no chain for us");
+            None
+        }
         Err(e) => {
             crate::logf!("ALIAS: our fleet chain did not come ({})", e);
             None
@@ -123,7 +130,10 @@ fn our_chain(handle_proof: &[u8; 32]) -> Option<fgtw::fleet::MembershipBlob> {
 /// This device in the alias's device list, on every platform (ferros's Photon with the alias and binding it was handed, the desktop and Android with their own): fetch the list, check it against the person's chain, add this device when missing, publish. A stale answer means another device published first, so once more on top of theirs.
 /// The list as it stands with this device in it, beside its binding; None when fgtw.org could not be reached or the list could not be made.
 pub fn join_list(keys: &PhotonKeys, device: &[u8; 32]) -> Option<(Vec<u8>, DeviceList)> {
-    let chain = our_chain(&keys.handle_proof)?;
+    let Some(chain) = our_chain(&keys.handle_proof) else {
+        crate::log("ALIAS: no chain of ours held or fetched; the device list is not joined");
+        return None;
+    };
     let alias_signer = fgtw::alias::bundle(&keys.alias);
     let now = crate::network::time_base::now_osc();
     for _ in 0..2 {
@@ -156,5 +166,6 @@ pub fn join_list(keys: &PhotonKeys, device: &[u8; 32]) -> Option<(Vec<u8>, Devic
             },
         }
     }
+    crate::log("ALIAS: the device list stayed stale after two publishes; joined at the next settle");
     None
 }

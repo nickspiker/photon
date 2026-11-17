@@ -90,7 +90,8 @@ impl PhotonApp {
 
     /// Keep a checked list: held here, written to the vault at once, and the siblings reconciled so a newly listed device becomes one.
     fn keep_alias_list(&mut self, binding: Vec<u8>, list: fgtw::alias_devices::DeviceList) {
-        if self.alias_list.as_ref().is_some_and(|(_, held)| !list.newer_than(held)) {
+        if let Some((_, held)) = self.alias_list.as_ref().filter(|(_, held)| !list.newer_than(held)) {
+            crate::logf!("ALIAS: device list revision {} ({} device(s)) is the one held; nothing to change", held.revision, held.devices.len());
             return;
         }
         if let (Some(addr), Some(vault)) = (self.alias_list_addr(), crate::storage::device_vault()) {

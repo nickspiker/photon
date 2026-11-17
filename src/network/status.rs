@@ -233,10 +233,10 @@ fn stranger_refusal(bytes: &[u8], contacts: &ContactPubkeys, our: &[u8; 32]) -> 
 /// NET-09: how many frames the stranger gate has refused, logged at every power of two so a flood costs a few lines.
 static STRANGER_DROPS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-fn stranger_drop_log(section: &str, len: usize, src: SocketAddr) {
+fn stranger_drop_log(section: &str, len: usize, src: SocketAddr, signer: &[u8; 32]) {
     let n = STRANGER_DROPS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
     if n.is_power_of_two() {
-        crate::logf!("Status: stranger frame #{} refused before parse — '{}' ({}B) from {}", n, section, len, src);
+        crate::logf!("Status: stranger frame #{} refused before parse — '{}' ({}B) from {}, signed by {}", n, section, len, src, crate::fp(signer));
     }
 }
 
@@ -2673,7 +2673,7 @@ async fn run_checker(
                         // Everything else from an unknown key is dropped here on a header read (the signer key and the TOC section name are cheap to pull) before any rung of the ladder hashes and verifies the frame, so a stranger cannot spend our receive loop on signatures that verify under a key they made, nor fill the UI queue with the updates those rungs would emit.
                         // The PT path has carried the same gate since the ~500 KB offer; this is the UDP and relay half of it.
                         if let Some((section, signer)) = stranger_refusal(msg_bytes, &contacts_recv, &our_device_pk) {
-                            stranger_drop_log(&section, msg_bytes.len(), src_addr);
+                            stranger_drop_log(&section, msg_bytes.len(), src_addr, &signer);
                             // The stale-fold edge (field 2026-11-05, Daniel): a contact whose phone moved keys speaks from a key our fold has never seen, and every frame of theirs dies here, the ceremony offer included; the UI re-reads that contact's fleet, once per key per session.
                             send_status_update(&status_tx_recv, StatusUpdate::StrangerFrame { sender_pubkey: DevicePubkey::from_bytes(signer) }, &event_proxy_recv);
                             continue;

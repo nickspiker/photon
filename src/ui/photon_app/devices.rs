@@ -3185,12 +3185,19 @@ impl PhotonApp {
     pub(super) fn reseed_pong_seal_keys(&self) {
         use zeroize::Zeroize;
         // Same walk publishes the About audience (fleet siblings only — Nick's disclosure ruling 2026-08-31): this is the one place that reads chain-built is_sibling, and it already runs on every membership/spine edge, so the status thread's copy tracks the fold with zero extra edges.
-        let sibs: Vec<[u8; 32]> = self
+        let mut sibs: Vec<[u8; 32]> = self
             .contacts
             .iter()
             .filter(|c| c.is_sibling && !c.locked_out)
             .flat_map(|c| c.answerable_pubkeys())
             .collect();
+        // Every Photon the alias's list names is one of ours from the moment the list is held, before its sibling row has woven (PHOTON.md M3): its frames reach the ladder rather than dying at the stranger gate. This device is not its own sibling.
+        let ours = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
+        for d in self.alias_listed_devices() {
+            if Some(d) != ours && !sibs.contains(&d) {
+                sibs.push(d);
+            }
+        }
         crate::network::status::set_sibling_devices(sibs);
         let Ok(mut keys) = self.pong_seal_keys.lock() else {
             return;
