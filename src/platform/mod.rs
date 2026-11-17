@@ -115,9 +115,6 @@ pub enum Priority {
 }
 
 /// `f` on a named thread at `priority` — thread_priority on the desktops and Android; ferros has no thread priorities yet, so there the name alone.
-/// The stack every spawn_at thread gets, on every platform: the CLUTCH ceremony's post-quantum encapsulation runs past 1 MiB (on ferros, whose threads get 1 MiB, the clutch-kem-encap thread overran its stack into the guard page and died, stalling the Pro's sibling ceremony, 2026-11-17); the desktop's 2 MiB default only hid it. Explicit, so no platform's default decides.
-const SPAWN_STACK: usize = 1 << 22;
-
 pub fn spawn_at<F: FnOnce() + Send + 'static>(name: &str, priority: Priority, f: F) {
     #[cfg(not(target_os = "ferros"))]
     {
@@ -126,7 +123,7 @@ pub fn spawn_at<F: FnOnce() + Send + 'static>(name: &str, priority: Priority, f:
             Priority::Min => ThreadPriority::Min,
             Priority::Max => ThreadPriority::Max,
         };
-        std::thread::Builder::new().name(name.to_string()).stack_size(SPAWN_STACK).spawn_with_priority(p, move |_| f()).unwrap_or_else(|e| panic!("spawning the {name} thread: {e}"));
+        std::thread::Builder::new().name(name.to_string()).spawn_with_priority(p, move |_| f()).unwrap_or_else(|e| panic!("spawning the {name} thread: {e}"));
     }
     #[cfg(target_os = "ferros")]
     {
@@ -134,7 +131,7 @@ pub fn spawn_at<F: FnOnce() + Send + 'static>(name: &str, priority: Priority, f:
         match priority {
             Priority::Min | Priority::Max => {}
         }
-        std::thread::Builder::new().name(name.to_string()).stack_size(SPAWN_STACK).spawn(f).unwrap_or_else(|e| panic!("spawning the {name} thread: {e}"));
+        std::thread::Builder::new().name(name.to_string()).spawn(f).unwrap_or_else(|e| panic!("spawning the {name} thread: {e}"));
     }
 }
 
