@@ -2258,7 +2258,8 @@ impl PhotonApp {
                 flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, text_size * 0.8, &pills, "Oxanium");
                 // Measure: the wrapped strip's real height (plus the row's top/bottom margin) drives the next frame's row offset and extent.
                 let measured = flow.used() + row_h as f32 * 0.2;
-                if (measured - self.ready_strip_h).abs() > 0.5 {
+                // Compared as stored (at least one row): a strip measuring under a row compared raw never matched the stored row height, so every Ready frame asked for another full one and the scroll memmove never armed (ferros Pro 2026-11-17: "already set before the tick: true", blame line 0).
+                if (measured.max(row_h as f32) - self.ready_strip_h).abs() > 0.5 {
                     self.ready_strip_h = measured.max(row_h as f32);
                     // The extent and the scroll clamp above read LAST frame's height; ask for the frame that reads this one.
                     self.scene_dirty = true;
