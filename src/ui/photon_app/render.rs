@@ -7830,6 +7830,10 @@ impl PhotonApp {
         self.noise.under_into(&mut Canvas::new(target, buf_w, buf_h, ctx.damage), noise_origin, bg_left_scroll.unwrap_or(bg_right_scroll), bg_right_scroll, bg_fullscreen, Some(damage));
         self.scroll_shift = 0;
         self.scroll_hint_armed = None;
+        // The idle whole-frame hunt (damage_rect's log): a flag this render raised for the next frame, and the asks this frame answered.
+        self.dirty_after_render = self.scene_dirty;
+        self.dirty_event = "";
+        self.frame_why.clear();
 
         // Development builds get the amber debug theme (orange bg tint / window hairline / title) via fluor's `amber` feature — pure theme-CONSTANT swaps, zero extra drawing steps. The old post-composite amber wash is gone: it wrote straight-RGB into fluor's α+darkness buffer, which inverted to blue.
 

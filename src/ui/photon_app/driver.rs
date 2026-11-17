@@ -2070,6 +2070,21 @@ impl FluorApp<Px> for PhotonApp {
             };
         // THE WHEEL is the third narrow case (SCROLL AS A MEMMOVE, 2026-10-06): its every consumer marks what it moves itself — `pane_scroll` (a rigid shift repaints a band over a memmove; a non-rigid one dirties the scene or the layers), the compose-box scroll, the viewer/reader — so the blanket claim here would only force the full repaint the memmove exists to avoid. The first dev build with the memmove shipped WITH this claim still in place: no frame ever qualified, and the skipped layer invalidations left the bg noise standing still under moving rows.
         if !matches!(event, Event::CursorMoved { .. } | Event::MouseWheel { .. }) && !compose_typing {
+            if !self.scene_dirty {
+                self.dirty_event = match event {
+                    Event::CloseRequested => "CloseRequested",
+                    Event::Resized { .. } => "Resized",
+                    Event::CursorLeft => "CursorLeft",
+                    Event::MouseInput { .. } => "MouseInput",
+                    Event::KeyboardInput { .. } => "KeyboardInput",
+                    Event::ModifiersChanged(_) => "ModifiersChanged",
+                    Event::Focused(_) => "Focused",
+                    Event::Ime(_) => "Ime",
+                    Event::DroppedFile(_) => "DroppedFile",
+                    Event::MenuItem(_) => "MenuItem",
+                    _ => "another event",
+                };
+            }
             self.scene_dirty = true;
         }
         // THE IMAGE VIEWER IS OPSIN'S VIEW: while it is open, pointer, wheel and key events go to it first with the hit id under the cursor. Photon keeps what is photon's — its own Back/Save pills (their ids are not the view's, and a press on them must not start a pan under them), the arrow keys (they step between the conversation's images), Shift+Escape (the real exit). `Close` is the view's Escape asking to leave; an export request from its Save pill is photon's save.
@@ -3915,6 +3930,7 @@ impl FluorApp<Px> for PhotonApp {
                 self.tick_stat_n = 0;
                 self.tick_stat_dirty = 0;
                 self.redraw_why.clear();
+                self.whole_frames_logged = 0;
                 self.tick_stat_at = Some(now);
             }
         }
@@ -3987,6 +4003,24 @@ impl FluorApp<Px> for PhotonApp {
             return Some(PixelRect::new(0, 0, vw, vh));
         }
         if self.scene_dirty || chord {
+            // The idle whole-frame hunt: name where this frame's dirty came from, a few times per stats window.
+            if self.scene_dirty && self.whole_frames_logged < 4 && crate::is_dev_build() {
+                self.whole_frames_logged += 1;
+                let from = if self.dirty_after_render {
+                    "the previous render left it set".to_string()
+                } else if !self.dirty_event.is_empty() {
+                    format!("the event {}", self.dirty_event)
+                } else if self.dirty_before_tick {
+                    "outside the tick (a service drain or a handler)".to_string()
+                } else {
+                    "this tick".to_string()
+                };
+                let (screen, asks) = (format!("{:?}", self.state), format!("{:?}", self.frame_why));
+                crate::logf!(
+                    "RENDER: whole frame on {} — scene_dirty from {}; first tick checkpoint to see it: line {}; redraw asks since the last frame at lines {}",
+                    screen, from, self.dirty_blame_line, asks
+                );
+            }
             let mut combined = PixelRect::new(0, 0, vw, vh);
             if chord {
                 combined = combined.union(chord_hint_bbox(viewport, vw, vh));

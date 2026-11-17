@@ -2043,6 +2043,11 @@ pub struct PhotonApp {
     scene_owed: bool,
     /// Dev instrument: the first tick checkpoint (a driver.rs line) that found `scene_dirty` newly set this tick; 0 = the tick left it alone.
     dirty_blame_line: u32,
+    /// Dev instrument (the idle whole-frame hunt, ferros Pro 2026-11-17: Ready repainted whole about once a second at rest): the event that raised `scene_dirty` from clear, whether the previous render left it set, the redraw asks since the last frame (the `redraw_why` line coding), and the whole frames logged this stats window.
+    dirty_event: &'static str,
+    dirty_after_render: bool,
+    frame_why: Vec<u32>,
+    whole_frames_logged: u32,
     /// SCROLL AS A MEMMOVE (Nick 2026-10-06, "how do we make it so it's just a mem move like we do with moving the window"): the scrollable pane's rigid shift this frame in viewport pixels (+ = content moved DOWN), accumulated by `pane_scroll` while the offset stays inside its bounds and read by `damage_rect`, which arms the hint below; zero when nothing scrolled rigidly. Cleared at the end of every render.
     scroll_shift: i32,
     /// The hint `damage_rect` armed for THIS frame — (pane rect, dy, the exposed band): `scroll_hint` hands rect + dy to the host (scratch + persistent screen memmove), the render shifts the bg layer and the hit map the same way and paints only the band plus the repainted overlays. `None` = an ordinary repaint.
@@ -3323,6 +3328,10 @@ impl PhotonApp {
             dirty_before_tick: false,
             scene_owed: false,
             dirty_blame_line: 0,
+            dirty_event: "",
+            dirty_after_render: false,
+            frame_why: Vec::new(),
+            whole_frames_logged: 0,
             scroll_shift: 0,
             scroll_hint_armed: None,
             last_pane: None,
@@ -3845,6 +3854,9 @@ impl PhotonApp {
     pub(crate) fn note_redraw(&mut self, line: u32) {
         if self.redraw_why.len() < 32 && !self.redraw_why.contains(&line) {
             self.redraw_why.push(line);
+        }
+        if self.frame_why.len() < 16 && !self.frame_why.contains(&line) {
+            self.frame_why.push(line);
         }
     }
 
