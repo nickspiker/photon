@@ -2057,6 +2057,8 @@ pub struct PhotonApp {
     scroll_shift: i32,
     /// The hint `damage_rect` armed for THIS frame — (pane rect, dy, the exposed band): `scroll_hint` hands rect + dy to the host (scratch + persistent screen memmove), the render shifts the bg layer and the hit map the same way and paints only the band plus the repainted overlays. `None` = an ordinary repaint.
     scroll_hint_armed: Option<(PixelRect, i32, PixelRect)>,
+    /// A memmove frame's damage as up to four disjoint rects (`damage_rects`), set with the hint by `damage_rect`; empty on every other frame.
+    damage_parts: Vec<PixelRect>,
     /// What the LAST render drew as the scrollable pane: which screen (1 = conversation list, 2 = the contacts block), its rect, and the FIXED rects drawn over it (a toast, the standing bands, the orb where it reaches in) — a shift must repaint each of those where it sits AND where its smeared copy lands, so the next frame's `damage_rect` reads them here.
     last_pane: Option<(u8, PixelRect, Vec<PixelRect>)>,
     /// Send button overlaid inside `message_textbox`'s right edge — mirrors the contacts-screen search `+` button (same size, same overlay treatment). Clicking it sends the compose box contents, same as pressing Enter.
@@ -3346,6 +3348,7 @@ impl PhotonApp {
             whole_frames_logged: 0,
             scroll_shift: 0,
             scroll_hint_armed: None,
+            damage_parts: Vec::new(),
             last_pane: None,
             contacts_plus_btn: None,
             message_send_btn: None,
@@ -4558,6 +4561,54 @@ fn rect_center_dims(r: PixelRect) -> (Coord, Coord, Coord, Coord) {
 /// True if `ip` is a private / non-routable address that must NOT be stored as a contact's public (`ip`) address — it belongs in `local_ip` instead. Covers IPv4 RFC1918 (10/8, 172.16/12, 192.168/16), link-local (169.254/16), loopback; IPv6 loopback, link-local (fe80::/10), unique-local (fc00::/7); and IPv4-mapped IPv6 (`::ffff:a.b.c.d`) by unwrapping to the embedded v4 (the ping/pong path reports LAN sources in exactly this mapped form, e.g. `::ffff:a.b.c.d`).
 fn is_private_addr(ip: &std::net::IpAddr) -> bool {
     crate::types::contact::is_private_ip(ip)
+}
+
+/// Damage pieces as at most `max` disjoint rects covering them all: overlapping pieces become their bounding box, and while there are too many, the two whose box adds the least area merge (a host clears, draws and converts each rect, so a pixel in two would be done twice).
+pub(crate) fn disjoint_rects(mut v: Vec<PixelRect>, max: usize) -> Vec<PixelRect> {
+    v.retain(|r| !r.is_empty());
+    let meets = |a: &PixelRect, b: &PixelRect| a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+    let area = |r: &PixelRect| r.width() * r.height();
+    loop {
+        let pair = (0..v.len()).flat_map(|i| (i + 1..v.len()).map(move |j| (i, j))).find(|&(i, j)| meets(&v[i], &v[j]));
+        // Reached only with no two meeting: disjoint rects lie inside their box, so its area is at least theirs together and the cost below never wraps.
+        let pair = pair.or_else(|| {
+            (v.len() > max)
+                .then(|| (0..v.len()).flat_map(|i| (i + 1..v.len()).map(move |j| (i, j))).min_by_key(|&(i, j)| area(&v[i].union(v[j])) - area(&v[i]) - area(&v[j])))
+                .flatten()
+        });
+        let Some((i, j)) = pair else { return v };
+        v[i] = v[i].union(v[j]);
+        v.swap_remove(j);
+    }
+}
+
+#[cfg(test)]
+mod disjoint_rects_tests {
+    use super::*;
+
+    /// The pieces come out disjoint, at most `max`, covering every piece; a band and a far overlay stay apart.
+    #[test]
+    fn pieces_merge_to_disjoint_rects_that_cover_them() {
+        let band = PixelRect::new(0, 2900, 1344, 2992);
+        let orb = PixelRect::new(40, 140, 200, 300);
+        let orb_moved = PixelRect::new(40, 120, 200, 280);
+        let bands = PixelRect::new(0, 2800, 1344, 2900);
+        let caret = PixelRect::new(600, 1000, 604, 1040);
+        assert_eq!(disjoint_rects(vec![band, orb], 4), vec![band, orb]);
+        let pieces = vec![band, orb, orb_moved, bands, caret, PixelRect::empty()];
+        for max in [1, 2, 4] {
+            let out = disjoint_rects(pieces.clone(), max);
+            assert!(out.len() <= max, "{max}: {out:?}");
+            for (i, a) in out.iter().enumerate() {
+                for b in &out[i + 1..] {
+                    assert!(!(a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1), "{a:?} meets {b:?}");
+                }
+            }
+            for p in pieces.iter().filter(|p| !p.is_empty()) {
+                assert!(out.iter().any(|r| r.x0 <= p.x0 && r.y0 <= p.y0 && r.x1 >= p.x1 && r.y1 >= p.y1), "{p:?} not covered by {out:?}");
+            }
+        }
+    }
 }
 
 /// CONTENT hit stamps RIDE THE PAINT DECISION (Nick 2026-10-01: "when we paint under we get a bool; if we never painted that pixel because something was there, skip the hit map"). fluor is front to back: the chrome is flattened into `target` before any content, opaque where it owns a pixel (the controls strip, the orb), and the under-blend's early-out skips exactly those pixels when content paints. These two stampers take the same decision from the same bit — a pixel already opaque is not ours — and so must run BEFORE the content they stamp for paints (its own paint would make the pixel opaque). The blind forms below stay for CLEARS and for the deliberate after-paint re-wins (a button reclaiming its silhouette over the widget it overlays), which cannot read opacity by then. The modal full-screen wave wipe fills the map directly.

@@ -135,7 +135,7 @@ fn main() {
     let whole = PixelRect::new(0, 0, w, h);
     macro_rules! ctx {
         () => {
-            Context { pressed_hit: fluor::paint::HIT_NONE, viewport, text: &mut text, clip_mask: &mut clip_mask, damage: &mut damage, window: &window, modifiers: Default::default(), cursor_x: 0.0, cursor_y: 0.0, is_maximized: true, window_origin: (0, 0), damage_clip: whole }
+            Context { pressed_hit: fluor::paint::HIT_NONE, viewport, text: &mut text, clip_mask: &mut clip_mask, damage: &mut damage, window: &window, modifiers: Default::default(), cursor_x: 0.0, cursor_y: 0.0, is_maximized: true, window_origin: (0, 0), damage_clip: whole, damage_rects: fluor::canvas::DamageRects::EMPTY }
         };
     }
     FluorApp::<Px>::init(&mut app, &mut ctx!());

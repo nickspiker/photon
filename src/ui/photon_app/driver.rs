@@ -3994,6 +3994,7 @@ impl FluorApp<Px> for PhotonApp {
         let chord = self.last_chord_held || self.brackets_held(Instant::now());
         // SCROLL AS A MEMMOVE (Nick 2026-10-06): a frame whose ONLY change is a rigid pane shift repaints just the exposed band plus the fixed overlays (where they sit and where their smeared copy landed); the host memmoves scratch + screen, the render memmoves the bg layer + hit map. Idempotent — the host may ask more than once a frame; the render clears the shift.
         self.scroll_hint_armed = None;
+        self.damage_parts.clear();
         if self.scroll_shift != 0 {
             let shift = self.scroll_shift;
             let chrome_dirty = self.chrome.as_ref().is_some_and(|c| c.damage_rect().is_some());
@@ -4009,12 +4010,16 @@ impl FluorApp<Px> for PhotonApp {
                 if *tag == want && n < h && rect.y1 <= vh && rect.x1 <= vw {
                     let band = if shift > 0 { PixelRect::new(rect.x0, rect.y0, rect.x1, rect.y0 + n) } else { PixelRect::new(rect.x0, rect.y1 - n, rect.x1, rect.y1) };
                     let mut dmg = band;
+                    // The same pieces apart, for a host that takes damage as several rects (`damage_rects`).
+                    let mut parts = vec![band];
                     for r in overlays {
                         dmg = dmg.union(*r);
+                        parts.push(*r);
                         // WHY/PROOF: an overlay moved by the shift can land partly or wholly off the viewport — the clip keeps its damage band inside the buffer, and an empty one is skipped just below.
                         let (y0, y1) = ((r.y0 as i64 + shift as i64).clamp(0, vh as i64) as usize, (r.y1 as i64 + shift as i64).clamp(0, vh as i64) as usize);
                         if y1 > y0 {
                             dmg = dmg.union(PixelRect::new(r.x0, y0, r.x1, y1));
+                            parts.push(PixelRect::new(r.x0, y0, r.x1, y1));
                         }
                     }
                     let mut dmg = PixelRect::new(dmg.x0.min(vw), dmg.y0.min(vh), dmg.x1.min(vw), dmg.y1.min(vh));
@@ -4023,8 +4028,10 @@ impl FluorApp<Px> for PhotonApp {
                     self.visit_app_widgets(&mut |w| {
                         if let Some(r) = w.damage_rect(vw, vh) {
                             dmg = dmg.union(r);
+                            parts.push(r);
                         }
                     });
+                    self.damage_parts = super::disjoint_rects(parts.into_iter().map(|r| PixelRect::new(r.x0.min(vw), r.y0.min(vh), r.x1.min(vw), r.y1.min(vh))).collect(), fluor::canvas::DAMAGE_RECTS);
                     return Some(dmg);
                 }
             }
@@ -4078,6 +4085,26 @@ impl FluorApp<Px> for PhotonApp {
             }
         });
         combined
+    }
+
+    /// A memmove frame's damage as its pieces (the band, each overlay where it sits and where its moved copy landed, each widget's own), merged to at most four disjoint rects (`disjoint_rects`); every other frame is `damage_rect`'s one rect (2026-11-17, the Pro: the band and the orb's overlay made one box of 16 % of the frame for a 20-row move).
+    fn damage_rects(&mut self, viewport: Viewport, out: &mut [PixelRect; fluor::canvas::DAMAGE_RECTS]) -> usize {
+        let Some(one) = self.damage_rect(viewport) else {
+            return 0;
+        };
+        if self.damage_parts.is_empty() {
+            out[0] = one;
+            return 1;
+        }
+        for (o, r) in out.iter_mut().zip(&self.damage_parts) {
+            *o = *r;
+        }
+        self.damage_parts.len()
+    }
+
+    /// The render reads the frame only inside its damage (it clears and draws there, front to back over what is already opaque, and memmoves its own bg layer and hit map), so the ferros host may skip a scroll frame's move of the scratch.
+    fn scratch_unread_outside_damage(&self) -> bool {
+        true
     }
 
     fn scroll_hint(&mut self, _viewport: Viewport) -> Option<(PixelRect, i32)> {

@@ -860,6 +860,8 @@ impl PhotonApp {
         let mark_pre = std::time::Instant::now();
         // SCROLL AS A MEMMOVE (Nick 2026-10-06): when `damage_rect` armed a rigid shift for this frame (and the host did not override it with a full repaint — then the clip IS the viewport and no memmove happened anywhere), the bg layer shifts by the same dy and only the exposed band re-rasters; the hit map shifts after the chrome pass; the lists clip their rows to the damage; the final bg flatten covers only the damage.
         let scroll_hint = self.scroll_hint_armed.filter(|_| ctx.damage_clip != fluor::canvas::PixelRect::new(0, 0, buf_w, buf_h));
+        // The rects the host cleared and presents this frame (one, the damage clip, unless a memmove frame named several), copied before the canvas borrows the context.
+        let frame_rects: Vec<fluor::canvas::PixelRect> = match ctx.damage_rects.as_slice() { [] => vec![ctx.damage_clip], r => r.to_vec() };
         _rt.3 = scroll_hint.is_some() && self.scroll_frames_hinted < 3 && crate::is_dev_build();
         // A scroll this frame that the hint did NOT carry (something else was dirty, the host forced a full repaint, no pane recorded yet): the layers `pane_scroll` left alone must now re-raster the ordinary way — the bg at the new offset, the hit map re-stamped — or the noise stands still under moving rows and taps land one shift behind.
         if scroll_hint.is_none() && self.scroll_shift != 0 {
@@ -2309,7 +2311,7 @@ impl PhotonApp {
                     continue; // fully outside the visible content area (rows now scroll up to the top, not just `rows.y0`)
                 }
                 // A MEMMOVE frame repaints only the exposed band and the overlays: a row a whole row's height clear of them (room for its glow) was moved with the pane, hit stamps and all, and is not built at all (ferros Pro 2026-11-17: the row walk was 12-16 ms of a frame that drew a 20-row band).
-                if scroll_hint.is_some() && (row_top + 2 * rh <= rows_clip.y_start as isize || row_top - rh >= rows_clip.y_end as isize) {
+                if scroll_hint.is_some() && frame_rects.iter().all(|d| row_top + 2 * rh <= rows_clip.y_start.max(d.y0) as isize || row_top - rh >= rows_clip.y_end.min(d.y1) as isize) {
                     continue;
                 }
                 // Hover/press vocabulary (block tints vetoed): hover = the NAME goes heavier + the presence ring strokes 1px wider; press = the logo's white-glow halo blooms behind the name. No fills, no deltas — weight, stroke, and light.
