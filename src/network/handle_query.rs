@@ -38,8 +38,23 @@ pub mod attest_stage {
     pub const LOADING: u8 = 4;
 }
 
+/// The UI's waker on the desktop (Android's Choreographer ticks regardless): the attest screen holds still while the proof runs, so each stage change wakes it to draw the new stage.
+static ATTEST_WAKER: std::sync::Mutex<Option<Arc<dyn WakeSender<PhotonEvent>>>> = std::sync::Mutex::new(None);
+
 fn set_attest_stage(stage: u8) {
     ATTEST_STAGE.store(stage, std::sync::atomic::Ordering::Relaxed);
+    if let Some(w) = ATTEST_WAKER.lock().ok().and_then(|g| g.clone()) {
+        // WHY: a refused wake means the event loop has closed; nothing is waiting to draw.
+        let _ = w.send(PhotonEvent::NetworkUpdate);
+    }
+}
+
+/// The handle proof, timed: the one figure that says what an attest costs on this hardware.
+fn timed_handle_proof(handle: &str) -> [u8; 32] {
+    let t = std::time::Instant::now();
+    let proof = Handle::username_to_handle_proof(handle);
+    crate::logf!("ATTEST: the handle proof took {} ms", t.elapsed().as_millis());
+    proof
 }
 
 /// Data loaded during attestation (all blocking work done in background)
@@ -202,6 +217,10 @@ impl HandleQuery {
     /// * `device_keypair` - The device's Ed25519 keypair for FGTW authentication * `event_proxy` - Desktop only: EventLoopProxy for waking the UI on connectivity changes
     #[cfg(not(target_os = "android"))]
     pub fn new(device_keypair: Keypair, event_proxy: Arc<dyn WakeSender<PhotonEvent>>) -> Self {
+        // The attest screen holds still during the handle proof; its stage changes wake the UI thru this.
+        if let Ok(mut g) = ATTEST_WAKER.lock() {
+            *g = Some(event_proxy.clone());
+        }
         Self::new_internal(device_keypair, Some(event_proxy))
     }
 
@@ -498,7 +517,7 @@ impl HandleQuery {
                 if let QueryRequest::Probe(handle) = &req {
                     let identity_seed = crate::storage::contacts::derive_identity_seed(handle);
                     set_attest_stage(attest_stage::PROVING);
-                    let handle_proof = Handle::username_to_handle_proof(handle); // ~1s
+                    let handle_proof = timed_handle_proof(handle); // ~1s
                     let session = tohu::SessionIdentity {
                         identity_seed,
                         vault_seed: identity_seed,
@@ -578,7 +597,7 @@ impl HandleQuery {
                         let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
                         let vault_seed = identity_seed;
                         set_attest_stage(attest_stage::PROVING);
-                        let handle_proof = Handle::username_to_handle_proof(&handle); // ~1s
+                        let handle_proof = timed_handle_proof(&handle); // ~1s
                                                                                       // Defer persistence until FGTW confirms ownership (below) — a rejected attest must NOT leave session roots that would auto-resume into the same rejection next launch.
                         (identity_seed, vault_seed, handle_proof, true)
                     }

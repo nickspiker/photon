@@ -1737,6 +1737,8 @@ pub struct PhotonApp {
     last_ru: f32,
     /// Wave-phase animation accumulator for the "query in flight" cue. Advances at `2π rad/s` (1 full cycle/sec) in `tick()` while `state == LaunchState::Attesting` (or future `AppState::Searching`); held constant otherwise so the wave stays idle when the app is. Summed into the scroll-driven base phase in `render()`. Wraps mod TAU each frame so it stays in `[0, 2π)` and float precision doesn't drift over a long-running query.
     attest_anim_phase: f32,
+    /// The attest stage the screen last drew (handle_query::ATTEST_STAGE): while the proof holds the animation still, a change of stage is the edge that draws a frame.
+    attest_stage_drawn: u8,
     /// Last `tick()` timestamp; used to compute the per-frame `delta_time` that `attest_anim_phase` advances by. `None` until the first tick fires.
     last_tick: Option<Instant>,
     /// Top-level app state machine. Launch(LaunchState) at startup; transitions to Ready after a successful attestation lands via `tick`'s `HandleQuery::try_recv` poll. Cloned out of [`super::state::AppState::Default`] at construction; mutated in `on_event` (textbox edits flip `Error → Fresh`), `tick` (handle_query result drives the Launch → Ready transition), and submission (`Fresh → Attesting`).
@@ -3112,6 +3114,7 @@ impl PhotonApp {
             zoom_hint: false,
             last_ru: 1.0,
             attest_anim_phase: 0.,
+            attest_stage_drawn: u8::MAX,
             last_tick: None,
             state: AppState::default(),
             textbox: None,

@@ -3107,10 +3107,11 @@ impl FluorApp<Px> for PhotonApp {
         // * `now` when an attestation is in flight — `tick()` advances `attest_anim_phase` at 1 cycle/sec for the "query in flight" wave shift; we need a wakeup every frame to keep it animating smoothly. Without this, the host blocks waiting for input and the animation stalls.
         let blink = self.blink_timer.next_tick();
         // An attestation OR an in-flight add-friend search both need a wakeup every frame to animate (the spectrum wave / the hourglass wobble).
-        let animating = matches!(
-            self.state,
-            AppState::Launch(LaunchState::Attesting) | AppState::Searching
-        ) || self.add_in_flight
+        // Not while the handle proof runs: the attest screen holds still for it, and the worker wakes the UI when the stage moves on (handle_query::set_attest_stage).
+        let proving = crate::network::handle_query::ATTEST_STAGE.load(std::sync::atomic::Ordering::Relaxed) == crate::network::handle_query::attest_stage::PROVING;
+        let animating = (matches!(self.state, AppState::Launch(LaunchState::Attesting)) && !proving)
+            || matches!(self.state, AppState::Searching)
+            || self.add_in_flight
             // The full-screen ring panel's pulse rings animate every frame while a wave is Ringing (phase is a pure function of now; the wakeup is what keeps frames coming).
             || self
                 .active_wave
@@ -3575,8 +3576,15 @@ impl FluorApp<Px> for PhotonApp {
         self.last_tick = Some(now);
 
         // Spectrum animation while attesting: wave phase advances at 2π rad/sec = 1 cycle/sec. Provides the visual "query in flight" cue the legacy build had — the bar slowly slides while we wait for FGTW to answer. Idle / Fresh / Error states leave the phase frozen so the screen stays calm.
-        if matches!(self.state, AppState::Launch(LaunchState::Attesting))
-            || matches!(self.state, AppState::Searching)
+        // HELD STILL FOR THE PROOF (owner 2026-11-17: a Pixel's handle proof went from 2.5 s to about 14 s while this redrew the whole screen every frame): the memory-hard proof gets the cores and the memory bandwidth, and the screen redraws once per stage change (the stage line under the wave), the stage's own edge.
+        let proving = matches!(self.state, AppState::Launch(LaunchState::Attesting)) && crate::network::handle_query::ATTEST_STAGE.load(std::sync::atomic::Ordering::Relaxed) == crate::network::handle_query::attest_stage::PROVING;
+        let stage = crate::network::handle_query::ATTEST_STAGE.load(std::sync::atomic::Ordering::Relaxed);
+        if matches!(self.state, AppState::Launch(LaunchState::Attesting)) && stage != self.attest_stage_drawn {
+            self.attest_stage_drawn = stage;
+            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+        }
+        if !proving && (matches!(self.state, AppState::Launch(LaunchState::Attesting))
+            || matches!(self.state, AppState::Searching))
         {
             self.attest_anim_phase += delta_time * std::f32::consts::TAU;
             self.attest_anim_phase %= std::f32::consts::TAU;
