@@ -1,16 +1,16 @@
 // All platforms share the fluor-hosted UI stack: `photon_app::PhotonApp` runs under `fluor::host::android::AndroidShell` on Android and `fluor::host::app::run_app` on desktop.
 // The legacy Android compositor (app / compositing / drawing / keyboard / mouse / text_editing / text_rasterizing / renderer_android) was deleted once fully retired — text measurement, editing, and rendering now live in fluor.
 
-/// The pixel depth Photon renders at on this target: fluor's 16-bit `G2t16` on every host that takes it (since fluor e9cedec all of them: winit/softbuffer desktops, Android, ferros), each target its own line so one can go back to fluor's 8-bit `Argb8` alone.
+/// The pixel depth Photon renders at on this target, each target its own line: fluor's 16-bit `G2t16` on ferros, its 8-bit `Argb8` on Android and the desktops (owner 2026-11-17: "should be 8 bit for everything but ferros"; the attest animation's full-screen 16-bit redraw every frame is the suspect in a Pixel's handle proof going from 2.5 s to about 14 s).
 /// Every buffer, cache and kernel of Photon's own paint is written against fluor's `Pixel` trait thru this name, so flipping a target is its one line here.
 #[cfg(target_os = "ferros")]
 pub type Px = fluor::pixel::G2t16;
 /// See the ferros arm.
 #[cfg(target_os = "android")]
-pub type Px = fluor::pixel::G2t16;
+pub type Px = fluor::pixel::Argb8;
 /// See the ferros arm.
 #[cfg(not(any(target_os = "ferros", target_os = "android")))]
-pub type Px = fluor::pixel::G2t16;
+pub type Px = fluor::pixel::Argb8;
 
 /// fluor's canvas at Photon's depth: every `&mut Canvas` in Photon's paint code is a canvas of [`Px`].
 pub type Canvas<'a> = fluor::canvas::Canvas<'a, Px>;
