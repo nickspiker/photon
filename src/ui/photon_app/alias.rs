@@ -72,6 +72,13 @@ impl PhotonApp {
         crate::logf!("ALIAS: settled; alias {}", hex::encode(&fgtw::alias::bundle(&ready.keys.alias).public().ed25519()[..4]));
         if self.photon_keys.is_none() {
             self.set_photon_keys(ready.keys);
+            // The alias is in hand from here: the pong seals for alias siblings switch to the alias's sibling secret, and each alias sibling gets our fleet state again under the alias's state key. A push before this went under the fleet key, which an alias sibling cannot open (the desktop's push to the Pro at its online edge, 2026-11-17).
+            self.reseed_contact_pubkeys();
+            let fleet = self.fleet_members_held();
+            let alias_sibs: Vec<[u8; 32]> = self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out).filter_map(|c| c.device_key()).filter(|d| self.alias_sibling_root(d, &fleet).is_some()).collect();
+            for d in alias_sibs {
+                self.fleet_state_push(Some(d));
+            }
         }
         match ready.list {
             Some((binding, list)) => {
