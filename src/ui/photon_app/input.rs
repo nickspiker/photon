@@ -1165,7 +1165,7 @@ impl PhotonApp {
         crate::network::status::set_profile_name(""); // pong slots: empty/zero = omitted
         crate::network::status::set_avatar_pin(&[0u8; 64]);
         self.pending_broadcast_signal = -1; // Android: drop the sticky session broadcast
-        self.state = AppState::Launch(LaunchState::Fresh);
+        self.state = self.not_signed_in_screen();
         // A wipe is the ultimate re-proof teardown: a retained handle turned "attest fresh" into "press the button" (field 2026-08-25 — Shred left the handle sitting in the attest field).
         self.clear_handle_for_reproof();
         crate::storage::device_binding::clear();
@@ -1303,7 +1303,7 @@ impl PhotonApp {
                 self.session = None;
                 self.private_s = crate::crypto::blind::PrivateS::None; // zeroized on overwrite — no identity, no S
                 self.pending_broadcast_signal = -1; // Android: drop the sticky session broadcast.
-                self.state = AppState::Launch(LaunchState::Fresh);
+                self.state = self.not_signed_in_screen();
                 self.clear_handle_for_reproof();
                 crate::logf!("[]u de-attested; session cleared — re-type handle to re-attest");
             }

@@ -1140,7 +1140,7 @@ impl FluorApp<Px> for PhotonApp {
                         self.session = None;
                         self.private_s = crate::crypto::blind::PrivateS::None;
                         self.pending_broadcast_signal = -1;
-                        self.state = AppState::Launch(LaunchState::Fresh);
+                        self.state = self.not_signed_in_screen();
                         self.clear_handle_for_reproof();
                         crate::log("SECURITY: locked — session cleared, vault kept; re-type handle to unlock");
                     } else if slot == 4 {
@@ -1148,7 +1148,7 @@ impl FluorApp<Px> for PhotonApp {
                         tohu::clear_session();
                         self.session = None;
                         self.private_s = crate::crypto::blind::PrivateS::None;
-                        self.state = AppState::Launch(LaunchState::Fresh);
+                        self.state = self.not_signed_in_screen();
                         self.clear_handle_for_reproof();
                         crate::log("SECURITY: kill — session cleared, vault kept; ending the process");
                         crate::flush_log_buffer();

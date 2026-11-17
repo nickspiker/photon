@@ -1787,7 +1787,9 @@ impl PhotonApp {
             } else {
                 // Hint slot — static "handle" label below the textbox. Tells the user what to type.
                 let hint_rect = attest.hint;
-                if !hint_rect.is_empty() {
+                // Waiting for the identity (ferros) is one line and nothing else: no field, no hint, nothing that leads to a handle.
+                let waiting = matches!(launch_state, LaunchState::WaitingForIdentity);
+                if !hint_rect.is_empty() && !waiting {
                     let region_h = (hint_rect.y1 - hint_rect.y0) as f32;
                     let cx = (hint_rect.x0 + hint_rect.x1) as f32 * 0.5;
                     let cy = (hint_rect.y0 + hint_rect.y1) as f32 * 0.5;
@@ -1860,7 +1862,7 @@ impl PhotonApp {
                             id,
                         );
                     }
-                } else {
+                } else if !waiting {
                     // The dead-end's ONE interaction: the user claims a sibling has unlocked this device. The pill returns to the normal resume entry (locked_retry_hit handler) and deliberately does NOT open a handle field here — a locked device never prompts for the root secret.
                     let r = attest.attest;
                     let pill = fluor::region::Region::new(

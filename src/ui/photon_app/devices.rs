@@ -2718,7 +2718,7 @@ impl PhotonApp {
                     self.session = None;
                     self.private_s = crate::crypto::blind::PrivateS::None;
                     self.pending_broadcast_signal = -1;
-                    self.state = AppState::Launch(LaunchState::Fresh);
+                    self.state = self.not_signed_in_screen();
                     // The whole point of going dark is that resume is handle-gated — a field still holding the handle would gate nothing.
                     self.clear_handle_for_reproof();
                     return;
