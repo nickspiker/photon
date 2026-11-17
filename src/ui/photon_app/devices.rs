@@ -1891,6 +1891,7 @@ impl PhotonApp {
         };
         let identity_seed = session.identity_seed;
         let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
+        let vault_seed = session.vault_seed;
         let busy = self.fleet_heal_busy.clone();
         let fkc = self.fleet_key_ram.clone();
         let rotated_tx = self.fleet_rotated_tx.clone();
@@ -1949,7 +1950,7 @@ impl PhotonApp {
                     .unwrap_or_default();
                 match fleet::mint_fleet_key(&hp, &device_key, &members, &identity_seed) {
                     Ok((revision, new_key)) => {
-                        if let Err(e) = storage.write_addr(&addr, &new_key) {
+                        if let Err(e) = crate::network::fgtw::alias::replace_fleet_key(&storage, &vault_seed, &new_key) {
                             crate::logf!("FLEET: minted key cache failed: {}", e);
                         }
                         if let Ok(mut g) = fkc.lock() {
@@ -1974,7 +1975,7 @@ impl PhotonApp {
                         if let Ok(Some(k)) =
                             fleet::recover_fleet_key(&hp, &device_key, &identity_seed)
                         {
-                            crate::log_err!(storage.write_addr(&addr, &k), "the recovered fleet key write");
+                            crate::log_err!(crate::network::fgtw::alias::replace_fleet_key(&storage, &vault_seed, &k), "the recovered fleet key write");
                             if let Ok(mut g) = fkc.lock() {
                                 *g = Some(k);
                             }
@@ -2013,7 +2014,7 @@ impl PhotonApp {
                 ours_meaningful,
             ) {
                 Ok(Some(k)) => {
-                    if let Err(e) = storage.write_addr(&addr, &k) {
+                    if let Err(e) = crate::network::fgtw::alias::replace_fleet_key(&storage, &vault_seed, &k) {
                         crate::logf!("FLEET: fleet key cache failed: {}", e);
                     } else {
                         crate::log("FLEET: fleet key synced from fan-out");
@@ -2042,6 +2043,7 @@ impl PhotonApp {
         };
         let identity_seed = session.identity_seed;
         let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
+        let vault_seed = session.vault_seed;
         // Live settings ride every roster push — a race-losing push must never revert a value this device already holds (the boot-minted avatar pin, field 2026-08-02).
         let live = self
             .fleet_settings
@@ -2066,7 +2068,7 @@ impl PhotonApp {
                 ours_meaningful,
             ) {
                 Ok(Some(k)) => {
-                    if let Err(e) = storage.write_addr(&addr, &k) {
+                    if let Err(e) = crate::network::fgtw::alias::replace_fleet_key(&storage, &vault_seed, &k) {
                         crate::logf!("FLEET: fleet key cache failed: {}", e);
                     }
                     if let Ok(mut g) = fkc.lock() {
@@ -2093,8 +2095,7 @@ impl PhotonApp {
     /// Persist a fleet key received over pairing (new device), overwriting any local placeholder so this device converges on the founder's key.
     pub(super) fn fleet_key_store(&self, key: &[u8; 32]) {
         if let (Some(storage), Some(session)) = (self.storage.as_ref(), self.session.as_ref()) {
-            let addr = crate::storage::vault_key("fleet_key", &session.vault_seed);
-            if let Err(e) = storage.write_addr(&addr, key) {
+            if let Err(e) = crate::network::fgtw::alias::replace_fleet_key(storage, &session.vault_seed, key) {
                 crate::logf!("FLEET: fleet key store failed: {}", e);
             }
             if let Ok(mut g) = self.fleet_key_ram.lock() {

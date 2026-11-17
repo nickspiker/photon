@@ -3827,6 +3827,10 @@ impl FluorApp<Px> for PhotonApp {
             self.scene_dirty = true;
             ctx.window.request_redraw();
         }
+        // The fleet key moved (a mint, a sync, a recovery): settle again while the key it replaced is kept, so the person key is sealed under the new one (network/fgtw/alias.rs). Taken only when a settle can start, so an edge during one waits for it.
+        if self.alias_rx.is_none() && crate::network::fgtw::alias::FLEET_KEY_MOVED.swap(false, std::sync::atomic::Ordering::AcqRel) {
+            self.spawn_alias_settle("the fleet key moved");
+        }
         self.drain_space();
         self.drain_keep();
         // Bonds edits go out on the edge of leaving the page (molecules.rs).

@@ -815,7 +815,7 @@ impl HandleQuery {
                                 &identity_seed,
                             ) {
                                 crate::log("RECOVERY: fleet key recovered from the fan-out (ira wrap — no sibling needed)");
-                                crate::log_err!(storage.write_addr(&crate::storage::vault_key("fleet_key", &vault_seed), &k), "RECOVERY: recovered fleet key write");
+                                crate::log_err!(crate::network::fgtw::alias::replace_fleet_key(&storage, &vault_seed, &k), "RECOVERY: recovered fleet key write");
                                 fleet_key = Some(k);
                             }
                         }

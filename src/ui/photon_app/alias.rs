@@ -36,7 +36,7 @@ impl PhotonApp {
                 };
                 let secret = *kp.secret.as_bytes();
                 std::thread::Builder::new().name("alias".into()).spawn(move || {
-                    let r = crate::network::fgtw::alias::settle(&session.identity_seed, &session.handle_proof, &fleet_key, &bundle, &secret);
+                    let r = crate::network::fgtw::alias::settle(&session.identity_seed, &session.vault_seed, &session.handle_proof, &fleet_key, &bundle, &secret);
                     crate::log_err!(tx.send(r), "the alias settle to the UI thread");
                 })
             }
