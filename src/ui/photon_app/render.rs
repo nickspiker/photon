@@ -78,6 +78,10 @@ impl PhotonApp {
     pub(super) fn render_frame(&mut self, target: &mut [Px], ctx: &mut Context) {
         // The scene is about to be painted in full: clear the dirty flag NOW, so a flag raised DURING this render (a first-frame measurement that moved the rows) survives to claim the next frame instead of being wiped at the end of this one (field 2026-10-01: the contacts sat under the wrapped filter strip's second line until a scroll forced another frame — the correction frame was asked for and then forgotten).
         self.scene_dirty = false;
+        // Marks draw quick on a frame whose zoom moved (a pinch or Ctrl+wheel step); the gesture's end asks for the settled frame that draws them properly (on_zoom_end, the Ctrl release).
+        // The first frame has no zoom before it, and the startup restore seeds `marks_last_ru` (take_zoom_request): neither is a gesture with an end to settle on.
+        super::MARKS_QUICK.store(self.marks_last_ru != 0. && ctx.viewport.ru != self.marks_last_ru, std::sync::atomic::Ordering::Relaxed);
+        self.marks_last_ru = ctx.viewport.ru;
         // A launch-box refill waiting on the text renderer (the minting retype puts the first entry back on a mismatch or a cancel).
         if let Some(s) = self.launch_refill.take() {
             if let Some(tb) = self.textbox.as_mut() {

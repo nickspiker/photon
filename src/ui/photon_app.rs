@@ -1729,6 +1729,8 @@ pub struct PhotonApp {
     bg_scroll: isize,
     /// The background noise, generated once per frame size and base colour and rolled by each screen's scroll (fluor `NoiseField`; owner 2026-11-08). render_frame lays it under everything at the end of the frame.
     noise: fluor::paint::NoiseField,
+    /// The zoom (`ru`) the last frame drew at: a frame at another one draws its marks quick ([`MARKS_QUICK`]).
+    marks_last_ru: f32,
     /// The chrome's bg layer was left unpainted on a screen that had nothing in it (render_frame's `bg_layer_used`): the next screen that uses it paints it whole first.
     bg_layer_stale: bool,
     /// Whether to paint the top-centre zoom-percentage watermark. The host swallows the zoom events (Ctrl/Cmd + scroll / ± / 0) and updates `ctx.viewport.ru` directly, so we can't observe a zoom event — instead `render` arms this when `ru` changes WHILE a zoom modifier is held, and the `ModifiersChanged` handler clears it the instant the modifier is released. Not time-based: it persists exactly as long as Ctrl/Cmd stays down after a zoom began. (Android pinch — show from two-fingers-down to release — waits on fluor's multi-touch `Touch` event, which doesn't exist yet.)
@@ -3106,6 +3108,7 @@ impl PhotonApp {
             pb_resolve_rx: None,
             bg_scroll: 0,
             noise: fluor::paint::NoiseField::new(),
+            marks_last_ru: 0.,
             bg_layer_stale: true,
             zoom_hint: false,
             last_ru: 1.0,
@@ -4122,6 +4125,12 @@ fn gradient_avatar_rgb(seed: u64, diam: usize) -> Vec<u8> {
     out
 }
 
+/// Marks draw quick this frame: the zoom moved since the last one (a pinch or Ctrl+wheel step), so each mark is its base raster resampled ([`MARK_BASE_STORE`]); the frame after the gesture settles draws them properly. Set by `render_frame`.
+pub(crate) static MARKS_QUICK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Each mark's base raster for the quick frames, by (seed, side), padded by one empty column and row ([`crate::ui::depth::resample_padded`]): the side is the mark's size rounded up to a power of two, at least 2⁸.
+static MARK_BASE_STORE: std::sync::Mutex<Vec<((u64, usize), std::sync::Arc<Vec<Px>>)>> = std::sync::Mutex::new(Vec::new());
+
 /// The default avatar's mark drawn straight at Photon's depth, by (seed, diameter), newest last: the [`AVATAR_CACHE_STORE`] of a depth that takes the mark directly ([`Depth::mark_disc`]).
 static AVATAR_DISC_STORE: std::sync::Mutex<Vec<((u64, usize), std::sync::Arc<Vec<Px>>)>> = std::sync::Mutex::new(Vec::new());
 
@@ -4132,6 +4141,37 @@ fn draw_gradient_avatar(canvas: &mut Canvas, cx: f32, cy: f32, r: f32, seed: u64
     if Px::DEPTH == 8 {
         crate::ui::avatar_render::draw_avatar(canvas, cx, cy, r, &gradient_avatar_rgb(seed, gd), gd, clip);
         return;
+    }
+    // WHILE THE ZOOM MOVES (the owner 2026-11-17: "we can do a shit bilinear or nearest of the 256x256 or something of the sort, then once it's the right size it does a proper render"): one base raster per mark, resampled to this frame's size; the settled frame renders it properly below. A disc under two pixels is cheap to render and has no span to resample across.
+    if MARKS_QUICK.load(std::sync::atomic::Ordering::Relaxed) && gd >= 2 {
+        let base = gd.next_power_of_two().max(1 << 8);
+        let cached = MARK_BASE_STORE.lock().unwrap().iter().find(|(k, _)| *k == (seed, base)).map(|(_, d)| d.clone());
+        let padded = match cached {
+            Some(d) => Some(d),
+            None => {
+                let salt = *blake3::Hasher::new().update(b"photon avatar").update(&seed.to_le_bytes()).finalize().as_bytes();
+                Px::mark_disc(&salt, base).map(|px| {
+                    // One empty column and row past the picture, for the resample's far neighbours.
+                    let mut padded = vec![Px::EMPTY; (base + 1) * (base + 1)];
+                    for (y, row) in px.chunks_exact(base).enumerate() {
+                        padded[y * (base + 1)..y * (base + 1) + base].copy_from_slice(row);
+                    }
+                    let d = std::sync::Arc::new(padded);
+                    let mut cache = MARK_BASE_STORE.lock().unwrap();
+                    if cache.len() >= AVATAR_CACHE {
+                        cache.remove(0);
+                    }
+                    cache.push(((seed, base), d.clone()));
+                    d
+                })
+            }
+        };
+        if let Some(padded) = padded {
+            let disc = crate::ui::depth::resample_padded(&padded, base, gd);
+            let half = gd as f32 * 0.5;
+            crate::ui::depth::blit_premult(canvas, &disc, gd, gd, (cx - half).round() as isize, (cy - half).round() as isize, clip);
+            return;
+        }
     }
     let cached = AVATAR_DISC_STORE.lock().unwrap().iter().find(|(k, _)| *k == (seed, gd)).map(|(_, d)| d.clone());
     let disc = match cached {
