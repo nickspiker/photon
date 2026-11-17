@@ -2395,7 +2395,7 @@ pub struct PhotonApp {
     last_peer_persist: Option<std::time::Instant>,
     /// Recently observed OWN LAN addresses (from our looped-back discovery beacons) with last-seen times. A multi-homed device loops a beacon back on EVERY interface each round, so `our_lan_ip` used to flip between them every round — and each flip cleared `self_record_published_for`, re-signing + re-publishing + persisting the record on a loop. This set makes the published choice sticky: keep the current address while it's still observed, only switch when it ages out. See `OurLanAddrObserved`.
     our_lan_ips: crate::linear_map::LinearMap<std::net::Ipv4Addr, std::time::Instant>,
-    /// Last zoom value actually persisted. Android saves on the pinch-release edge (onScaleEnd → take_scale_ended); desktop saves on modifier release. This tracker suppresses redundant re-saves of the restored value.
+    /// Last zoom value actually persisted. A touch device saves on the pinch-release edge (FluorApp::on_zoom_end, from Android's onScaleEnd or ferros's first finger up); desktop saves on modifier release. This tracker suppresses redundant re-saves of the restored value.
     zoom_saved_ru: f32,
     /// Monotonic tick counter — the frame-gap fence for `pending_sends` (see `drain_pending_sends`).
     tick_serial: u64,

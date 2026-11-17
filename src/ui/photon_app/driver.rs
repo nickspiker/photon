@@ -652,6 +652,14 @@ impl FluorApp<Px> for PhotonApp {
         self.viewer.as_ref().and_then(|v| v.view.as_ref()).is_some_and(|view| view.plain())
     }
 
+    /// A pinch that zoomed has ended (its fingers lifted; Android's onScaleEnd thru AndroidShell, ferros's host on the first finger up): the edge the zoom is kept on, the analog of the desktop's Ctrl/Cmd key-up save. No timer: the value is settled the moment the fingers lift. A viewer that owned the gesture moved its picture, not `ru`, so nothing new is saved.
+    fn on_zoom_end(&mut self, ctx: &mut Context) {
+        if (ctx.viewport.ru - self.zoom_saved_ru).abs() > 0.001 {
+            self.zoom_saved_ru = ctx.viewport.ru;
+            self.save_zoom_setting(ctx.viewport.ru);
+        }
+    }
+
     fn on_zoom(&mut self, factor: f32, _anchor_x: Coord, anchor_y: Coord, ctx: &mut Context) {
         // The image viewer with its controls hidden owns the gesture: opsin's view zooms about the pointer (the point under it holds still). With the controls up `ru` already moved and the picture holds still; the screens behind the viewer are not drawn, so nothing scrolls either.
         if let Some(v) = self.viewer.as_mut() {
@@ -3389,15 +3397,6 @@ impl FluorApp<Px> for PhotonApp {
                 self.kick_fleet_history_sweep("periodic backstop");
                 self.reserve_fleet_forwards();
             }
-        }
-
-        // Android zoom persistence rides the pinch-RELEASE edge (Kotlin onScaleEnd → nativeOnScaleEnd), the exact analog of desktop's Ctrl/Cmd key-up save. No timers — the value is settled the moment the fingers lift.
-        #[cfg(target_os = "android")]
-        if crate::platform::jni_android::take_scale_ended()
-            && (ctx.viewport.ru - self.zoom_saved_ru).abs() > 0.001
-        {
-            self.zoom_saved_ru = ctx.viewport.ru;
-            self.save_zoom_setting(ctx.viewport.ru);
         }
 
         // IME-inset watch (Android): the surface never resizes for the keyboard, so an inset change arrives with NO resize event — diff it here and relayout the bottom-anchored widgets + repaint. Cheap atomic read per tick.

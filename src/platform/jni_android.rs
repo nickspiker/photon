@@ -986,17 +986,14 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeImeReplace(
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnScaleEnd(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
-    _context_ptr: jlong,
+    context_ptr: jlong,
 ) {
-    SCALE_ENDED.store(true, std::sync::atomic::Ordering::Relaxed);
+    // The pinch-release edge goes to the shell, which tells the app once (FluorApp::on_zoom_end), the same edge ferros's host gives: the zoom is kept there.
+    let Some(ctx) = get_context(context_ptr) else {
+        return;
+    };
+    ctx.shell.on_scale_end();
 }
-
-/// Pinch-release edge, drained once by the app's tick — the Android zoom-persist moment.
-pub fn take_scale_ended() -> bool {
-    SCALE_ENDED.swap(false, std::sync::atomic::Ordering::Relaxed)
-}
-
-static SCALE_ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(target_os = "android")]
 #[no_mangle]
