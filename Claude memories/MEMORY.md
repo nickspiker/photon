@@ -9,6 +9,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [render never touches vault](feedback_render_never_touches_vault.md) — HARD: UI thread makes no vault call
 - [no reload mid-ceremony](feedback_reload_mid_ceremony.md) — HARD: never dev.sh/deploy mid-CLUTCH or mid-WAVE; check the log
 - [commit trailer](commit-trailer-built-with.md) — "Built with Claude <model>"; never Co-Authored-By
+- [quote commit ids](feedback_quote_commit_ids.md) — copy ids from git output in the same turn; never type one from memory
 - [Nick publishes](nick-publishes.md) — Nick initiates; when asked, deploy.sh + RELEASE_NOTES.md
 - [deploy detached](feedback_deploy_detached.md) — HARD: deploy.sh via setsid nohup + log watch, never a tool-backgrounded command (10 min cap)
 - [dev build = published](feedback_dev_build_means_published.md) — HARD: "dev build" means the dev-channel publish; a local compile is a compile check
