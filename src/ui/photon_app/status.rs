@@ -3265,6 +3265,15 @@ impl PhotonApp {
                             }
                         }
                     }
+                    // A beacon under our own handle while one of our Photon siblings has no proven path is answered with ours, every time: a session-start beacon reaches only the devices up at that moment, so two Photons that started apart (the desktop reloading while the Pro's Photon beaconed, 2026-11-17) would otherwise never meet. The answers stop once every sibling has a path.
+                    if Some(handle_proof) == self.our_handle_proof()
+                        && self.contacts.iter().any(|c| c.is_sibling && !c.locked_out && c.validated_path.is_none() && !self.sibling_awaits_list(c))
+                    {
+                        let to = std::net::SocketAddr::from((local_ip, port));
+                        if !joiner_beacon_reply.contains(&to) {
+                            joiner_beacon_reply.push(to);
+                        }
+                    }
                     // A beacon names its device (ke), so an own-handle beacon from one of our sibling devices says which one it is: its source is that sibling's LAN address, and the sibling is pinged there straight away. This is how a ferros Photon, which reaches neither fgtw.org's phonebook nor the relay, and its siblings find each other on one network (2026-11-16: the desktop and the Pro's Photon only ever tried the relay, and neither ever heard the other).
                     if let Some(dk) = device_pubkey.filter(|_| Some(handle_proof) == self.our_handle_proof()) {
                         if let Some(idx) = self.contacts.iter().position(|c| c.is_sibling && c.device_key() == Some(dk)) {

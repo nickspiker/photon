@@ -960,6 +960,7 @@ impl PhotonApp {
                 && !c.clutch_yielded
                 && c.clutch_round_started
                     .map_or(true, |t| now - t >= CLUTCH_ROUND_TTL_OSC)
+                && !self.sibling_awaits_list(c)
                 && !ceremony_parked_by(c, our_device, &siblings)
         });
         if next_idx.is_none() && sibling_probe_pending && !self.keygen_fleet_gate_holding {

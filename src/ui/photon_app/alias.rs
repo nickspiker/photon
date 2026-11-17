@@ -140,6 +140,14 @@ impl PhotonApp {
         super::AppState::Launch(super::LaunchState::Fresh)
     }
 
+    /// A sibling that waits for the alias's list: one that never wove, under a held list that does not name it. A fleet member that is not a Photon (ferros's identity service, baf3dec7) never joins the list and never answers a ceremony; offering it one cost a 573 KB offer it took whole and died on (the Pro, 2026-11-17). A new Photon of ours joins the list at its first settle and weaves then; a sibling that already wove is never held back.
+    pub(super) fn sibling_awaits_list(&self, c: &crate::types::Contact) -> bool {
+        c.is_sibling
+            && c.clutch_state != crate::types::ClutchState::Complete
+            && self.alias_list.is_some()
+            && c.device_key().is_some_and(|d| !self.alias_listed_devices().contains(&d))
+    }
+
     /// The devices the alias's list names (this device among them).
     pub(super) fn alias_listed_devices(&self) -> Vec<[u8; 32]> {
         self.alias_list.as_ref().map(|(_, l)| l.devices.clone()).unwrap_or_default()

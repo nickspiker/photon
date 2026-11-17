@@ -1403,6 +1403,10 @@ impl PhotonApp {
                 parked += 1;
                 continue;
             }
+            // A sibling that waits for the alias's list (a fleet member that is not a Photon, or one not yet listed) is no Photon to push rows to.
+            if self.sibling_awaits_list(sib) {
+                continue;
+            }
             let (primary, alt, relay_to) = match sib.race_addrs() {
                 Some((p, a)) => (
                     p,
