@@ -184,7 +184,7 @@ impl FluorApp<Px> for PhotonApp {
     fn on_window_shown(&mut self) {
         #[cfg(not(target_os = "android"))]
         crate::platform::desktop_notify::set_window_visible(true);
-        self.scene_dirty = true;
+        self.dirty_from("the host's on_window_shown");
     }
 
     fn on_user_event(&mut self, event: PhotonEvent, _ctx: &mut Context) -> EventResponse {
@@ -663,7 +663,7 @@ impl FluorApp<Px> for PhotonApp {
             self.save_zoom_setting(ctx.viewport.ru);
         }
         // The settled frame: the marks the pinch drew quick render properly at their size.
-        self.scene_dirty = true;
+        self.dirty_from("the host's on_zoom_end");
         ctx.window.request_redraw();
     }
 
@@ -673,7 +673,7 @@ impl FluorApp<Px> for PhotonApp {
             if let Some(view) = v.view.as_mut().filter(|view| view.plain()) {
                 view.zoom_around(factor, _anchor_x, anchor_y);
             }
-            self.scene_dirty = true;
+            self.dirty_from("the host's on_zoom");
             ctx.window.request_redraw();
             return;
         }
@@ -2084,16 +2084,16 @@ impl FluorApp<Px> for PhotonApp {
         if !matches!(event, Event::CursorMoved { .. } | Event::MouseWheel { .. }) && !compose_typing {
             if !self.scene_dirty {
                 self.dirty_event = match event {
-                    Event::CloseRequested => "CloseRequested",
-                    Event::Resized { .. } => "Resized",
-                    Event::CursorLeft => "CursorLeft",
-                    Event::MouseInput { .. } => "MouseInput",
-                    Event::KeyboardInput { .. } => "KeyboardInput",
-                    Event::ModifiersChanged(_) => "ModifiersChanged",
-                    Event::Focused(_) => "Focused",
-                    Event::Ime(_) => "Ime",
-                    Event::DroppedFile(_) => "DroppedFile",
-                    Event::MenuItem(_) => "MenuItem",
+                    Event::CloseRequested => "the event CloseRequested",
+                    Event::Resized { .. } => "the event Resized",
+                    Event::CursorLeft => "the event CursorLeft",
+                    Event::MouseInput { .. } => "the event MouseInput",
+                    Event::KeyboardInput { .. } => "the event KeyboardInput",
+                    Event::ModifiersChanged(_) => "the event ModifiersChanged",
+                    Event::Focused(_) => "the event Focused",
+                    Event::Ime(_) => "the event Ime",
+                    Event::DroppedFile(_) => "the event DroppedFile",
+                    Event::MenuItem(_) => "the event MenuItem",
                     _ => "another event",
                 };
             }
@@ -2160,7 +2160,7 @@ impl FluorApp<Px> for PhotonApp {
                     let f = s.band.frac_at(ctx.cursor_x as f32);
                     if f != s.frac {
                         s.frac = f;
-                        self.scene_dirty = true;
+                        self.dirty_from("a pointer move");
                         changed = true;
                     }
                 }
@@ -2174,7 +2174,7 @@ impl FluorApp<Px> for PhotonApp {
                 if let Some(i) = self.keep_drag {
                     self.keep_sliders[i].set_value_from_x(ctx.cursor_x as f32);
                     if self.keep_sliders[i].take_change() {
-                        self.scene_dirty = true;
+                        self.dirty_from("a pointer move");
                         changed = true;
                     }
                 }
@@ -2187,14 +2187,14 @@ impl FluorApp<Px> for PhotonApp {
                     if self.avatar_hovered != want {
                         self.avatar_hovered = want;
                         // The avatar hover hint is CONTENT (drawn text, not an overlay tint), so its flip needs the full-viewport frame CursorMoved otherwise avoids.
-                        self.scene_dirty = true;
+                        self.dirty_from("a pointer move");
                         changed = true;
                     }
                     // A group's big avatar on its Manage page shows the same hint (group_avatar.rs).
                     let want = matches!(self.state, AppState::ConversationPanel(crate::ui::state::ConversationPage::Manage)) && self.conv_panel_btn_base != HIT_NONE && new_hit == self.conv_panel_btn_base + super::conv_panel::SLOT_AVATAR;
                     if self.group_face_hovered != want {
                         self.group_face_hovered = want;
-                        self.scene_dirty = true;
+                        self.dirty_from("a pointer move");
                         changed = true;
                     }
                 }
@@ -4047,7 +4047,7 @@ impl FluorApp<Px> for PhotonApp {
                 let from = if self.dirty_after_render {
                     "the previous render left it set".to_string()
                 } else if !self.dirty_event.is_empty() {
-                    format!("the event {}", self.dirty_event)
+                    self.dirty_event.to_string()
                 } else if self.dirty_before_tick {
                     "outside the tick (a service drain or a handler)".to_string()
                 } else {
@@ -4279,7 +4279,7 @@ impl PhotonApp {
             };
             // Not while a finger (or button) drags the pane: the rows passing under it are not being hovered, and the full repaint would defeat the scroll memmove every frame.
             if (row_hover(new_hit) || row_hover(self.hover_hit)) && !self.press_held {
-                self.scene_dirty = true;
+                self.dirty_from("a hover change");
             }
             self.hover_hit = new_hit;
             let mut is_tb = false;
@@ -5302,6 +5302,6 @@ impl PhotonApp {
         crate::logf!("PEOPLE: {} of the person's people handed in, {} new contact row(s)", people.len(), added);
         self.people = people;
         self.reseed_contact_pubkeys();
-        self.scene_dirty = true;
+        self.dirty_from("the people handed in");
     }
 }

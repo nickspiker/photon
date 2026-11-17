@@ -3868,6 +3868,14 @@ impl PhotonApp {
     }
 
     /// Remember which line asked for this tick's redraw (deduplicated, capped) — read by the storm report in `tick`.
+    /// Mark the scene dirty from outside the tick, naming who did for the idle whole-frame log (`damage_rect`): the first to raise it from clear is the one named.
+    pub(crate) fn dirty_from(&mut self, who: &'static str) {
+        if !self.scene_dirty {
+            self.dirty_event = who;
+        }
+        self.scene_dirty = true;
+    }
+
     pub(crate) fn note_redraw(&mut self, line: u32) {
         if self.redraw_why.len() < 32 && !self.redraw_why.contains(&line) {
             self.redraw_why.push(line);
