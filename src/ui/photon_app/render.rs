@@ -2308,6 +2308,10 @@ impl PhotonApp {
                 if row_top + rh <= 0 || row_top >= buf_h as isize {
                     continue; // fully outside the visible content area (rows now scroll up to the top, not just `rows.y0`)
                 }
+                // A MEMMOVE frame repaints only the exposed band and the overlays: a row a whole row's height clear of them (room for its glow) was moved with the pane, hit stamps and all, and is not built at all (ferros Pro 2026-11-17: the row walk was 12-16 ms of a frame that drew a 20-row band).
+                if scroll_hint.is_some() && (row_top + 2 * rh <= rows_clip.y_start as isize || row_top - rh >= rows_clip.y_end as isize) {
+                    continue;
+                }
                 // Hover/press vocabulary (block tints vetoed): hover = the NAME goes heavier + the presence ring strokes 1px wider; press = the logo's white-glow halo blooms behind the name. No fills, no deltas — weight, stroke, and light.
                 let row_hit_here = view.hit;
                 let row_pressed =
