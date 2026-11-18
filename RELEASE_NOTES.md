@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v154
 - **Joining a group works even if your first answer got lost.** If your "join" never reached the person who invited you, you could see the members but never any messages, and tapping Join again did nothing; now the next invitation sends your join again, and you can always tap Join until you are in.
 - **Friends' pictures stop disappearing.** When a friend's picture changed, Photon threw away the copy it had before the new one arrived, so pictures vanished one by one after restarts; now the old picture stays until the new one is ready.
 - **Your devices share your friends' pictures.** If one of your devices is missing a friend's picture, it asks your other devices for theirs, and only your own devices ever pass a friend's picture along.
@@ -15,6 +17,8 @@ One sentence per line, however long; plain language for the person who installs 
 - **Your identity survives a change of devices.** When your devices change the key they share, the key your identity rests on now moves to the new one too; before, it could be left locked under the old one.
 - **Smoother scrolling.** A scrolling list now redraws only the part that changed.
 - **Photon on ferros.** A Photon on ferros now receives your contacts and conversations from your other devices, sealed for it alone, and sends through them; it never holds your friendship keys, so removing it cuts it off.
+
+Built from photon bf0c42e1 · chirp b01db995 · fgtw 67ef4455 · fluor ebfc14cb · ihi 92796ee6 · kete d04e2151 · limbus 30ab5cc3 · manifestus add362f6 · nunc b518ad11 · opsin 595cf0c9 · rarangi 387b44ab · spirix b12187fb · tapuwae 0bc864d7 · tohu 7df2ac9b · voca 04dcf2df · vsf 8602d074
 
 ## v153
 - **Friends see your groups again after a device changes keys.** When one of your devices moved to a new key, the group records it had signed were refused by your friends, so a friend you invited could see the members but none of the messages; your devices now sign those records again with a current key.
