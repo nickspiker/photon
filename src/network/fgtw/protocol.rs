@@ -4800,3 +4800,23 @@ mod grp_relay_tests {
         assert!(parse_grp_relay_vsf(&bent).is_err(), "a changed byte must not verify");
     }
 }
+
+/// Build an `avatar_want` — "send me your copy of friend `who`'s avatar", to a sibling device of ours (fgtw::protocol::avatar_want).
+pub fn build_avatar_want_vsf(handle_proof: &[u8; 32], who: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
+    fgtw::protocol::avatar_want(handle_proof, who, &envelope_signer(device_secret), vsf::eagle_time_oscillations())
+}
+
+/// Parse + verify an `avatar_want`: (handle proof, the friend's party id, sender device pubkey).
+pub fn parse_avatar_want_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32], [u8; 32]), String> {
+    fgtw::protocol::parse_avatar_want(vsf_bytes)
+}
+
+/// Build an `avatar_give` — friend `who`'s avatar as we hold it, sealed for one sibling device (fgtw::protocol::avatar_give).
+pub fn build_avatar_give_vsf(handle_proof: &[u8; 32], who: &[u8; 32], sealed: &[u8], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
+    fgtw::protocol::avatar_give(handle_proof, who, sealed, &envelope_signer(device_secret), vsf::eagle_time_oscillations())
+}
+
+/// Parse + verify an `avatar_give`: (handle proof, the friend's party id, the sealed avatar, sender device pubkey).
+pub fn parse_avatar_give_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32], Vec<u8>, [u8; 32]), String> {
+    fgtw::protocol::parse_avatar_give(vsf_bytes)
+}

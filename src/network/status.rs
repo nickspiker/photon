@@ -568,6 +568,19 @@ pub enum StatusUpdate {
         sealed: Vec<u8>,
         sender_pubkey: DevicePubkey,
     },
+    /// A sibling asks for our copy of friend `who`'s avatar (`avatar_want`).
+    AvatarWanted {
+        handle_proof: [u8; 32],
+        who: [u8; 32],
+        sender_pubkey: DevicePubkey,
+    },
+    /// A sibling's copy of friend `who`'s avatar, sealed for us (`avatar_give`).
+    AvatarGiven {
+        handle_proof: [u8; 32],
+        who: [u8; 32],
+        sealed: Vec<u8>,
+        sender_pubkey: DevicePubkey,
+    },
     /// A departure frame (`depart_req` or `depart_deny`), whole, for the Depart machine (fgtw::flow) to open and check: the bytes, where they came from, and the signer the cheap parse read.
     DepartFrame {
         bytes: Vec<u8>,
@@ -2343,6 +2356,10 @@ async fn run_checker(
                                             StatusUpdate::FleetStatePushed { handle_proof, sealed, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) },
                                             &event_proxy_recv,
                                         );
+                                    } else if let Ok((handle_proof, who, sender_pubkey)) = crate::network::fgtw::protocol::parse_avatar_want_vsf(&data) {
+                                        send_status_update(&status_tx_recv, StatusUpdate::AvatarWanted { handle_proof, who, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) }, &event_proxy_recv);
+                                    } else if let Ok((handle_proof, who, sealed, sender_pubkey)) = crate::network::fgtw::protocol::parse_avatar_give_vsf(&data) {
+                                        send_status_update(&status_tx_recv, StatusUpdate::AvatarGiven { handle_proof, who, sealed, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) }, &event_proxy_recv);
                                     } else if let Ok((handle_proof, blob, sender_pubkey)) = crate::network::fgtw::protocol::parse_fanout_resp_vsf(&data) {
                                         send_status_update(
                                             &status_tx_recv,
@@ -3030,6 +3047,19 @@ async fn run_checker(
                                     StatusUpdate::FleetStatePushed { handle_proof, sealed, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) },
                                     &event_proxy_recv,
                                 );
+                                continue;
+                            }
+                            // A friend's avatar among our own devices: the ask, and a small answer (a large one arrives reassembled, above).
+                            if let Ok((handle_proof, who, sender_pubkey)) = crate::network::fgtw::protocol::parse_avatar_want_vsf(msg_bytes) {
+                                let ack_bytes = pt_recv.lock().unwrap().build_packet_ack(msg_bytes);
+                                udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                send_status_update(&status_tx_recv, StatusUpdate::AvatarWanted { handle_proof, who, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) }, &event_proxy_recv);
+                                continue;
+                            }
+                            if let Ok((handle_proof, who, sealed, sender_pubkey)) = crate::network::fgtw::protocol::parse_avatar_give_vsf(msg_bytes) {
+                                let ack_bytes = pt_recv.lock().unwrap().build_packet_ack(msg_bytes);
+                                udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                send_status_update(&status_tx_recv, StatusUpdate::AvatarGiven { handle_proof, who, sealed, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) }, &event_proxy_recv);
                                 continue;
                             }
                             if let Ok((handle_proof, blob, sender_pubkey)) = crate::network::fgtw::protocol::parse_fanout_resp_vsf(msg_bytes) {

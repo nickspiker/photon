@@ -349,6 +349,8 @@ impl PhotonApp {
                 StatusUpdate::BindReqFrame { .. } => "BindReqFrame",
                 StatusUpdate::FanoutReceived { .. } => "FanoutReceived",
                 StatusUpdate::FleetStatePushed { .. } => "FleetStatePushed",
+                StatusUpdate::AvatarWanted { .. } => "AvatarWanted",
+                StatusUpdate::AvatarGiven { .. } => "AvatarGiven",
                 StatusUpdate::FleetChainReceived { .. } => "FleetChainReceived",
                 StatusUpdate::AddressPushed { .. } => "AddressPushed",
                 StatusUpdate::BindSelectReceived { .. } => "BindSelectReceived",
@@ -478,6 +480,9 @@ impl PhotonApp {
         let mut fanouts_after: Vec<([u8; 32], Vec<u8>, [u8; 32])> = Vec::new();
         // Fleet state a sibling pushed us (sealed, sender) — opened and merged after the loop.
         let mut fstate_pushes_after: Vec<(Vec<u8>, [u8; 32])> = Vec::new();
+        // A friend's avatar among our own devices, asked or answered by a sibling: handled after the loop (it needs &mut self).
+        let mut avatar_wants_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
+        let mut avatar_gives_after: Vec<([u8; 32], Vec<u8>, [u8; 32])> = Vec::new();
         // Siblings that just came online, owed our fleet state.
         let mut fstate_to_siblings_after: Vec<[u8; 32]> = Vec::new();
         // Siblings that answered a ping this drain: the Depart machine hands them a departure frame they have not taken (fgtw::flow Reachable).
@@ -4505,6 +4510,17 @@ impl PhotonApp {
                         fstate_pushes_after.push((sealed, sender_pubkey.key));
                     }
                 }
+                // A friend's avatar among our own devices: only a live sibling of ours asks or answers.
+                StatusUpdate::AvatarWanted { handle_proof, who, sender_pubkey } => {
+                    if self.our_handle_proof() == Some(handle_proof) && self.contacts.iter().any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)) {
+                        avatar_wants_after.push((who, sender_pubkey.key));
+                    }
+                }
+                StatusUpdate::AvatarGiven { handle_proof, who, sealed, sender_pubkey } => {
+                    if self.our_handle_proof() == Some(handle_proof) && self.contacts.iter().any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)) {
+                        avatar_gives_after.push((who, sealed, sender_pubkey.key));
+                    }
+                }
                 StatusUpdate::FanoutReceived { handle_proof, blob, sender_pubkey, .. } => {
                     let joining = self.session.is_none() && self.add_join_hp == Some(handle_proof);
                     let ours = self.our_handle_proof() == Some(handle_proof) && self.contacts.iter().any(|c| c.is_sibling && c.knows_device(&sender_pubkey.key));
@@ -5895,6 +5911,12 @@ impl PhotonApp {
             self.add_step(fgtw::flow::Event::Reachable { from: dev });
         }
         // A sibling's state, opened under the fleet key we hold and merged exactly as a slot read would be; one we cannot open waits for the key sync, and the next push or online edge carries it again.
+        for (who, sender) in avatar_wants_after {
+            self.answer_avatar_want(who, sender);
+        }
+        for (who, sealed, sender) in avatar_gives_after {
+            self.take_avatar_give(who, sealed, sender);
+        }
         for (sealed, sender) in fstate_pushes_after {
             // An alias sibling's state is sealed under the alias's state key (a ferros Photon holds no fleet key); a member sibling's under the fleet key.
             let fleet = self.fleet_members_held();

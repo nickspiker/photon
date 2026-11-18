@@ -1454,6 +1454,114 @@ impl PhotonApp {
         });
     }
 
+    /// The key a friend's avatar travels under between this device and sibling `device`: the pair key for an alias sibling (alias_seal_key), else one from the fleet key both hold.
+    fn sibling_avatar_key(&self, device: &[u8; 32]) -> Option<[u8; 32]> {
+        self.alias_seal_key(device, b"avatar_give")
+            .or_else(|| self.fleet_key_cached().map(|k| blake3::derive_key("photon 2026-11-17 a friend's avatar between siblings", &k)))
+    }
+
+    /// A FRIEND'S AVATAR FROM OUR OWN DEVICES (the owner 2026-11-17: "it's literally bittorrent"): this device has no picture for friend `hp`, so it asks each of our siblings for theirs, once a session. Only ever among one person's own devices: a friend's picture is never handed to anyone that friend did not share it with.
+    pub(super) fn want_avatar_from_siblings(&mut self, hp: [u8; 32]) {
+        if self.avatar_want_sent.contains(&hp) {
+            return;
+        }
+        let (Some(who), Some(our_hp), Some(secret)) = (
+            self.contacts.iter().find(|c| !c.is_sibling && c.handle_proof == hp).map(|c| c.handle_hash),
+            self.our_handle_proof(),
+            self.device_keypair.as_ref().map(|kp| *kp.secret.as_bytes()),
+        ) else {
+            return;
+        };
+        let sibs: Vec<[u8; 32]> = self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out).filter_map(|c| c.device_key()).filter(|d| self.sibling_avatar_key(d).is_some()).collect();
+        if sibs.is_empty() {
+            return;
+        }
+        let Ok(frame) = crate::network::fgtw::protocol::build_avatar_want_vsf(&our_hp, &who, &secret) else {
+            return;
+        };
+        self.avatar_want_sent.insert(hp);
+        crate::logf!("AVATAR: no picture held for {}; asking {} sibling(s) for theirs", crate::fp(&hp), sibs.len());
+        for d in sibs {
+            self.dispatch_frame_to_sibling(frame.clone(), Some(d));
+        }
+    }
+
+    /// A sibling asks for our copy of friend `who`'s avatar: read it off the UI thread and answer it sealed for that sibling alone; nothing held, no answer.
+    pub(super) fn answer_avatar_want(&mut self, who: [u8; 32], sender: [u8; 32]) {
+        if !self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == who) {
+            return;
+        }
+        let (Some(key), Some(our_hp), Some(secret), Some(storage), Some(checker)) = (
+            self.sibling_avatar_key(&sender),
+            self.our_handle_proof(),
+            self.device_keypair.as_ref().map(|kp| *kp.secret.as_bytes()),
+            self.storage.clone(),
+            self.status_checker.as_ref(),
+        ) else {
+            return;
+        };
+        let Some(sib) = self.contacts.iter().find(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender)) else {
+            return;
+        };
+        let unspecified = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
+        let (primary, alt, relay_to) = match sib.race_addrs() {
+            Some((p, a)) => (p, a, relay_unless_direct_trusted(sib, crate::network::udp::get_local_ip())),
+            None => (unspecified, None, sib.relay_device_list()),
+        };
+        let dispatch = checker.history_dispatch();
+        queue_job(&self.seal_job_tx, move || {
+            let Some(bytes) = storage.read_addr(&crate::storage::vault_key("avatar", &who)).ok().flatten() else {
+                return;
+            };
+            let frame = kete::encrypt_bytes(&bytes, &key).map_err(|e| e.to_string()).and_then(|sealed| crate::network::fgtw::protocol::build_avatar_give_vsf(&our_hp, &who, &sealed, &secret));
+            match frame {
+                Ok(vsf_bytes) => {
+                    crate::logf!("AVATAR: our copy of {}'s picture to sibling {}", hex::encode(&who[..4]), crate::fp(&sender));
+                    crate::log_err!(dispatch.send(crate::network::status::HistorySendRequest { peer_addr: primary, alt_addr: alt, recipient_pubkey: sender, relay_to, vsf_bytes, tag: None }), "send a friend's avatar to a sibling");
+                }
+                Err(e) => crate::logf!("AVATAR: the answer to a sibling's ask did not build ({})", e),
+            }
+        });
+    }
+
+    /// A sibling's copy of friend `who`'s avatar: opened, decoded (either form the cache holds) and kept here off the UI thread, then shown as any fetched avatar is.
+    pub(super) fn take_avatar_give(&mut self, who: [u8; 32], sealed: Vec<u8>, sender: [u8; 32]) {
+        let Some(key) = self.sibling_avatar_key(&sender) else {
+            return;
+        };
+        let Some((hp, pin)) = self.contacts.iter().find(|c| !c.is_sibling && c.handle_hash == who).map(|c| (c.handle_proof, c.avatar_pin)) else {
+            return;
+        };
+        let Some(storage) = self.storage.clone() else {
+            return;
+        };
+        let tx = self.avatar_dl_tx.clone();
+        let wake = self.event_proxy.clone();
+        queue_job(&self.seal_job_tx, move || {
+            let Ok(bytes) = kete::decrypt_bytes(&sealed, &key) else {
+                return crate::logf!("AVATAR: a sibling's copy of {}'s picture did not open — dropped", hex::encode(&who[..4]));
+            };
+            let pixels = crate::ui::avatar_scoped::decode_avatar_plaintext(&bytes).map(|(_, px)| px).or_else(|| {
+                (pin != [0u8; 64])
+                    .then(|| {
+                        let mut k = [0u8; 32];
+                        k.copy_from_slice(&pin[..32]);
+                        crate::ui::avatar::load_avatar_from_bytes_with_key(&bytes, &k).map(|(_, px)| px)
+                    })
+                    .flatten()
+            });
+            let Some(px) = pixels else {
+                return crate::logf!("AVATAR: a sibling's copy of {}'s picture does not decode here — dropped", hex::encode(&who[..4]));
+            };
+            crate::log_err!(storage.write_addr(&crate::storage::vault_key("avatar", &who), &bytes), "keep a sibling's copy of a friend's avatar");
+            crate::logf!("AVATAR: {}'s picture from a sibling — kept and shown", hex::encode(&who[..4]));
+            crate::log_err!(tx.send(crate::ui::avatar::AvatarDownloadResult { owner: Some(hp), pixels: Some(px), name: None }), "a sibling's avatar to the UI");
+            if let Some(w) = wake {
+                super::wake_ui(&w);
+            }
+        });
+    }
+
     /// Drain finished braid decrypts and commit each — the other half of the ChatMessage arm.
     pub(super) fn drain_braid_rx(&mut self) {
         while let Ok(d) = self.braid_rx_rx.try_recv() {
@@ -3312,6 +3420,7 @@ impl PhotonApp {
     }
 
     pub(super) fn drain_avatar_downloads(&mut self) {
+        let mut wanted_from_siblings: Vec<[u8; 32]> = Vec::new();
         while let Ok(result) = self.avatar_dl_rx.try_recv() {
             // PREFERRED-NAME adoption first (independent of pixels — a blob can carry a name while the picture fails to decode). Self: the wall blob is the reinstall heal — write the recovered name into fstate iff local profile.name is BLANK (a set name always outranks the recovered copy; never clobber). Contact: the name came sealed under the pin THEY handed us, so adopt it into published_name like the pong slot does.
             if let Some(name) = result.name.clone().filter(|n| !n.is_empty()) {
@@ -3349,6 +3458,10 @@ impl PhotonApp {
                 }
             }
             let Some(vsf_rgb) = result.pixels else {
+                // A friend's picture found nowhere here: our own devices may still hold it (want_avatar_from_siblings, once a session).
+                if let Some(hp) = result.owner {
+                    wanted_from_siblings.push(hp);
+                }
                 // Own-avatar decode failed (poisoned vault bytes) — arm the FGTW recovery the old synchronous load fired inline. Only the boot decode worker sends owner-None with no pixels (the recover worker sends success only), so this can't loop.
                 if result.owner.is_none() && result.name.is_none() {
                     if let Some(seed) = self.messenger_root() {
@@ -3382,6 +3495,9 @@ impl PhotonApp {
                     crate::fp(&contact.handle_proof)
                 );
             }
+        }
+        for hp in wanted_from_siblings {
+            self.want_avatar_from_siblings(hp);
         }
     }
 

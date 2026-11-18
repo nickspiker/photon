@@ -1882,6 +1882,8 @@ pub struct PhotonApp {
     avatar_dl_started: crate::linear_map::SortedSet<[u8; 32]>,
     /// Mutual peers we've sent a direct P2P AvatarRequest to, mapped to the eagle-time we sent it. The per-tick sweep asks each mutual peer once, then — if no AvatarResponse has installed an avatar within `AVATAR_P2P_FALLBACK_OSC` — falls back to FGTW. So a friend's avatar comes from the friend first, and FGTW only covers the case where the friend is offline or avatar-less.
     avatar_req_pending: crate::linear_map::LinearMap<[u8; 32], i64>,
+    /// Friends whose picture we asked our siblings for this session (want_avatar_from_siblings): once each.
+    avatar_want_sent: crate::linear_map::SortedSet<[u8; 32]>,
     /// Request ids WE minted for history pages, rid → (the conversation the request was FOR, sent osc, the device whose page answered it). The AUTHORITATIVE page-match: the per-conversation `in_flight` rid alone starved recovery when two contact rows resolved the same peer (field, 2026-08-10 — a duplicated contact meant the page's token resolved to one conversation while the rid lived on the OTHER's record, so every served page dropped "rid unmatched" forever). A page matching ANY rid here was asked for by us, whatever contact the token resolves to today.
     /// An answered entry stays until the sweep, so the twin every page has (PT plus the relay copy) is recognised and dropped silently; drive_history_recovery sweeps answered entries after one in-flight timeout and unanswered ones after eight.
     hist_rid_map: crate::linear_map::LinearMap<[u8; 32], (crate::types::ConversationId, i64, Option<[u8; 32]>)>,
@@ -3254,6 +3256,7 @@ impl PhotonApp {
             fleet_rotated_rx: std::sync::mpsc::channel().1,
             avatar_dl_started: crate::linear_map::SortedSet::new(),
             avatar_req_pending: crate::linear_map::LinearMap::new(),
+            avatar_want_sent: crate::linear_map::SortedSet::new(),
             hist_rid_map: crate::linear_map::LinearMap::new(),
             hist_relay_wanted: crate::linear_map::SortedSet::new(),
             keygen_fleet_gate_holding: false,
