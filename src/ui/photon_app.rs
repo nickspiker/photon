@@ -3014,6 +3014,8 @@ pub struct PhotonApp {
     alias_chains_owed: Vec<[u8; 32]>,
     /// The alias's device list as last checked, beside its binding: the devices that are this person's Photons (PHOTON.md M3).
     alias_list: Option<(Vec<u8>, fgtw::alias_devices::DeviceList)>,
+    /// The sign-outs that back the devices the kept list leaves out (fgtw alias_devices::SignOut), kept beside it in the vault and carried to fgtw.org at every publish.
+    alias_signouts: Vec<fgtw::alias_devices::SignOut>,
     /// A settle owed to fgtw.org after one did not reach it: (tries so far, not before this Eagle time), tried again on the next network edge.
     alias_retry: Option<(u32, i64)>,
     /// The devices outside the membership our chain has locked out (fgtw OpKind::LockListed), as the last fold this device saw read them: refused like the fleet-locked set (photon_app/alias.rs).
@@ -3834,6 +3836,7 @@ impl PhotonApp {
             alias_pairs_rx: None,
             alias_chains_owed: Vec::new(),
             alias_list: None,
+            alias_signouts: Vec::new(),
             alias_retry: None,
             chain_listed_locked: Vec::new(),
             alias_lock_rx: None,

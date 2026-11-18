@@ -6,7 +6,7 @@
 
 use super::fleet::{held_chain, PhotonTransport, SigningBundle};
 use crate::crypto::photon_keys::PhotonKeys;
-use fgtw::alias_devices::DeviceList;
+use fgtw::alias_devices::{DeviceList, SignOut};
 use fgtw::pq::FleetSigner;
 
 /// What one settle of the alias came to.
@@ -85,7 +85,7 @@ fn eggs(device_secret: &[u8; 32]) -> Vec<Vec<u8>> {
 /// Settle the person key and the alias, sign the binding, and put this device in the alias's device list.
 /// `fleet_key` opens the fleet's space; `vault_seed` addresses the fleet keys a rotation left behind on this device ([`keep_prior_fleet_key`]), under which the person key and the space are found too, and the person key is sealed again under `fleet_key`; `signer` is this device's full bundle (every egg the chain says it holds).
 /// Err when the person key cannot be had: fgtw.org did not answer and no key is held (never minted on a pull that did not complete), the key is sealed under a fleet key this device does not hold, or the chain is not held.
-pub fn settle(identity_seed: &[u8; 32], vault_seed: &[u8; 32], handle_proof: &[u8; 32], fleet_key: &[u8; 32], signer: &SigningBundle, device_secret: &[u8; 32]) -> Result<AliasReady, String> {
+pub fn settle(identity_seed: &[u8; 32], vault_seed: &[u8; 32], handle_proof: &[u8; 32], fleet_key: &[u8; 32], signer: &SigningBundle, device_secret: &[u8; 32], kept: &Kept) -> Result<AliasReady, String> {
     let vault = crate::storage::device_vault().ok_or("no vault")?;
     let me = signer.keypair().public.to_bytes();
     let now = crate::network::time_base::now_osc();
@@ -165,7 +165,7 @@ pub fn settle(identity_seed: &[u8; 32], vault_seed: &[u8; 32], handle_proof: &[u
     let binding = binding.to_vsf_bytes()?;
     let identity_pub = crate::crypto::clutch::identity_party_id(identity_seed);
     let keys = PhotonKeys::new(alias, *handle_proof, identity_pub, binding, Some(*identity_seed));
-    let joined = join_list(&keys, &me);
+    let joined = join_list(&keys, &me, kept);
     Ok(AliasReady { keys, joined })
 }
 
@@ -191,36 +191,34 @@ fn our_chain(handle_proof: &[u8; 32]) -> Option<fgtw::fleet::MembershipBlob> {
     }
 }
 
+/// The list this device last kept, with the sign-outs it carried: what a join measures fgtw.org's list against, so a device is never dropped from the list it acts on without a backing.
+#[derive(Clone, Default)]
+pub struct Kept {
+    pub list: Option<DeviceList>,
+    pub signouts: Vec<SignOut>,
+}
+
 /// What a join of the alias's device list came to.
 #[derive(Default)]
 pub struct Joined {
     /// The list as it stands with this device in it, beside its binding; None when fgtw.org could not be reached, the list could not be made, or this device is locked out.
+    /// Never one that leaves out a device the kept list named without that device's own sign-out or the chain backing it (fgtw alias_devices::unbacked_drops).
     pub list: Option<(Vec<u8>, DeviceList)>,
+    /// The sign-outs that ride with the list: the records backing each device it leaves out.
+    pub signouts: Vec<SignOut>,
     /// The devices outside the membership our chain has locked out (OpKind::LockListed), as the chain the join checked against reads them.
     pub listed_locked: Vec<[u8; 32]>,
     /// The chain has locked THIS device out: it joins nothing, and Photon on it signs out (the lock is the person's word that it is lost).
     pub self_locked: bool,
 }
 
-/// The devices an honest holder leaves out of the next revision of the list: every device the chain has locked out, and every device that was a member and has left the chain (a member's sign-out ends with its leaving the chain, and the list follows it).
-fn list_drops(chain: &fgtw::fleet::MembershipBlob) -> Vec<[u8; 32]> {
-    let mut drops = chain.all_locked().unwrap_or_default();
-    let members = chain.fold().unwrap_or_default();
-    for op in &chain.ops {
-        if matches!(op.kind, fgtw::fleet::OpKind::Genesis | fgtw::fleet::OpKind::Add) && !members.contains(&op.device_pubkey) && !drops.contains(&op.device_pubkey) {
-            drops.push(op.device_pubkey);
-        }
-    }
-    drops
-}
-
-/// fgtw.org's list, checked against `chain` for its signature (not its locks: this is the holder that prunes them): Ok(None) when fgtw.org holds none or one that is not the person's, Err when fgtw.org did not answer.
-fn fetch_signed_list(keys: &PhotonKeys, chain: &fgtw::fleet::MembershipBlob) -> Result<Option<DeviceList>, String> {
-    match fgtw::client::fetch_alias_devices(&PhotonTransport, &keys.handle_proof) {
-        Ok(Some((b, l))) => match fgtw::alias_devices::check_signed(&b, &l, chain) {
-            Ok(_) => Ok(Some(l)),
+/// fgtw.org's slot, its list checked against `chain` for its signature (not its locks: this is the holder that prunes them), with the sign-outs it carries: Ok(None) when fgtw.org holds none or one that is not the person's, Err when fgtw.org did not answer.
+fn fetch_signed_slot(keys: &PhotonKeys, chain: &fgtw::fleet::MembershipBlob) -> Result<Option<(DeviceList, Vec<SignOut>)>, String> {
+    match fgtw::client::fetch_alias_slot(&PhotonTransport, &keys.handle_proof) {
+        Ok(Some((b, l, s))) => match fgtw::alias_devices::check_signed(&b, &l, chain) {
+            Ok(_) => Ok(Some((l, s))),
             Err(e) => {
-                crate::logf!("ALIAS: fgtw.org's device list does not check ({}); starting from ours", e);
+                crate::logf!("ALIAS: fgtw.org's device list does not check ({}); starting from the one kept here", e);
                 Ok(None)
             }
         },
@@ -229,75 +227,109 @@ fn fetch_signed_list(keys: &PhotonKeys, chain: &fgtw::fleet::MembershipBlob) -> 
     }
 }
 
-/// This device in the alias's device list, on every platform (ferros's Photon with the alias and binding it was handed, the desktop and Android with their own): fetch the list, check it against the person's chain, add this device when missing and leave out every device the chain has locked out or seen leave (`list_drops`), publish. A stale answer means another device published first, so once more on top of theirs.
+/// The sign-outs known here and at fgtw.org, together.
+fn all_signouts(a: &[SignOut], b: &[SignOut]) -> Vec<SignOut> {
+    let mut out = a.to_vec();
+    for s in b {
+        if !out.contains(s) {
+            out.push(s.clone());
+        }
+    }
+    out
+}
+
+/// This device in the alias's device list, on every platform (ferros's Photon with the alias and binding it was handed, the desktop and Android with their own): fetch the slot, check it against the person's chain, add this device when missing, leave out every device the chain has locked out or seen leave (fgtw alias_devices::chain_drops), and put back every device the kept list named that fgtw.org's list leaves out with no backing, then publish. A stale answer means another device published first, so once more on top of theirs.
+/// THE OWNER'S RULE (2026-11-18, "the other needs the device present to sign itself out"): a list that merely omits a device is not a removal, since every Photon of the person holds the alias; the device stays in the list this device acts on and is published back, until its own signed sign-out or the chain backs its leaving.
 /// A device the chain has locked out joins nothing: a stolen one that signs a list naming itself is refused by every reader (alias_devices::check), and an honest one finds out here.
-pub fn join_list(keys: &PhotonKeys, device: &[u8; 32]) -> Joined {
+pub fn join_list(keys: &PhotonKeys, device: &[u8; 32], kept: &Kept) -> Joined {
     let Some(chain) = our_chain(&keys.handle_proof) else {
         crate::log("ALIAS: no chain of ours held or fetched; the device list is not joined");
         return Joined::default();
     };
     let listed_locked = chain.listed_locked().unwrap_or_default();
-    let drops = list_drops(&chain);
+    let drops = fgtw::alias_devices::chain_drops(&chain);
     if chain.all_locked().unwrap_or_default().contains(device) {
         crate::log("ALIAS: our chain has locked this device out; it joins no list");
-        return Joined { list: None, listed_locked, self_locked: true };
+        return Joined { listed_locked, self_locked: true, ..Joined::default() };
     }
+    let failed = |listed_locked: Vec<[u8; 32]>| Joined { listed_locked, ..Joined::default() };
     // Derived only when a list must be signed: the bundle is a Falcon and a SPHINCS+ keygen (about 380 ms on ferros), and a device already listed signs nothing.
     let mut alias_signer: Option<fgtw::pq::SigningBundle> = None;
     let now = crate::network::time_base::now_osc();
     for _ in 0..2 {
-        let held_list = match fetch_signed_list(keys, &chain) {
-            Ok(l) => l,
+        let (fetched, fetched_signouts) = match fetch_signed_slot(keys, &chain) {
+            Ok(Some((l, s))) => (Some(l), s),
+            Ok(None) => (None, Vec::new()),
             Err(e) => {
                 crate::logf!("ALIAS: {}", e);
-                return Joined { list: None, listed_locked, self_locked: false };
+                return failed(listed_locked);
             }
         };
-        let names_drop = held_list.as_ref().is_some_and(|l| l.devices.iter().any(|d| drops.contains(d)));
-        if let Some(l) = held_list.as_ref().filter(|l| l.contains(device) && !names_drop) {
-            return Joined { list: Some((keys.binding.clone(), l.clone())), listed_locked, self_locked: false };
+        let signouts = all_signouts(&fetched_signouts, &kept.signouts);
+        // Put back what fgtw.org's list leaves out with nothing backing it.
+        let restore = match (kept.list.as_ref(), fetched.as_ref()) {
+            (Some(k), Some(f)) => fgtw::alias_devices::unbacked_drops(k, f, &signouts, &chain),
+            _ => Vec::new(),
+        };
+        let base = fetched.clone().or_else(|| kept.list.clone());
+        let names_drop = base.as_ref().is_some_and(|l| l.devices.iter().any(|d| drops.contains(d)));
+        if let Some(l) = fetched.as_ref().filter(|l| l.contains(device) && !names_drop && restore.is_empty()) {
+            return Joined { list: Some((keys.binding.clone(), l.clone())), signouts: fgtw::alias_devices::carried(&signouts, l), listed_locked, self_locked: false };
         }
         let signer = alias_signer.get_or_insert_with(|| fgtw::alias::bundle(&keys.alias));
-        match DeviceList::revised(held_list.as_ref(), signer, &keys.handle_proof, Some(*device), &drops, now) {
-            None => return Joined { list: held_list.map(|l| (keys.binding.clone(), l)), listed_locked, self_locked: false },
-            Some(next) => match fgtw::client::publish_alias_devices(&PhotonTransport, &keys.binding, &next, now) {
-                Ok(()) => {
-                    let left = held_list.as_ref().map_or(0, |l| l.devices.iter().filter(|d| drops.contains(d)).count());
-                    crate::logf!("ALIAS: the device list published with this device in it ({} device(s), {} left out as locked or gone)", next.devices.len(), left);
-                    return Joined { list: Some((keys.binding.clone(), next)), listed_locked, self_locked: false };
-                }
-                Err(e) if e == "alias_devices: stale" => continue,
-                Err(e) => {
-                    crate::logf!("ALIAS: the device list publish failed ({})", e);
-                    return Joined { list: None, listed_locked, self_locked: false };
-                }
+        let mut adds = vec![*device];
+        adds.extend(restore.iter().copied());
+        // With nothing at fgtw.org to build on, the kept list is signed again at a new revision, so the slot is never left empty by a device that holds one.
+        let next = match DeviceList::revised(base.as_ref(), signer, &keys.handle_proof, &adds, &drops, now) {
+            Some(next) => next,
+            None if fetched.is_none() => match base.as_ref() {
+                Some(b) => DeviceList::sign(signer, &keys.handle_proof, now.max(b.revision + 1), b.devices.clone(), b.complete),
+                None => return failed(listed_locked),
             },
+            None => return Joined { list: fetched.map(|l| (keys.binding.clone(), l)), signouts, listed_locked, self_locked: false },
+        };
+        let carried = fgtw::alias_devices::carried(&signouts, &next);
+        match fgtw::client::publish_alias_slot(&PhotonTransport, &keys.binding, &next, &carried, now) {
+            Ok(()) => {
+                let left = base.as_ref().map_or(0, |l| l.devices.iter().filter(|d| drops.contains(d)).count());
+                crate::logf!("ALIAS: the device list published with this device in it ({} device(s), {} left out as locked or gone, {} put back with no sign out behind their leaving)", next.devices.len(), left, restore.len());
+                return Joined { list: Some((keys.binding.clone(), next)), signouts: carried, listed_locked, self_locked: false };
+            }
+            Err(e) if e == "alias_devices: stale" => continue,
+            Err(e) => {
+                crate::logf!("ALIAS: the device list publish failed ({})", e);
+                return failed(listed_locked);
+            }
         }
     }
     crate::log("ALIAS: the device list stayed stale after two publishes; joined at the next settle");
-    Joined { list: None, listed_locked, self_locked: false }
+    failed(listed_locked)
 }
 
-/// SIGN OUT (the owner 2026-11-18: "the other needs the device present to sign itself out, thus asserting it wiped its keys"): this device publishes the alias's list without itself, the device's own word that it is leaving, before it discards Photon's state here.
-/// No re-key follows: the device asserts it wiped. Its siblings drop its row when they next read the list, and nothing seals to it again.
+/// SIGN OUT (the owner 2026-11-18: "the other needs the device present to sign itself out, thus asserting it wiped its keys"): this device signs its own sign-out with its own key (fgtw alias_devices::SignOut, over the person, its key and the revision it leaves at) and publishes the alias's list without itself, the record riding beside it, before it discards Photon's state here.
+/// No re-key follows: the device asserts it wiped. Its siblings drop its row when they next read the list, and only because the record backs its leaving.
 /// Ok when the list no longer names this device (already gone included); Err when fgtw.org could not be reached or the list could not be checked, so the person can try again and nothing is discarded yet.
-pub fn leave_list(keys: &PhotonKeys, device: &[u8; 32]) -> Result<(), String> {
+pub fn leave_list(keys: &PhotonKeys, device_key: &impl fgtw::pq::FleetSigner, kept: &Kept) -> Result<(), String> {
+    let device = device_key.keypair().public.to_bytes();
     let chain = our_chain(&keys.handle_proof).ok_or("no chain of ours held or fetched, so the list cannot be checked")?;
-    let drops = list_drops(&chain);
+    let drops = fgtw::alias_devices::chain_drops(&chain);
     let now = crate::network::time_base::now_osc();
     let signer = fgtw::alias::bundle(&keys.alias);
     for _ in 0..2 {
-        let Some(held) = fetch_signed_list(keys, &chain)? else {
+        let Some((held, fetched_signouts)) = fetch_signed_slot(keys, &chain)? else {
             return Ok(());
         };
         let mut out = drops.clone();
-        out.push(*device);
-        let Some(next) = DeviceList::revised(Some(&held), &signer, &keys.handle_proof, None, &out, now) else {
+        out.push(device);
+        let Some(next) = DeviceList::revised(Some(&held), &signer, &keys.handle_proof, &[], &out, now) else {
             return Ok(());
         };
-        match fgtw::client::publish_alias_devices(&PhotonTransport, &keys.binding, &next, now) {
+        let mut signouts = all_signouts(&fetched_signouts, &kept.signouts);
+        signouts.push(SignOut::sign(device_key, &keys.handle_proof, next.revision));
+        let carried = fgtw::alias_devices::carried(&signouts, &next);
+        match fgtw::client::publish_alias_slot(&PhotonTransport, &keys.binding, &next, &carried, now) {
             Ok(()) => {
-                crate::logf!("ALIAS: signed out: the device list published without this device ({} device(s) left)", next.devices.len());
+                crate::logf!("ALIAS: signed out: the device list published without this device, its own sign out beside it ({} device(s) left)", next.devices.len());
                 return Ok(());
             }
             Err(e) if e == "alias_devices: stale" => continue,

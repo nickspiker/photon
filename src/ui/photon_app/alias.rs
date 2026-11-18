@@ -18,8 +18,9 @@ impl PhotonApp {
             // ferros: the alias and binding were handed in; only the list is ours to join.
             Some(keys) => {
                 let keys = keys.clone();
+                let kept = self.alias_kept();
                 std::thread::Builder::new().name("alias".into()).spawn(move || {
-                    let joined = crate::network::fgtw::alias::join_list(&keys, &device);
+                    let joined = crate::network::fgtw::alias::join_list(&keys, &device, &kept);
                     crate::log_err!(tx.send(Ok(crate::network::fgtw::alias::AliasReady { keys, joined })), "the alias list to the UI thread");
                 })
             }
@@ -35,8 +36,9 @@ impl PhotonApp {
                     return;
                 };
                 let secret = *kp.secret.as_bytes();
+                let kept = self.alias_kept();
                 std::thread::Builder::new().name("alias".into()).spawn(move || {
-                    let r = crate::network::fgtw::alias::settle(&session.identity_seed, &session.vault_seed, &session.handle_proof, &fleet_key, &bundle, &secret);
+                    let r = crate::network::fgtw::alias::settle(&session.identity_seed, &session.vault_seed, &session.handle_proof, &fleet_key, &bundle, &secret, &kept);
                     crate::log_err!(tx.send(r), "the alias settle to the UI thread");
                 })
             }
@@ -94,7 +96,7 @@ impl PhotonApp {
         match joined.list {
             Some((binding, list)) => {
                 self.alias_retry = None;
-                self.keep_alias_list(binding, list);
+                self.keep_alias_list(binding, list, joined.signouts);
             }
             None => self.alias_owe(),
         }
@@ -129,6 +131,7 @@ impl PhotonApp {
         };
         // The alias prunes the list; without it yet the chain's lock alone is written, and the settle that brings the alias prunes the list (join_list leaves locked devices out).
         let keys = self.photon_keys.clone();
+        let kept = self.alias_kept();
         if self.alias_alone() {
             crate::log("ALIAS: Photon on the alias alone is no member of the chain and cannot lock a device out");
             return;
@@ -145,8 +148,8 @@ impl PhotonApp {
         let wake = self.event_proxy.clone();
         let spawned = std::thread::Builder::new().name("alias lock".into()).spawn(move || {
             let r = crate::network::fgtw::fleet::lock_listed_device_chain(&signer, &hp, &pk).map(|listed_locked| match keys {
-                Some(keys) => crate::network::fgtw::alias::join_list(&keys, &me),
-                None => crate::network::fgtw::alias::Joined { list: None, listed_locked, self_locked: false },
+                Some(keys) => crate::network::fgtw::alias::join_list(&keys, &me, &kept),
+                None => crate::network::fgtw::alias::Joined { listed_locked, ..Default::default() },
             });
             crate::log_err!(tx.send((pk, r)), "the lock out to the UI thread");
             if let Some(w) = wake {
@@ -193,11 +196,13 @@ impl PhotonApp {
         let (Some(keys), Some(kp)) = (self.photon_keys.clone(), self.device_keypair.as_ref()) else {
             return;
         };
-        let me = kp.public.to_bytes();
+        // The sign out is signed by this device's own key, the one the list names it by.
+        let device_key = crate::network::fgtw::fleet::signer_for(kp);
+        let kept = self.alias_kept();
         let (tx, rx) = std::sync::mpsc::channel();
         let wake = self.event_proxy.clone();
         let spawned = std::thread::Builder::new().name("alias sign out".into()).spawn(move || {
-            let r = if publish { crate::network::fgtw::alias::leave_list(&keys, &me) } else { Ok(()) };
+            let r = if publish { crate::network::fgtw::alias::leave_list(&keys, &device_key, &kept) } else { Ok(()) };
             let r = r.and_then(|()| discard_photon_vault(&keys.handle_proof));
             crate::log_err!(tx.send(r), "the sign out to the UI thread");
             if let Some(w) = wake {
@@ -226,7 +231,7 @@ impl PhotonApp {
                     }
                     self.adopt_listed_locked(joined.listed_locked);
                     if let Some((binding, list)) = joined.list {
-                        self.keep_alias_list(binding, list);
+                        self.keep_alias_list(binding, list, joined.signouts);
                     }
                     self.ready_toast = Some(tr(Msg::LockedOutToast).into_owned());
                 }
@@ -244,6 +249,7 @@ impl PhotonApp {
                     crate::log("ALIAS: signed out; Photon's state on this device is discarded");
                     self.photon_keys = None;
                     self.alias_list = None;
+                    self.alias_signouts.clear();
                     self.alias_pairs.clear();
                     self.alias_chains_owed.clear();
                     self.chain_listed_locked.clear();
@@ -264,14 +270,20 @@ impl PhotonApp {
         self.messenger_root().map(|root| crate::storage::vault_key("alias_devices", &root))
     }
 
-    /// Keep a checked list: held here, written to the vault at once, and the siblings reconciled so a newly listed device becomes one.
-    fn keep_alias_list(&mut self, binding: Vec<u8>, list: fgtw::alias_devices::DeviceList) {
+    /// The list kept here and the sign-outs beside it, for a join to measure fgtw.org's list against (network/fgtw/alias.rs Kept).
+    fn alias_kept(&self) -> crate::network::fgtw::alias::Kept {
+        crate::network::fgtw::alias::Kept { list: self.alias_list.as_ref().map(|(_, l)| l.clone()), signouts: self.alias_signouts.clone() }
+    }
+
+    /// Keep a checked list: held here, written to the vault at once with the sign-outs that back what it leaves out, and the siblings reconciled so a newly listed device becomes one and a signed-out or locked one goes.
+    /// The join that hands it over never hands a list leaving out a device the kept list named without a backing (join_list), so a row goes here only on a device's own sign out or the chain.
+    fn keep_alias_list(&mut self, binding: Vec<u8>, list: fgtw::alias_devices::DeviceList, signouts: Vec<fgtw::alias_devices::SignOut>) {
         if let Some((_, held)) = self.alias_list.as_ref().filter(|(_, held)| !list.newer_than(held)) {
             crate::logf!("ALIAS: device list revision {} ({} device(s)) is the one held; nothing to change", held.revision, held.devices.len());
             return;
         }
         if let (Some(addr), Some(vault)) = (self.alias_list_addr(), crate::storage::device_vault()) {
-            match fgtw::alias_devices::slot_doc(&binding, &list, crate::network::time_base::now_osc()) {
+            match fgtw::alias_devices::slot_doc_with(&binding, &list, &signouts, crate::network::time_base::now_osc()) {
                 Ok(doc) => {
                     crate::log_err!(vault.write_addr(&addr, &doc), "the alias device list to the vault");
                 }
@@ -280,6 +292,7 @@ impl PhotonApp {
         }
         crate::logf!("ALIAS: device list revision {} holds {} device(s)", list.revision, list.devices.len());
         self.alias_list = Some((binding, list));
+        self.alias_signouts = signouts;
         // The fleet's members as the held chain folds them, never the sibling rows: a locked-out device keeps its row but answers for nothing, and reconciling against the rows dropped it as "left the fold" (1be949c1, 2026-11-14).
         let members = self.fleet_members_held();
         // A member Photon whose chain is not held yet reads no members, and a reconcile then would drop every member sibling: it waits for the fold's own reconcile. This device is always a member, so empty means not held.
@@ -298,7 +311,10 @@ impl PhotonApp {
             return;
         };
         match fgtw::alias_devices::from_slot_doc(&doc) {
-            Ok(slot) => self.alias_list = Some(slot),
+            Ok(slot) => {
+                self.alias_list = Some(slot);
+                self.alias_signouts = fgtw::alias_devices::signouts_from_slot_doc(&doc).unwrap_or_default();
+            }
             Err(e) => crate::logf!("ALIAS: the kept device list does not read ({})", e),
         }
     }
