@@ -141,7 +141,13 @@ Three rules now hold:
 - Two roots at one index in one lineage: the LOWER root wins, on every device (`FriendshipChains::era_superseded_by` for molecule chains; genesis clocks no longer decide).
 - A second answer to our Join (`install_bind_wrap`) never replaces an era we hold at a higher index, or at the same index under a lower root.
 - A standing member's device advertising an era of the group we never held is a fork: the lowest standing party, on one device of its fleet, mints a fresh era WHOLE past every index seen and delivers it over each member's bond (`heal_group_era_fork`); both sides install it pending and cut over on its first frame, and the minter cuts over on the first bond ACK (re-sending held rows thru `after_molecule_cutover`). Once per (group, advertised tag).
-Still open: a member we never friended has no bond to carry the heal; and the Join is still answered by whichever sponsor device acts — naming the sponsor's device in the Join would stop the second mint at its source (a wire change).
+**Any device answers a Join (2026-11-18).** The Join reaches only the sponsor's device the joiner's route names; the one-device-acts gate dropped it there whenever another device of the fleet acted, and nobody answered (a joiner waited on the re-offering laptop while the desktop never saw the Join). Now every device of the sponsor's fleet that receives a Join answers it (Photon on the alias alone excepted: it speaks to no friend yet), and the answers cannot compete:
+- A from-join mint takes its nonce and fresh secret from the era it is answered in (`join_mint_secrets`: a KDF of era N's root and history key, the Join and the joiner left out), so every answer in era N, by any device and for any joiner, hands out the one same N+1. Leave, lost-standing, lockout and cadence mints stay random, since an era anyone holding N could derive shuts nobody out.
+- A device holding a pending era hands it over whole, as before; a pending era from a join mint is the same bytes on every device.
+- A wrap at the index of a pending era we hold never replaces a same or lower root (`pending_stands`), so two mints of one index settle on the lower root whatever order their wraps land in.
+- A Join one of our devices already answered (its bundles came back in that device's records, the joiner standing) is not answered again; a lost answer comes back as a fresh Join with a fresh bundle.
+
+Still open: a member we never friended has no bond to carry the heal.
 
 ### 10.5 Screens
 

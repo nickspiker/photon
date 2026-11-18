@@ -83,6 +83,33 @@ pub(super) fn unfolded_member_proofs(named: &[[u8; 32]], us: Option<[u8; 32]>, f
     out
 }
 
+/// A mint's (nonce, fresh): derived from the era it is answered in for a join (`join_mint_secrets`, the same on every device of ours), random for every other mint.
+pub(super) fn mint_secrets(join: bool, root: &[u8; 32], hk: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
+    if join {
+        crate::crypto::era::join_mint_secrets(root, hk)
+    } else {
+        (rand::random(), rand::random())
+    }
+}
+
+/// A group's next era from the one it is minted in, the one formula the minter and every member opening its wrap run: the transcript binds the group, the index and the nonce.
+/// The wrap set is not in the transcript (a member is meant to verify the set against its own roster and withhold a short one — that check is not built yet, docs/conversations.md Phase 3).
+pub(super) fn molecule_next_era(gid: &MoleculeId, next: u64, root: &[u8; 32], hk: &[u8; 32], nonce: &[u8; 32], fresh: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
+    let transcript = crate::crypto::era::derive_era_transcript(&gid.token(), next, nonce, crate::crypto::era::KEM_SET_DEFAULT, &crate::crypto::era::EraKemWire::default(), &crate::crypto::era::EraKemWire::default());
+    crate::crypto::era::derive_era_keys(&gid.0, next, root, Some(hk), fresh, &transcript)
+}
+
+/// Does the pending era we hold (`held` = its index and root) stand against an incoming one at `era` with `root`: the same index under the same or a lower root does, so every device keeps the lower of two mints of one index whatever order their wraps land in.
+pub(super) fn pending_stands(held: Option<(u64, [u8; 32])>, era: u64, root: &[u8; 32]) -> bool {
+    held.is_some_and(|(e, r)| e == era && r <= *root)
+}
+
+/// Was this Join already answered by one of our devices: the joiner stands, and every bundle it carries is held at that stamp or a newer one (the answering device's records carried them back to us).
+/// A re-sent Join carries a fresh bundle, so it is never mistaken for one already answered.
+pub(super) fn join_already_answered(roster: &Roster, joiner: &[u8; 32], bundles: &[crate::types::molecule::BundleRecord]) -> bool {
+    roster.is_standing(joiner) && bundles.iter().all(|b| roster.bundles.get(&(b.party, b.device)).is_some_and(|held| held.signed_osc >= b.signed_osc))
+}
+
 /// Frames kept per group for relaying: the newest win.
 const GROUP_FRAMES_KEPT: usize = 256;
 /// At most this many frames handed to one member device per sync record (oldest first; the next record carries on).
@@ -401,6 +428,11 @@ impl PhotonApp {
     /// JOIN (the sponsor's side): verify the invitee's records, vouch for them, post everything into the group, and answer with a wrap of the current era (from-genesis) or of a freshly minted next era (from-join, D5 — the joiner never reads a row from before it stood).
     fn answer_bind(&mut self, ci: usize, blob: Option<Vec<u8>>) {
         let joiner_fp = self.contacts.get(ci).map(|c| crate::fp(&c.handle_proof)).unwrap_or_default();
+        // Photon on the alias alone speaks to no friend yet (transmit_core refuses the wrap), so it vouches and posts nothing either: its fleet siblings answer.
+        if self.alias_alone() {
+            crate::logf!("MOLECULE: join from {} — Photon on the alias alone answers no Join; a fleet sibling does", joiner_fp);
+            return;
+        }
         let Some(joiner) = self.contacts.get(ci).map(|c| c.handle_hash) else {
             return;
         };
@@ -444,13 +476,15 @@ impl PhotonApp {
             crate::logf!("MOLECULE: join from {} for {} — we are not standing; cannot vouch", joiner_fp, hex::encode(&gid.0[..4]));
             return;
         }
-        // ANOTHER DEVICE OF A MEMBER already standing: the party has read every era already, so it takes the current one whole like a from-genesis join — a from-join mint here only forked the era away from that member's other devices.
-        let already_standing = self.molecule_rosters[pos].1.is_standing(&joiner);
-        // ONE DEVICE OF OUR FLEET ANSWERS: the Join rides the bond to all of them, and two answers minted the group two different eras at once (desktop and MacBook, 2026-10-24) — the rest learn the outcome by chain-sync.
-        if !self.fleet_device_acts(Some(ci)) {
-            crate::logf!("MOLECULE: join from {} for {} — another of our devices answers it", joiner_fp, hex::encode(&gid.0[..4]));
+        // ANY DEVICE OF OUR FLEET ANSWERS (Nick 2026-11-18): the Join reaches only the device the joiner's route names, so the old one-device-acts gate dropped it whenever that device was not the one that acts, and nobody answered (Jon, 2026-11-18, waiting on the MacBook's re-offer).
+        // Two answers no longer compete: a from-join mint derives its era from the era it is answered in (join_mint_secrets), so every answer in era N hands out the one same N+1.
+        // A Join one of our devices already answered (its bundles came back to us in that device's records, the joiner standing) is not answered again: the joiner holds that answer, and a lost one comes back as a fresh Join with a fresh bundle.
+        if join_already_answered(&self.molecule_rosters[pos].1, &joiner, &bundles) {
+            crate::logf!("MOLECULE: join from {} for {} — one of our devices already answered it", joiner_fp, hex::encode(&gid.0[..4]));
             return;
         }
+        // ANOTHER DEVICE OF A MEMBER already standing: the party has read every era already, so it takes the current one whole like a from-genesis join — a from-join mint here only forked the era away from that member's other devices.
+        let already_standing = self.molecule_rosters[pos].1.is_standing(&joiner);
         let vouch = crate::types::molecule::vouch_record(our_pid, joiner, false, &seed);
         let mut posted = Roster::default();
         posted.merge_member(member.clone());
@@ -560,11 +594,9 @@ impl PhotonApp {
         };
         let our_device = self.device_keypair.as_ref().map(|k| *k.public.as_bytes());
         let next = era + 1;
-        let nonce: [u8; 32] = rand::random();
-        let mut fresh: [u8; 32] = rand::random();
-        // The transcript binds the mint to the group, the index and the nonce; the wrap set is not in it (a member is meant to verify the set against its own roster and withhold a short one — that check is not built yet, docs/conversations.md Phase 3).
-        let transcript = crate::crypto::era::derive_era_transcript(&gid.token(), next, &nonce, crate::crypto::era::KEM_SET_DEFAULT, &crate::crypto::era::EraKemWire::default(), &crate::crypto::era::EraKemWire::default());
-        let (next_root, next_hk) = crate::crypto::era::derive_era_keys(&gid.0, next, &root, Some(&hk), &fresh, &transcript);
+        // A join mint is derived from the era it is answered in, so every device of ours answering any Join in this era mints the same next era; every other mint stays random.
+        let (nonce, mut fresh) = mint_secrets(joiner.is_some(), &root, &hk);
+        let (next_root, next_hk) = molecule_next_era(&gid, next, &root, &hk, &nonce, &fresh);
         // The wrap set is the standing bundles whose device is still in its owner's fold: a device removed from a member's fleet, or a bundle planted under a party by a device that was never theirs, receives no era from here on.
         // A bundle in the roster whose owner we hold no fold for was merged before records were fold-checked (new ones park until the fold lands), so it still receives rather than stranding that member.
         let targets: Vec<crate::types::molecule::BundleRecord> = self.molecule_rosters[pos]
@@ -730,8 +762,13 @@ impl PhotonApp {
             return;
         }
         let fresh32: [u8; 32] = fresh.as_slice().try_into().unwrap();
-        let transcript = crate::crypto::era::derive_era_transcript(&gid.token(), w.era, &w.nonce, crate::crypto::era::KEM_SET_DEFAULT, &crate::crypto::era::EraKemWire::default(), &crate::crypto::era::EraKemWire::default());
-        let (next_root, next_hk) = crate::crypto::era::derive_era_keys(&gid.0, w.era, &root, Some(&hk), &fresh32, &transcript);
+        let (next_root, next_hk) = molecule_next_era(&gid, w.era, &root, &hk, &w.nonce, &fresh32);
+        // TWO MINTS OF ONE INDEX (a random leave or cadence mint meeting a join mint): the lower root stands on every device, the rule era_superseded_by keeps for held eras, so a pending era never flips with the order wraps land in.
+        let held = self.friendship_chains.iter().find(|(id, _)| *id == fid).and_then(|(_, c)| c.pending_era().map(|p| (p.era_index, p.lane_root)));
+        if pending_stands(held, w.era, &next_root) {
+            crate::logf!("MOLECULE: wrap for era {} in {} — the pending era we hold at that index stands (same or lower root)", w.era, hex::encode(&gid.0[..4]));
+            return;
+        }
         if let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid) {
             chains.install_pending(crate::types::friendship::PendingEra { era_index: w.era, lane_root: next_root, history_key: Some(next_hk), tag: crate::crypto::clutch::era_tag(&next_root), resp_osc: None });
         }
@@ -1938,5 +1975,90 @@ mod fold_tests {
         // A peer whose chain vanished holds no devices: it is asked for again.
         let emptied = MoleculePeer { party: [0xB1; 32], handle_proof: jeff, devices: Vec::new(), fold_ts: 1 };
         assert_eq!(unfolded_member_proofs(&named, Some(joshua), &[nick], &[emptied]), vec![jeff]);
+    }
+}
+
+#[cfg(test)]
+mod join_answer_tests {
+    use super::{join_already_answered, mint_secrets, molecule_next_era, pending_stands};
+    use crate::types::molecule::{found_atom, join_record, vouch_record, BundleRecord, MoleculeId, Roster};
+
+    fn era_n() -> (MoleculeId, [u8; 32], [u8; 32]) {
+        (MoleculeId([0x42; 32]), [0x5A; 32], [0xC3; 32])
+    }
+
+    /// The sponsor's desktop and laptop each receive the same Join in era 4 and each answer it: both mint byte-identical era 5 roots and history keys, and a member opening either device's wrap derives that same era.
+    #[test]
+    fn two_devices_answering_one_join_mint_one_era() {
+        let (gid, root, hk) = era_n();
+        let (nonce_a, fresh_a) = mint_secrets(true, &root, &hk);
+        let (nonce_b, fresh_b) = mint_secrets(true, &root, &hk);
+        assert_eq!((nonce_a, fresh_a), (nonce_b, fresh_b));
+        let desktop = molecule_next_era(&gid, 5, &root, &hk, &nonce_a, &fresh_a);
+        let laptop = molecule_next_era(&gid, 5, &root, &hk, &nonce_b, &fresh_b);
+        assert_eq!(desktop, laptop);
+        // A member holding the desktop's pending era meets the laptop's wrap: the same root, so nothing changes.
+        assert!(pending_stands(Some((5, desktop.0)), 5, &laptop.0));
+    }
+
+    /// A person's two devices each send a Join in era 4, answered by two different devices of ours: the join path takes no input from the Join, so both answers hand out the one era 5, and a device already holding that era pending hands the same one over.
+    #[test]
+    fn two_joins_in_one_era_get_one_era() {
+        let (gid, root, hk) = era_n();
+        let answer = || {
+            let (nonce, fresh) = mint_secrets(true, &root, &hk);
+            molecule_next_era(&gid, 5, &root, &hk, &nonce, &fresh)
+        };
+        let first_join = answer();
+        let second_join = answer();
+        assert_eq!(first_join, second_join);
+        // The era after a cutover is another base, so a join answered there mints another era: convergence is per era, never one fixed secret.
+        let (n6, f6) = mint_secrets(true, &first_join.0, &first_join.1);
+        assert_ne!(molecule_next_era(&gid, 6, &first_join.0, &first_join.1, &n6, &f6), first_join);
+    }
+
+    /// A leave, a lost standing, a lockout and the cadence mint stay random: two such mints from one era differ, and neither is the join era.
+    #[test]
+    fn a_leave_mint_stays_random() {
+        let (gid, root, hk) = era_n();
+        let (n0, f0) = mint_secrets(false, &root, &hk);
+        let (n1, f1) = mint_secrets(false, &root, &hk);
+        assert_ne!((n0, f0), (n1, f1));
+        let join = mint_secrets(true, &root, &hk);
+        assert_ne!((n0, f0), join);
+        assert_ne!(molecule_next_era(&gid, 5, &root, &hk, &n0, &f0), molecule_next_era(&gid, 5, &root, &hk, &n1, &f1));
+    }
+
+    /// Two mints of one index: the lower root stands whichever wrap lands first, so every device keeps the same pending era; another index is never held against.
+    #[test]
+    fn the_lower_pending_root_stands() {
+        let (low, high) = ([0x10u8; 32], [0xF0u8; 32]);
+        assert!(pending_stands(Some((5, low)), 5, &high));
+        assert!(!pending_stands(Some((5, high)), 5, &low));
+        assert!(!pending_stands(Some((4, low)), 5, &high));
+        assert!(!pending_stands(None, 5, &high));
+    }
+
+    /// A Join one of our devices already answered (its bundle came back in that device's records, the joiner standing) is not answered again; the same person's fresh Join, with a fresh bundle, is.
+    #[test]
+    fn an_answered_join_is_answered_once() {
+        let (founder, founder_seed) = ([0xF1u8; 32], [0x07u8; 32]);
+        let birth = found_atom(founder, [0xF2; 32], "f", [0u8; 32], "t", false, &founder_seed);
+        let mut roster = Roster { genesis: Some(birth.genesis.clone()), ..Roster::default() };
+        roster.merge_member(birth.founder_member.clone());
+        roster.merge_vouch(birth.founder_vouch.clone());
+        let joiner = [0x0Au8; 32];
+        let bundle = BundleRecord { party: joiner, device: [0x0D; 32], published_era: 0, kem_set: 0, mlkem_pk: Vec::new(), x_pk: Vec::new(), hqc_pk: Vec::new(), signed_osc: 1 << 8, signature: [0u8; 64] };
+        assert!(!join_already_answered(&roster, &joiner, std::slice::from_ref(&bundle)), "nobody answered yet");
+        // One of our devices answered: its records carry the joiner's member record, our vouch and the bundle.
+        roster.merge_member(join_record(joiner, [0x0B; 32], "j", [0u8; 32], founder, &[0x09; 32]));
+        roster.merge_bundle(bundle.clone());
+        roster.merge_vouch(vouch_record(founder, joiner, false, &founder_seed));
+        assert!(roster.is_standing(&joiner));
+        assert!(join_already_answered(&roster, &joiner, std::slice::from_ref(&bundle)), "the same Join arriving again is answered already");
+        let fresh = BundleRecord { signed_osc: 1 << 9, ..bundle.clone() };
+        assert!(!join_already_answered(&roster, &joiner, &[fresh]), "a re-sent Join carries a fresh bundle and is answered");
+        let other_device = BundleRecord { device: [0x0E; 32], ..bundle };
+        assert!(!join_already_answered(&roster, &joiner, &[other_device]), "the person's other device joining is answered");
     }
 }

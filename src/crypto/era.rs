@@ -284,6 +284,15 @@ pub fn derive_bond_split(bond_id: &[u8; 32], conv_root: &[u8; 32], conv_history_
     derive_era_keys(bond_id, 0, conv_root, conv_history_key, &[0u8; 32], &transcript)
 }
 
+/// The fresh secret and nonce of a JOIN mint in a group (Nick 2026-11-18, "any device answers a Join"): derived from the era the join is answered in, so every device of the sponsor's fleet that answers any Join in era N mints the one same N+1, and nothing competes.
+/// The Join and the joiner stay out of it on purpose: two Joins answered in one era (a person's two devices, two people at once) converge on one era too.
+/// Only the join path takes this; a leave, a lost standing, a lockout and the cadence mint keep random secrets, since an era anyone holding N could derive shuts nobody out.
+/// Returns (nonce, fresh).
+pub fn join_mint_secrets(lane_root: &[u8; 32], history_key: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
+    let derive = |what: &str| *blake3::Hasher::new_derive_key(what).update(lane_root).update(history_key).finalize().as_bytes();
+    (derive("photon 2026-11-18 join era: nonce"), derive("photon 2026-11-18 join era: fresh"))
+}
+
 /// Derive the next era's (lane_root, history_key). body = friendship_id ‖ era_index ‖ old_lane_root ‖ hk_present ‖ old_history_key|zeros ‖ fresh_len ‖ fresh ‖ transcript — injective, both keys from one body under two domains, the body zeroized after.
 pub fn derive_era_keys(friendship_id: &[u8; 32], era_index: u64, old_lane_root: &[u8; 32], old_history_key: Option<&[u8; 32]>, fresh: &[u8; 32], transcript: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     let mut body = Vec::with_capacity(32 + 8 + 32 + 1 + 32 + 4 + 32 + 32);
