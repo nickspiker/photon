@@ -71,6 +71,28 @@ fn build_signed_vsf(
     crate::network::fgtw::fleet::sign_device_envelope(unsigned_bytes, &keypair.public.to_bytes(), keypair.secret.as_bytes())
 }
 
+
+/// Answer the seed's pipe challenge, the first frame on a fresh pipe (fgtw::pipe's open handshake): the seed binds our pipe only once this answer, signed with our device key, comes back up the socket, and until then no frame for us goes down it.
+/// `None` when `frame` is not a challenge the seed signed (a relay envelope, or a worker from before the handshake), so the caller reads it as an ordinary frame.
+/// `Some(Err)` is a seed challenge we will not answer: one issued for another device or another service's hub.
+pub fn pipe_answer(frame: &[u8], keypair: &Keypair) -> Option<Result<Vec<u8>, String>> {
+    pipe_answer_under(frame, &crate::network::fgtw::bootstrap::FGTW_ED25519_PUBLIC_KEY, keypair)
+}
+
+/// [`pipe_answer`] under a given seed key, so a test can stand in for the seed.
+fn pipe_answer_under(frame: &[u8], seed_public: &[u8; 32], keypair: &Keypair) -> Option<Result<Vec<u8>, String>> {
+    let challenge = fgtw::pipe::read_challenge(frame, seed_public)?;
+    if challenge.dev != keypair.public.to_bytes() {
+        return Some(Err("pipe challenge names another device".to_string()));
+    }
+    if challenge.svc.is_some() {
+        return Some(Err("pipe challenge is for another service's hub".to_string()));
+    }
+    // The installed device signer when this is our device key, the same one every device envelope is signed with.
+    let signer = crate::network::fgtw::fleet::signer_for(keypair);
+    Some(fgtw::pipe::open_answer(frame, &signer, vsf::eagle_time_oscillations()))
+}
+
 /// Send a message via FGTW conduit relay
 ///
 /// # Arguments
@@ -349,5 +371,50 @@ mod peel_tests {
             payload, inner,
             "inner payload must round-trip byte-identical"
         );
+    }
+}
+
+#[cfg(test)]
+mod pipe_answer_tests {
+    use super::*;
+
+    const SEED_SECRET: [u8; 32] = [0x6a; 32];
+
+    fn seed_public() -> [u8; 32] {
+        ed25519_dalek::SigningKey::from_bytes(&SEED_SECRET).verifying_key().to_bytes()
+    }
+
+    /// The answer is a `pipe_open` frame signed by our device key, committing to the challenge's exact bytes under the "photon pipe open" domain, which is what the seed checks before it binds the pipe.
+    #[test]
+    fn the_answer_is_a_device_signed_pipe_open_bound_to_the_challenge() {
+        let kp = crate::network::fgtw::Keypair::from_seed(&[5u8; 32]);
+        let challenge = fgtw::pipe::challenge(&SEED_SECRET, &kp.public.to_bytes(), None, &[1u8; 32], vsf::eagle_time_oscillations()).unwrap();
+        let answer = pipe_answer_under(&challenge, &seed_public(), &kp).expect("a seed challenge").expect("answered");
+        assert_eq!(fgtw::pipe::check_answer(&answer, &fgtw::pipe::open_binding(&challenge)), Some(kp.public.to_bytes()));
+        // The encoding, field by field: header signed by our device key, primary section `pipe_open`, one `ch` hash equal to the domain-separated commitment.
+        let (header, end) = vsf::verification::read_verified(&answer, Some(kp.public.to_bytes())).expect("verifies under our key");
+        let section = header.primary_section(&answer, end).unwrap();
+        assert_eq!(section.name, fgtw::pipe::OPEN_SECTION);
+        let ch = section.get_field("ch").and_then(|f| f.values.first()).cloned();
+        let expected = *blake3::Hasher::new_derive_key("photon pipe open").update(&challenge).finalize().as_bytes();
+        assert_eq!(ch, Some(VsfType::hb(expected.to_vec())));
+        // It is never mistaken for a relay frame on either end.
+        assert!(peel_relay_envelope(&answer).is_none());
+        assert!(peel_relay_envelope(&challenge).is_none());
+    }
+
+    /// A challenge for another device or another service's hub is not answered, and a frame no seed signed is not a challenge at all.
+    #[test]
+    fn only_our_own_seed_signed_challenge_is_answered() {
+        let kp = crate::network::fgtw::Keypair::from_seed(&[6u8; 32]);
+        let other = crate::network::fgtw::Keypair::from_seed(&[7u8; 32]);
+        let now = vsf::eagle_time_oscillations();
+        let for_other = fgtw::pipe::challenge(&SEED_SECRET, &other.public.to_bytes(), None, &[2u8; 32], now).unwrap();
+        assert!(matches!(pipe_answer_under(&for_other, &seed_public(), &kp), Some(Err(_))));
+        let for_rd = fgtw::pipe::challenge(&SEED_SECRET, &kp.public.to_bytes(), Some(fgtw::pipe::SVC_RUSTDESK), &[3u8; 32], now).unwrap();
+        assert!(matches!(pipe_answer_under(&for_rd, &seed_public(), &kp), Some(Err(_))));
+        let forged = fgtw::pipe::challenge(&[0x11; 32], &kp.public.to_bytes(), None, &[4u8; 32], now).unwrap();
+        assert!(pipe_answer_under(&forged, &seed_public(), &kp).is_none(), "a challenge under any other key is not the seed's");
+        assert!(pipe_answer(b"", &kp).is_none());
     }
 }

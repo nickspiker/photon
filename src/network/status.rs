@@ -1921,6 +1921,8 @@ async fn run_checker(
     {
         let our_dev_hex = hex::encode(our_device_pk);
         let inject_tx_pipe = inject_tx.clone();
+        // Our device key answers the seed's challenge on every fresh pipe; the signature runs here on the network runtime, never the UI thread.
+        let pipe_keypair = keypair.clone();
         tokio::spawn(async move {
             use futures::StreamExt;
             use tokio_tungstenite::tungstenite::Message;
@@ -1965,6 +1967,22 @@ async fn run_checker(
                             };
                             last_inbound = tokio::time::Instant::now();
                             match msg {
+                                // The seed's liveness probe is an empty frame: nothing to read.
+                                Ok(Message::Binary(data)) if data.is_empty() => {}
+                                // The seed's challenge, its first frame on a fresh pipe: the pipe carries nothing for us until our device key answers it (fgtw::pipe's open handshake).
+                                Ok(Message::Binary(data)) if let Some(answer) = crate::network::fgtw::relay::pipe_answer(&data, &pipe_keypair) => {
+                                    use futures::SinkExt;
+                                    match answer {
+                                        Ok(answer) => {
+                                            if write.send(Message::Binary(answer.into())).await.is_err() {
+                                                crate::log("PIPE: answer write failed — reconnecting");
+                                                break;
+                                            }
+                                            crate::log("PIPE: answered the seed's challenge with our device key");
+                                        }
+                                        Err(e) => crate::logf!("PIPE: seed challenge not answered: {}", e),
+                                    }
+                                }
                                 Ok(Message::Binary(data)) => {
                                     // Peel the authenticated relay envelope the worker now forwards intact. The envelope's presence + valid sender signature IS the domain separator: a frame off the pipe is KNOWN-relayed from device X, ground truth in the bytes, not the RELAY_ADDR sentinel. Inject only the inner payload — it's byte-identical to a direct message, so the dispatch below is untouched.
                                     match crate::network::fgtw::relay::peel_relay_envelope(&data) {
