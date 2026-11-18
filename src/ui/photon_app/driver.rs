@@ -4130,6 +4130,11 @@ impl FluorApp<Px> for PhotonApp {
     }
 
     /// The render reads the frame only inside its damage (it clears and draws there, front to back over what is already opaque, and memmoves its own bg layer and hit map), so the ferros host may skip a scroll frame's move of the scratch.
+    /// On ferros no pixel of Photon's frame is ever see-through: the host is always maximized, so the chrome is full-edge (no window-shape clip, no edge left bare) and the noise goes under the whole frame on every screen; the display then never reads what the window covers. The desktop window's corners are see-through, so only ferros says so.
+    fn opaque(&self) -> bool {
+        cfg!(target_os = "ferros")
+    }
+
     fn scratch_unread_outside_damage(&self) -> bool {
         true
     }
