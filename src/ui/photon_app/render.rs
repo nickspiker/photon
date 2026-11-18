@@ -2665,7 +2665,7 @@ impl PhotonApp {
                 let rail_inset = layout.rail_inset();
                 let nav_h = layout.nav_row_h();
                 let rspan = layout.unit * 0.58;
-                // No pinned Back under the title arc (ferros): the helm's Back and the orb leave the panel.
+                // No pinned Back under the title arc (ferros): the helm's Back leaves the panel, never the orb.
                 if arc.is_none() {
                     let r = fluor::region::Region::new(rail_inset.x, rail_inset.y, rail_inset.w, nav_h);
                     let back_held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
@@ -5451,7 +5451,7 @@ impl PhotonApp {
             let rail_inset = layout.rail_inset();
             let nav_h = layout.nav_row_h();
             let rspan = layout.unit * 0.58;
-            // Pinned Back row at the very top of the rail (none under the title arc, ferros: the helm's Back and the orb close the page).
+            // Pinned Back row at the very top of the rail (none under the title arc, ferros: the helm's Back closes the page, never the orb).
             if arc.is_none() {
                 let r = fluor::region::Region::new(rail_inset.x, rail_inset.y, rail_inset.w, nav_h);
                 let back_held =

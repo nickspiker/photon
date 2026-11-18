@@ -578,19 +578,7 @@ impl PhotonApp {
                 self.settings_picker = false;
                 self.open_conversation_panel(text)
             }
-            // ferros (a safe circle): the pages hang from the orb with no drawn back control, so the orb closes them again, as the settings circle closes on the deck (the design of 2026-11-18); the helm's Back does the same thru Escape.
-            AppState::Settings(_) if crate::ui::safe_circle().is_some() => {
-                self.change_focus(None);
-                self.settings_picker = false;
-                self.state = if self.signed_in() { AppState::Ready } else { self.not_signed_in_screen() };
-                true
-            }
-            AppState::ConversationPanel(_) if crate::ui::safe_circle().is_some() => {
-                self.settings_picker = false;
-                self.leave_conversation_panel();
-                true
-            }
-            // Settings / AddDevice / the conversation panel fall thru: navigation off those screens is a dedicated control (back button), never the orb.
+            // Settings / AddDevice / the conversation panel fall thru: back is back, the orb is settings, so navigation off those screens is a dedicated control (the back button; on ferros, where none is drawn, the helm's Back thru Escape), never the orb.
             _ => false,
         }
     }
