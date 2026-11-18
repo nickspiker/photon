@@ -78,11 +78,11 @@ impl PhotonApp {
         // Conversation compose box: a full-width strip lifted off the bottom edge by `compose_margin`. Geometry must match the render block's `compose_h`/`compose_margin`/`compose_cy`, where `unit` is ReadyLayout's span-based harmonic unit (same as the contacts screen — no hardcoded pixels). The send button is OVERLAID inside the box's right edge, exactly like the contacts-screen `+` search button (7/8 of the box height, inset 1/16 from the right).
         let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
         let compose_h = unit * 1.8;
-        let compose_margin = unit * 0.8;
+        let compose_margin = unit * super::conversation::COMPOSE_MARGIN;
         let compose_w = buf_w as f32 - unit * 2.0;
         let compose_cx = buf_w as f32 * 0.5;
-        // `ime_lift` rides the anchor so the compose bar (and its overlaid send button) sits above the soft keyboard — same term the render's list_bottom subtracts.
-        let compose_cy = buf_h as f32 - self.ime_lift() - compose_margin - compose_h * 0.5;
+        // `bottom_lift` rides the anchor so the compose bar (and its overlaid send button) sits above the soft keyboard, and inside a safe circle (ferros) — same term the render's list_bottom subtracts.
+        let compose_cy = buf_h as f32 - self.bottom_lift(buf_h, unit) - compose_margin - compose_h * 0.5;
         if let Some(tb) = self.message_textbox.as_mut() {
             tb.set_font_size(font_size, ctx.text);
             // Exclude the overlaid send button's footprint (7/8-height square + 1/16 inset, matching the button block below) so typing never runs under the arrow.

@@ -21,6 +21,21 @@ const V_SLICES: [f32; 11] = [
     0.25, // gap5
 ];
 
+/// The slices under a safe circle's orb (ferros): no avatar or handle, a one-unit hint line under the orb (a search's result, a toast, the new atom's create pill), then the box and the separator as above.
+const SAFE_SLICES: [f32; 11] = [
+    0.25, // gap under the orb
+    0., // avatar: the orb is our face
+    0., // gap1
+    0., // handle
+    0., // gap2
+    1., // hint
+    0.25, // gap3
+    1.5, // textbox (search)
+    0.25, // gap4
+    0.5, // separator
+    0.25, // gap5
+];
+
 const IDX_AVATAR: usize = 1;
 const IDX_HANDLE: usize = 3;
 const IDX_HINT: usize = 5;
@@ -77,10 +92,15 @@ impl ReadyLayout {
             0.
         };
 
+        // With a safe circle (ferros) the orb at the circle's top IS our own face, so the avatar's slices and the hint under it (whose role is the OS's there) fold away and the block hangs from the orb's bottom; the unit stays the one above, so every screen sizes alike on every host.
+        let orb = crate::ui::safe_circle().map(|c| crate::ui::safe_layout::OrbLayout::compute(&c, buf_w as f32, span * ru / 32.));
+        let slices = if orb.is_some() { SAFE_SLICES } else { V_SLICES };
+        let block_y = orb.map_or(block_y, |o| o.orb_bottom() as usize);
+
         // Cumulative slice y-positions in pixels: accumulate the float total, truncate once per boundary so slices stay tight (no per-slice rounding drift).
         let mut v = [0_usize; 12];
         let mut cum = 0.;
-        for (i, s) in V_SLICES.iter().enumerate() {
+        for (i, s) in slices.iter().enumerate() {
             v[i] = (cum * unit_height) as usize;
             cum += s;
         }
@@ -109,7 +129,11 @@ impl ReadyLayout {
         let contact_avatar_diameter = row_height / 2;
 
         ReadyLayout {
-            avatar: slot(IDX_AVATAR),
+            // Under a safe circle the avatar is the orb, so its square is the orb's: `avatar_center_radius` names the orb, and the conversation's face takes its size.
+            avatar: orb.map_or_else(|| slot(IDX_AVATAR), |o| {
+                let (x, y, r) = o.orb;
+                PixelRect::new((x - r) as usize, (y - r) as usize, (x + r) as usize, (y + r) as usize)
+            }),
             handle: slot(IDX_HANDLE),
             hint: slot(IDX_HINT),
             textbox: slot(IDX_TEXTBOX),

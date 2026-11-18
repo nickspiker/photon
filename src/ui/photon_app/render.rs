@@ -234,7 +234,10 @@ impl PhotonApp {
         // The ranked reaction strip, same pre-chrome discipline (reads fleet settings thru &self). Cheap: a prefix scan of the settings map.
         let ranked_reactions = self.ranked_reactions();
         // Title-bar text by screen, computed BEFORE the chrome borrow (peer count reads `self.handle_query` / `self.session`). Launch/attest shows the "← Network" affordance; once attested (Ready) it shows the peer count — distinct identities in the store EXCLUDING our own: peers are PEOPLE, so the FGTW seed is not a peer (the old `+1` when online) and neither are our own fleet siblings (their records ride the same store for direct routing). `set_title` only re-rasterizes chrome when the string actually changes, so this is cheap to recompute each frame.
-        let title_text: String = if self.wave_screen() {
+        let title_text: String = if crate::ui::safe_circle().is_some() {
+            // A safe circle's orb (ferros) hangs at the top centre with the console's circles either side: no title beside it, and each screen names itself under the orb.
+            String::new()
+        } else if self.wave_screen() {
             // The wave screen names the other party itself, under the square — no chrome title behind it.
             String::new()
         } else if matches!(
@@ -439,6 +442,10 @@ impl PhotonApp {
         let settings_pages = self.settings_pages();
         // Same hoist for the IME inset (Android keyboard height): read it before the chrome borrow so the conversation block can use it without re-borrowing self.
         let ime_lift = self.ime_lift();
+        // The conversation's compose bar lifts by the keyboard and, on a safe circle (ferros), by the circle's floor at its corners (`bottom_lift`, the layout pass's same term).
+        let conv_lift = self.bottom_lift(buf_h, ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height);
+        // The orb's unread dot (a safe circle's orb, ferros): any conversation but the one open waits unread.
+        let orb_dot = crate::ui::safe_circle().is_some() && self.conversations.iter().any(|v| v.unread_count > 0 && Some(v.id()) != self.active_conversation);
         // The launch form's lift: the keyboard, plus the permanence warning under the button while it shows (input.rs `launch_lift_below`).
         let launch_lift = ime_lift + self.launch_lift_below(buf_w, buf_h, ctx.viewport.ru);
         // Same hoist for the Fleet page's locked set (treat-as-stolen rows): the row loop can't re-borrow self.
@@ -940,7 +947,8 @@ impl PhotonApp {
         // THE BLIND (conv_blind): on the conversation screen the orb is its top slat; everywhere else it rests.
         let blind_strip_floor = if cfg!(target_os = "android") { 0.0 } else { fluor::host::chrome::strip_height(ctx.viewport) };
         let blind_unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
-        let blind_on = matches!(self.state, AppState::Conversation) && !wave_fullscreen && self.viewer.is_none() && self.reader.is_none();
+        // A safe circle's orb (ferros) stays put under the camera, the face of the conversation: no blind there.
+        let blind_on = matches!(self.state, AppState::Conversation) && !wave_fullscreen && self.viewer.is_none() && self.reader.is_none() && crate::ui::safe_circle().is_none();
         let conv_blind_now = conv_blind(buf_h, blind_unit, blind_strip_floor, if blind_on { self.conv_blind_h } else { [0.0; 3] }, chrome.orb_geometry().is_some());
         chrome.set_orb_dy(if blind_on { conv_blind_now.orb_dy } else { 0.0 });
         chrome.rasterize_chrome(ctx.damage, ctx.text, ctx.clip_mask);
@@ -966,6 +974,16 @@ impl PhotonApp {
             let span = ctx.viewport.effective_span();
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             paint::draw_chord_hint(&mut canvas, ctx.text, CHORD_HINTS, span);
+        }
+        // THE UNREAD DOT (ferros, owner 2026-11-18: "so dot instead of magenta ring. I like. I think it looks slick."): on a safe circle's orb, a dot in the unread colour on its upper right while a conversation other than the one open waits unread, in front of the orb and its own to tap.
+        // It sits wholly inside the orb's square (its centre seven eighths of the radius out on the diagonal, its radius a quarter), so the orb's overlay rect carries it thru a scroll's memmove.
+        if let (true, Some((ox, oy, or))) = (orb_dot, chrome.orb_geometry()) {
+            let (ox, oy, or) = (ox as f32, oy as f32, or as f32);
+            let along = or * (7. / 8.) * std::f32::consts::FRAC_1_SQRT_2;
+            let (dx, dy, dr) = (ox + along, oy - along, or / 4.);
+            let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
+            claim_hit_circle_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, dx, dy, dr, chrome.app_icon_btn.id());
+            paint::draw_circle(&mut canvas, dx, dy, dr, *theme::RING_UNREAD_COLOUR, Some(fluor::paint::Clip::new(ctx.damage_clip.x0, ctx.damage_clip.y0, ctx.damage_clip.x1, ctx.damage_clip.y1)));
         }
         // The CHROME LAYER (orb, controls strip, title, window buttons) goes in NOW, before any content: fluor is front to back, so it stays on top of everything the screens draw — rows scrolled up under the title strip, the full-screen wave panel. Its bg layer (the speckle) is flattened LAST, under all content (`flatten_bg_into` below).
         // Over the damage only: outside it the frame already holds last frame's composite, chrome included, and a chrome change is chrome damage that widens the frame's damage (damage_rect).
@@ -1423,11 +1441,19 @@ impl PhotonApp {
                 let wave_cy = conv_blind_now.row_cy;
                 let beam_cy = conv_blind_now.beam_cy;
                 let wave_cx = buf_w as f32 - unit * 0.5 - pill_w * 0.5;
+                // A safe circle (ferros): Wave and Beam are beads on the orb's shoulders, on the arc thru its centre concentric with the circle (safe_layout), Wave left and Beam right, each label fitted inside its bead.
+                let beads = crate::ui::safe_circle().map(|c| crate::ui::safe_layout::OrbLayout::compute(&c, buf_w as f32, ctx.viewport.effective_span() / 32.).beads);
                 if let Some(b) = self.wave_start_btn.as_mut() {
                     let pw = pill_w * if wave_pill_no_path { 1.8 } else if group_joinable { 1.5 } else { 1.0 };
-                    b.set_rect(buf_w as f32 - unit * 0.5 - pw * 0.5, wave_cy, pw, pill_h);
+                    match beads {
+                        Some([(x, y, r), _]) => b.set_rect(x, y, r * 2., r * 2.),
+                        None => b.set_rect(buf_w as f32 - unit * 0.5 - pw * 0.5, wave_cy, pw, pill_h),
+                    }
                     b.set_font_size(pill_font);
                     b.set_label(tr(if wave_pill_no_path { Msg::WaveStartNoPath } else if group_joinable { Msg::WaveJoin } else { Msg::WaveStart }));
+                    if beads.is_some() {
+                        b.set_font_size_fitted(pill_font, ctx.text);
+                    }
                     b.set_enabled(wave_pill_enabled);
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
@@ -1437,9 +1463,15 @@ impl PhotonApp {
                 // Beam (video) — the slat above Wave, a third of a pill left of it so the two read as a stack: live when a wave could start and this device can send a beam (a codec + a camera path; docs/beams.md); a tap starts the wave with the beam armed.
                 if let Some(b) = self.beam_btn.as_mut() {
                     let bw = pill_w * if group_joinable { 1.5 } else { 1.0 };
-                    b.set_rect(wave_cx - pill_w * 0.35 - (bw - pill_w) * 0.5, beam_cy, bw, pill_h);
+                    match beads {
+                        Some([_, (x, y, r)]) => b.set_rect(x, y, r * 2., r * 2.),
+                        None => b.set_rect(wave_cx - pill_w * 0.35 - (bw - pill_w) * 0.5, beam_cy, bw, pill_h),
+                    }
                     b.set_font_size(pill_font);
                     b.set_label(tr(if group_joinable { Msg::BeamJoin } else { Msg::BeamStart }));
+                    if beads.is_some() {
+                        b.set_font_size_fitted(pill_font, ctx.text);
+                    }
                     b.set_enabled(beam_pill_enabled);
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
@@ -1936,13 +1968,17 @@ impl PhotonApp {
             let (cx, cy_natural, radius) = ready_layout.avatar_center_radius();
             let cy = cy_natural - scroll;
             // NAMING A NEW ATOM (Nick 2026-10-27): our avatar gives way to the create pill — "Create atom" alone, "Create molecule" once a friend is picked — live once the box holds a name. It claims the avatar's hit id, so a tap founds instead of picking a picture.
+            // A safe circle's orb (ferros) is our face already and sits in front of this block: the create pill takes the hint line under it instead, and no second face is drawn.
+            let safe = crate::ui::safe_circle().is_some();
             if self.atom_naming {
                 let named = self.contacts_textbox.as_ref().is_some_and(|t| !t.chars.is_empty());
                 let label = if self.atom_picks.is_empty() { tr(Msg::CreateAtom) } else { tr(Msg::CreateMolecule) };
-                let (pw, ph) = ((radius * 3.6).min(buf_w as f32 * 0.8), radius * 0.9);
-                let pill = fluor::region::Region::new(cx - pw * 0.5, cy - ph * 0.5, pw, ph);
+                let hint = ready_layout.hint;
+                let (pcx, pcy, ph) = if safe { ((hint.x0 + hint.x1) as f32 * 0.5, (hint.y0 + hint.y1) as f32 * 0.5 - scroll, (hint.y1 - hint.y0) as f32) } else { (cx, cy, radius * 0.9) };
+                let pw = (ph * 4.).min(buf_w as f32 * 0.8);
+                let pill = fluor::region::Region::new(pcx - pw * 0.5, pcy - ph * 0.5, pw, ph);
                 draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill, &label, self.avatar_hit_id, ctx.pressed_hit, named, named.then_some(*theme::PILL_GREEN), "Oxanium");
-            } else {
+            } else if !safe {
             // WHY/PROOF (a circle, not the paint): the avatar's whole disc takes the tap whatever its picture shows, claimed BEFORE it paints and only where nothing opaque (the chrome) already sits (see claim_hit_rect_under).
             claim_hit_circle_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, cx, cy, radius, self.avatar_hit_id);
             // 0xFFC5C5C5 in fluor's α+darkness format = α 0xFF, darkness 0xC5 each channel = visible RGB(0x3A, 0x3A, 0x3A) ≈ 22% brightness. Standalone constant (no theme.rs entry yet) — promote when Ready chrome gets a proper palette pass.
@@ -2342,6 +2378,12 @@ impl PhotonApp {
                         self.own_avatar_row = Some((diam, crate::ui::avatar_render::update_avatar_scaled(base, crate::ui::avatar::AVATAR_SIZE, diam)));
                     }
                 }
+                // ferros (a safe circle): the unread cue is a dot on the avatar's upper right, in front of it, as on the orb, not the magenta ring round it.
+                let unread_dot = view.unread && crate::ui::safe_circle().is_some();
+                if unread_dot {
+                    let along = avatar_r * (7. / 8.) * std::f32::consts::FRAC_1_SQRT_2;
+                    paint::draw_circle(&mut canvas, avatar_cx + along, cy - along, avatar_r / 4., *theme::RING_UNREAD_COLOUR, Some(rows_clip));
+                }
                 // Avatar (or placeholder) is topmost; the presence ring paints UNDER it so only the rim shows.
                 match (*row, view.pie.as_ref()) {
                     (ReadyRow::Me, None) if self.own_avatar_row.is_some() => {
@@ -2387,7 +2429,7 @@ impl PhotonApp {
                     ring,
                     Some(rows_clip),
                 );
-                if unread {
+                if unread && !unread_dot {
                     paint::draw_circle(
                         &mut canvas,
                         avatar_cx,
@@ -3114,7 +3156,9 @@ impl PhotonApp {
                     let back_y = conv_blind_now.row_cy;
                     let back_x = unit.max(crate::ui::safe_left_px() as f32); // the padding, or a landscape left cutout where wider — never added
                     let back_text = tr(Msg::BackToContacts);
-                    let topbar_visible = back_y + back_size > 0.0;
+                    // ferros draws no back button: the helm's Back sends Escape, up one page (WINDOWS.md "The helm").
+                    let safe_orb = crate::ui::safe_circle().map(|c| crate::ui::safe_layout::OrbLayout::compute(&c, buf_w as f32, ctx.viewport.effective_span() / 32.));
+                    let topbar_visible = safe_orb.is_none() && back_y + back_size > 0.0;
                     // Same hover/press vocabulary as the contact rows: hover = weight 500 → 700, press = the wordmark's glow behind the label (composited AFTER the text — under() layers beneath).
                     let back_pressed = topbar_visible
                         && ctx.pressed_hit != HIT_NONE
@@ -3129,7 +3173,7 @@ impl PhotonApp {
                         let back_w = ctx.text.measure_text(&back_text, &TextStyle::new(back_size, 0).weight(back_weight).font("Oxanium"));
                         claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, 0, (back_y - back_size) as isize, (back_x + back_w + unit) as isize, (back_y + back_size) as isize, self.back_btn_hit_id);
                     }
-                    if back_y > -back_size {
+                    if topbar_visible {
                         ctx.text.draw_text_left(
                             &mut canvas,
                             &back_text,
@@ -3349,10 +3393,25 @@ impl PhotonApp {
                                           // The floor clears the CHROME title strip on desktop plus the tiny always-on name; Android draws no strip (full-edge) so a slim margin stands.
                         // The list's hard top (Nick 2026-09-30): the status bar's bottom on a phone, the window's top edge on desktop — never a layout-unit guess. The blind's row sits above it while down; raised, the text runs right up to this line (the chrome is flattened on top of it).
                         let top_floor = crate::ui::safe_top_px() as f32;
-                        let list_top = (back_y + unit).max(top_floor);
+                        // Under a safe circle's orb (ferros) the list starts below the name hung under it.
+                        let list_top = match safe_orb { Some(o) => o.orb_bottom() + unit * 1.25, None => (back_y + unit).max(top_floor) };
+                        // The name under the orb (ferros): the desktop's chrome title, which a safe circle's orb has no room beside, fitted to three quarters of the width.
+                        if let Some(o) = safe_orb {
+                            let name = hdr.title.split('\n').next().unwrap_or_default();
+                            let name_style = |s: f32| {
+                                let t = TextStyle::new(s, their_colour).weight(600).font("Oxanium");
+                                if hdr.has_real_name { t } else { t.shear(0.2126) }
+                            };
+                            let size = unit * 0.6;
+                            let room = buf_w as f32 * 0.75;
+                            let w = ctx.text.measure_text(name, &name_style(size));
+                            // WHY/PROOF: the fit shrinks a name wider than the room, never grows one; the name is the person's own text of any length, and a long one would run under the console's circles.
+                            let style = name_style(if w > room { size * room / w } else { size });
+                            ctx.text.draw_text_center(&mut canvas, name, o.orb.0, o.orb_bottom() + unit * 0.55, &style, None, None);
+                        }
                         // Compose bar reserves the bottom strip, lifted off the bottom edge by `compose_margin` — and above the soft keyboard (`ime_lift`; the surface never resizes for the IME). The list lives between list_top and list_bottom. Must match the layout pass's `compose_h`/`compose_margin` below.
                         let compose_h = unit * 1.8;
-                        let compose_margin = unit * 0.8;
+                        let compose_margin = unit * super::conversation::COMPOSE_MARGIN;
                         // Armed reply/edit strip: one extra band above the compose box naming what the next send references (drawn half-alpha below). Reserved OUT of the list so it never overdraws the newest message.
                         let compose_strip: Option<(i64, u8)> = if compose_ready {
                             self.compose_edit_of
@@ -3375,7 +3434,7 @@ impl PhotonApp {
                             && self.message_textbox.as_ref().is_some_and(|tb| self.focused == Some(tb.hit_id()));
                         let digit_band_h = if digit_strip { unit * 1.1 } else { 0.0 };
                         let list_bottom = buf_h as f32
-                            - ime_lift
+                            - conv_lift
                             - live_compose_h
                             - compose_margin
                             - unit * 0.5
@@ -3524,9 +3583,8 @@ impl PhotonApp {
                         let header_name = hdr.title.clone();
                         let header_name_lines: Vec<String> = header_name.split('\n').map(|s| s.to_string()).collect();
                         let header_name_extra = unit * 0.9 * (header_name_lines.len() - 1) as f32; // `split` always yields at least one piece
-                        let header_block_h = avatar_r * 2.0
-                            + unit * 3.0
-                            + header_name_extra
+                        // Under a safe circle the orb is their face and the name hangs under it: entry #0 holds the status alone, half a unit above the first row.
+                        let header_block_h = if safe_orb.is_some() { unit * 0.5 } else { avatar_r * 2.0 + unit * 3.0 + header_name_extra }
                             + status_wrapped
                                 .as_ref()
                                 .map(|(lines, _)| unit * 0.25 + unit * 0.75 * lines.len() as f32)
@@ -4861,7 +4919,11 @@ impl PhotonApp {
                             };
                             let block_name_y = y - unit * 0.2 - status_h;
                             let block_avatar_cy = block_name_y - header_name_extra - unit * 1.2 - avatar_r;
-                            draw_conv_avatar(&mut canvas, block_avatar_cy, Some(list_clip));
+                            if safe_orb.is_none() {
+                                draw_conv_avatar(&mut canvas, block_avatar_cy, Some(list_clip));
+                            }
+                            // Under a safe circle the name is under the orb already.
+                            let header_name_lines: &[String] = if safe_orb.is_some() { &[] } else { &header_name_lines };
                             // Bottom-anchored like the status: the LAST name line sits at block_name_y, earlier lines stack upward at the name pitch.
                             for (k, line) in header_name_lines.iter().enumerate() {
                                 ctx.text.draw_text_center(
@@ -5074,7 +5136,7 @@ impl PhotonApp {
                             }
                         } else if let Some(gid) = active_gid {
                             // A GROUP conversation we cannot write in right now: the compose slot says WHY (binding, catching up, left) instead of a box that would swallow text — it used to promise a "next build" that had long shipped (Emma 2026-10-24).
-                            let label_y = buf_h as f32 - ime_lift - compose_margin - unit * 0.9;
+                            let label_y = buf_h as f32 - conv_lift - compose_margin - unit * 0.9;
                             let why = match self.molecule_locals.iter().find(|(g, _)| g.0 == gid.0).map(|(_, l)| l.phase).unwrap_or_default() {
                                 crate::storage::molecule::MoleculePhase::Joining => tr(Msg::JoiningStatus),
                                 crate::storage::molecule::MoleculePhase::Left => tr(Msg::YouLeftNote),

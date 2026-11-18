@@ -12,9 +12,21 @@ pub fn soft_cap(z: f32, limit: f32) -> f32 {
     z / (1. + (z / limit).powi(SOFT_POWER)).powf(1. / SOFT_POWER as f32)
 }
 
+/// The larger of two non-negative lengths, softly: `(a⁸ + b⁸)^(1/8)`, C∞, within a twelfth of a percent of the larger once the two differ by half.
+pub fn soft_max(a: f32, b: f32) -> f32 {
+    (a.powi(SOFT_POWER) + b.powi(SOFT_POWER)).powf(1. / SOFT_POWER as f32)
+}
+
+/// How far above the frame's bottom (`h`) a bar spanning `x0 .. w − x0` keeps its bottom edge so both its lower corners stay inside `c`, a quarter `unit` clear of the circle: the helm's Back and Deck sit outside it, in the glass's bottom corners.
+/// Never negative: the circle's lowest point is the glass's bottom, so at any side the circle is at or above it.
+pub fn bar_floor(c: &SafeCircle, h: f32, x0: f32, unit: f32) -> f32 {
+    let dx = c.cx - x0;
+    h - (c.cy + (c.r * c.r - dx * dx).sqrt()) + unit / 4.
+}
+
 /// The orb, its beads and the gaps between them, in units of the span unit: the orb's radius, a bead's radius, the gap from the circle's top to the orb, and the gap from the orb to a bead.
 const ORB_R: f32 = 2.;
-const BEAD_R: f32 = 3. / 4.;
+const BEAD_R: f32 = 1.;
 const TOP_GAP: f32 = 1. / 2.;
 const BEAD_GAP: f32 = 3. / 8.;
 
@@ -93,6 +105,24 @@ mod tests {
         let (c, w, unit) = pro(1.);
         let l = OrbLayout::compute(&c, w, unit);
         assert!(l.orb.1 - l.orb.2 > 118.56);
+    }
+
+    /// A full-width bar lifted by `bar_floor` keeps its corners inside the circle at every zoom, and the soft maximum is never below either side.
+    #[test]
+    fn the_bar_stays_inside_the_circle() {
+        for k in 0..=16 {
+            let ru = 0.25 * 2f32.powf(k as f32 / 4.);
+            let (c, w, unit) = pro(ru);
+            let h = 2992.;
+            let lift = bar_floor(&c, h, unit, unit);
+            assert!(lift > 0.);
+            let y = h - lift;
+            for x in [unit, w - unit] {
+                assert!(((x - c.cx).powi(2) + (y - c.cy).powi(2)).sqrt() < c.r, "ru {ru}: the bar's corner ({x}, {y}) leaves the circle");
+            }
+            let m = soft_max(lift, unit);
+            assert!(m >= lift && m >= unit);
+        }
     }
 
     /// The cap is smooth: sizes grow with the zoom at every step, with no flat run where a clamp would hold them.

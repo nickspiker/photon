@@ -33,6 +33,19 @@ impl PhotonApp {
         }
     }
 
+    /// The compose bar's lift off the frame's bottom: the keyboard's rows (`ime_lift`) and, on a safe circle (ferros), enough that the bar's lower corners stay inside the circle, clear of the helm's Back and Deck; softly the larger, so the bar never jumps between the two.
+    /// `unit` is the layout unit; the bar spans `unit .. w − unit` and rests `COMPOSE_MARGIN` units above whatever it is lifted off.
+    pub(super) fn bottom_lift(&self, buf_h: usize, unit: f32) -> f32 {
+        let kb = self.ime_lift();
+        match crate::ui::safe_circle() {
+            Some(c) => {
+                let margin = unit * COMPOSE_MARGIN;
+                crate::ui::safe_layout::soft_max(kb + margin, crate::ui::safe_layout::bar_floor(&c, buf_h as f32, unit, unit)) - margin
+            }
+            None => kb,
+        }
+    }
+
     /// Put the orb where the frame wants it: at the top of the safe circle, centred under the camera, on a host with one (ferros, `ui::safe_circle`); in the corner by the chrome's own rule elsewhere.
     /// Called at each resize, zoom included, and when the safe circle moves (the tick's watch).
     pub(super) fn place_orb(&mut self, ctx: &Context) {
@@ -68,6 +81,7 @@ impl PhotonApp {
             // Leaving the wave: forget the last-built key so the normal orb rebuilds from scratch, brand orb included.
             self.orb_key = None;
             self.orb_contact = None;
+            self.orb_self = None;
             if let Some(chrome) = self.chrome.as_mut() {
                 chrome.app_icon = self.photon_orb.clone();
                 chrome.set_orb_tint(orb_tint_for(self.online));
@@ -91,10 +105,13 @@ impl PhotonApp {
                 c.is_online || !orb_has_remote,
             )
         });
-        if orb_key == self.orb_key && target.is_some() == self.orb_contact.is_some() {
+        // On a safe circle (ferros) the orb outside a conversation is our own face, the one under the camera that the Ready screen used to draw large: keyed on our picture (a sample of its bytes, so a new pick shows) or our gradient's seed.
+        let orb_self = (target.is_none() && crate::ui::safe_circle().is_some()).then(|| self.own_face_key());
+        if orb_key == self.orb_key && target.is_some() == self.orb_contact.is_some() && orb_self == self.orb_self {
             return;
         }
         self.orb_key = orb_key;
+        self.orb_self = orb_self;
         self.orb_contact = target.map(|ci| self.contacts[ci].id); // PROOF: `target` came from active_contact() this call
         self.orb_had_avatar = has_avatar;
         let Some(chrome) = self.chrome.as_mut() else {
@@ -121,31 +138,35 @@ impl PhotonApp {
                         )
                     }
                 };
-                let pixels: Vec<u32> = src
-                    .chunks_exact(3)
-                    .map(|p| {
-                        0xFF00_0000
-                            | (((255 - p[0]) as u32) << 16)
-                            | (((255 - p[1]) as u32) << 8)
-                            | ((255 - p[2]) as u32)
-                    })
-                    .collect();
                 let ring = super::row_ring_tier_in(&self.contacts, c, orb_has_remote);
                 let online = c.is_online || !orb_has_remote;
-                chrome.app_icon = Some(fluor::host::icon::Icon {
-                    width: diam as u32,
-                    height: diam as u32,
-                    pixels,
-                });
+                chrome.app_icon = Some(orb_icon_of(&src, diam));
                 chrome.set_orb_tint(fluor::host::chrome::OrbTint::Custom {
                     ring,
                     brighten: online,
                 });
             }
             None => {
-                chrome.app_icon = self.photon_orb.clone();
+                chrome.app_icon = match orb_self {
+                    Some(_) => {
+                        let (src, diam) = match self.device_avatar_pixels.as_ref() {
+                            Some(px) if px.len() == crate::ui::avatar::AVATAR_SIZE * crate::ui::avatar::AVATAR_SIZE * 3 => (px.clone(), crate::ui::avatar::AVATAR_SIZE),
+                            _ => (gradient_avatar_rgb(self.session.as_ref().map(|s| proof_gradient_seed(&s.handle_proof)).unwrap_or(0), 64), 64),
+                        };
+                        Some(orb_icon_of(&src, diam))
+                    }
+                    None => self.photon_orb.clone(),
+                };
                 chrome.set_orb_tint(orb_tint_for(self.online));
             }
+        }
+    }
+
+    /// What our own face on the orb is drawn from: a sample of our picture's bytes (any new pick changes it) or, with none, our gradient's seed.
+    fn own_face_key(&self) -> u64 {
+        match self.device_avatar_pixels.as_ref() {
+            Some(px) => px.iter().step_by(px.len() / 64 + 1).fold(1u64, |h, &b| h.rotate_left(5) ^ b as u64),
+            None => self.session.as_ref().map(|s| proof_gradient_seed(&s.handle_proof)).unwrap_or(0),
         }
     }
 
@@ -3712,3 +3733,12 @@ mod tests {
         assert_eq!(friend_era_verdict(Some(0x43e7_4c1d), Some(0xd01a_68b6), &[0x43e7_4c1d, 0xd01a_68b6]), None, "a friend on both (two of its devices split) gives no evidence");
     }
 }
+
+/// A `diam`-square VSF RGB face (a 256² avatar, or a gradient placeholder) as the orb's icon: α+darkness packed, exactly the brand orb's format, so the chrome renders it thru the identical pipeline.
+fn orb_icon_of(src: &[u8], diam: usize) -> fluor::host::icon::Icon {
+    let pixels: Vec<u32> = src.chunks_exact(3).map(|p| 0xFF00_0000 | (((255 - p[0]) as u32) << 16) | (((255 - p[1]) as u32) << 8) | ((255 - p[2]) as u32)).collect();
+    fluor::host::icon::Icon { width: diam as u32, height: diam as u32, pixels }
+}
+
+/// The compose bar's rest above whatever it is lifted off (the frame's bottom, the keyboard, the safe circle's floor), in layout units: the layout pass and the render share it.
+pub(super) const COMPOSE_MARGIN: f32 = 0.8;
