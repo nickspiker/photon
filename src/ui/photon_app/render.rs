@@ -505,7 +505,7 @@ impl PhotonApp {
                     (phase, self.group_wave_title().unwrap_or_else(|| "?".into()), true, self.group_wave_face(), dur)
                 })
             });
-        // Ringing shows a SECOND action (Decline) beside the primary — hoisted so the end-of-frame hit re-stamp agrees with the early paint without re-deriving the phase.
+        // Ringing shows a SECOND action (Decline) beside the primary — hoisted so the paint and its hit claim read one phase.
         let wave_two_actions = wave_overlay.as_ref().map_or(false, |(p, _, _, _, _)| {
             matches!(p, crate::wave::WavePhase::Ringing)
         });
@@ -864,10 +864,10 @@ impl PhotonApp {
         // The rects the host cleared and presents this frame (one, the damage clip, unless a memmove frame named several), copied before the canvas borrows the context.
         let frame_rects: Vec<fluor::canvas::PixelRect> = match ctx.damage_rects.as_slice() { [] => vec![ctx.damage_clip], r => r.to_vec() };
         _rt.3 = scroll_hint.is_some() && self.scroll_frames_hinted < 3 && crate::is_dev_build();
-        // A scroll this frame that the hint did NOT carry (something else was dirty, the host forced a full repaint, no pane recorded yet): the layers `pane_scroll` left alone must now re-raster the ordinary way — the bg at the new offset, the hit map re-stamped — or the noise stands still under moving rows and taps land one shift behind.
+        // A scroll this frame that the hint did NOT carry (something else was dirty, the host forced a full repaint, no pane recorded yet): the bg layer `pane_scroll` left alone must now re-raster at the new offset, or the noise stands still under moving rows.
+        // The hit map needs nothing here: such a frame is a whole one, and `clear_hits` below starts every pixel of it afresh (until 2026-11-17 the chrome was invalidated too, only so its re-raster would wipe the map).
         if scroll_hint.is_none() && self.scroll_shift != 0 {
             chrome.invalidate_bg();
-            chrome.invalidate_chrome();
         }
         if self.scroll_shift != 0 {
             if scroll_hint.is_some() { self.scroll_frames_hinted += 1 } else { self.scroll_frames_full += 1 }
@@ -944,8 +944,15 @@ impl PhotonApp {
         let conv_blind_now = conv_blind(buf_h, blind_unit, blind_strip_floor, if blind_on { self.conv_blind_h } else { [0.0; 3] }, chrome.orb_geometry().is_some());
         chrome.set_orb_dy(if blind_on { conv_blind_now.orb_dy } else { 0.0 });
         chrome.rasterize_chrome(ctx.damage, ctx.text, ctx.clip_mask);
+        // THE HIT MAP GOES FRONT TO BACK, as the pixels do (fluor `paint::claim_hit`, 2026-11-17): the frontmost thing claims its pixels first and a pixel already claimed is never written again.
+        // Nothing has claimed yet: the bg, the perimeter and the chrome's re-raster above write no hits into the frame's map (the chrome's go in at its flatten below).
+        // So the scroll's move comes first, mirroring the host's memmove of the scratch, then the map is cleared over each damage rect, as the host cleared the scratch there; outside the damage it keeps last frame's claims, as the frame keeps last frame's pixels.
+        // Until 2026-11-17 each screen wiped its own region with HIT_NONE stamps (taking the chrome's and the wave bar's hits with them) and the wave overlay re-stamped itself last to win them back.
         if let Some((rect, dy, _)) = scroll_hint {
             chrome.scroll_hit_map(rect, dy);
+        }
+        for r in &frame_rects {
+            chrome.clear_hits(*r);
         }
         // The orb's bbox (ring included): a fixed thing that may reach into a scrolling pane, so the pane records it as an overlay for the memmove path.
         let orb_bbox: Option<fluor::canvas::PixelRect> = chrome.orb_geometry().map(|(cx, cy, r)| {
@@ -964,7 +971,7 @@ impl PhotonApp {
         // Over the damage only: outside it the frame already holds last frame's composite, chrome included, and a chrome change is chrome damage that widens the frame's damage (damage_rect).
         chrome.flatten_chrome_into(target, buf_w, buf_h, Some(fluor::paint::Clip::new(ctx.damage_clip.x0, ctx.damage_clip.y0, ctx.damage_clip.x1, ctx.damage_clip.y1)));
 
-        // WAVE OVERLAY (docs/waves.md) — retained fluor Buttons (no hand-rolled pills), painted HERE, EARLY, so under-blend keeps them above every screen's body (the whole point: a ring must be visible + answerable from wherever the user is). A live wave shows the status chip + action bar; an open callable conversation with no wave shows the ☎ start pill. Pixels land now (hit_map = None); the hit rects are RE-STAMPED at the very end via `stamp_hit_into` because each screen re-stamps its own hit_test_map region and would otherwise wipe this. Hover/press/dispatch ride `visit_app_widgets`. y sits just below the chrome title-bar band.
+        // WAVE OVERLAY (docs/waves.md) — retained fluor Buttons (no hand-rolled pills), painted HERE, EARLY, so under-blend keeps them above every screen's body (the whole point: a ring must be visible + answerable from wherever the user is). A live wave shows the status chip + action bar; an open callable conversation with no wave shows the ☎ start pill. Each button claims its hits right after its own paint (`stamp_hit_into`, the whole pill with its label and anti-aliased rim), in the same front-to-back order as its pixels, so every screen drawn after takes only what the overlay left; a pill that must not dispatch (dimmed, or a label) claims nothing of its own. Hover/press/dispatch ride `visit_app_widgets`. y sits just below the chrome title-bar band.
         {
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             // The ONE zoom-aware line unit the rest of the UI sizes off (back arrow, contact rows, avatar) — harmonic-mean of span·ru and the height budget, so it tracks Ctrl+/− and pinch; every dimension below is a multiple of it: NO fixed pixels, NO clamps (AGENT.md).
@@ -976,6 +983,8 @@ impl PhotonApp {
             _rt.mark("bg+chrome");
             if let (Some(l), Some(g)) = (wave_layout, field_geom) {
                 // ── FULL-SCREEN WAVE PANEL ── three bands (wave_field.rs `wave_layout`): the stage, the info strip under it, the dock at the bottom; every element scales off `unit` (zoom-honest, no fixed pixels).
+                // Where the panel shows is read against the α before it draws (the chrome is already in), over the frame's damage: outside the damage nothing it draws changes a pixel.
+                self.surface_shown.before(canvas.pixels, buf_w, buf_h, ctx.damage_clip);
                 let (phase, name, pi) = match &wave_overlay {
                     Some((ph, n, _, p, _)) => (*ph, n.clone(), *p),
                     None => (crate::wave::WavePhase::Ringing, String::from("?"), None),
@@ -1009,16 +1018,20 @@ impl PhotonApp {
                         let name_style = TextStyle::new(unit * 0.55, tint);
                         match pic {
                             Some(p) => {
+                                // Our own tile is the camera switch while we beam and there is another camera to switch to.
+                                if face.us && self.group_wave.as_ref().is_some_and(|w| w.beam_tx.is_some()) && (cfg!(target_os = "android") || crate::wave::beam_session::desktop_cameras().len() > 1) {
+                                    self.beam_self_rect = Some((*tx, *ty, *tx + *tw, *ty + *th));
+                                    // WHY/PROOF (a rect, not the paint): its tap claims the whole tile (its picture inset a quarter unit, and the name), before the tile paints, on a live wave.
+                                    if wave_phase_now == Some(crate::wave::WavePhase::Active) {
+                                        claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, *tx as isize, *ty as isize, (*tx + *tw) as isize, (*ty + *th) as isize, self.beam_self_hit);
+                                    }
+                                }
                                 // The name rides the tile's foot, painted first so it sits over the picture.
                                 ctx.text.draw_text_center(&mut canvas, &label, (*tx + *tw / 2) as f32, (*ty + *th) as f32 - unit * 0.6, &name_style, None, None);
                                 // A quarter unit in from each tile edge, so neighbouring frames' rounded corners read as separate frames.
                                 let gp = (unit / 4.0) as usize;
                                 // WHY/PROOF: a tile is the stage split by the member count, and on a tiny window it is narrower than the two margins — the plain subtraction would wrap to a huge width and the blit would run past the buffer; the frame then has no size and paints nothing.
                                 super::wave_field::paint_picture_rect(&mut canvas, *tx + gp, *ty + gp, tw.saturating_sub(2 * gp), th.saturating_sub(2 * gp), &p, false);
-                                // Our own tile is the camera switch while we beam and there is another camera to switch to.
-                                if face.us && self.group_wave.as_ref().is_some_and(|w| w.beam_tx.is_some()) && (cfg!(target_os = "android") || crate::wave::beam_session::desktop_cameras().len() > 1) {
-                                    self.beam_self_rect = Some((*tx, *ty, *tx + *tw, *ty + *th));
-                                }
                             }
                             None => {
                                 if let Some((_, diam, px)) = self.group_roll_avatars.iter().find(|(d, _, _)| *d == face.device) {
@@ -1139,6 +1152,7 @@ impl PhotonApp {
                             b.set_fill(Some(theme::PILL_GREY.0));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                            b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, id);
                         }
                         if let Some(b) = self.wave_action_btn.as_mut() {
                             b.set_rect(cx, by, main_w, main_h);
@@ -1152,6 +1166,7 @@ impl PhotonApp {
                             b.set_held_fill(Some(*theme::WAVE_ACCEPT_HOVER));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                            b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, id);
                         }
                         if let Some(b) = self.wave_decline_btn.as_mut() {
                             b.set_rect(rx, ry, side_w, side_h);
@@ -1162,6 +1177,7 @@ impl PhotonApp {
                             b.set_held_fill(Some(*theme::WAVE_DANGER_HOVER));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                            b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, id);
                         }
                     }
                     _ => {
@@ -1171,6 +1187,7 @@ impl PhotonApp {
                             b.set_font_size_fitted(bfont * 0.8, ctx.text);
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                            b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, id);
                         }
                         if let Some(b) = self.wave_action_btn.as_mut() {
                             b.set_rect(cx, by, bw, bh);
@@ -1186,6 +1203,7 @@ impl PhotonApp {
                             b.set_held_fill(Some(*theme::WAVE_DANGER_HOVER));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                            b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, id);
                         }
                         // The route (Android, field 2026-09-14): labelled with the device the wave plays on (the Kotlin route mirror); a tap cycles to the next available output.
                         #[cfg(target_os = "android")]
@@ -1203,6 +1221,7 @@ impl PhotonApp {
                             b.set_font_size_fitted(bfont * 0.8, ctx.text);
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                            b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, id);
                         }
                         // The BEAM toggle (docs/beams.md), in the right slot the route button holds on Android: live when this device has a codec and a camera path.
                         #[cfg(not(target_os = "android"))]
@@ -1215,6 +1234,9 @@ impl PhotonApp {
                             b.set_enabled(can_beam);
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                            // A tap only on a live wave this device can beam on; ringing out it shows, hiding what is behind it, but takes none.
+                            let live = wave_phase_now == Some(crate::wave::WavePhase::Active) && can_beam;
+                            b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, if live { id } else { HIT_BLOCK });
                         }
                     }
                 }
@@ -1273,6 +1295,9 @@ impl PhotonApp {
                         b.set_font_size_fitted(sfont, ctx.text);
                         let id = b.hit_id();
                         b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        // The phone's Beam toggle takes a tap only on a live wave this device can beam on, and otherwise shows without one (the rest of the row is gated by its inclusion above).
+                        let live = *k != 3 || (wave_phase_now == Some(crate::wave::WavePhase::Active) && can_beam);
+                        b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, if live { id } else { HIT_BLOCK });
                     }
                 }
                 // THE PAIR'S PICTURES (Nick 2026-10-13): the peer's picture as big as the stage allows, TOP-anchored, so the spare room falls below it; our camera as an inset in the picture's bottom-right corner (the stage's, until theirs arrives), its name inside the inset's foot. The inset paints FIRST: fluor composites front to back, so it lands over the picture painted next and under the text and buttons.
@@ -1288,13 +1313,7 @@ impl PhotonApp {
                         let m = s / 8;
                         // WHY/PROOF: `ph` follows the PEER's picture shape — a sliver of a picture is shorter than the inset and its margin, and the inset then sits at the stage's top rather than a wrapped row past the buffer.
                         let (ix, iy) = (sx + sw - s - m, sy + ph.saturating_sub(s + m));
-                        // The camera's name inside the inset's foot (Nick 2026-10-17: "enumerate the names"), painted before the inset so it sits on it.
-                        if let Some(name) = Self::camera_label() {
-                            let cap = TextStyle::new(s as f32 / 9.0, *theme::STATUS_TEXT_COLOUR).font("Oxanium");
-                            ctx.text.draw_text_center(&mut canvas, &name, (ix + s / 2) as f32, (iy + s) as f32 - s as f32 / 8.0, &cap, None, None);
-                        }
-                        super::wave_field::paint_picture_rect(&mut canvas, ix, iy, s, s, &me, false);
-                        // The inset is the camera switch (a tap cycles lenses on a phone, devices on a desktop): its square is a tap target, re-stamped at the end of the frame.
+                        // WHY/PROOF (a rect, not the paint): the inset is the camera switch (a tap cycles lenses on a phone, devices on a desktop), and its whole square claims the tap on a live wave, before the inset and its name paint.
                         let sending = if cfg!(target_os = "android") {
                             crate::wave::beam_session::android_sending()
                         } else {
@@ -1302,7 +1321,16 @@ impl PhotonApp {
                         };
                         if sending {
                             self.beam_self_rect = Some((ix, iy, ix + s, iy + s));
+                            if wave_phase_now == Some(crate::wave::WavePhase::Active) {
+                                claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, ix as isize, iy as isize, (ix + s) as isize, (iy + s) as isize, self.beam_self_hit);
+                            }
                         }
+                        // The camera's name inside the inset's foot (Nick 2026-10-17: "enumerate the names"), painted before the inset so it sits on it.
+                        if let Some(name) = Self::camera_label() {
+                            let cap = TextStyle::new(s as f32 / 9.0, *theme::STATUS_TEXT_COLOUR).font("Oxanium");
+                            ctx.text.draw_text_center(&mut canvas, &name, (ix + s / 2) as f32, (iy + s) as f32 - s as f32 / 8.0, &cap, None, None);
+                        }
+                        super::wave_field::paint_picture_rect(&mut canvas, ix, iy, s, s, &me, false);
                     }
                     if let Some(p) = peer {
                         super::wave_field::paint_picture_rect(&mut canvas, sx, sy, sw, sh, &p, true);
@@ -1312,6 +1340,11 @@ impl PhotonApp {
                 if let (Some(m), false, false, false) = (self.wave_field_map.as_ref(), picture_up, self_stage, group_layout) {
                     super::wave_field::paint_field(&mut canvas, &g, m, &self.wave_field_tabs);
                 }
+                // THE PANEL IS MODAL BY ITS CLAIM: everything it showed on that no control of it claimed (the field's wash, the faces, the text, the dock's rims) hides what is behind it, translucent or not, as the frontmost layer there; nothing it drew behind an already opaque pixel (the chrome's) claims.
+                // Where the panel paints nothing the window's own surface shows and stays unclaimed; no screen draws behind the panel anyway.
+                // Until 2026-11-17 the whole map was wiped at the end of the frame, the chrome's hits with it.
+                self.surface_shown.settle(canvas.pixels);
+                self.surface_shown.claim(&mut chrome.hit_test_map, HIT_BLOCK);
             } else if let Some((phase, name, direct, _pi, _dur)) = &wave_overlay {
                 let phase = *phase;
                 let bar_w = buf_w as f32 * 0.9; // window-relative width — a bar spans the window
@@ -1338,12 +1371,14 @@ impl PhotonApp {
                 } else {
                     bar_w - status_w - gap
                 };
-                // Status chip — a non-interactive label (full brightness, not in the widget walk, never stamped).
+                // Status chip — a non-interactive label (full brightness, not in the widget walk, no id of its own).
                 if let Some(b) = self.wave_status_btn.as_mut() {
                     b.set_rect(x0 + status_w * 0.5, cy, status_w, pill_h);
                     b.set_font_size(wave_font);
                     b.set_label(status);
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, HIT_NONE);
+                    // A label in front of the screen, with no click of its own: it hides what is behind it wherever it shows, rim and all.
+                    b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, HIT_BLOCK);
                 }
                 let ax = x0 + status_w + gap;
                 let a_label = tr(match phase {
@@ -1362,6 +1397,7 @@ impl PhotonApp {
                     b.set_held_fill(Some(if accept { *theme::WAVE_ACCEPT_HOVER } else { *theme::WAVE_DANGER_HOVER }));
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                    b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, id);
                 }
                 if wave_two_actions {
                     let dx = x0 + status_w + gap * 2. + action_w;
@@ -1375,6 +1411,7 @@ impl PhotonApp {
                         b.set_held_fill(Some(*theme::WAVE_DANGER_HOVER));
                         let id = b.hit_id();
                         b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, id);
                     }
                 }
             } else if matches!(self.state, AppState::Conversation) && wave_pill_show && self.viewer.is_none() && self.reader.is_none() {
@@ -1394,6 +1431,8 @@ impl PhotonApp {
                     b.set_enabled(wave_pill_enabled);
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                    // Dimmed, it still shows: it hides what is behind it and takes no tap.
+                    b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, if wave_pill_enabled { id } else { HIT_BLOCK });
                 }
                 // Beam (video) — the slat above Wave, a third of a pill left of it so the two read as a stack: live when a wave could start and this device can send a beam (a codec + a camera path; docs/beams.md); a tap starts the wave with the beam armed.
                 if let Some(b) = self.beam_btn.as_mut() {
@@ -1404,6 +1443,7 @@ impl PhotonApp {
                     b.set_enabled(beam_pill_enabled);
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                    b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, if wave_pill_enabled && beam_pill_enabled { id } else { HIT_BLOCK });
                 }
                 // Fleet wave-presence chip: a wave is live on another of our devices — informational v1, the join/switch affordance lands with handoff.
                 if let Some(txt) = &fleet_chip_text {
@@ -1420,7 +1460,7 @@ impl PhotonApp {
             }
         }
 
-        // DISTINCT SCREEN while ringing (2026-08-31): the full-screen ring panel is opaque and modal, so painting the underlying screen is pure waste — at full frame rate (the pulse animation), during the one moment the radio + speaker are also busy. Every per-screen body below is skipped; the panel, chrome flatten, joiner flood and the endgame hit re-stamp (which wipes the map modal anyway) still run. Screen-side frame bookkeeping (scroll extents, textbox geometry, hit stamps) goes stale for the ring's duration by design — the drain repaints fully on every ring edge, so the first non-ringing frame rebuilds it all.
+        // DISTINCT SCREEN while ringing (2026-08-31): the full-screen ring panel is opaque and modal, so painting the underlying screen is pure waste — at full frame rate (the pulse animation), during the one moment the radio + speaker are also busy. Every per-screen body below is skipped; the panel (modal by its own claim), chrome flatten and joiner flood still run. Screen-side frame bookkeeping (scroll extents, textbox geometry) goes stale for the ring's duration by design — the drain repaints fully on every ring edge, so the first non-ringing frame rebuilds it all.
         if !wave_fullscreen {
 
         // Launch-screen widgets paint UNDER the chord hint (so the hint always wins over the textbox) and OVER chrome (so the pill sits on top of the spectrum strip / wordmark). Same target buffer as the chord hint; widgets stamp their hit IDs into chrome's shared `hit_test_map`. Only paint when the launch screen is the active state — Ready/Searching/Conversation get their own widgets later.
@@ -1434,18 +1474,6 @@ impl PhotonApp {
             // Awareness lives at RENDER time here, mirroring the submit-time refusal at attest(): a bound device must never render fresh-attest-as-anyone / join-another-fleet / pairing-words UI, only get bounced after interacting.
             // Presence-only — no handle comparison happens here, so no oracle: the marker's existence gates the UI, its VALUE only ever meets a post-proof compare (2026-08-23 ticket).
             let device_bound = crate::storage::device_binding::binding().is_some();
-
-            // Clear the attest block's footprint in the shared hit_test_map BEFORE re-stamping this frame's widgets. Chrome only wipes the map on its own dirty cycles (`rasterize_chrome` early-returns when chrome is clean), but the launch widgets re-stamp every frame — so when the Attest button stops rendering (handle cleared to empty) on a chrome-clean frame, its old hit-rect would otherwise linger and keep dispatching pointer + hitmask. The attest_block is the only Photon-owned region of the map on this screen, so clearing the whole block each frame is the cheap correct reset; the textbox/button/∞ below re-stamp whatever is actually present.
-            restamp_hit_rect(
-                &mut chrome.hit_test_map,
-                buf_w,
-                buf_h,
-                layout.attest_block.x0 as isize,
-                layout.attest_block.y0 as isize,
-                layout.attest_block.x1 as isize,
-                layout.attest_block.y1 as isize,
-                HIT_NONE,
-            );
 
             // Status slot — `attest.error` rect above the textbox. Carries either the red error message (`LaunchState::Error`) or the white "Attesting…" indicator (`LaunchState::Attesting`); empty in Fresh. Same geometry for both so they swap in place; colour differentiates "something's wrong" from "we're working". Wave's 1-cycle/sec phase animation pairs with the "Attesting…" line as the secondary cue.
             let status: Option<(std::borrow::Cow<'_, str>, u32)> = if self.launch_add_mode
@@ -1686,6 +1714,9 @@ impl PhotonApp {
                         } else {
                             (tr(Msg::CopyWords), *theme::CONTACT_NAME_COLOUR)
                         };
+                        // WHY/PROOF (a rect, not the paint): the line's tap band (most of the width, padded round the glyphs, so more than the text shows), claimed before the text paints.
+                        let half_w = buf_w as f32 * 0.4;
+                        claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, (cx - half_w) as isize, (y - csize * 0.8) as isize, (cx + half_w) as isize, (y + csize * 0.8) as isize, self.join_copywords_hit_id);
                         ctx.text.draw_text_center(
                             &mut canvas,
                             &clabel,
@@ -1694,17 +1725,6 @@ impl PhotonApp {
                             &TextStyle::new(csize, ccolour).weight(600).font("Oxanium"),
                             None,
                             None,
-                        );
-                        let half_w = buf_w as f32 * 0.4;
-                        restamp_hit_rect(
-                            &mut chrome.hit_test_map,
-                            buf_w,
-                            buf_h,
-                            (cx - half_w) as isize,
-                            (y - csize * 0.8) as isize,
-                            (cx + half_w) as isize,
-                            (y + csize * 0.8) as isize,
-                            self.join_copywords_hit_id,
                         );
                         y += csize * 0.9;
                     }
@@ -1717,6 +1737,11 @@ impl PhotonApp {
                         } else {
                             (tr(fgtw::text::Msg::JoinAskFgtw), *theme::CONTACT_NAME_COLOUR)
                         };
+                        // WHY/PROOF (a rect, not the paint): the line's padded tap band, as Copy words above, before the text paints.
+                        if !self.join_mailbox_asked {
+                            let half_w = buf_w as f32 * 0.4;
+                            claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, (cx - half_w) as isize, (y - msize * 0.8) as isize, (cx + half_w) as isize, (y + msize * 0.8) as isize, self.join_mailbox_hit_id);
+                        }
                         ctx.text.draw_text_center(
                             &mut canvas,
                             &mlabel,
@@ -1726,19 +1751,6 @@ impl PhotonApp {
                             None,
                             None,
                         );
-                        if !self.join_mailbox_asked {
-                            let half_w = buf_w as f32 * 0.4;
-                            restamp_hit_rect(
-                                &mut chrome.hit_test_map,
-                                buf_w,
-                                buf_h,
-                                (cx - half_w) as isize,
-                                (y - msize * 0.8) as isize,
-                                (cx + half_w) as isize,
-                                (y + msize * 0.8) as isize,
-                                self.join_mailbox_hit_id,
-                            );
-                        }
                         y += msize * 0.9;
                     }
                     // The confirm reminder closes the block: the add is approved on the OTHER device.
@@ -1770,6 +1782,9 @@ impl PhotonApp {
                         } else {
                             fluor::theme::HINT_COLOUR
                         };
+                        // WHY/PROOF (a rect, not the paint): the line's padded tap band, as Copy words above, before the text paints.
+                        let half_w = buf_w as f32 * 0.4;
+                        claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, (cx - half_w) as isize, (y - sf_size * 0.8) as isize, (cx + half_w) as isize, (y + sf_size * 0.8) as isize, self.join_startfresh_hit_id);
                         ctx.text.draw_text_center(
                             &mut canvas,
                             &sf_label,
@@ -1780,17 +1795,6 @@ impl PhotonApp {
                                 .font("Oxanium"),
                             None,
                             None,
-                        );
-                        let half_w = buf_w as f32 * 0.4;
-                        restamp_hit_rect(
-                            &mut chrome.hit_test_map,
-                            buf_w,
-                            buf_h,
-                            (cx - half_w) as isize,
-                            (y - sf_size * 0.8) as isize,
-                            (cx + half_w) as isize,
-                            (y + sf_size * 0.8) as isize,
-                            self.join_startfresh_hit_id,
                         );
                     }
                 }
@@ -1929,18 +1933,6 @@ impl PhotonApp {
             // The whole user section (avatar, hint, search box + plus, separator) scrolls together with the contact rows as one block; `contacts_scroll` is the single block offset (0 = rest, avatar at its natural top). Subtract it from the Y of every scrolling element. The version watermark, Sec/Rec meters, and background do NOT scroll (rendered elsewhere / left unoffset here). The upper clamp lands below once `matching`/`rows` are known.
             let scroll = self.contacts_scroll as f32;
 
-            // Clear the contacts textbox slot in the shared hit_test_map before re-stamping. Same reason as the launch screen: chrome only wipes the map on its own dirty cycles, but the textbox + overlaid plus-button re-stamp every frame, and the plus only renders when the field is non-empty. Without this, clearing the search field to empty on a chrome-clean frame would leave the plus-button's old hit-rect dispatching pointer + hitmask. The plus lives inside the textbox slot, so clearing that slot covers both. The slot scrolls with the block, so clear the SCROLLED rect (update_widget_layout offsets the textbox/button rects by the same `contacts_scroll`).
-            restamp_hit_rect(
-                &mut chrome.hit_test_map,
-                buf_w,
-                buf_h,
-                ready_layout.textbox.x0 as isize,
-                ready_layout.textbox.y0 as isize - self.contacts_scroll,
-                ready_layout.textbox.x1 as isize,
-                ready_layout.textbox.y1 as isize - self.contacts_scroll,
-                HIT_NONE,
-            );
-
             let (cx, cy_natural, radius) = ready_layout.avatar_center_radius();
             let cy = cy_natural - scroll;
             // NAMING A NEW ATOM (Nick 2026-10-27): our avatar gives way to the create pill — "Create atom" alone, "Create molecule" once a friend is picked — live once the box holds a name. It claims the avatar's hit id, so a tap founds instead of picking a picture.
@@ -1951,8 +1943,8 @@ impl PhotonApp {
                 let pill = fluor::region::Region::new(cx - pw * 0.5, cy - ph * 0.5, pw, ph);
                 draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill, &label, self.avatar_hit_id, ctx.pressed_hit, named, named.then_some(*theme::PILL_GREEN), "Oxanium");
             } else {
-            // The avatar's hit circle, stamped BEFORE it paints and only where nothing opaque (the chrome) already sits — the stamp rides the paint decision (see stamp_hit_rect_under).
-            stamp_hit_circle_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, cx, cy, radius, self.avatar_hit_id);
+            // WHY/PROOF (a circle, not the paint): the avatar's whole disc takes the tap whatever its picture shows, claimed BEFORE it paints and only where nothing opaque (the chrome) already sits (see claim_hit_rect_under).
+            claim_hit_circle_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, cx, cy, radius, self.avatar_hit_id);
             // 0xFFC5C5C5 in fluor's α+darkness format = α 0xFF, darkness 0xC5 each channel = visible RGB(0x3A, 0x3A, 0x3A) ≈ 22% brightness. Standalone constant (no theme.rs entry yet) — promote when Ready chrome gets a proper palette pass.
             if self.device_avatar_pixels.is_some() {
                 let diameter = (radius * 2.0) as usize;
@@ -2008,7 +2000,7 @@ impl PhotonApp {
 
             // Contacts-page textbox + plus button. The plus button is OVERLAID inside the textbox right edge and ONLY rendered when the textbox has content — empty textbox shows no button. While an add-friend search is in flight, a rotating hourglass replaces the button (and the button is not hit-stampable, so it can't be re-clicked mid-search).
             //
-            // Under-blend is topmost-FIRST (first opaque writer wins colour AND its per-pixel hit stamp). Paint the button/hourglass BEFORE the textbox: the button claims its exact pill silhouette in the framebuffer and hit map, and the textbox drawn under it can't overwrite either (its own stamp is per-opaque-pixel too). No hit re-stamp — the draw yields the correct pill-shaped hit area on its own.
+            // Under-blend is topmost-FIRST (first opaque writer wins colour AND its per-pixel hit stamp). Paint the button/hourglass BEFORE the textbox: the button claims its exact pill silhouette in the framebuffer and hit map, and the textbox drawn under it can't overwrite either (its own stamp is per-opaque-pixel too). The button claims every pixel it shows on (its glyph and anti-aliased rim too) as it paints, before the textbox does.
             let plus_visible = self
                 .contacts_textbox
                 .as_ref()
@@ -2078,12 +2070,6 @@ impl PhotonApp {
                     Some(&mut chrome.hit_test_map),
                     id,
                 );
-            }
-            // Re-win the plus button's hit silhouette after the search textbox clobbered it (only when the button actually rendered — not during the in-flight hourglass, which isn't clickable).
-            if !self.add_in_flight && plus_visible {
-                if let Some(btn) = self.contacts_plus_btn.as_ref() {
-                    btn.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, btn.hit_id());
-                }
             }
 
             // Add-friend result text in the hint slot above the search box: green "added {h}", red "not found" / "error: …". Stays until the next search starts (cleared in `submit_add_friend`).
@@ -2323,9 +2309,9 @@ impl PhotonApp {
                     || (view.hit != HIT_NONE && ctx.pressed_hit == HIT_NONE && self.hover_hit == row_hit_here);
                 // The avatar centres on the WHOLE row block, so a wrapped name sits balanced beside it (Nick 2026-09-09).
                 let cy = (row_top + rh / 2) as f32;
-                // The row's hit rect, stamped BEFORE the row paints and only where nothing opaque already sits: a row scrolled up under the title strip or the orb leaves those pixels to the chrome, exactly as its pixels do (field 2026-10-01: a blind after-paint stamp took the orb until the next chrome-dirty frame).
+                // WHY/PROOF (a rect, not the paint): the row's whole rect takes the tap (the gaps round its name and avatar too), claimed BEFORE the row paints and only where nothing opaque already sits: a row scrolled up under the title strip or the orb leaves those pixels to the chrome, exactly as its pixels do (field 2026-10-01: a blind after-paint stamp took the orb until the next chrome-dirty frame).
                 if view.hit != HIT_NONE {
-                    stamp_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, rows.x0 as isize, row_top, rows.x1 as isize, row_top + rh, view.hit);
+                    claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, rows.x0 as isize, row_top, rows.x1 as isize, row_top + rh, view.hit);
                 }
 
                 // Build/refresh a contact's scaled-avatar cache at the row diameter (a group's pie is computed per frame — a few thousand pixels, no cache).
@@ -2519,9 +2505,6 @@ impl PhotonApp {
             let layout = SettingsLayout::compute(&ctx.viewport);
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             if conv_hdr.is_some() {
-                // Clear the panel region's hit stamps before re-stamping this frame (immediate-mode stamps must not linger across page switches) — INSIDE THIS FRAME'S DAMAGE only: a pill re-stamps only pixels it paints, and outside the damage nothing paints, so a region-wide wipe on a caret-blink or chrome frame left every pill there dead (Nick 2026-10-24: Leave neither lit nor clicked).
-                let d = ctx.damage_clip;
-                restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, d.x0 as isize, (layout.rail.y as isize).max(d.y0 as isize), d.x1 as isize, d.y1 as isize, HIT_NONE);
                 // Our pid keys the colours below — a keyed colour, not a self-check. "Is this only me" is the participant count.
                 let our_hh = own_pid.unwrap_or([0u8; 32]);
                 let seed_ref = self.session.as_ref().map(|se| se.identity_seed);
@@ -2630,11 +2613,12 @@ impl PhotonApp {
                 {
                     let r = fluor::region::Region::new(rail_inset.x, rail_inset.y, rail_inset.w, nav_h);
                     let back_held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
+                    // WHY/PROOF (a rect, not the paint): its hits first, over the fill's own rect (the label and the fill paint next, the fill covering the whole rect, so the rect is what shows).
+                    claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, layout.rail.x as isize, layout.rail.y as isize, layout.rail.right() as isize, r.bottom() as isize, self.back_btn_hit_id);
                     ctx.text.draw_text_left(&mut canvas, &tr(Msg::SettingsBack), r.x + rspan * 0.6, r.center_y(), &TextStyle::new(rspan, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), None, None);
                     let fill = if back_held { fluor::theme::BUTTON_HELD } else { theme::BACK_BUTTON_IDLE_FILL };
                     // Full rail column, up to the rail's true top — no padding (Nick 2026-09-02).
                     paint::fill_rect(&mut canvas, layout.rail.x as isize, layout.rail.y as isize, layout.rail.w as isize, (r.bottom() - layout.rail.y) as isize, fill, None, None);
-                    restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, layout.rail.x as isize, layout.rail.y as isize, layout.rail.right() as isize, r.bottom() as isize, self.back_btn_hit_id);
                 }
                 let pages_top = rail_inset.y + nav_h;
                 let pages_clip = fluor::paint::Clip::new(layout.rail.x as usize, pages_top.max(layout.rail.y) as usize, layout.rail.right() as usize, layout.rail.bottom() as usize);
@@ -2648,6 +2632,8 @@ impl PhotonApp {
                     let hid = self.conv_nav_base + i as HitId;
                     let held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == hid;
                     let colour = if active { *theme::CONTACT_NAME_COLOUR } else { *theme::LABEL_COLOUR };
+                    // WHY/PROOF (a rect, not the paint): the row's tap band, cut to the pages region as its paint is, before the row paints; an idle row paints only its label there, so the band reaches past what shows.
+                    claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, layout.rail.x as isize, r.y.max(pages_top) as isize, layout.rail.right() as isize, r.bottom().min(layout.rail.bottom()) as isize, hid);
                     ctx.text.draw_text_left(&mut canvas, &tr(Msg::ConversationPageName(*p)), r.x + rspan * 0.6, r.center_y(), &TextStyle::new(rspan, colour).weight(if active { 600 } else { 400 }).font("Oxanium"), Some(pages_clip), None);
                     if held {
                         // Full rail column, edge to edge (Nick 2026-09-02).
@@ -2655,7 +2641,6 @@ impl PhotonApp {
                     } else if active {
                         paint::fill_rect(&mut canvas, layout.rail.x as isize, r.y as isize, layout.rail.w as isize, r.h as isize, theme::RAIL_ACTIVE_COLOUR, Some(pages_clip), None);
                     }
-                    restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, layout.rail.x as isize, r.y.max(pages_top) as isize, layout.rail.right() as isize, r.bottom().min(layout.rail.bottom()) as isize, hid);
                 }
                 paint::fill_rect(&mut canvas, layout.content.x as isize, layout.content.y as isize, 1, layout.content.h as isize, theme::SEPARATOR_COLOUR, None, None);
 
@@ -2704,6 +2689,10 @@ impl PhotonApp {
                                 super::BondKind::Friend => editable,
                             };
                             let hid = if tappable { btn + super::conv_panel::SLOT_BONDS + k as HitId } else { HIT_NONE };
+                            // WHY/PROOF (a rect, not the paint): the whole row is its tap target (its avatar, name and checkbox, and the room between them), claimed before any of it paints.
+                            if hid != HIT_NONE {
+                                claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, r.x as isize, r.y as isize, r.right() as isize, r.bottom() as isize, hid);
+                            }
                             // Avatar: the contact's own picture as the contacts list draws it, else its deterministic gradient (a member we never friended: their party's).
                             let ar = r.h * 0.36;
                             let acx = r.x + r.h * 0.55;
@@ -2730,9 +2719,6 @@ impl PhotonApp {
                                 let mut id_slot = hid;
                                 let mut cb = fluor::widgets::checkbox::Checkbox::new(&mut id_slot, "", r.right() - side * 1.5, acy, side, side, hspan2, checked);
                                 cb.render_content_into(&mut canvas, ctx.text, None, if hid != HIT_NONE { Some(&mut chrome.hit_test_map[..]) } else { None });
-                            }
-                            if hid != HIT_NONE {
-                                restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, r.x as isize, r.y as isize, r.right() as isize, r.bottom() as isize, hid);
                             }
                         }
                         if bonds.len() == first_outside {
@@ -2824,9 +2810,10 @@ impl PhotonApp {
                         if let Some((gid, roster, ..)) = roster_src.as_ref() {
                             let block = fluor::region::Region::new(rows[1].x, rows[1].y, rows[1].w, rows[1].h * 5.0);
                             let (cx, cy) = (block.center_x(), block.center_y());
+                            // WHY/PROOF (a circle, not the paint): the picture's whole disc takes the tap, claimed before it paints.
                             // Tappable unless we have left: Android picks a picture, the desktop's hover shows the hint (and a tap says to drop one).
                             if !left {
-                                stamp_hit_circle_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, cx, cy, avatar_r, btn + super::conv_panel::SLOT_AVATAR);
+                                claim_hit_circle_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, cx, cy, avatar_r, btn + super::conv_panel::SLOT_AVATAR);
                             }
                             match group_face.as_ref().and_then(|h| super::group_avatar::face_at(&self.group_faces, h, diam)) {
                                 Some(scaled) => crate::ui::avatar_render::draw_avatar(&mut canvas, cx, cy, avatar_r, scaled, diam, Some(content_clip)),
@@ -2965,7 +2952,7 @@ impl PhotonApp {
                     let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
                     let area_top = if cfg!(target_os = "android") { crate::ui::safe_top_px() as f32 } else { fluor::host::chrome::strip_height(ctx.viewport) };
                     let pb = self.wave_playback.as_ref().filter(|_| self.wave_playback_hash == Some(rp.hash));
-                    super::replay::draw_replay(rp, pb, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, unit, area_top, self.replay_base, ctx.pressed_hit, ctx.damage_clip);
+                    super::replay::draw_replay(rp, pb, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, unit, area_top, self.replay_base, ctx.pressed_hit, ctx.damage_clip, &mut self.surface_shown);
                 }
             }
             if self.viewer.is_some() || self.reader.is_some() {
@@ -2987,10 +2974,10 @@ impl PhotonApp {
                         fluor::region::Region::new(pad_x, py, pw, pill_h * 0.9),
                         fluor::region::Region::new(pad_x + pw + line_h * 0.5, py, pw, pill_h * 0.9),
                     ];
-                    // Hit map FIRST: swallow the area (stale stamps from the skipped conversation body must not fire); the pills and the view's widgets then win their rects as they draw.
-                    // INSIDE THIS FRAME'S DAMAGE only (Nick 2026-11-01: "the back button on the image preview screen before the full rez copy comes in, it doesn't work"): a pill re-stamps only the pixels it paints, and while the original is fetched only the progress bar repaints — a whole-area swallow erased Back every frame (the dead-Leave class, 675d88d9).
+                    // The hits go in with the pixels, front to back: the pills claim theirs as they paint, the view's widgets theirs, and the viewer's own surface (`viewer_base + 3`) claims whatever else of it shows, last, below.
+                    // Where the viewer shows is read against the α before it draws, from its top edge down over the frame's damage (the chrome, and the orb hanging below the strip, are already in and keep theirs).
                     let d = ctx.damage_clip;
-                    restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, d.x0 as isize, (area_top as isize).max(d.y0 as isize), d.x1 as isize, d.y1 as isize, self.viewer_base + 3);
+                    self.surface_shown.before(canvas.pixels, buf_w, buf_h, fluor::canvas::PixelRect::new(d.x0, d.y0.max(area_top as usize), d.x1, d.y1));
                     // Topmost first: pills paint before the picture, the picture before the backdrop — everything wins exactly its own pixels.
                     if let Some(v) = self.viewer.as_mut() {
                         let held = crate::storage::blob_present_or_pending(&v.hash);
@@ -3006,10 +2993,7 @@ impl PhotonApp {
                                 view.set_area(opsin::view::Area { x: 0.0, y: area_top, w: buf_w as f32, h: buf_h as f32 - area_top });
                                 // opsin's view draws 8-bit: at a wider depth it goes in widened, under what is already here (depth.rs).
                                 Px::paint_8bit(&mut canvas, &mut self.front8, |c8| view.render(c8, ctx.viewport, ctx.text, ctx.damage_clip, (ctx.cursor_x, ctx.cursor_y), &mut chrome.hit_test_map));
-                                // PHOTON'S PILLS WIN THEIR RECTS LAST (field 2026-10-01, "back button doesn't do anything on the full-screen viewer"): the view's own buttons stamp during their blit, after the pills above, and a panel widget laid over the top-left took the Back pill's pixels. A deliberate after-paint re-win — the pills were painted first, so they are on top on screen too.
-                                for (i, r) in prects.iter().enumerate().filter(|_| !plain) {
-                                    restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, r.x as isize, r.y as isize, (r.x + r.w) as isize, (r.y + r.h) as isize, self.viewer_base + if i == 0 { 0 } else { 2 });
-                                }
+                                // Photon's pills claimed their rects as they painted, ahead of the view, so a panel widget laid over the top-left takes none of Back (field 2026-10-01, "back button doesn't do anything on the full-screen viewer"; until 2026-11-17 they re-won them here as the last writer).
                             }
                             None => {
                                 // The decode is on its way (or the original is still being fetched): the preview blob / micro thumb fitted in the area, the name and the state underneath.
@@ -3086,6 +3070,10 @@ impl PhotonApp {
                         let bd_top = if cfg!(target_os = "android") { 0.0 } else { fluor::host::chrome::strip_height(ctx.viewport) };
                         paint::fill_rect(&mut canvas, 0, bd_top as isize, buf_w as isize, (buf_h as f32 - bd_top) as isize, *theme::VIEWER_BG_COLOUR, None, None);
                     }
+                    // THE VIEWER'S OWN SURFACE, last: whatever of the viewer shows that no pill or view widget claimed (the picture, its caption and bar, a dimmed Save, the reader's page) takes the viewer's own id, a tap that does nothing, so nothing behind it answers.
+                    // Where the image viewer shows nothing the speckle behind it does, unclaimed: the window's own surface (until 2026-11-17 the whole area below the strip was swallowed, the speckle with it).
+                    self.surface_shown.settle(canvas.pixels);
+                    self.surface_shown.claim(&mut chrome.hit_test_map, self.viewer_base + 3);
                 }
             }
             // The one conversation arm paints ANY conversation from its header; `hdr.ci` is the one person it is with, when it is with one we hold a contact for.
@@ -3119,7 +3107,7 @@ impl PhotonApp {
                     let conv_layout = ReadyLayout::compute(buf_w, buf_h, ru);
                     let unit = conv_layout.unit_height;
 
-                    // Back arrow (top-left) — below the chrome title bar area. Slides off vertically by conv_topbar_off (scroll-tied, browser-toolbar style); the hit rect follows and stamps HIT_NONE once mostly gone so a ghost tap can't fire it.
+                    // Back arrow (top-left) — below the chrome title bar area. Slides off vertically by conv_topbar_off (scroll-tied, browser-toolbar style); the hit rect follows and claims nothing once mostly gone so a ghost tap can't fire it.
                     // Half the old size (Nick 2026-09-15: "2x too big").
                     let back_size = unit * 0.575;
                     // The blind's bottom row (conv_blind): wholly above the screen once raised, never a sliver left peeking.
@@ -3136,6 +3124,11 @@ impl PhotonApp {
                             && ctx.pressed_hit == HIT_NONE
                             && self.hover_hit == self.back_btn_hit_id);
                     let back_weight = if back_hovered { 700 } else { 500 };
+                    // WHY/PROOF (a rect, not the paint): the back button's tap band, padded round its label (and its press glow), claimed before either paints; none once the bar is mostly gone, so a ghost tap cannot fire it.
+                    if topbar_visible {
+                        let back_w = ctx.text.measure_text(&back_text, &TextStyle::new(back_size, 0).weight(back_weight).font("Oxanium"));
+                        claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, 0, (back_y - back_size) as isize, (back_x + back_w + unit) as isize, (back_y + back_size) as isize, self.back_btn_hit_id);
+                    }
                     if back_y > -back_size {
                         ctx.text.draw_text_left(
                             &mut canvas,
@@ -3181,28 +3174,6 @@ impl PhotonApp {
                             );
                         }
                     }
-                    // Stamp the back button hit rect.
-                    let back_w = ctx.text.measure_text(
-                        &back_text,
-                        &TextStyle::new(back_size, 0)
-                            .weight(back_weight)
-                            .font("Oxanium"),
-                    );
-                    restamp_hit_rect(
-                        &mut chrome.hit_test_map,
-                        buf_w,
-                        buf_h,
-                        0,
-                        (back_y - back_size) as isize,
-                        (back_x + back_w + unit) as isize,
-                        (back_y + back_size) as isize,
-                        if topbar_visible {
-                            self.back_btn_hit_id
-                        } else {
-                            HIT_NONE
-                        },
-                    );
-
                     // ONE LAYOUT, ONE LAYER (user spec, 2026-07-26): the conversation is a single scrolling stream whose ENTRY #0 is the avatar + name (+ ceremony status while pending) — visible ONLY at the conversation GENESIS, at the literal top of the content area, scrolling like any message. The fixed centred header is DEAD for every state (its pre-woven survival was the root of the "different layer" saga). The fixed strip holds ONLY the tiny always-on name, the orb, and the sliding "‹ Contacts".
                     let (_, _, avatar_r) = conv_layout.avatar_center_radius();
                     let avatar_diam = (avatar_r * 2.0) as usize;
@@ -3663,8 +3634,7 @@ impl PhotonApp {
                         self.msg_attach_visuals.clear();
                         self.msg_attach_visuals.resize(super::MSG_HIT_SPAN as usize, None);
                         self.msg_link_hits.clear();
-                        // ── LINK CONSENT PANEL ── painted BEFORE the message walk (earliest paint wins under-blend), hit-stamped AFTER it (latest stamp wins the map). A tapped link never opens silently: the full destination shows verbatim — punycode/homograph honesty — with Open / Copy / Cancel (Nick 2026-09-04).
-                        let mut consent_stamp: Option<([fluor::region::Region; 3], f32)> = None;
+                        // ── LINK CONSENT PANEL ── painted BEFORE the message walk, its hits with it (the earliest paint and the earliest claim win). A tapped link never opens silently: the full destination shows verbatim — punycode/homograph honesty — with Open / Copy / Cancel (Nick 2026-09-04).
                         if let Some(dest) = self.link_consent.clone() {
                             let url_style = TextStyle::new(msg_size * 0.9, *theme::LINK_COLOUR).weight(500).font("Oxanium");
                             let panel_w = (buf_w as f32 - pad_x * 2.0).max(msg_size);
@@ -3696,8 +3666,9 @@ impl PhotonApp {
                             draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[0], &tr(Msg::OpenLinkPill), self.link_consent_base, ctx.pressed_hit, true, Some(*theme::PILL_GREEN), "Open Sans");
                             draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[1], &tr(Msg::CopyPill), self.link_consent_base + 1, ctx.pressed_hit, true, None, "Open Sans");
                             draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[2], &tr(Msg::Cancel), self.link_consent_base + 2, ctx.pressed_hit, true, None, "Open Sans");
+                            // WHY/PROOF (a rect, not the paint): the backdrop fills this whole rect, so the rect is what it shows; it hides the rows behind it and takes no tap of its own, claiming what the pills left of the panel, before it paints.
+                            claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, 0, py0 as isize, buf_w as isize, list_bottom as isize, HIT_BLOCK);
                             paint::fill_rect(&mut canvas, 0, py0 as isize, buf_w as isize, (list_bottom - py0) as isize, *theme::CONSENT_BG_COLOUR, None, None);
-                            consent_stamp = Some((prects, py0));
                         }
                         // (The image viewer / text reader is a DISTINCT screen now — drawn above, this whole body skipped while it's open.)
                         // TOP-ANCHOR while the conversation fits the view: the stream reads avatar/name → msg 1 → msg 2 from the top, ONE strip — bottom-anchoring a short history floated the header block mid-screen above a clump of bottom messages ("rendered in a different layer"). Once content outgrows the view the min() saturates and the classic newest-at-bottom anchor takes over seamlessly.
@@ -3707,8 +3678,7 @@ impl PhotonApp {
                         // Hold the cached wrap strings for the whole walk (disjoint field from everything the loop mutates).
                         let wrap_cache: &Vec<Vec<String>> =
                             &self.msg_wrap.as_ref().expect("wrap cache built above").1;
-                        let mut filter_stamp: Option<(fluor::region::Region, HitId)> = None;
-                        // STREAM FILTER PILL — bottom RIGHT, drawn BEFORE the row walk so under-blend keeps it above the rows (Nick 2026-09-12: "the filter button is not drawn first like it should be"); its hit rect is re-asserted after the walk, just above the compose box (Nick 2026-09-09: the top-centre spot overlapped the title), sliding off to the RIGHT with the same scroll-tied offset the top bar slides up with. Stamped AFTER the row walk so it wins its rect; no stamp while slid away.
+                        // STREAM FILTER PILL — bottom RIGHT, drawn BEFORE the row walk so under-blend keeps it above the rows (Nick 2026-09-12: "the filter button is not drawn first like it should be"); it sits just above the compose box (Nick 2026-09-09: the top-centre spot overlapped the title), sliding off to the RIGHT with the same scroll-tied offset the top bar slides up with. It claims its rect as it paints, ahead of the rows; while slid away it still hides what is behind it but takes no tap.
                         {
                             let f_label = tr(match self.conv_filter {
                                 ChatFilter::All => Msg::FilterAll,
@@ -3722,7 +3692,6 @@ impl PhotonApp {
                             // Only once there is something to filter (Nick 2026-10-01): a link established, or rows already in the stream — never on the barren CLUTCH screen.
                             let linked = is_self_contact || hdr.woven || hdr.owner_woven || !visible.is_empty();
                             if linked && f_x < buf_w as f32 {
-                                filter_stamp = Some((fluor::region::Region::new(f_x, f_y, f_w, f_h), if topbar_visible { self.conv_filter_hit } else { HIT_NONE }));
                                 super::draw_stub_pill(
                                     &mut canvas,
                                     ctx.text,
@@ -3731,7 +3700,7 @@ impl PhotonApp {
                                     buf_h,
                                     fluor::region::Region::new(f_x, f_y, f_w, f_h),
                                     &f_label,
-                                    if topbar_visible { self.conv_filter_hit } else { HIT_NONE },
+                                    if topbar_visible { self.conv_filter_hit } else { HIT_BLOCK },
                                     ctx.pressed_hit,
                                 );
                             }
@@ -3790,14 +3759,21 @@ impl PhotonApp {
                                 + wave_band_h
                                 + img_band_h
                                 + audio_band_h;
-                            // THE ROW'S HIT BAND — the WHOLE wrapped block — stamped BEFORE the row paints and only where nothing opaque already sits (the chrome's strip and orb, since the list runs to the window top on desktop): the stamp rides the paint decision (see stamp_hit_rect_under). Clamped to the list region so header/compose never lose their own hits. MODULAR SLOTS, not a spend-down budget (Nick 2026-09-05, after the field bug where the walk's off-screen rows below the viewport exhausted a 64-id budget before any visible row got a target): the slot is `visible_index % MSG_HIT_SPAN`, so every row HAS an id by construction and there is nothing to exhaust. The table write below happens on the same band test, which keeps map and table in lockstep.
+                            // THE ROW'S HIT BAND — the WHOLE wrapped block, WHY/PROOF (a rect, not the paint): the gaps between a row's glyphs and lines are the row too — claimed BEFORE the row paints and only where nothing opaque already sits (the chrome's strip and orb, since the list runs to the window top on desktop): the stamp rides the paint decision (see claim_hit_rect_under). Clamped to the list region so header/compose never lose their own hits. MODULAR SLOTS, not a spend-down budget (Nick 2026-09-05, after the field bug where the walk's off-screen rows below the viewport exhausted a 64-id budget before any visible row got a target): the slot is `visible_index % MSG_HIT_SPAN`, so every row HAS an id by construction and there is nothing to exhaust. The table write below happens on the same band test, which keeps map and table in lockstep.
                             let band_top = ((y - block_extra - line_h * 0.5).max(list_top)) as isize;
                             let band_bot = ((y + line_h * 0.5).min(list_bottom)) as isize;
                             let slot = vi % super::MSG_HIT_SPAN as usize;
                             // On a memmove frame a row outside the damage keeps the stamps the hit-map shift carried; only rows touching the damage re-stamp (the read of every pixel in the band is the cost).
                             let band_in_damage = scroll_hint.is_none() || (band_bot > ctx.damage_clip.y0 as isize && band_top < ctx.damage_clip.y1 as isize);
+                            // The SELECTED row's strip (its action pills, the reaction glyphs, the circled "+") paints inside this band further down the walk and is in front of it: there the band reads what is in front now and claims behind the strip at the row's end (FrontOpaque), so the strip's pills keep their own taps.
+                            let row_selected = sel_key.is_some_and(|(ts, out)| msg.timestamp == ts && msg.is_outgoing == out);
+                            let mut band_front: Option<FrontOpaque> = None;
                             if band_bot > band_top && band_in_damage {
-                                stamp_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, 0, band_top, buf_w as isize, band_bot, self.msg_hit_base + slot as HitId);
+                                if row_selected {
+                                    band_front = Some(FrontOpaque::take(canvas.pixels, buf_w, buf_h, 0, band_top, buf_w as isize, band_bot));
+                                } else {
+                                    claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, 0, band_top, buf_w as isize, band_bot, self.msg_hit_base + slot as HitId);
+                                }
                             }
                             // Attachment transfer progress: a thin fill under the pill while a matching PT transfer runs (outbound for our un-confirmed sends, inbound for blobs we're missing). Matched loosely by direction — the throttled snapshot only ever contains big sharded transfers.
                             let mut bar_frac: Option<f32> = None;
@@ -4227,6 +4203,8 @@ impl PhotonApp {
                                 // The circled "+": react with ANYTHING — arms the compose box, the system keyboard is the picker. Dim ring, bright glyph — a dark button like its siblings.
                                 let plus_cx = rx_cursor + plus_r;
                                 let plus_cy = y;
+                                // WHY/PROOF (a rect, not the paint): its tap band, a line tall and padded round the circle (so wider than what shows), cut to the list as its paint is, claimed before it paints.
+                                claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, (plus_cx - plus_r - pad_hit * 0.4) as isize, ((y - line_h * 0.5).max(list_top)) as isize, (plus_cx + plus_r + pad_hit * 0.4) as isize, ((y + line_h * 0.5).min(list_bottom)) as isize, self.react_strip_base + 9);
                                 paint::draw_circle(
                                     &mut canvas,
                                     plus_cx,
@@ -4247,16 +4225,6 @@ impl PhotonApp {
                                     &plus_style,
                                     Some(list_clip),
                                     None,
-                                );
-                                restamp_hit_rect(
-                                    &mut chrome.hit_test_map,
-                                    buf_w,
-                                    buf_h,
-                                    (plus_cx - plus_r - pad_hit * 0.4) as isize,
-                                    ((y - line_h * 0.5).max(list_top)) as isize,
-                                    (plus_cx + plus_r + pad_hit * 0.4) as isize,
-                                    ((y + line_h * 0.5).min(list_bottom)) as isize,
-                                    self.react_strip_base + 9,
                                 );
                                 y -= detail_h;
                             }
@@ -4875,20 +4843,13 @@ impl PhotonApp {
                                     paint::fill_rect(&mut canvas, 0, t, buf_w as isize, b - t, *theme::ATTACH_DONE_TINT, Some(list_clip), None);
                                 }
                             }
+                            // The selected row's band, behind everything the row drew and claimed (see `band_front` above).
+                            if let Some(front) = band_front {
+                                front.claim_behind(&mut chrome.hit_test_map, buf_w, self.msg_hit_base + slot as HitId);
+                            }
                             y -= line_h + block_extra + sel_meta_extra;
                         }
                         _rt.mark("rows");
-                        // Re-asserted after the row walk (see the filter pill above the walk).
-                        if let Some((r, hid)) = filter_stamp {
-                            restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, r.x as isize, r.y as isize, (r.x + r.w) as isize, (r.y + r.h) as isize, hid);
-                        }
-                        // Consent panel hit re-assert (the row walk stamped over it): HIT_NONE swallows everything under the panel, then the three pills win their own rects back.
-                        if let Some((prects, py0)) = consent_stamp {
-                            restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, 0, py0 as isize, buf_w as isize, list_bottom as isize, HIT_NONE);
-                            for (pi, r) in prects.iter().enumerate() {
-                                restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, r.x as isize, r.y as isize, (r.x + r.w) as isize, (r.y + r.h) as isize, self.link_consent_base + pi as HitId);
-                            }
-                        }
                         // STREAM ENTRY #0 — avatar, name, optional ceremony/lifecycle status: drawn ONLY when the walk reached message 1 (genesis on screen); `y` then sits just above it and the entry is the stream's literal first item. Ordinary stream content: same clip as every message, no pinning, no slide. Off-screen anywhere but genesis.
                         if reached_oldest && y > list_top - header_block_h - line_h {
                             let (block_status, status_h) = match &status_wrapped {
@@ -5057,9 +5018,12 @@ impl PhotonApp {
                                 let id = btn.hit_id();
                                 btn.render_content_into(&mut canvas, 0., 0., ctx.text, None, Some(&mut chrome.hit_test_map), id);
                             }
-                            // Send GLYPH first, then its pill under it (fluor is front to back). The textbox draws after — it sits over the button and clobbers the button's hit stamp with its own id — so we re-stamp the button's TRUE pill silhouette (fill + stroke, which also covers the arrowhead) AFTER the textbox, as the last writer. That's the whole click + hover region: shape-accurate, not a bbox rectangle.
+                            // Send GLYPH first, then its pill under it (fluor is front to back), each claiming the button's hits where it shows, before the textbox behind them.
                             if let Some(btn) = self.message_send_btn.as_mut() {
                                 let id = btn.hit_id();
+                                // The glyph is the button's too but is drawn here, outside its paint: where it shows it claims the button's id, so its opaque core falls neither to the textbox behind nor to nothing.
+                                let mut glyph = paint::Shown::default();
+                                glyph.before(canvas.pixels, buf_w, buf_h, paint::reach_rect((btn.center_x - btn.width * 0.5) as isize, (btn.center_y - btn.height * 0.5) as isize, (btn.center_x + btn.width * 0.5) as isize + 1, (btn.center_y + btn.height * 0.5) as isize + 1, buf_w, buf_h));
                                 if self.compose_edit_of.is_some() {
                                     // EDIT armed: commit-the-correction — a green check, distinct from the send arrow by shape AND colour.
                                     draw_check_mark(
@@ -5084,6 +5048,8 @@ impl PhotonApp {
                                         arrow,
                                     );
                                 }
+                                glyph.settle(canvas.pixels);
+                                glyph.claim(&mut chrome.hit_test_map, id);
                                 btn.render_content_into(
                                     &mut canvas,
                                     0.,
@@ -5105,24 +5071,6 @@ impl PhotonApp {
                                     Some(&mut chrome.hit_test_map),
                                     id,
                                 );
-                            }
-                            // Re-win the send button's hit silhouette after the textbox clobbered it.
-                            if let Some(btn) = self.message_send_btn.as_ref() {
-                                btn.stamp_hit_into(
-                                    &mut chrome.hit_test_map,
-                                    buf_w,
-                                    buf_h,
-                                    btn.hit_id(),
-                                );
-                            }
-                            // The link button sits inside the textbox's rect too, so it needs the same re-stamp or its hover, hand cursor and click all land on the textbox (Nick 2026-09-09: "needs button hover effects and hand").
-                            if link_btn_visible {
-                                if let Some(btn) = self.compose_link_btn.as_ref() {
-                                    btn.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, btn.hit_id());
-                                }
-                            }
-                            if let Some(btn) = self.compose_attach_btn.as_ref() {
-                                btn.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, btn.hit_id());
                             }
                         } else if let Some(gid) = active_gid {
                             // A GROUP conversation we cannot write in right now: the compose slot says WHY (binding, catching up, left) instead of a box that would swallow text — it used to promise a "next build" that had long shipped (Emma 2026-10-24).
@@ -5151,6 +5099,12 @@ impl PhotonApp {
                 let back_size = unit * 1.15;
                 let back_x = unit.max(crate::ui::safe_left_px() as f32); // the padding, or a landscape left cutout where wider — never added
                 let back_text = tr(Msg::BackToContacts);
+                let back_w = ctx.text.measure_text(
+                    &back_text,
+                    &TextStyle::new(back_size, 0).weight(500).font("Oxanium"),
+                );
+                // WHY/PROOF (a rect, not the paint): its tap band, padded round the label (so wider than what shows), claimed before the label paints.
+                claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, 0, (back_y - back_size) as isize, (back_x + back_w + unit) as isize, (back_y + back_size) as isize, self.back_btn_hit_id);
                 ctx.text.draw_text_left(
                     &mut canvas,
                     &back_text,
@@ -5161,20 +5115,6 @@ impl PhotonApp {
                         .font("Oxanium"),
                     None,
                     None,
-                );
-                let back_w = ctx.text.measure_text(
-                    &back_text,
-                    &TextStyle::new(back_size, 0).weight(500).font("Oxanium"),
-                );
-                restamp_hit_rect(
-                    &mut chrome.hit_test_map,
-                    buf_w,
-                    buf_h,
-                    0,
-                    (back_y - back_size) as isize,
-                    (back_x + back_w + unit) as isize,
-                    (back_y + back_size) as isize,
-                    self.back_btn_hit_id,
                 );
             }
 
@@ -5312,6 +5252,9 @@ impl PhotonApp {
                     let held = ctx.pressed_hit != HIT_NONE
                         && ctx.pressed_hit
                             == (self.add_candidate_hit_base + i as HitId);
+                    // WHY/PROOF (a rect, not the paint): the row's tap band, most of the width (so wider than its label), claimed before the label paints.
+                    let half_w = buf_w as f32 * 0.42;
+                    claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, (cx - half_w) as isize, y as isize, (cx + half_w) as isize, (y + row_h) as isize, self.add_candidate_hit_base + i as HitId);
                     ctx.text.draw_text_center(
                         &mut canvas,
                         &label,
@@ -5322,17 +5265,6 @@ impl PhotonApp {
                             .font("Oxanium"),
                         None,
                         None,
-                    );
-                    let half_w = buf_w as f32 * 0.42;
-                    restamp_hit_rect(
-                        &mut chrome.hit_test_map,
-                        buf_w,
-                        buf_h,
-                        (cx - half_w) as isize,
-                        y as isize,
-                        (cx + half_w) as isize,
-                        (y + row_h) as isize,
-                        self.add_candidate_hit_base + i as HitId,
                     );
                     y += row_h;
                 }
@@ -5347,20 +5279,12 @@ impl PhotonApp {
                     (tr(fgtw::text::Msg::AddLookFgtw), *theme::CONTACT_NAME_COLOUR)
                 };
                 let size = u * 0.45;
-                ctx.text.draw_text_center(&mut canvas, &label, cx, y + size, &TextStyle::new(size, colour).font("Oxanium"), None, None);
+                // WHY/PROOF (a rect, not the paint): the line's tap band, as a nearby row's, before the label paints.
                 if !listing {
                     let half_w = buf_w as f32 * 0.42;
-                    restamp_hit_rect(
-                        &mut chrome.hit_test_map,
-                        buf_w,
-                        buf_h,
-                        (cx - half_w) as isize,
-                        y as isize,
-                        (cx + half_w) as isize,
-                        (y + size * 2.) as isize,
-                        self.add_mailbox_hit_id,
-                    );
+                    claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, (cx - half_w) as isize, y as isize, (cx + half_w) as isize, (y + size * 2.) as isize, self.add_mailbox_hit_id);
                 }
+                ctx.text.draw_text_center(&mut canvas, &label, cx, y + size, &TextStyle::new(size, colour).font("Oxanium"), None, None);
                 y += size * 2. + gap;
             }
             // Status row, from the machine's view.
@@ -5399,11 +5323,7 @@ impl PhotonApp {
             let layout = SettingsLayout::compute(&ctx.viewport);
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
 
-            // Clear the settings region in the shared hit_test_map before re-stamping this frame's rail rows + pills — same reason as the launch block: immediate-mode stamps must not linger across page switches. Only inside this frame's damage: outside it nothing repaints, so nothing could re-stamp (the conversation panel's dead-Leave class).
-            let d = ctx.damage_clip;
-            restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, d.x0 as isize, (layout.rail.y as isize).max(d.y0 as isize), d.x1 as isize, d.y1 as isize, HIT_NONE);
-
-            // Open dropdown popup FIRST (under-blend: topmost content paints first) so it composites over everything painted after it.
+            // Open dropdown popup FIRST (under-blend: topmost content paints first) so it composites over everything painted after it, and its hits likewise: its rows claim theirs, its frame claims the rest of it (HIT_BLOCK), and nothing drawn after takes any of it.
             if page == SettingsPage::Appearance {
                 if let Some(dd) = self.settings_theme_dropdown.as_mut() {
                     dd.render_popup_into(
@@ -5443,6 +5363,8 @@ impl PhotonApp {
                 let r = fluor::region::Region::new(rail_inset.x, rail_inset.y, rail_inset.w, nav_h);
                 let back_held =
                     ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
+                // WHY/PROOF (a rect, not the paint): its hits first, over the fill's own rect (the label and the fill paint next, the fill covering the whole rect, so the rect is what shows).
+                claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, layout.rail.x as isize, layout.rail.y as isize, layout.rail.right() as isize, r.bottom() as isize, self.back_btn_hit_id);
                 // Text FIRST (topmost-first → in front), THEN the fill behind it. 50%-black (α = 0x80) in darkness space is 0x80_FF_FF_FF (visible black is 0xFFFFFF in the RGB bytes); brighter when held.
                 ctx.text.draw_text_left(
                     &mut canvas,
@@ -5470,16 +5392,6 @@ impl PhotonApp {
                     fill,
                     None,
                     None,
-                );
-                restamp_hit_rect(
-                    &mut chrome.hit_test_map,
-                    buf_w,
-                    buf_h,
-                    layout.rail.x as isize,
-                    layout.rail.y as isize,
-                    layout.rail.right() as isize,
-                    r.bottom() as isize,
-                    self.back_btn_hit_id,
                 );
             }
             // The page rows scroll within the region BELOW the pinned Back row — clipped so a scrolled row never paints over Back.
@@ -5509,6 +5421,8 @@ impl PhotonApp {
                 } else {
                     *theme::LABEL_COLOUR
                 };
+                // WHY/PROOF (a rect, not the paint): the row's tap band, cut to the pages region as its paint is, before the row paints; an idle row paints only its label there, so the band reaches past what shows.
+                claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, r.x as isize, r.y.max(pages_top) as isize, r.right() as isize, r.bottom().min(layout.rail.bottom()) as isize, self.settings_nav_base + i as HitId);
                 // Label FIRST (in front), then the highlight fill behind it.
                 ctx.text.draw_text_left(
                     &mut canvas,
@@ -5546,16 +5460,6 @@ impl PhotonApp {
                         None,
                     );
                 }
-                restamp_hit_rect(
-                    &mut chrome.hit_test_map,
-                    buf_w,
-                    buf_h,
-                    r.x as isize,
-                    r.y.max(pages_top) as isize,
-                    r.right() as isize,
-                    r.bottom().min(layout.rail.bottom()) as isize,
-                    self.settings_nav_base + i as HitId,
-                );
             }
 
             // Hairline between rail and content.
@@ -5800,6 +5704,8 @@ impl PhotonApp {
                                 tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
                             }
                         } else {
+                            // WHY/PROOF (a rect, not the paint): the whole name band is the tap target (so more than the name shows), claimed before the name paints.
+                            claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, name_band.x as isize, name_band.y as isize, name_band.right() as isize, name_band.bottom() as isize, btn_base + 16 + i as HitId);
                             ctx.text.draw_text_left(
                                 &mut canvas,
                                 name,
@@ -5810,16 +5716,6 @@ impl PhotonApp {
                                     .font("Oxanium"),
                                 None,
                                 None,
-                            );
-                            restamp_hit_rect(
-                                &mut chrome.hit_test_map,
-                                buf_w,
-                                buf_h,
-                                name_band.x as isize,
-                                name_band.y as isize,
-                                name_band.right() as isize,
-                                name_band.bottom() as isize,
-                                btn_base + 16 + i as HitId,
                             );
                         }
                         // The name is the card's headline — let it breathe before the status beneath it (Nick 2026-09-08).
@@ -7406,6 +7302,16 @@ impl PhotonApp {
                     y += line_h * 0.6;
                     // THE DIGIT CHEAT SHEET, every base (Nick 2026-09-10): three columns — dozenal, hexadecimal, arabic — each counting 0 to F in its own numerals, the dozenal column with its digit names. The same table whatever base is chosen.
                     let index_top = y;
+                    // WHY/PROOF (a rect, not the paint): the whole sheet is one tap target, claimed before it paints: its bottom is where the rows below end (the same steps, in the same order, so the same float), and it is cut to the pane, where the sheet shows (its text is clipped there), so a sheet scrolled up under the header claims none of it; it reaches past the glyphs, between the columns.
+                    let mut index_bot = index_top;
+                    if base != crate::NumBase::Dozenal {
+                        index_bot += line_h;
+                    }
+                    index_bot += line_h;
+                    for _ in 0..16u32 {
+                        index_bot += line_h * 0.9;
+                    }
+                    claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, inset.x as isize, index_top.max(inset.y) as isize, (inset.x + inset.w) as isize, index_bot.min(inset.y + inset.h) as isize, btn_base + 5);
                     // The dozenal arm titles the sheet itself (the digits section leads straight into it); the other bases title it here.
                     if base != crate::NumBase::Dozenal {
                         ctx.text.draw_text_center(&mut canvas, &tr(Msg::DigitsHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
@@ -7430,7 +7336,6 @@ impl PhotonApp {
                         }
                         y += line_h * 0.9;
                     }
-                    restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, inset.x as isize, index_top as isize, (inset.x + inset.w) as isize, y as isize, btn_base + 5);
                     y += line_h * 0.3;
                     if self.about_riddle_revealed && base == crate::NumBase::Dozenal {
                         y += line_h * 0.4;
@@ -7582,6 +7487,8 @@ impl PhotonApp {
                         .weight(if link_hovered { 700 } else { 500 })
                         .font("Oxanium");
                     let link_w = ctx.text.measure_text("passless.org", &link_style);
+                    // WHY/PROOF (a rect, not the paint): its tap rect, padded round the measured text and cut to the pane as the text is, claimed before the text paints.
+                    claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, (cx - link_w * 0.5 - hspan2 * 0.4) as isize, y.max(inset.y) as isize, (cx + link_w * 0.5 + hspan2 * 0.4) as isize, ((y + line_h * 1.2).min(inset.y + inset.h)) as isize, btn_base + 4);
                     ctx.text.draw_text_center(
                         &mut canvas,
                         "passless.org",
@@ -7590,16 +7497,6 @@ impl PhotonApp {
                         &link_style,
                         about_clip,
                         None,
-                    );
-                    restamp_hit_rect(
-                        &mut chrome.hit_test_map,
-                        buf_w,
-                        buf_h,
-                        (cx - link_w * 0.5 - hspan2 * 0.4) as isize,
-                        y.max(inset.y) as isize,
-                        (cx + link_w * 0.5 + hspan2 * 0.4) as isize,
-                        ((y + line_h * 1.2).min(inset.y + inset.h)) as isize,
-                        btn_base + 4,
                     );
                     y += line_h * 1.3;
                     y += line_h * 1.4;
@@ -7673,6 +7570,8 @@ impl PhotonApp {
                     // Version — dozenal glyphs (weight 400 → the Oxanium +glyphs face draws the reserved control bytes as dozenal digits), NEVER arabic. Tap toggles the reveal (spelled form + cheat sheet). Whole row is the tap target (btn_base + 3).
                     let ver_glyphs = version_dozenal_glyphs();
                     let ver = tr(Msg::AboutVersion(&ver_glyphs));
+                    // WHY/PROOF (a rect, not the paint): the whole row, cut to the pane as the text is, claimed before the text paints (so more than the version shows).
+                    claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, inset.x as isize, y.max(inset.y) as isize, (inset.x + inset.w) as isize, (y + line_h).min(inset.y + inset.h) as isize, btn_base + 3);
                     ctx.text.draw_text_center(
                         &mut canvas,
                         &ver,
@@ -7683,16 +7582,6 @@ impl PhotonApp {
                             .font("Oxanium"),
                         about_clip,
                         None,
-                    );
-                    restamp_hit_rect(
-                        &mut chrome.hit_test_map,
-                        buf_w,
-                        buf_h,
-                        inset.x as isize,
-                        y as isize,
-                        (inset.x + inset.w) as isize,
-                        (y + line_h) as isize,
-                        btn_base + 3,
                     );
                     y += line_h;
                     // The standing clock correction (Nick 2026-09-03): photon orders messages on consensus-corrected time, so the curious should be able to see how far their own clock sits from it. Purely informational — the system clock is never touched, and a deliberately-fast clock is a preference, not a fault.
@@ -7793,82 +7682,6 @@ impl PhotonApp {
                 None,
                 None,
             );
-        }
-
-        // Re-stamp the wave overlay's hit rects LAST: screens re-stamp their own regions of the shared hit_test_map every frame, which would otherwise wipe the top-of-screen wave bar's clickable area. Pixels were painted early (under-blend keeps them on top); only the hit rects need re-asserting after every screen has stamped. Each Button stamps its OWN rect (set in the early paint), so the two passes can never disagree. Visibility mirrors `visit_app_widgets` exactly: action always when a wave is live, decline in ringing/ended, start only when a callable convo enables it (a dimmed pill must not dispatch a dead tap). The status chip is a label — never stamped.
-        if wave_overlay.is_some() {
-            // Full-screen ring panel is MODAL: wipe the whole map first so the screen's own widgets (stamped above) can't be tapped thru the wash — then the two wave buttons are the only live targets.
-            if wave_fullscreen {
-                // A direct fill, not restamp_hit_rect: the modal panel covers the chrome too, and the content stampers stop at the chrome's stamp floor by design.
-                chrome.hit_test_map.fill(HIT_NONE);
-            }
-            if let Some(b) = self.wave_action_btn.as_ref() {
-                b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
-            }
-            if wave_two_actions {
-                if let Some(b) = self.wave_decline_btn.as_ref() {
-                    b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
-                }
-            }
-            // Full-screen-only controls (the modal wipe above cleared the map, so these must re-assert), by the SAME gates the paint used — a pill painted but never stamped is a dead tap (2026-10-10 Beam; 2026-10-31 the mic and speaker pickers, "working intermittently").
-            if wave_fullscreen {
-                let stamp = |b: Option<&Button>, map: &mut Vec<HitId>| {
-                    if let Some(b) = b {
-                        b.stamp_hit_into(map, buf_w, buf_h, b.hit_id());
-                    }
-                };
-                match wave_phase_now {
-                    Some(crate::wave::WavePhase::Active | crate::wave::WavePhase::Outgoing) => {
-                        // The route pill stamps only where it renders (Android).
-                        #[cfg(target_os = "android")]
-                        stamp(self.wave_speaker_btn.as_ref(), &mut chrome.hit_test_map);
-                        stamp(self.wave_back_btn.as_ref(), &mut chrome.hit_test_map);
-                        // The Beam toggle (the diagonal's right slot on a desktop, the secondary row on a phone): live wave only, and only where it can act.
-                        if wave_phase_now == Some(crate::wave::WavePhase::Active) && can_beam {
-                            stamp(self.beam_btn.as_ref(), &mut chrome.hit_test_map);
-                        }
-                        if dock_cal {
-                            stamp(self.beam_cal_btn.as_ref(), &mut chrome.hit_test_map);
-                        }
-                        if dock_out {
-                            stamp(self.wave_out_btn.as_ref(), &mut chrome.hit_test_map);
-                        }
-                        if dock_mic {
-                            stamp(self.wave_mic_btn.as_ref(), &mut chrome.hit_test_map);
-                        }
-                        if dock_mic {
-                            stamp(self.wave_mute_btn.as_ref(), &mut chrome.hit_test_map);
-                        }
-                        // The self-view's camera cycle (the pair's inset, or our own group tile), where it painted.
-                        if wave_phase_now == Some(crate::wave::WavePhase::Active) {
-                            if let Some((x0, y0, x1, y1)) = self.beam_self_rect {
-                                restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, x0 as isize, y0 as isize, x1 as isize, y1 as isize, self.beam_self_hit);
-                            }
-                        }
-                    }
-                    // Reject was painted but never re-stamped after the modal wipe — a tap on it hit nothing.
-                    Some(crate::wave::WavePhase::Ringing) => {
-                        stamp(self.wave_reject_btn.as_ref(), &mut chrome.hit_test_map);
-                        if dock_other {
-                            stamp(self.beam_back_btn.as_ref(), &mut chrome.hit_test_map);
-                        }
-                    }
-                    None => {}
-                }
-            }
-        } else if matches!(self.state, AppState::Conversation)
-            && wave_pill_show
-            && wave_pill_enabled
-        {
-            if let Some(b) = self.wave_start_btn.as_ref() {
-                b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
-            }
-            // The Beam slat above Wave, the same re-assert (it was painted live but owned no pixels — the 2026-10-10 dead tap).
-            if beam_pill_enabled {
-                if let Some(b) = self.beam_btn.as_ref() {
-                    b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
-                }
-            }
         }
 
         let mark_content = std::time::Instant::now();

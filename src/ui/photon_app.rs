@@ -33,7 +33,7 @@ use fluor::host::app::{Context, EventResponse, FluorApp};
 use fluor::host::chrome::{self, ResizeEdge};
 use fluor::host::chrome_widget::DefaultChrome;
 use fluor::host::widget::{self, Container, TabDir, Widget};
-use fluor::paint::{self, HitId, HIT_NONE};
+use fluor::paint::{self, HitId, HIT_BLOCK, HIT_NONE};
 use fluor::widgets::BlinkTimer;
 /// fluor's widgets at Photon's depth ([`Px`]): `with_depth` builds them (`new` is the 8-bit constructor), the same construction `new` makes at 8 bits.
 type Button = fluor::widgets::Button<Px>;
@@ -2451,8 +2451,10 @@ pub struct PhotonApp {
     avatar_hit_id: HitId,
     /// The beam's self-view inset as a tap target (a paint primitive, not a Widget — dispatched in the Pressed arm like the avatar): a tap cycles the phone's camera.
     beam_self_hit: HitId,
-    /// Where the inset was painted this frame, for the end-of-frame re-stamp; None when it is not on screen.
+    /// Where the inset was painted this frame (its tap claimed with its paint); None when it is not on screen.
     beam_self_rect: Option<(usize, usize, usize, usize)>,
+    /// Where a full-area surface showed this frame (the full-screen wave panel, the viewer, the replayed wave), α before against α after ([`paint::Shown`]), kept so its buffer is reused frame to frame: the surface claims its own id (or HIT_BLOCK) exactly where it showed, behind every control it drew.
+    surface_shown: paint::Shown,
     /// KnownHandle fork pills — pick-another-name / it's-mine (docs/lifecycle.md D1). Plain hit rects, Pressed-arm dispatch.
     known_pick_hit: HitId,
     known_mine_hit: HitId,
@@ -3515,6 +3517,7 @@ impl PhotonApp {
             avatar_hit_id: HIT_NONE,
             beam_self_hit: HIT_NONE,
             beam_self_rect: None,
+            surface_shown: paint::Shown::default(),
             known_pick_hit: HIT_NONE,
             known_mine_hit: HIT_NONE,
             joiner_selected: false,
@@ -4637,8 +4640,13 @@ mod disjoint_rects_tests {
     }
 }
 
-/// CONTENT hit stamps RIDE THE PAINT DECISION (Nick 2026-10-01: "when we paint under we get a bool; if we never painted that pixel because something was there, skip the hit map"). fluor is front to back: the chrome is flattened into `target` before any content, opaque where it owns a pixel (the controls strip, the orb), and the under-blend's early-out skips exactly those pixels when content paints. These two stampers take the same decision from the same bit — a pixel already opaque is not ours — and so must run BEFORE the content they stamp for paints (its own paint would make the pixel opaque). The blind forms below stay for CLEARS and for the deliberate after-paint re-wins (a button reclaiming its silhouette over the widget it overlays), which cannot read opacity by then. The modal full-screen wave wipe fills the map directly.
-fn stamp_hit_rect_under(
+/// Photon's own hit claims go FRONT TO BACK, as the pixels do (AGENT.md, "Compositing: Front to Back"; fluor `paint::claim_hit`): a thing claims a pixel only where it shows, so never where something in front has already painted the pixel opaque (the under-blend's early-out skips it, and so does the hit work: Nick 2026-10-01, "if we never painted that pixel because something was there, skip the hit map"), and never where something in front already claimed it.
+/// The opacity is read BEFORE the thing paints (its own paint would make the pixel opaque), so each call sits right ahead of the paint it claims for, at that paint's place in the frame.
+/// A widget claims where its paint raised the α (fluor `paint::Shown`); these claim a TAP TARGET instead, a rect or a disc the thing holds whether or not its paint covers every pixel of it (a text row: the gaps between its glyphs and the padding round them are the row too).
+/// WHY/PROOF that a rect is wanted at each call: a label claimed by its glyphs alone would take a tap only on their strokes; every call site states its own case (`WHY/PROOF (a rect, not the paint)`).
+/// Nothing behind an opaque pixel claims, so the rect never reaches thru a front surface; it reaches only past the thing's own pixels, into space nothing in front of it showed on.
+/// Until 2026-11-17 these overwrote any id already there, and a blind `restamp_hit_rect` beside them let a later stamp take a pixel from whatever was in front of it.
+fn claim_hit_rect_under(
     hit_map: &mut [HitId],
     pixels: &[Px],
     buf_w: usize,
@@ -4658,14 +4666,14 @@ fn stamp_hit_rect_under(
         for x in xs..xe {
             let i = row_base + x;
             if pixels[i] < Px::OPAQUE {
-                hit_map[i] = hit_id;
+                paint::claim_hit(&mut hit_map[i], hit_id);
             }
         }
     }
 }
 
-/// The circle twin of [`stamp_hit_rect_under`]: every pixel whose centre is inside the circle AND that nothing opaque has painted yet.
-fn stamp_hit_circle_under(
+/// The circle twin of [`claim_hit_rect_under`]: every pixel whose centre is inside the circle, that nothing in front painted opaque or claimed.
+fn claim_hit_circle_under(
     hit_map: &mut [HitId],
     pixels: &[Px],
     buf_w: usize,
@@ -4691,7 +4699,47 @@ fn stamp_hit_circle_under(
             let dx = (x as f32 + 0.5) - cx;
             let i = row_base + x;
             if dx * dx + dy2 <= r2 && pixels[i] < Px::OPAQUE {
-                hit_map[i] = hit_id;
+                paint::claim_hit(&mut hit_map[i], hit_id);
+            }
+        }
+    }
+}
+
+/// [`claim_hit_rect_under`] split in two, for a thing whose own widgets are in front of its tap rect but claim after the rect's place in the code: the opacity in front is read here, before the thing paints, and the rect claims behind its widgets with [`Self::claim_behind`] once they have claimed.
+/// The one user is the selected message row: its band is the row's backdrop tap target, and its strip's pills, painted inside the band further down the row's walk, are in front of it.
+pub(super) struct FrontOpaque {
+    xs: usize,
+    ys: usize,
+    xe: usize,
+    ye: usize,
+    opaque: Vec<bool>,
+}
+
+impl FrontOpaque {
+    /// Which pixels of the rect something in front has already painted opaque.
+    pub(super) fn take(pixels: &[Px], buf_w: usize, buf_h: usize, x0: isize, y0: isize, x1: isize, y1: isize) -> Self {
+        let xs = x0.max(0) as usize; // WHY/PROOF: as in claim_hit_rect_under, a rect that starts offscreen would wrap the usize cast
+        let ys = y0.max(0) as usize;
+        let xe = (x1.max(0) as usize).min(buf_w);
+        let ye = (y1.max(0) as usize).min(buf_h);
+        let mut opaque = Vec::new();
+        for y in ys..ye {
+            for x in xs..xe {
+                opaque.push(pixels[y * buf_w + x] >= Px::OPAQUE);
+            }
+        }
+        Self { xs, ys, xe, ye, opaque }
+    }
+
+    /// Claim `hit_id` over the rect wherever nothing in front was opaque when [`Self::take`] read it; a pixel claimed since (the thing's own widgets, or anything in front) stays theirs.
+    pub(super) fn claim_behind(&self, hit_map: &mut [HitId], buf_w: usize, hit_id: HitId) {
+        let mut k = 0;
+        for y in self.ys..self.ye {
+            for x in self.xs..self.xe {
+                if !self.opaque[k] {
+                    paint::claim_hit(&mut hit_map[y * buf_w + x], hit_id);
+                }
+                k += 1;
             }
         }
     }
@@ -5500,29 +5548,6 @@ fn draw_stub_pill_filled(
         enabled,
         fill,
     );
-}
-
-/// Stamp `hit_id` over every pixel in `[x0, x1) × [y0, y1)` of `hit_map`. Used to reclaim hit-test coverage for a widget that paints visually on top of another but whose hit stamps were overwritten by the under-blend partner's later stamping pass (the contacts-page plus button overlaid inside the textbox). Bbox over-stamp — corners outside the pill silhouette claim a few extra pixels, which dispatches those clicks to the button. Acceptable UX since the area is tiny and inside the pill anyway.
-fn restamp_hit_rect(
-    hit_map: &mut [HitId],
-    buf_w: usize,
-    buf_h: usize,
-    x0: isize,
-    y0: isize,
-    x1: isize,
-    y1: isize,
-    hit_id: HitId,
-) {
-    let xs = x0.max(0) as usize; // WHY/PROOF: a rect that starts offscreen (negative isize) — the usize cast would wrap
-    let ys = y0.max(0) as usize; // (offscreen rect — see above)
-    let xe = (x1.max(0) as usize).min(buf_w); // (offscreen rect — see above)
-    let ye = (y1.max(0) as usize).min(buf_h); // (offscreen rect — see above)
-    for y in ys..ye {
-        let row_base = y * buf_w;
-        for x in xs..xe {
-            hit_map[row_base + x] = hit_id;
-        }
-    }
 }
 
 #[cfg(test)]

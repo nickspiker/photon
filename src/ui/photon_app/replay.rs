@@ -268,7 +268,7 @@ impl PhotonApp {
     }
 }
 
-/// Paint the replay screen (inside the chrome borrow: everything it reads is passed in). Topmost first — controls and names before faces, faces before rings — so each wins exactly its own pixels.
+/// Paint the replay screen (inside the chrome borrow: everything it reads is passed in). Topmost first — controls and names before faces, faces before rings — so each wins exactly its own pixels, and its hits with them: each control claims as it paints (or just before, for a tap band wider than what it paints), and the screen's own surface (`SLOT_AREA`) claims whatever else of it shows, last.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn draw_replay(
     rp: &mut WaveReplay,
@@ -283,10 +283,11 @@ pub(super) fn draw_replay(
     base: HitId,
     pressed: HitId,
     damage: fluor::canvas::PixelRect,
+    shown: &mut paint::Shown,
 ) {
     let g = replay_geom(buf_w, buf_h, unit, area_top);
-    // The area's stale stamps go (inside the damage only — a control re-stamps only the pixels it paints, the dead-Leave class).
-    restamp_hit_rect(hit_map, buf_w, buf_h, damage.x0 as isize, (area_top as isize).max(damage.y0 as isize), damage.x1 as isize, damage.y1 as isize, base + SLOT_AREA);
+    // Where the screen shows is read against the α before it draws, from its top edge down over the frame's damage.
+    shown.before(canvas.pixels, buf_w, buf_h, fluor::canvas::PixelRect::new(damage.x0, damage.y0.max(area_top as usize), damage.x1, damage.y1));
     draw_stub_pill_filled(canvas, text, hit_map, buf_w, buf_h, g.back, &tr(Msg::ViewerBack), base + SLOT_BACK, pressed, true, None, "Oxanium");
     text.draw_text_center(canvas, &rp.title, buf_w as f32 * 0.5, g.title_y, &TextStyle::new(unit * 0.72, *theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium"), None, None);
 
@@ -306,10 +307,10 @@ pub(super) fn draw_replay(
     text.draw_text_left(canvas, &total_s, bx1 - tw, g.time_y, &small, None, None);
     let frac = if total > 0 { pos as f32 / total as f32 } else { 0.0 };
     let bw = bx1 - bx0;
+    // WHY/PROOF (a rect, not the paint): the bar takes a tap a unit tall, centred on it, claimed before it paints: a quarter-unit line is too thin a target, so the band reaches past what the bar shows.
+    claim_hit_rect_under(hit_map, canvas.pixels, buf_w, buf_h, bx0 as isize, (by + bh * 0.5 - unit * 0.5) as isize, bx1 as isize, (by + bh * 0.5 + unit * 0.5) as isize, base + SLOT_BAR);
     paint::fill_rect(canvas, bx0 as isize, by as isize, (bw * frac) as isize, bh as isize, *theme::PROGRESS_FILL, None, None);
     paint::fill_rect(canvas, bx0 as isize, by as isize, bw as isize, bh as isize, *theme::PROGRESS_TRACK, None, None);
-    // The bar takes a tap a unit tall, centred on it — a quarter-unit line is too thin a target.
-    restamp_hit_rect(hit_map, buf_w, buf_h, bx0 as isize, (by + bh * 0.5 - unit * 0.5) as isize, bx1 as isize, (by + bh * 0.5 + unit * 0.5) as isize, base + SLOT_BAR);
     rp.bar = (bx0, bx1);
 
     // The kept beam follows the audio: the moment the playhead has reached, as slots of 10 ms from the recording's first moment.
@@ -322,6 +323,10 @@ pub(super) fn draw_replay(
     for (k, (v, ((tx, ty, tw, th), (fx, fy, fr)))) in rp.voices.iter().zip(tiles).enumerate() {
         let muted = rp.muted.get(k).copied().unwrap_or(false);
         let name_style = TextStyle::new(unit * 0.55, if muted { *theme::LABEL_COLOUR } else { v.tint });
+        // WHY/PROOF (a rect, not the paint): the whole tile is the voice's tap target, claimed before the tile paints: its face, name and ring show only in part of it.
+        if k < MAX_TILES {
+            claim_hit_rect_under(hit_map, canvas.pixels, buf_w, buf_h, tx as isize, ty as isize, (tx + tw) as isize, (ty + th) as isize, base + SLOT_TILES + k as HitId);
+        }
         // Their camera, when the kept beam has a picture of it by now: it fills the tile, the name at its foot, as the live group screen draws a beaming member.
         if let Some(pic) = rp.video.as_ref().and_then(|vid| vid.picture_of(&v.party)) {
             text.draw_text_center(canvas, &v.name, (tx + tw / 2) as f32, (ty + th) as f32 - unit * 0.6, &name_style, None, None);
@@ -329,9 +334,6 @@ pub(super) fn draw_replay(
             let gp = (unit / 4.0) as usize;
             // WHY/PROOF: a tile on a tiny window can be narrower than its two margins — the plain subtraction would wrap and the blit run past the buffer; the frame then has no size and paints nothing.
             super::wave_field::paint_picture_rect(canvas, tx + gp, ty + gp, tw.saturating_sub(2 * gp), th.saturating_sub(2 * gp), &pic, false);
-            if k < MAX_TILES {
-                restamp_hit_rect(hit_map, buf_w, buf_h, tx as isize, ty as isize, (tx + tw) as isize, (ty + th) as isize, base + SLOT_TILES + k as HitId);
-            }
             continue;
         }
         text.draw_text_center(canvas, &v.name, fx, fy + fr + unit * 0.75, &name_style, None, None);
@@ -347,8 +349,9 @@ pub(super) fn draw_replay(
             let ring = super::wave_field::env_ring_colour(Some(crate::wave::live::FrameEnv { fno: now_fno, p }));
             paint::draw_circle(canvas, fx, fy, fr + super::ring_thickness(fr), ring, None);
         }
-        if k < MAX_TILES {
-            restamp_hit_rect(hit_map, buf_w, buf_h, tx as isize, ty as isize, (tx + tw) as isize, (ty + th) as isize, base + SLOT_TILES + k as HitId);
-        }
     }
+    // THE SCREEN'S OWN SURFACE, last: whatever of it shows below its top edge that no control claimed (the title, the times, a voice past the last tile id) takes the screen's own id, a tap that does nothing; where it shows nothing (or only behind something already opaque) it claims nothing, and the speckle there is the window's own surface.
+    // Until 2026-11-17 the whole area below the strip was swallowed first, the speckle with it, and the controls re-stamped over it.
+    shown.settle(canvas.pixels);
+    shown.claim(hit_map, base + SLOT_AREA);
 }

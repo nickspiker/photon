@@ -2531,7 +2531,8 @@ impl FluorApp<Px> for PhotonApp {
                     }
                 }
 
-                if hit_id == HIT_NONE {
+                // HIT_BLOCK is a front surface with no click of its own (the full-screen wave panel's wash, the link consent panel, an open dropdown's frame): no widget, the window's own surface, as it was when such surfaces left the map empty.
+                if hit_id == HIT_NONE || hit_id == HIT_BLOCK {
                     // No widget under the cursor — clear focus, then start a move-drag (the host promotes it to an actual drag once the cursor moves). Resize edges were already claimed at the top of this arm, before ANY hit dispatch.
                     if self.change_focus(None) {
                         ctx.window.request_redraw();
@@ -3505,9 +3506,8 @@ impl FluorApp<Px> for PhotonApp {
                 self.change_focus(None);
                 // A screen swap must also re-raster the CACHED bg layer — it's dirty-gated and nothing else invalidates it on navigation, so the previous screen's backdrop stayed baked beneath the new one (the launch chromatic wave + wordmark showing thru the settings panel; the settings divider-split noise lingering after Back). One noise re-raster per screen change is cheap.
                 if let Some(chrome) = self.chrome.as_mut() {
+                    // The dirty bg layer makes the frame a whole one, so the render clears the previous screen's hits everywhere (`clear_hits`), and the chrome claims its own (the orb's) at its flatten every frame (until 2026-11-17 the chrome was invalidated here too, only so its re-raster would wipe the map).
                     chrome.invalidate_bg();
-                    // And the chrome layer with it: its raster is where the orb's hit area is stamped, and the previous screen's stamps otherwise stay in the map until something else dirties it.
-                    chrome.invalidate_chrome();
                 }
                 { needs_redraw = true; self.note_redraw(line!() + 100_000); }
             }
@@ -4540,9 +4540,9 @@ impl PhotonApp {
             // A rigid shift leaves both layers alone: the render memmoves the bg layer and the hit map by the same dy and repaints only the exposed band (SCROLL AS A MEMMOVE).
             if !rigid {
                 if let Some(chrome) = self.chrome.as_mut() {
+                    // The dirty bg layer makes this frame a whole one, and the render clears the hit map over all of it (`clear_hits`) before anything claims at the scrolled positions, so no hit zone is left behind at the old ones.
+                    // Until 2026-11-17 the chrome was invalidated here too, only so its re-raster would wipe the map.
                     chrome.invalidate_bg();
-                    // Scrolling moves the content (and therefore every per-pixel hit zone) but doesn't dirty the chrome layer on its own, so `rasterize_chrome` would early-return and skip its `hit_test_map.fill(HIT_NONE)` — leaving STALE hit stamps at the pre-scroll row/widget positions. Those ghosts make `hit_at` return the wrong id under the cursor after a scroll, so the hover overlay tints the wrong pixels. Invalidate chrome so the map is cleared and re-stamped against this frame's scrolled positions.
-                    chrome.invalidate_chrome();
                 }
             }
         if !from_fling {
