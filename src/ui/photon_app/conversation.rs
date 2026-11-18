@@ -34,13 +34,13 @@ impl PhotonApp {
     }
 
     /// The compose bar's lift off the frame's bottom: the keyboard's rows (`ime_lift`) and, on a safe circle (ferros), enough that the bar's lower corners stay inside the circle, clear of the helm's Back and Deck; softly the larger, so the bar never jumps between the two.
-    /// `unit` is the layout unit; the bar spans `unit .. w − unit` and rests `COMPOSE_MARGIN` units above whatever it is lifted off.
-    pub(super) fn bottom_lift(&self, buf_h: usize, unit: f32) -> f32 {
+    /// `unit` is the layout unit; the bar spans `side .. w − side` (`compose_side`) and rests `COMPOSE_MARGIN` units above whatever it is lifted off.
+    pub(super) fn bottom_lift(&self, buf_w: usize, buf_h: usize, unit: f32) -> f32 {
         let kb = self.ime_lift();
         match crate::ui::safe_circle() {
             Some(c) => {
                 let margin = unit * COMPOSE_MARGIN;
-                crate::ui::safe_layout::soft_max(kb + margin, crate::ui::safe_layout::bar_floor(&c, buf_h as f32, unit, unit)) - margin
+                crate::ui::safe_layout::soft_max(kb + margin, crate::ui::safe_layout::bar_floor(&c, buf_h as f32, compose_side(buf_w, buf_h, unit), unit)) - margin
             }
             None => kb,
         }
@@ -3753,33 +3753,42 @@ impl PhotonApp {
     }
 }
 
-/// The compose bar's size: its resting (one-line) height, its text's size, and how tall it may grow as lines are typed.
-/// Elsewhere it is what it always was: the bar a 1.8-unit strip, the text the page's font, growth up to a third of the frame.
-/// On a safe circle (ferros) the bar follows the free space between the name under the orb and the bar's floor (the keyboard or the circle's), so at 400% with the keyboard up it does not crowd the list, the selection's actions or the filter pill: the box's one-line height (`2.3 ·` its font, fluor's MultiTextbox: a 1.4 row and 0.45 padding either side) is held under a quarter of that space and under a sixth of the bar's width (so the send, attach and link buttons, 7/8 of it square each, leave half the bar to type in), softly (`soft_cap`, C∞), and the text, the send and attach buttons and the growth cap (half the space) follow it.
+/// The compose bar's size: its resting (one-line) height, its text's size, its side margin, and how tall it may grow as lines are typed.
+/// It scales with the unit like everything else, at every zoom and on every host: the bar a 1.8-unit strip in the page's font, never shrunk for room; when room runs short the message list gives up its space and scrolls.
+/// On a safe circle (ferros) the box is the bar's own height, its text sized from the unit (`bar_h / ONE_LINE`), where elsewhere it takes the page's font (the launch box's, which outgrows the unit at 400%: there it stood three times the bar's height and left the list no room with the keyboard up).
+/// The side margin is the unit off a safe circle; on one (ferros) it is the margin at 100% at every zoom (`compose_side`), so the bar spans the width less the same margin as at 100%. Growth stops at a third of the frame, and on a safe circle at half the room the list has between the name under the orb and the bar's floor.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct ComposeFit {
     pub bar_h: f32,
     pub font: f32,
+    pub side: f32,
     pub grow_to: f32,
+}
+
+impl ComposeFit {
+    /// For a frame `buf_w × buf_h`, the layout unit `unit` (ReadyLayout's), the span unit `span_unit` (`span · ru / 32`, the orb's), the bar's lift off the bottom `lift` (`bottom_lift`) and the page's font `font`.
+    pub fn compute(buf_w: usize, buf_h: usize, unit: f32, span_unit: f32, lift: f32, font: f32) -> Self {
+        let h = buf_h as f32;
+        let fit = ComposeFit { bar_h: unit * 1.8, font, side: compose_side(buf_w, buf_h, unit), grow_to: h / 3. };
+        match crate::ui::safe_circle() {
+            None => fit,
+            Some(c) => {
+                let orb = crate::ui::safe_layout::OrbLayout::compute(&c, buf_w as f32, span_unit);
+                // The list's room: from its top (render: under the name hung from the orb) to the bar's bottom.
+                let free = (h - lift - unit * COMPOSE_MARGIN) - (orb.orb_bottom() + unit * 1.25);
+                ComposeFit { font: fit.bar_h / ONE_LINE, grow_to: free / 2., ..fit }
+            }
+        }
+    }
 }
 
 /// fluor's MultiTextbox at one line: a row of 1.4 fonts and 0.45 of padding above and below.
 const ONE_LINE: f32 = 1.4 + 2. * 0.45;
 
-impl ComposeFit {
-    /// For a frame `w × h`, the layout unit `unit` (ReadyLayout's), the span unit `span_unit` (`span · ru / 32`, the orb's), the bar's lift off the bottom `lift` (`bottom_lift`) and the page's font `font`.
-    pub fn compute(w: f32, h: f32, unit: f32, span_unit: f32, lift: f32, font: f32) -> Self {
-        let bar_h = unit * 1.8;
-        match crate::ui::safe_circle() {
-            None => ComposeFit { bar_h, font, grow_to: h / 3. },
-            Some(c) => {
-                let orb = crate::ui::safe_layout::OrbLayout::compute(&c, w, span_unit);
-                // The list's top (render: under the name hung from the orb) to the bar's bottom.
-                let free = (h - lift - unit * COMPOSE_MARGIN) - (orb.orb_bottom() + unit * 1.25);
-                let bar_w = w - unit * 2.;
-                let box_h = crate::ui::safe_layout::soft_cap(crate::ui::safe_layout::soft_cap(font * ONE_LINE, free / 4.), bar_w / 6.);
-                ComposeFit { bar_h: crate::ui::safe_layout::soft_cap(bar_h, box_h), font: box_h / ONE_LINE, grow_to: free / 2. }
-            }
-        }
+/// The compose bar's side margin: the unit off a safe circle; on one (ferros) the unit at 100% whatever the zoom, so the bar is as wide at 400% as at 100%.
+pub(super) fn compose_side(buf_w: usize, buf_h: usize, unit: f32) -> f32 {
+    match crate::ui::safe_circle() {
+        Some(_) => crate::ui::ready_layout::ReadyLayout::compute(buf_w, buf_h, 1.).unit_height,
+        None => unit,
     }
 }

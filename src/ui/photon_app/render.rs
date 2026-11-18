@@ -443,7 +443,7 @@ impl PhotonApp {
         // Same hoist for the IME inset (Android keyboard height): read it before the chrome borrow so the conversation block can use it without re-borrowing self.
         let ime_lift = self.ime_lift();
         // The conversation's compose bar lifts by the keyboard and, on a safe circle (ferros), by the circle's floor at its corners (`bottom_lift`, the layout pass's same term).
-        let conv_lift = self.bottom_lift(buf_h, ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height);
+        let conv_lift = self.bottom_lift(buf_w, buf_h, ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height);
         // The orb's unread dot (a safe circle's orb, ferros): any conversation but the one open waits unread.
         // The title arc (ferros): the pages this screen goes round and the open one, read before the chrome borrow.
         let title_arc = if self.title_arc_screen() { self.title_arc_pages() } else { None };
@@ -3458,7 +3458,7 @@ impl PhotonApp {
                             ctx.text.draw_text_center(&mut canvas, name, o.orb.0, o.orb_bottom() + unit * 0.55, &style, None, None);
                         }
                         // Compose bar reserves the bottom strip, lifted off the bottom edge by `compose_margin` — and above the soft keyboard (`ime_lift`; the surface never resizes for the IME). The list lives between list_top and list_bottom. Must match the layout pass's `compose_h`/`compose_margin` below.
-                        // The layout pass's (ComposeFit): 1.8 units off a safe circle, fitted to the free space on one.
+                        // The layout pass's (ComposeFit): 1.8 units at every zoom.
                         let compose_h = self.compose_bar_h;
                         let compose_margin = unit * super::conversation::COMPOSE_MARGIN;
                         // Armed reply/edit strip: one extra band above the compose box naming what the next send references (drawn half-alpha below). Reserved OUT of the list so it never overdraws the newest message.
@@ -3495,14 +3495,8 @@ impl PhotonApp {
                             } else {
                                 0.0
                             };
-                        // The stream filter pill's size, and on a safe circle (ferros) a band of its own between the list and the compose bar: there it once sat inside the list's bottom right, and at 400% it lay over the selected row's actions; it is held under three quarters of the bar's height, softly, so it shrinks with the bar.
-                        let (f_h, f_w) = match crate::ui::safe_circle() {
-                            Some(_) => {
-                                let f_h = crate::ui::safe_layout::soft_cap(unit * 1.3, compose_h * (3. / 4.));
-                                (f_h, f_h * (3.2 / 1.3))
-                            }
-                            None => (unit * 1.3, unit * 3.2),
-                        };
+                        // The stream filter pill's size, and on a safe circle (ferros) a band of its own between the list and the compose bar: there it once sat inside the list's bottom right, and at 400% it lay over the selected row's actions. It scales with the unit; the list gives up the room.
+                        let (f_h, f_w) = (unit * 1.3, unit * 3.2);
                         let filter_band = if crate::ui::safe_circle().is_some() { f_h + unit * 0.25 } else { 0. };
                         let list_bottom = list_bottom - filter_band;
                         // Clamp so a short window (tall header) can never invert the clip (list_top > list_bottom) — that's what made every message vanish on resize. When there's no room, list_bottom collapses to list_top and the list is simply empty rather than drawing with a negative-height (inverted) clip.
