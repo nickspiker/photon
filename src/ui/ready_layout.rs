@@ -128,6 +128,13 @@ impl ReadyLayout {
         let row_height = (unit_height * 1.5) as usize;
         let contact_avatar_diameter = row_height / 2;
 
+        // Where the rows stop: the frame's bottom, or on a safe circle (ferros) the circle's floor at the rows' sides above the helm (safe_layout::bar_floor), so no row draws below it; the list scrolls in what is above.
+        // bar_floor is never negative and never past the frame (safe_layout), so the floor is a row of the frame.
+        let rows_floor = match crate::ui::safe_circle() {
+            Some(c) => (buf_h as f32 - crate::ui::safe_layout::bar_floor(&c, buf_h as f32, content_x as f32, unit_height)) as usize,
+            None => buf_h,
+        };
+
         ReadyLayout {
             // Under a safe circle the avatar is the orb, so its square is the orb's: `avatar_center_radius` names the orb, and the conversation's face takes its size.
             avatar: orb.map_or_else(|| slot(IDX_AVATAR), |o| {
@@ -138,7 +145,7 @@ impl ReadyLayout {
             hint: slot(IDX_HINT),
             textbox: slot(IDX_TEXTBOX),
             separator,
-            rows: PixelRect::new(content_x, rows_y, block_x1, buf_h),
+            rows: PixelRect::new(content_x, rows_y, block_x1, rows_floor),
             row_height,
             contact_avatar_diameter,
             unit_height,

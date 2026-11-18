@@ -374,7 +374,7 @@ impl PhotonApp {
             let block_bottom_at_zero = rl.rows.y0 as isize + block_h;
             // The version footer rides the block one row-height past the last row; extend the scroll extent past it (footer gap + a row-height of bottom margin) so the user can scroll the version fully into view instead of the bottom edge swallowing it.
             let block_end = block_bottom_at_zero + row_h * 2;
-            let max_scroll = (block_end - buf_h as isize).max(0); // the algorithm: a block shorter than the window has no scroll
+            let max_scroll = (block_end - rl.rows.y1 as isize).max(0); // the algorithm: a block shorter than the rows' room has no scroll (the rows stop at the frame's bottom, or the circle's floor on ferros)
             // Publish the extent — no hard clamp; the wheel resists past-the-end and tick() springs the overshoot back (rubber-band).
             self.contacts_scroll_extent = max_scroll;
             self.update_widget_layout(ctx);
@@ -1974,8 +1974,11 @@ impl PhotonApp {
 
         // Ready screen — slice-based layout matching legacy ContactsUnifiedLayout. Today only the avatar circle is painted; the layout already carries rects for handle / hint / textbox / separator / contact rows so subsequent slices drop into named slots without re-computing geometry.
         if matches!(self.state, AppState::Ready) {
-            let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             let ready_layout = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru);
+            // The screen draws on the frame's rows down to where its rows stop (ReadyLayout: the frame's bottom, or the circle's floor above the helm on ferros), so nothing of the list, its pills or its hits runs below it; the rows scroll in what is above.
+            let page_rows = ready_layout.rows.y1;
+            let mut canvas = Canvas::new(&mut target[..page_rows * buf_w], buf_w, page_rows, ctx.damage);
+            let buf_h = page_rows;
 
             // The whole user section (avatar, hint, search box + plus, separator) scrolls together with the contact rows as one block; `contacts_scroll` is the single block offset (0 = rest, avatar at its natural top). Subtract it from the Y of every scrolling element. The version watermark, Sec/Rec meters, and background do NOT scroll (rendered elsewhere / left unoffset here). The upper clamp lands below once `matching`/`rows` are known.
             let scroll = self.contacts_scroll as f32;
@@ -2273,7 +2276,7 @@ impl PhotonApp {
                     .sum::<isize>();
             let block_bottom_at_zero = rows.y0 as isize + block_h;
             let block_end = block_bottom_at_zero + row_h * 2;
-            let max_scroll = (block_end - buf_h as isize).max(0); // the algorithm: a block shorter than the window has no scroll
+            let max_scroll = (block_end - buf_h as isize).max(0); // the algorithm: a block shorter than the rows' room has no scroll (buf_h: the rows' floor here)
             if self.contacts_scroll > max_scroll {
                 self.contacts_scroll = max_scroll;
             }
