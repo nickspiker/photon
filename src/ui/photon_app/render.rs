@@ -1446,18 +1446,23 @@ impl PhotonApp {
                 let wave_cy = conv_blind_now.row_cy;
                 let beam_cy = conv_blind_now.beam_cy;
                 let wave_cx = buf_w as f32 - unit * 0.5 - pill_w * 0.5;
-                // A safe circle (ferros): Wave and Beam are beads on the orb's shoulders, on the arc thru its centre concentric with the circle (safe_layout), Wave left and Beam right, each label fitted inside its bead.
+                // A safe circle (ferros): Wave and Beam are beads on the orb's shoulders, on the arc thru its centre concentric with the circle (safe_layout), Wave left and Beam right: true circles, each with its mark and no words (the owner, 2026-11-18); one that cannot start (no direct path, no camera) is dimmed, its mark grey on a darker bead, and takes no tap.
                 let beads = crate::ui::safe_circle().map(|c| crate::ui::safe_layout::OrbLayout::compute(&c, buf_w as f32, ctx.viewport.effective_span() / 32.).beads);
                 if let Some(b) = self.wave_start_btn.as_mut() {
                     let pw = pill_w * if wave_pill_no_path { 1.8 } else if group_joinable { 1.5 } else { 1.0 };
+                    b.set_round(beads.is_some());
                     match beads {
-                        Some([(x, y, r), _]) => b.set_rect(x, y, r * 2., r * 2.),
-                        None => b.set_rect(buf_w as f32 - unit * 0.5 - pw * 0.5, wave_cy, pw, pill_h),
-                    }
-                    b.set_font_size(pill_font);
-                    b.set_label(tr(if wave_pill_no_path { Msg::WaveStartNoPath } else if group_joinable { Msg::WaveJoin } else { Msg::WaveStart }));
-                    if beads.is_some() {
-                        b.set_font_size_fitted(pill_font, ctx.text);
+                        Some([(x, y, r), _]) => {
+                            b.set_rect(x, y, r * 2., r * 2.);
+                            b.set_label(WAVE_MARK);
+                            b.set_font_size(r * BEAD_MARK);
+                            b.set_fill((!wave_pill_enabled).then(|| fluor::paint::scale_brightness(fluor::theme::BUTTON_FILL, 1, 2)));
+                        }
+                        None => {
+                            b.set_rect(buf_w as f32 - unit * 0.5 - pw * 0.5, wave_cy, pw, pill_h);
+                            b.set_font_size(pill_font);
+                            b.set_label(tr(if wave_pill_no_path { Msg::WaveStartNoPath } else if group_joinable { Msg::WaveJoin } else { Msg::WaveStart }));
+                        }
                     }
                     b.set_enabled(wave_pill_enabled);
                     let id = b.hit_id();
@@ -1468,14 +1473,19 @@ impl PhotonApp {
                 // Beam (video) — the slat above Wave, a third of a pill left of it so the two read as a stack: live when a wave could start and this device can send a beam (a codec + a camera path; docs/beams.md); a tap starts the wave with the beam armed.
                 if let Some(b) = self.beam_btn.as_mut() {
                     let bw = pill_w * if group_joinable { 1.5 } else { 1.0 };
+                    b.set_round(beads.is_some());
                     match beads {
-                        Some([_, (x, y, r)]) => b.set_rect(x, y, r * 2., r * 2.),
-                        None => b.set_rect(wave_cx - pill_w * 0.35 - (bw - pill_w) * 0.5, beam_cy, bw, pill_h),
-                    }
-                    b.set_font_size(pill_font);
-                    b.set_label(tr(if group_joinable { Msg::BeamJoin } else { Msg::BeamStart }));
-                    if beads.is_some() {
-                        b.set_font_size_fitted(pill_font, ctx.text);
+                        Some([_, (x, y, r)]) => {
+                            b.set_rect(x, y, r * 2., r * 2.);
+                            b.set_label(BEAM_MARK);
+                            b.set_font_size(r * BEAD_MARK);
+                            b.set_fill((!beam_pill_enabled).then(|| fluor::paint::scale_brightness(fluor::theme::BUTTON_FILL, 1, 2)));
+                        }
+                        None => {
+                            b.set_rect(wave_cx - pill_w * 0.35 - (bw - pill_w) * 0.5, beam_cy, bw, pill_h);
+                            b.set_font_size(pill_font);
+                            b.set_label(tr(if group_joinable { Msg::BeamJoin } else { Msg::BeamStart }));
+                        }
                     }
                     b.set_enabled(beam_pill_enabled);
                     let id = b.hit_id();
@@ -8330,3 +8340,10 @@ fn draw_title_arc(canvas: &mut Canvas, text: &mut fluor::text::TextRenderer, hit
         text.draw_text_center(canvas, title, k * x + s * y, k * y - s * x, &style, None, None);
     }
 }
+
+/// The Wave bead's mark (ferros, a safe circle): a sine wave (U+223F, Noto Sans Math), the wave a voice makes; a mark, not a word, so no language carries it.
+const WAVE_MARK: &str = "\u{223F}";
+/// The Beam bead's mark: the video camera in its monochrome face (U+1F4F9 with U+FE0E, Noto Sans Symbols 2), so a dimmed bead greys it as it greys the wave.
+const BEAM_MARK: &str = "\u{1F4F9}\u{FE0E}";
+/// A bead's mark size as a fraction of its radius: the font's em, about one and a quarter radii (`1 + 1/4`), so the glyph's ink sits well inside the circle.
+const BEAD_MARK: f32 = 1. + 1. / 4.;

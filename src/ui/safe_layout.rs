@@ -43,10 +43,11 @@ pub struct OrbLayout {
 
 impl OrbLayout {
     /// The orb at the top of `c`, centred on it, and its beads on the arc through its centre concentric with `c`, for a frame `w` wide and a span unit `unit` (`span · ru / 32`).
-    /// The cap: the orb and both beads with their gaps span `2 · (ORB_R + BEAD_GAP + 2 · BEAD_R)` units across; that is held under seven eighths of the width, softly, so the beads never leave the glass at 400%.
+    /// The cap: the orb and both beads with their gaps span `2 · (ORB_R + BEAD_GAP + 2 · BEAD_R)` units across; that is held under three quarters of the width, softly, so at 400% the beads slide in along the arc and shrink with the orb, an eighth of the width clear of the glass's sides (where the console's circles hang above the safe circle), with no kink where the cap takes over.
+    /// The beads never leave the circle: each centre is on the arc through the orb's centre, `arc` from the circle's centre, and `arc + bead_r = c.r − (TOP_GAP + ORB_R − BEAD_R)·unit`, so a bead is always one and a half units inside the circle.
     pub fn compute(c: &SafeCircle, w: f32, unit: f32) -> Self {
         let half_units = ORB_R + BEAD_GAP + 2. * BEAD_R;
-        let unit = soft_cap(unit, w * (7. / 16.) / half_units);
+        let unit = soft_cap(unit, w * (3. / 8.) / half_units);
         let r = unit * ORB_R;
         let cy = c.top() + unit * TOP_GAP + r;
         let bead_r = unit * BEAD_R;
@@ -92,7 +93,9 @@ mod tests {
             assert!((l.orb.0 - c.cx).abs() < 0.01, "ru {ru}: the orb is off centre");
             for b in l.beads {
                 assert!(inside(&c, b), "ru {ru}: a bead leaves the circle: {b:?}");
-                assert!(b.0 - b.2 > 0. && b.0 + b.2 < w, "ru {ru}: a bead leaves the glass: {b:?}");
+                assert!(b.0 - b.2 > w / 16. && b.0 + b.2 < w - w / 16., "ru {ru}: a bead comes within a sixteenth of the glass's side: {b:?}");
+                let inset = c.r - ((b.0 - c.cx).powi(2) + (b.1 - c.cy).powi(2)).sqrt() - b.2;
+                assert!(inset > l.unit, "ru {ru}: a bead is within a unit of the circle: {inset}");
                 let gap = ((b.0 - l.orb.0).powi(2) + (b.1 - l.orb.1).powi(2)).sqrt() - b.2 - l.orb.2;
                 assert!(gap > 0., "ru {ru}: a bead touches the orb");
             }
