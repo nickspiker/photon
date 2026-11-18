@@ -541,6 +541,10 @@ impl PhotonApp {
     /// Encrypt + send the compose-box contents to the open contact, append it as an outgoing bubble, and persist. No-op unless a CLUTCH-Complete contact is open with a friendship chain and the box is non-empty. The crypto/wire/persist layers already exist (`FriendshipChains::prepare_send`, `StatusChecker::send_message`, `save_messages`); this is the UI→chain→network glue. Orb (chrome app-icon) tap. Returns true if it acted (caller redraws). Routed by screen: Ready → open the settings / about / help panel (its own screen with a nine-page nav rail); Settings → no-op (the dedicated back affordance exits). Launch / AddDevice / Conversation ignore the orb. The interim Ready → AddDevice entry moved onto the Fleet page's "Add device" pill.
     /// Which settings pages the nav rail shows, gated by attest state. Pre-attest (no session) there is no identity to configure — You/Fleet/Recovery/Appearance/Notifications/Diagnostics all need one — so About, Updates, and Security narrowed to its one pre-attest verb, Wipe (Nick 2026-09-16: a bound device with a lost or foreign handle, or a hand-me-down phone, had no way out but the dev chord or the OS).
     pub(super) fn settings_pages(&self) -> &'static [SettingsPage] {
+        #[cfg(test)]
+        if self.signed_in() && FERROS_PAGES_IN_TEST.with(|f| f.get()) {
+            return &SettingsPage::FERROS;
+        }
         if self.signed_in() && self.octopus_open {
             &SettingsPage::ALL_OCTOPUS
         } else if self.signed_in() {
@@ -567,7 +571,7 @@ impl PhotonApp {
                 self.you_fields_loaded = false;
                 self.settings_picker = false;
                 // The rail's first page: You here, the messenger's first page on ferros, where You lives in `ahau`, the OS capsule.
-                self.state = AppState::Settings(SettingsPage::ALL[0]);
+                self.state = AppState::Settings(self.settings_pages()[0]);
                 true
             }
             // Pre-attest: the orb ALSO opens the panel, but `settings_pages` narrows it to About + Updates. Land on About. (Editing the handle already cancels the permanence interstitial, so opening settings from Launch is safe.)
@@ -1336,4 +1340,10 @@ impl PhotonApp {
         }
         acted
     }
+}
+
+// Under test, ferros's page list on any target, so a desktop render of the ferros layout (a safe circle) shows the pages ferros gets; never compiled into a build.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static FERROS_PAGES_IN_TEST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
