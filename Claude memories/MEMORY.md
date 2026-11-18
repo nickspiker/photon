@@ -5,6 +5,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [answer, don't act](feedback_answer_dont_act.md) — a question gets an answer and a stop, never an action
 - [build via dev.sh](feedback_build_dev_script.md) — never bare cargo build; android = scripts/android/dev-adb.sh
 - [one build per check](feedback-one-build-per-check.md) — capture once to scratchpad, grep the capture
+- [builds off /tmp](feedback_builds_off_tmp.md) — HARD: cargo targets on /mnt/Harbor/Code, never tmpfs /tmp (EDQUOT for every session)
 - [test discipline](feedback_test_discipline.md) — ONE full cargo test per batch; never --lib alone
 - [render never touches vault](feedback_render_never_touches_vault.md) — HARD: UI thread makes no vault call
 - [reload timing](feedback_reload_mid_ceremony.md) — default: reload when no round is progressing and no wave is live; a stuck round may be dropped (owner 2026-11-17, not a hard rule)
