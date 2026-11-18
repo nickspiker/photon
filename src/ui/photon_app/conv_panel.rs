@@ -20,12 +20,10 @@ pub(super) const CONV_PANEL_SLOTS: HitId = SLOT_BONDS + 40;
 
 impl PhotonApp {
     /// The one other person the open conversation is with — None for a group, our own notes, or a sibling's row. Such a conversation's panel IS that person's page (Nick 2026-11-01: "the person management page is distinct from the one in a conversation, can we combine those?").
-    /// The rows a page leaves out ahead of its own: on a safe circle (ferros) the person page of a two-person conversation draws no big picture, since the orb above is already that person's face, so its five face rows go; 0 everywhere else. The render shifts the page's rows by these and the scroll extent counts without them.
+    /// The rows `page` leaves out ahead of its own (`page_skip`), for the open conversation.
     pub(super) fn conversation_page_skip(&self, page: crate::ui::state::ConversationPage) -> usize {
-        match page {
-            crate::ui::state::ConversationPage::Person(p) if crate::ui::safe_circle().is_some() && self.pair_person() == Some(p) => PERSON_FACE_ROWS,
-            _ => 0,
-        }
+        let own_pair = matches!(page, crate::ui::state::ConversationPage::Person(p) if self.pair_person() == Some(p));
+        page_skip(page, own_pair)
     }
 
     pub(super) fn pair_person(&self) -> Option<[u8; 32]> {
@@ -302,3 +300,17 @@ impl PhotonApp {
 
 /// The rows the person page's picture takes at its top (render: the avatar block spans the first five).
 pub(super) const PERSON_FACE_ROWS: usize = 5;
+
+/// The rows a panel page leaves out ahead of its own on a safe circle (ferros), where the orb and the title arc above already say what they said: the person page of a two-person conversation draws no big picture (the orb is that person's face), so its five face rows go, and Bonds, In numbers and Manage draw no title of their own (the arc names the page), so their title row goes. `own_pair`: the page is the person of the open two-person conversation. 0 everywhere off a safe circle.
+/// The render shifts the page's rows by these, standing empty rows ahead so every row keeps its number, and the scroll extent counts without them.
+pub(super) fn page_skip(page: crate::ui::state::ConversationPage, own_pair: bool) -> usize {
+    use crate::ui::state::ConversationPage;
+    if crate::ui::safe_circle().is_none() {
+        return 0;
+    }
+    match page {
+        ConversationPage::Person(_) if own_pair => PERSON_FACE_ROWS,
+        ConversationPage::Person(_) => 0,
+        ConversationPage::Bonds | ConversationPage::Stats | ConversationPage::Manage => 1,
+    }
+}

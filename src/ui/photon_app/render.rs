@@ -2736,7 +2736,7 @@ impl PhotonApp {
                 let tspan = layout.unit * 0.72;
                 let hspan2 = tspan * 0.75;
                 // A page's rows, the ones it leaves out (`conversation_page_skip`: the pair's person page on ferros drops its picture, the orb's face) standing empty ahead so every row keeps its number.
-                let skip = if crate::ui::safe_circle().is_some() && own_pair_page { super::conv_panel::PERSON_FACE_ROWS } else { 0 }; // conversation_page_skip, from what is held before the chrome borrow
+                let skip = super::conv_panel::page_skip(page, own_pair_page);
                 let n = super::conversation_page_rows(page, bonds.len(), roster_src.is_some()) - skip;
                 let rows: Vec<fluor::region::Region> = std::iter::repeat(fluor::region::Region::new(0., 0., 0., 0.)).take(skip).chain(rows_n(layout.content_scrolled(n, settings_content_scroll), n)).collect();
                 let pill = |r: fluor::region::Region, frac: f32| fluor::region::Region::new(r.x + r.w * 0.1, r.y, r.w * frac, r.h * 0.9);
@@ -2750,7 +2750,9 @@ impl PhotonApp {
                 // Display doctrine (matches clutch_status_detail): dozenal is the acclimation surface for VERSION + REPUTATION only — counters stay in current mixed arabic units for now.
                 match page {
                     ConversationPage::Bonds => {
-                        settings_line(&mut canvas, ctx.text, rows[0], &tr(Msg::ConversationPageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                        if skip == 0 {
+                            settings_line(&mut canvas, ctx.text, rows[0], &tr(Msg::ConversationPageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600); // the arc names the page on ferros (page_skip)
+                        }
                         settings_line(&mut canvas, ctx.text, rows[1], &tr(Msg::BindNote), hspan2, *theme::LABEL_COLOUR, 400);
                         // Inviting needs the conversation's own key to outlive the pair's bond: a roster-backed conversation can grow today, a pair-keyed one once its keys split from the bond (docs/conversations.md Phase 3).
                         let editable = roster_src.as_ref().is_some_and(|(_, _, phase, ..)| *phase == crate::storage::molecule::MoleculePhase::Standing);
@@ -2878,7 +2880,9 @@ impl PhotonApp {
                             (tr(Msg::MembersOnline { online, total: members_total }).into_owned(), *theme::LABEL_COLOUR, false)
                         };
                         // These rows should CONVERGE across your fleet devices — two devices showing different numbers here IS the sync bug, made visible.
-                        settings_line(&mut canvas, ctx.text, rows[0], &tr(Msg::ConversationPageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                        if skip == 0 {
+                            settings_line(&mut canvas, ctx.text, rows[0], &tr(Msg::ConversationPageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600); // the arc names the page on ferros (page_skip)
+                        }
                         settings_line(&mut canvas, ctx.text, rows[1], &tr(Msg::MessagesSentReceived { total: human.len(), sent, recv }), hspan2, *theme::LABEL_COLOUR, 400);
                         settings_line(&mut canvas, ctx.text, rows[2], &tr(Msg::MessagesDelivered(delivered)), hspan2, *theme::LABEL_COLOUR, 400);
                         settings_line(&mut canvas, ctx.text, rows[3], &tr(Msg::ChatDaysSpan(span_days)), hspan2, *theme::LABEL_COLOUR, 400);
@@ -2891,7 +2895,9 @@ impl PhotonApp {
                         settings_line(&mut canvas, ctx.text, rows[8], &tr(Msg::RowsShouldMatch), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
                     }
                     ConversationPage::Manage => {
-                        settings_line(&mut canvas, ctx.text, rows[0], &tr(Msg::ConversationPageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                        if skip == 0 {
+                            settings_line(&mut canvas, ctx.text, rows[0], &tr(Msg::ConversationPageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600); // the arc names the page on ferros (page_skip)
+                        }
                         let left = roster_src.as_ref().is_some_and(|(_, _, phase, ..)| *phase == crate::storage::molecule::MoleculePhase::Left);
                         // THE GROUP'S PICTURE (group_avatar.rs, Nick 2026-11-02): the big avatar over rows 1–5, the drop hint under it on hover (desktop), Remove under that while one is set; every row below moves down by `fo`.
                         let fo = if roster_src.is_some() { super::MANAGE_FACE_ROWS } else { 0 };
@@ -5770,7 +5776,7 @@ impl PhotonApp {
                     let devices = &fleet_devices;
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
-                    flow.line(&mut canvas, ctx.text, &tr(Msg::FleetTitle), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.page_title(&mut canvas, ctx.text, &tr(Msg::FleetTitle), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.line(&mut canvas, ctx.text, &tr(Msg::FleetTapToCopy), hspan2 * 0.82, *theme::LABEL_COLOUR, 400);
                     // SIGNATURE FLOOR — the migration from one egg to the basket, fleet-wide: the floor every member has proved (what every op is held to), and how many have declared the full three-family basket. The floor reaches the basket the moment the last live member declares; a chain-locked member is left out of that count.
                     if let Some(fs) = fleet_schemes.as_ref() {
@@ -5970,7 +5976,7 @@ impl PhotonApp {
                     // LANGUAGE (Nick 2026-09-03: "separate Language page at the bottom of settings but above About... buttons for each language, rather than a dropdown that's hard to find"): one button per language, labelled in ITSELF (autonyms — a lost user must always recognise their own tongue). The current choice is the filled pill; a tap persists device-local display.lang and the whole UI re-renders thru tr().
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
-                    flow.line(&mut canvas, ctx.text, &tr(Msg::LanguageLabel), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.page_title(&mut canvas, ctx.text, &tr(Msg::LanguageLabel), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.gap(hspan2 * 0.8);
                     let current = crate::ui::lang::lang();
                     for (i, l) in crate::ui::lang::Lang::ALL.iter().enumerate() {
@@ -5998,7 +6004,7 @@ impl PhotonApp {
                     // SECURITY, Flow rework (Nick 2026-09-02): SHORT pill labels with the explanation as a wrapped hint BELOW each pill (the parentheticals moved out of the buttons), everything wrapping at the pane edge. Destructiveness ramp unchanged: Lock (green, reversible) · Remove (yellow) · Shred (orange) · Remove & shred (red); the wipers stay two-tap + mutually exclusive; hit ids unchanged (0..3 + the unattended base).
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
-                    flow.line(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.page_title(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                     // Pre-attest (Nick 2026-09-16: "wipe without attesting upon first boot") the page is ONE verb: Wipe. There is no identity to lock, kill, revoke or release, but there may be a vault, a binding marker and a log left by whoever held this hardware before — and a bound device with a lost or foreign handle has no other way out. The vault is sealed under the handle-derived seed, so the attest screen was never the lock: this grants nothing an OS "clear storage" doesn't.
                     let unattested = self.session.is_none();
                     flow.prose(&mut canvas, ctx.text, &tr(if unattested { Msg::SecurityIntroUnattested } else { Msg::SecurityIntro }), hspan2, *theme::LABEL_COLOUR, 400);
@@ -6207,7 +6213,7 @@ impl PhotonApp {
                     // RECOVERY, Flow rework (ticket queue 2026-09-02): everything wraps at the pane edge, the checkbox positions inline (the About-checkbox pattern), and the measured extent replaces the hand-counted 8-row estimate.
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
-                    flow.line(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.page_title(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.line(&mut canvas, ctx.text, &tr(Msg::Custodians), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.gap(hspan2 * 0.4);
                     if let Some(cb) = self.settings_custodian_check.as_mut() {
@@ -6297,7 +6303,7 @@ impl PhotonApp {
                     // NOTIFICATIONS, Flow rework: one checkbox per flowed band (left-aligned, widths measured per label), everything wraps, measured extent replaces the row estimate. Presence stays COMMENTED OUT (Nick 2026-09-01) — field + dispatch compiled for a one-line restore.
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
-                    flow.line(&mut canvas, ctx.text, &tr(Msg::NotificationsTitle), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.page_title(&mut canvas, ctx.text, &tr(Msg::NotificationsTitle), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.gap(hspan2 * 0.4);
                     // The background/load-on-startup toggle MOVED to Security (Nick 2026-09-03) — it belongs beside the auto-attest arm it enables, not among the alert sounds.
                     // The wave toggles (ring, vibrate on incoming, hold every wave) moved home to the Wave page (Nick 2026-09-16).
@@ -6328,7 +6334,7 @@ impl PhotonApp {
                     // UPDATES on the Flow (2026-09-09): everything wraps at the pane edge — title, version, the auto-check box, the two channel pills as a wrapping pill row, then the status line or the download bar.
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
-                    flow.line(&mut canvas, ctx.text, &tr(Msg::UpdatesTitle), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.page_title(&mut canvas, ctx.text, &tr(Msg::UpdatesTitle), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.line(&mut canvas, ctx.text, &tr(Msg::PhotonVersion(&version_dozenal_glyphs())), hspan2, *theme::CONTACT_NAME_COLOUR, 400);
                     flow.gap(hspan2 * 0.5);
                     // ORDER (Nick 2026-09-09): version, then the GREEN release pill with what's new IN THAT RELEASE beneath it (the offered version's notes, fetched beside the manifest — not the running build's), then the AMBER dev pill with its beta invitation (and, on a dev build, what is coming). Each pill sizes to its label and wraps onto its own line when the pane is narrow.
@@ -6580,7 +6586,7 @@ impl PhotonApp {
                     // THE WAVE PAGE (Nick 2026-09-16, "a wave config screen"): this device's hearing (the earpiece trim in STOPS — "ideally not dB"), its voice (the per-mic profiles the calibration learned, forget / measure now), the last wave's stats, and the wave preferences. Everything but the trim and the ritual is data the app already held and used to let die in the log.
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
-                    flow.line(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.page_title(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveIntro), hspan2, *theme::LABEL_COLOUR, 400);
                     // ── Hearing: the trim.
                     flow.gap(hspan2 * 0.6);
@@ -6772,7 +6778,7 @@ impl PhotonApp {
                     // THE VAULT'S PHYSIQUE (Nick 2026-09-14: "would be nice to see the stats"). Read-only; the snapshot is fetched off-thread on page entry and on Refresh (the librarian's mailbox queues behind commits). Sizes ride dms_size (DMS dozenal / hex bits / arabic), counts ride fmt_num64 — the number doctrine end to end.
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
-                    flow.line(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.page_title(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.prose(&mut canvas, ctx.text, &tr(Msg::VaultIntro), hspan2, *theme::LABEL_COLOUR, 400);
                     flow.gap(hspan2 * 0.4);
                     match self.vault_stats.as_ref() {
@@ -6901,7 +6907,7 @@ impl PhotonApp {
                     // DIAGNOSTICS on the Flow (2026-09-09): the log line and the note prompt wrap at the pane edge like every other page; the four actions are a wrapping pill row; the note box and the hard-logs box sit inline.
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
-                    flow.line(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.page_title(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                     // The live size, not just the cap: "how much have I got to send" is the question this page exists to answer.
                     let used = crate::log_size_bytes();
                     let cap = crate::LOG_CAP_BYTES;
@@ -6960,7 +6966,7 @@ impl PhotonApp {
                     // Admin text for the one person who opened it, in English only.
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
-                    flow.line(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.page_title(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                     let busy = self.octopus_rx.is_some();
                     if let Some(status) = self.octopus_status.as_deref() {
                         flow.prose(&mut canvas, ctx.text, status, hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
@@ -7027,7 +7033,7 @@ impl PhotonApp {
                     // IDEAS & FIXES (ideas.rs, docs/ideas.md): the explainer, the box, the two pills, then everything this device sent with its status.
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
-                    flow.line(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.page_title(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.gap(hspan2 * 0.4);
                     flow.prose(&mut canvas, ctx.text, &tr(Msg::IdeasIntro), hspan2, *theme::LABEL_COLOUR, 400);
                     flow.gap(hspan2 * 0.4);
@@ -7099,18 +7105,19 @@ impl PhotonApp {
                     let prose_style = TextStyle::new(hspan2 * 0.75, *theme::LABEL_COLOUR).weight(400).font("Oxanium");
                     let head_style = TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium");
                     let mut y = inset.y - settings_content_scroll;
-                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::PageName(page)), cx, y + line_h * 0.5, &head_style, page_clip, None);
-                    y += line_h * 1.4;
-                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::MoleculesExplainHead), cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), page_clip, None);
-                    y += line_h;
+                    // The page's own name, but under the title arc (ferros), which already names it.
+                    if arc.is_none() {
+                        ctx.text.draw_text_center(&mut canvas, &tr(Msg::PageName(page)), cx, y + line_h * 0.5, &head_style, page_clip, None);
+                        y += line_h * 1.4;
+                    }
+                    y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::MoleculesExplainHead), &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), line_h, page_clip);
                     for line in tr(Msg::MoleculesExplainProse).lines() {
                         y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
                         y += line_h * 0.3;
                     }
                     y += line_h * 0.4;
                     // The default newcomer-history policy for groups WE found — the founding picker reads it; a fleet setting, born linked.
-                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::DefaultHistoryHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
-                    y += line_h;
+                    y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::DefaultHistoryHead), &head_style, line_h, page_clip);
                     y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::DefaultHistoryNote), &prose_style, line_h * 0.8, page_clip);
                     y += line_h * 0.3;
                     {
@@ -7125,8 +7132,7 @@ impl PhotonApp {
                         y += flow.used();
                     }
                     y += line_h * 0.6;
-                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::YourMolecules), cx, y + line_h * 0.5, &head_style, page_clip, None);
-                    y += line_h;
+                    y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::YourMolecules), &head_style, line_h, page_clip);
                     if self.molecule_rosters.is_empty() {
                         y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::NoAtomsYet), &prose_style, line_h * 0.8, page_clip);
                     }
@@ -7144,7 +7150,7 @@ impl PhotonApp {
                     // THE BEAM PAGE (Nick 2026-10-26): what this device asks of the beams it sends — this device only or following the fleet, HDR (greyed out where the cameras are 8-bit SDR), the largest size, the frame rate, quality, the data ceiling, what a busy link sheds — then test patterns painted straight into the buffer as g2t codes, so this screen's white, its brightest and its banding can be judged by eye.
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
-                    flow.line(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.page_title(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.prose(&mut canvas, ctx.text, &tr(Msg::BeamIntro), hspan2, *theme::LABEL_COLOUR, 400);
                     let bs = crate::wave::beam_settings::current();
                     let capable = crate::wave::beam_settings::hdr_capable();
@@ -7355,8 +7361,11 @@ impl PhotonApp {
                     let head_style = TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium");
                     let cell_style = TextStyle::new(hspan2 * 0.85, *theme::LABEL_COLOUR).weight(400).font("Oxanium");
                     let mut y = inset.y - settings_content_scroll;
-                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::PageName(page)), cx, y + line_h * 0.5, &head_style, page_clip, None);
-                    y += line_h * 1.4;
+                    // The page's own name, but under the title arc (ferros), which already names it.
+                    if arc.is_none() {
+                        ctx.text.draw_text_center(&mut canvas, &tr(Msg::PageName(page)), cx, y + line_h * 0.5, &head_style, page_clip, None);
+                        y += line_h * 1.4;
+                    }
                     // Fleet-wide base pills (display.base — linked, so a preference follows the identity): dozenal, hexadecimal, arabic, the chosen one filled green whichever it is (Nick 2026-09-15: "no arabic shaming").
                     let base = crate::num_base();
                     {
@@ -7418,16 +7427,14 @@ impl PhotonApp {
                         }
                         crate::NumBase::Hex => {
                             // The coder's page: no dozenal sermon here.
-                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::WhyHex), cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), page_clip, None);
-                            y += line_h;
+                            y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::WhyHex), &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), line_h, page_clip);
                             for line in tr(Msg::WhyHexProse).lines() {
                                 y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
                                 y += line_h * 0.3;
                             }
                         }
                         crate::NumBase::Arabic => {
-                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::BaseTenHead), cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), page_clip, None);
-                            y += line_h;
+                            y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::BaseTenHead), &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), line_h, page_clip);
                             for line in tr(Msg::BaseTenProse).lines() {
                                 y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
                                 y += line_h * 0.3;
@@ -7449,8 +7456,7 @@ impl PhotonApp {
                     claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, inset.x as isize, index_top.max(inset.y) as isize, (inset.x + inset.w) as isize, index_bot.min(inset.y + inset.h) as isize, btn_base + 5);
                     // The dozenal arm titles the sheet itself (the digits section leads straight into it); the other bases title it here.
                     if base != crate::NumBase::Dozenal {
-                        ctx.text.draw_text_center(&mut canvas, &tr(Msg::DigitsHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
-                        y += line_h;
+                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::DigitsHead), &head_style, line_h, page_clip);
                     }
                     let cols = [inset.x + inset.w * 0.2, inset.x + inset.w * 0.5, inset.x + inset.w * 0.8];
                     // Columns in the same historical order as the pills: arabic, hexadecimal, dozenal.
@@ -7542,8 +7548,7 @@ impl PhotonApp {
                         }
                         crate::NumBase::Hex => {
                             // LINEAR legends: the seconds count and the bit count in hex, no scaling.
-                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::DmsHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
-                            y += line_h;
+                            y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::DmsHead), &head_style, line_h, page_clip);
                             y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::HexTimeIntro), &prose_style, line_h * 0.8, page_clip);
                             y += line_h * 0.6;
                             for secs in [1u64, 60, 3600, 86400, 2592000, 31536000] {
@@ -7552,8 +7557,7 @@ impl PhotonApp {
                                 y += line_h * 0.9;
                             }
                             y += line_h * 0.6;
-                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::DmsSizeHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
-                            y += line_h;
+                            y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::DmsSizeHead), &head_style, line_h, page_clip);
                             y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::HexSizeIntro), &prose_style, line_h * 0.8, page_clip);
                             y += line_h * 0.6;
                             for bits in [8u64, 8192, 8388608, 8589934592] {

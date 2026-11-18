@@ -5313,15 +5313,10 @@ fn settings_line(
     colour: u32,
     weight: u16,
 ) {
-    text.draw_text_left(
-        canvas,
-        s,
-        row.x + size * 0.3,
-        row.center_y(),
-        &TextStyle::new(size, colour).weight(weight).font("Oxanium"),
-        None,
-        None,
-    );
+    // Fitted to its row (the owner, 2026-11-18: no line runs off the glass): the line and its 0.3-size inset either side held under the row's width, softly (safe_layout::soft_cap, C∞), so at 400% a long row shrinks into its slot; well inside the width it is `size`.
+    let style = |sz: Coord| TextStyle::new(sz, colour).weight(weight).font("Oxanium");
+    let fit = crate::ui::safe_layout::soft_cap(size, size * (row.w - size * 0.6) / text.measure_text(s, &style(size)));
+    text.draw_text_left(canvas, s, row.x + size * 0.3, row.center_y(), &style(fit), None, None);
 }
 
 /// FLOW layout for settings pages (Nick 2026-09-02, "option 2"): a y-cursor every element advances by its own height — so EVERY text element wraps at the pane edge by construction, and the page's true height falls out of the final cursor (measured scroll extent, no hand-counted row estimates). The About card proved the pattern; this is it, named. Pages convert one at a time; toka-rendered documents later ride this same substrate.
@@ -5351,6 +5346,21 @@ impl Flow {
         let region = fluor::region::Region::new(self.x, self.y, self.w, size * 1.6);
         let n = settings_prose(canvas, text, region, s, size, colour, weight);
         self.y += (n.max(1) as Coord) * size * 1.25 + size * 0.35; // design: an empty prose block still advances one line, so the next heading never overlaps it
+    }
+
+    /// The page's own name at its top: a [`line`], except under the title arc (ferros, a safe circle), where the arc above already names the page and the line would say it twice.
+    pub(super) fn page_title(
+        &mut self,
+        canvas: &mut Canvas,
+        text: &mut fluor::text::TextRenderer,
+        s: &str,
+        size: Coord,
+        colour: u32,
+        weight: u16,
+    ) {
+        if crate::ui::safe_circle().is_none() {
+            self.line(canvas, text, s, size, colour, weight);
+        }
     }
 
     /// A paragraph — same as [`line`] (everything wraps here); named for call-site intent.
