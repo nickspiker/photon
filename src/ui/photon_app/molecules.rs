@@ -236,6 +236,16 @@ impl PhotonApp {
                 self.persist_molecule(&gid);
             }
             crate::logf!("MOLECULE: offer for held group {} from {} merged as records", hex::encode(&gid.0[..4]), sponsor_fp);
+            // STILL JOINING: a re-offer is the sponsor saying it never saw our Join (2026-11-17, Jon: joined, saw the members, never any content, while the sponsor re-offered on every return). The Join rides the bond once, and one lost on the way (the sponsor's device asleep, no mailbox) left both sides waiting forever: send it again (bind_offer sends while Joining, a fresh bundle the sponsor wraps to).
+            if self.molecule_locals.iter().any(|(g, l)| *g == gid && l.phase == MoleculePhase::Joining) {
+                if !self.bond_offers.iter().any(|o| o.molecule_id == gid) {
+                    if let Some((_, roster)) = self.molecule_rosters.iter().find(|(g, _)| *g == gid) {
+                        self.bond_offers.push(BondOffer { molecule_id: gid, sponsor, row_osc, snapshot: roster.clone(), accepted: true });
+                    }
+                }
+                crate::logf!("MOLECULE: re-offer for {} from {} while still joining; our Join went missing, sending it again", hex::encode(&gid.0[..4]), sponsor_fp);
+                self.bind_offer(gid);
+            }
             return;
         }
         let members = snapshot.standing().len();
