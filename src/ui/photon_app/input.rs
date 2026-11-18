@@ -77,14 +77,17 @@ impl PhotonApp {
 
         // Conversation compose box: a full-width strip lifted off the bottom edge by `compose_margin`. Geometry must match the render block's `compose_h`/`compose_margin`/`compose_cy`, where `unit` is ReadyLayout's span-based harmonic unit (same as the contacts screen — no hardcoded pixels). The send button is OVERLAID inside the box's right edge, exactly like the contacts-screen `+` search button (7/8 of the box height, inset 1/16 from the right).
         let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
-        let compose_h = unit * 1.8;
         let compose_margin = unit * super::conversation::COMPOSE_MARGIN;
         let compose_w = buf_w as f32 - unit * 2.0;
         let compose_cx = buf_w as f32 * 0.5;
+        let lift = self.bottom_lift(buf_h, unit);
+        let fit = super::conversation::ComposeFit::compute(buf_w as f32, buf_h as f32, unit, ctx.viewport.effective_span() / 32., lift, font_size);
+        let compose_h = fit.bar_h;
+        self.compose_bar_h = compose_h;
         // `bottom_lift` rides the anchor so the compose bar (and its overlaid send button) sits above the soft keyboard, and inside a safe circle (ferros) — same term the render's list_bottom subtracts.
-        let compose_cy = buf_h as f32 - self.bottom_lift(buf_h, unit) - compose_margin - compose_h * 0.5;
+        let compose_cy = buf_h as f32 - lift - compose_margin - compose_h * 0.5;
         if let Some(tb) = self.message_textbox.as_mut() {
-            tb.set_font_size(font_size, ctx.text);
+            tb.set_font_size(fit.font, ctx.text);
             // Exclude the overlaid send button's footprint (7/8-height square + 1/16 inset, matching the button block below) so typing never runs under the arrow.
             tb.set_right_inset(compose_h * 7.0 / 8.0 + compose_h / 16.0);
             // Bottom-anchored growth: the box's bottom edge stays where the single-line bar sat; extra lines grow UPWARD into the list, capped at a third of the screen (the field ruling: line COUNT varies wildly with zoom, screen fraction doesn't).
@@ -93,7 +96,7 @@ impl PhotonApp {
                 compose_cx,
                 bottom_y,
                 compose_w,
-                buf_h as f32 / 3.0,
+                fit.grow_to,
                 ctx.text,
             );
         }
@@ -104,17 +107,18 @@ impl PhotonApp {
             let box_right = compose_cx + compose_w * 0.5;
             let send_cx = box_right - send_inset - send_size * 0.5;
             btn.set_rect(send_cx, compose_cy, send_size, send_size);
-            btn.set_font_size(font_size);
+            // The bar's text size (ComposeFit): the page's font, or on a safe circle the one fitted to the free space, so the buttons' marks shrink with the bar.
+            btn.set_font_size(fit.font);
             // The link button sits one slot left of send, same size; the text area yields to both while it shows.
             if let Some(lb) = self.compose_link_btn.as_mut() {
                 lb.set_rect(send_cx - send_size - send_inset, compose_cy, send_size, send_size);
-                lb.set_font_size(font_size * 0.9);
+                lb.set_font_size(fit.font * 0.9);
             }
             // The paperclip sits one slot further left than whatever is beside send (the link button when it shows), and the text yields to every slot in use.
             let slots = if link_visible { 3.0 } else { 2.0 };
             if let Some(ab) = self.compose_attach_btn.as_mut() {
                 ab.set_rect(send_cx - (send_size + send_inset) * (slots - 1.0), compose_cy, send_size, send_size);
-                ab.set_font_size(font_size * 0.9);
+                ab.set_font_size(fit.font * 0.9);
             }
             if let Some(tb) = self.message_textbox.as_mut() {
                 tb.set_right_inset((send_size + send_inset) * slots);

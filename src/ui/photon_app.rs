@@ -2650,6 +2650,8 @@ pub struct PhotonApp {
     keyboard_rows: u32,
     /// The `keyboard_rows` the layout was last made for: the tick lays out again when they differ.
     keyboard_rows_laid: u32,
+    /// The compose bar's resting height (one line), as the layout pass last set it (`ComposeFit`): the render's list yields to it, so the two passes agree.
+    compose_bar_h: f32,
     /// THE TITLE ARC (ferros, a safe circle; the settings circle's grammar, ferros COMPOSITOR.md "Titles ride the circle"): how far the pages have turned, in pages, toward the next (the finger's across the page while it holds, then the spring's back to 0).
     settings_turn: f32,
     /// The spring's speed, pages a frame: critically damped, stepped once a tick, so the motion has no clock of its own.
@@ -3663,6 +3665,7 @@ impl PhotonApp {
             last_ime_inset: 0,
             keyboard_rows: 0,
             keyboard_rows_laid: 0,
+            compose_bar_h: 0.,
             settings_turn: 0.0,
             settings_turn_v: 0.0,
             settings_picker: false,
@@ -5609,6 +5612,41 @@ fn draw_stub_pill_filled(
         enabled,
         fill,
     );
+}
+
+/// A pill drawn only inside the rows `top .. bottom` (the conversation list's band): the frame's rows there are a canvas and a hit map of their own, so a pill straddling the list's top or bottom edge is cut at it, like the rows' text, instead of drawing over the name under the orb or the filter pill (ferros at 400%, 2026-11-18; the same on the desktop when a selected row scrolls under the header).
+/// `top` and `bottom` are rows of the frame (`0 ≤ top ≤ bottom ≤ buf_h`, the list's own clip); the damage the pill makes goes back to the frame's at its own rows.
+#[allow(clippy::too_many_arguments)]
+fn draw_stub_pill_banded(
+    canvas: &mut Canvas,
+    text: &mut fluor::text::TextRenderer,
+    hit_map: &mut [HitId],
+    buf_w: usize,
+    top: f32,
+    bottom: f32,
+    rect: fluor::region::Region,
+    label: &str,
+    hit_id: HitId,
+    pressed_hit: HitId,
+    enabled: bool,
+    fill: Option<(u32, u32)>,
+    label_font: &'static str,
+) {
+    let (t, b) = (top as usize, bottom as usize);
+    // An empty band shows nothing (the list collapsed to its top): there is no row to draw in.
+    if b == t {
+        return;
+    }
+    let mut band_damage = fluor::canvas::Damage::new();
+    {
+        let mut band = Canvas::new(&mut canvas.pixels[t * buf_w..b * buf_w], buf_w, b - t, &mut band_damage);
+        let shifted = fluor::region::Region::new(rect.x, rect.y - t as f32, rect.w, rect.h);
+        draw_stub_pill_filled(&mut band, text, &mut hit_map[t * buf_w..b * buf_w], buf_w, b - t, shifted, label, hit_id, pressed_hit, enabled, fill, label_font);
+    }
+    if !band_damage.is_empty() {
+        let r = band_damage.bbox();
+        canvas.damage.add(fluor::canvas::PixelRect::new(r.x0, r.y0 + t, r.x1, r.y1 + t));
+    }
 }
 
 #[cfg(test)]

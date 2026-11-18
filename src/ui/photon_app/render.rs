@@ -2096,12 +2096,18 @@ impl PhotonApp {
                 .unwrap_or(false);
             if search_empty && !search_focused {
                 if let Some(tb) = self.contacts_textbox.as_ref() {
+                    // Fitted to the box: the prompt and the box's own padding either side held under its width, softly (safe_layout::soft_cap, C∞), so at 400% it shrinks into the box instead of spilling past its ends; well inside the width it is the box's 0.6 of its font as before.
+                    let prompt = tr(Msg::SearchPlaceholder);
+                    let want = tb.font_size * 0.6;
+                    let style = TextStyle::new(want, 0).weight(500).font("Oxanium");
+                    let fill = ctx.text.measure_text(&prompt, &style) + 2. * tb.padding();
+                    let size = crate::ui::safe_layout::soft_cap(want, want * tb.width / fill);
                     ctx.text.draw_text_center(
                         &mut canvas,
-                        &tr(Msg::SearchPlaceholder),
+                        &prompt,
                         tb.center_x,
                         tb.center_y,
-                        &TextStyle::new(tb.font_size * 0.6, fluor::theme::HINT_COLOUR)
+                        &TextStyle::new(size, fluor::theme::HINT_COLOUR)
                             .weight(500)
                             .font("Oxanium"),
                         None,
@@ -2564,7 +2570,12 @@ impl PhotonApp {
             let arc = crate::ui::safe_circle().zip(title_arc.as_ref());
             let picker = arc.is_some() && self.settings_picker;
             let layout = if picker { SettingsLayout { rail: layout.content, ..layout } } else { layout };
-            let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
+            // Under the title arc (ferros) the page draws on the frame's rows down to the body's bottom alone, the circle's floor above the helm (SettingsLayout): a page scrolls within that band and whatever runs past it is cut there, the pills, boxes and wrapped prose included, none of which carries a clip of its own; elsewhere the whole frame, as before.
+            // content.bottom() is the frame's height less bar_floor, which is never negative (safe_layout), so these rows are the frame's own.
+            let page_rows = if arc.is_some() { layout.content.bottom() as usize } else { buf_h };
+            let mut canvas = Canvas::new(&mut target[..page_rows * buf_w], buf_w, page_rows, ctx.damage);
+            // The page's rows are the frame here: every pill, claim and hit below stops at the floor with the pixels.
+            let buf_h = page_rows;
             if conv_hdr.is_some() {
                 // Our pid keys the colours below — a keyed colour, not a self-check. "Is this only me" is the participant count.
                 let our_hh = own_pid.unwrap_or([0u8; 32]);
@@ -3443,7 +3454,8 @@ impl PhotonApp {
                             ctx.text.draw_text_center(&mut canvas, name, o.orb.0, o.orb_bottom() + unit * 0.55, &style, None, None);
                         }
                         // Compose bar reserves the bottom strip, lifted off the bottom edge by `compose_margin` — and above the soft keyboard (`ime_lift`; the surface never resizes for the IME). The list lives between list_top and list_bottom. Must match the layout pass's `compose_h`/`compose_margin` below.
-                        let compose_h = unit * 1.8;
+                        // The layout pass's (ComposeFit): 1.8 units off a safe circle, fitted to the free space on one.
+                        let compose_h = self.compose_bar_h;
                         let compose_margin = unit * super::conversation::COMPOSE_MARGIN;
                         // Armed reply/edit strip: one extra band above the compose box naming what the next send references (drawn half-alpha below). Reserved OUT of the list so it never overdraws the newest message.
                         let compose_strip: Option<(i64, u8)> = if compose_ready {
@@ -3479,6 +3491,16 @@ impl PhotonApp {
                             } else {
                                 0.0
                             };
+                        // The stream filter pill's size, and on a safe circle (ferros) a band of its own between the list and the compose bar: there it once sat inside the list's bottom right, and at 400% it lay over the selected row's actions; it is held under three quarters of the bar's height, softly, so it shrinks with the bar.
+                        let (f_h, f_w) = match crate::ui::safe_circle() {
+                            Some(_) => {
+                                let f_h = crate::ui::safe_layout::soft_cap(unit * 1.3, compose_h * (3. / 4.));
+                                (f_h, f_h * (3.2 / 1.3))
+                            }
+                            None => (unit * 1.3, unit * 3.2),
+                        };
+                        let filter_band = if crate::ui::safe_circle().is_some() { f_h + unit * 0.25 } else { 0. };
+                        let list_bottom = list_bottom - filter_band;
                         // Clamp so a short window (tall header) can never invert the clip (list_top > list_bottom) — that's what made every message vanish on resize. When there's no room, list_bottom collapses to list_top and the list is simply empty rather than drawing with a negative-height (inverted) clip.
                         let list_bottom = list_bottom.max(list_top);
                         // Status toast on the CONVERSATION screen — the Ready hint slot and the Settings pane both draw `ready_toast`, but this AppState never did, which made a refused self-row persist (its toast fires while the user is right here) invisible (2026-08-21 erasure ticket). Above the compose bar, painted early so under-blend keeps it over the list; event-shown, cleared on the next interaction via clear_toast, never time-based.
@@ -3776,10 +3798,9 @@ impl PhotonApp {
                                 ChatFilter::Waves => Msg::FilterWaves,
                                 ChatFilter::Text => Msg::FilterText,
                             });
-                            let f_h = unit * 1.3;
-                            let f_w = unit * 3.2;
                             let f_x = buf_w as f32 - pad_x - f_w + self.conv_topbar_off; // slides off to the right as the blind rises
-                            let f_y = list_bottom - f_h - unit * 0.25;
+                            // In its band under the list on a safe circle; inside the list's bottom right elsewhere.
+                            let f_y = if filter_band > 0. { list_bottom + unit * 0.25 } else { list_bottom - f_h - unit * 0.25 };
                             // Only once there is something to filter (Nick 2026-10-01): a link established, or rows already in the stream — never on the barren CLUTCH screen.
                             let linked = is_self_contact || hdr.woven || hdr.owner_woven || !visible.is_empty();
                             if linked && f_x < buf_w as f32 {
@@ -4248,7 +4269,7 @@ impl PhotonApp {
                                         let rect = fluor::region::Region::new(px, ry, w, pill_h);
                                         if rect.y + rect.h >= list_top && rect.y <= list_bottom {
                                             let fill = Some((theme::near_black(colour, 0.15), theme::near_black(colour, 0.3)));
-                                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, &label, hid, ctx.pressed_hit, hid != HIT_NONE, fill, "Oxanium");
+                                            super::draw_stub_pill_banded(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, list_top, list_bottom, rect, &label, hid, ctx.pressed_hit, hid != HIT_NONE, fill, "Oxanium");
                                         }
                                         px += w + pad_hit;
                                     }
@@ -4286,7 +4307,7 @@ impl PhotonApp {
                                     let rect = fluor::region::Region::new(rx_cursor, y - react_pill_h * 0.5, w, react_pill_h);
                                     if rect.y + rect.h >= list_top && rect.y <= list_bottom {
                                         let fill = Some((theme::near_black(verb, 0.15), theme::near_black(verb, 0.3)));
-                                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, g, self.react_strip_base + self.react_strip_glyphs.len() as HitId, ctx.pressed_hit, true, fill, "Oxanium");
+                                        super::draw_stub_pill_banded(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, list_top, list_bottom, rect, g, self.react_strip_base + self.react_strip_glyphs.len() as HitId, ctx.pressed_hit, true, fill, "Oxanium");
                                     }
                                     self.react_strip_glyphs.push(g.clone());
                                     rx_cursor += w + pad_hit;
@@ -5420,7 +5441,13 @@ impl PhotonApp {
             let arc = crate::ui::safe_circle().zip(title_arc.as_ref());
             let picker = arc.is_some() && self.settings_picker;
             let layout = if picker { SettingsLayout { rail: layout.content, ..layout } } else { layout };
-            let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
+            // Under the title arc (ferros) the page draws on the frame's rows down to the body's bottom alone, the circle's floor above the helm (SettingsLayout): a page scrolls within that band and whatever runs past it is cut there, the pills, boxes and wrapped prose included, none of which carries a clip of its own; elsewhere the whole frame, as before.
+            // content.bottom() is the frame's height less bar_floor, which is never negative (safe_layout), so these rows are the frame's own.
+            let page_rows = if arc.is_some() { layout.content.bottom() as usize } else { buf_h };
+            let mut canvas = Canvas::new(&mut target[..page_rows * buf_w], buf_w, page_rows, ctx.damage);
+            // The page's rows are the frame here: every pill, claim and hit below stops at the floor with the pixels; the frame's own height stays for what is sized by it (the About slab).
+            let frame_h = buf_h;
+            let buf_h = page_rows;
 
             // Open dropdown popup FIRST (under-blend: topmost content paints first) so it composites over everything painted after it, and its hits likewise: its rows claim theirs, its frame claims the rest of it (HIT_BLOCK), and nothing drawn after takes any of it.
             if page == SettingsPage::Appearance {
@@ -7559,7 +7586,7 @@ impl PhotonApp {
                     ));
                     let mut y = inset.y - settings_content_scroll;
                     // The wave + wordmark now paint in the BG pass (see about_slab in the bg closure): the attest screen's proportions at pane width, never zoom-scaled, scrolled with the card. The card just advances past the slab.
-                    let (_, slab_h) = about_slab(buf_w, buf_h, inset.w);
+                    let (_, slab_h) = about_slab(buf_w, frame_h, inset.w);
                     y += slab_h + line_h * 0.4;
                     // The two headline properties — the whole pitch in two words each.
                     ctx.text.draw_text_center(
@@ -8330,10 +8357,13 @@ fn draw_title_arc(canvas: &mut Canvas, text: &mut fluor::text::TextRenderer, hit
         let (x, y) = (c.cx + arc * theta.sin(), c.cy - arc * theta.cos());
         let title = &titles[(at as isize + k).rem_euclid(n) as usize];
         let alpha = (((colour >> 24) & 0xFF) as f32 * a) as u32;
-        let style = TextStyle::new(size, (colour & 0x00FF_FFFF) | (alpha << 24)).weight(600).font("Oxanium").rotation(theta);
+        // Each title fitted to three quarters of the width, softly (safe_layout::soft_cap, C∞): at 400% a long one ("Notifications") shrinks to stay on the glass instead of running off both sides; a short one keeps the header's size.
+        let flat = TextStyle::new(size, 0).weight(600).font("Oxanium");
+        let fit = crate::ui::safe_layout::soft_cap(size, size * buf_w as f32 * (3. / 4.) / text.measure_text(title, &flat));
+        let style = TextStyle::new(fit, (colour & 0x00FF_FFFF) | (alpha << 24)).weight(600).font("Oxanium").rotation(theta);
         if o.abs() < 0.25 {
             let w = text.measure_text(title, &style);
-            claim_hit_rect_under(hit_map, canvas.pixels, buf_w, buf_h, (x - w * 0.5 - size) as isize, (y - size) as isize, (x + w * 0.5 + size) as isize, (y + size) as isize, title_hit);
+            claim_hit_rect_under(hit_map, canvas.pixels, buf_w, buf_h, (x - w * 0.5 - fit) as isize, (y - fit) as isize, (x + w * 0.5 + fit) as isize, (y + fit) as isize, title_hit);
         }
         // fluor turns a styled line about the frame's origin, not its anchor (its glyphs' places go thru the rotation as they are), so the anchor goes in turned back by θ and comes out at (x, y).
         let (s, k) = theta.sin_cos();

@@ -3752,3 +3752,34 @@ impl PhotonApp {
         self.session.as_ref().map(|s| s.handle_proof).or(self.photon_keys.as_ref().map(|k| k.handle_proof)).map(|p| proof_gradient_seed(&p)).unwrap_or(0)
     }
 }
+
+/// The compose bar's size: its resting (one-line) height, its text's size, and how tall it may grow as lines are typed.
+/// Elsewhere it is what it always was: the bar a 1.8-unit strip, the text the page's font, growth up to a third of the frame.
+/// On a safe circle (ferros) the bar follows the free space between the name under the orb and the bar's floor (the keyboard or the circle's), so at 400% with the keyboard up it does not crowd the list, the selection's actions or the filter pill: the box's one-line height (`2.3 ·` its font, fluor's MultiTextbox: a 1.4 row and 0.45 padding either side) is held under a quarter of that space and under a sixth of the bar's width (so the send, attach and link buttons, 7/8 of it square each, leave half the bar to type in), softly (`soft_cap`, C∞), and the text, the send and attach buttons and the growth cap (half the space) follow it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct ComposeFit {
+    pub bar_h: f32,
+    pub font: f32,
+    pub grow_to: f32,
+}
+
+/// fluor's MultiTextbox at one line: a row of 1.4 fonts and 0.45 of padding above and below.
+const ONE_LINE: f32 = 1.4 + 2. * 0.45;
+
+impl ComposeFit {
+    /// For a frame `w × h`, the layout unit `unit` (ReadyLayout's), the span unit `span_unit` (`span · ru / 32`, the orb's), the bar's lift off the bottom `lift` (`bottom_lift`) and the page's font `font`.
+    pub fn compute(w: f32, h: f32, unit: f32, span_unit: f32, lift: f32, font: f32) -> Self {
+        let bar_h = unit * 1.8;
+        match crate::ui::safe_circle() {
+            None => ComposeFit { bar_h, font, grow_to: h / 3. },
+            Some(c) => {
+                let orb = crate::ui::safe_layout::OrbLayout::compute(&c, w, span_unit);
+                // The list's top (render: under the name hung from the orb) to the bar's bottom.
+                let free = (h - lift - unit * COMPOSE_MARGIN) - (orb.orb_bottom() + unit * 1.25);
+                let bar_w = w - unit * 2.;
+                let box_h = crate::ui::safe_layout::soft_cap(crate::ui::safe_layout::soft_cap(font * ONE_LINE, free / 4.), bar_w / 6.);
+                ComposeFit { bar_h: crate::ui::safe_layout::soft_cap(bar_h, box_h), font: box_h / ONE_LINE, grow_to: free / 2. }
+            }
+        }
+    }
+}
