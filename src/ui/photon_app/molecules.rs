@@ -236,14 +236,17 @@ impl PhotonApp {
                 self.persist_molecule(&gid);
             }
             crate::logf!("MOLECULE: offer for held group {} from {} merged as records", hex::encode(&gid.0[..4]), sponsor_fp);
-            // STILL JOINING: a re-offer is the sponsor saying it never saw our Join (2026-11-17, Jon: joined, saw the members, never any content, while the sponsor re-offered on every return). The Join rides the bond once, and one lost on the way (the sponsor's device asleep, no mailbox) left both sides waiting forever: send it again (bind_offer sends while Joining, a fresh bundle the sponsor wraps to).
-            if self.molecule_locals.iter().any(|(g, l)| *g == gid && l.phase == MoleculePhase::Joining) {
+            // NOT YET HOLDING THE KEYS: a re-offer is the sponsor saying it never saw our Join (2026-11-17, Jon: joined, saw the members, never any content, while the sponsor re-offered on every return). The Join rides the bond once, and one lost on the way (the sponsor's device asleep, no mailbox) left both sides waiting forever: send it again (bind_offer sends while Joining, a fresh bundle the sponsor wraps to).
+            let fid = crate::types::FriendshipId::from_bytes(gid.0);
+            let keys_held = self.friendship_chains.iter().any(|(id, c)| *id == fid && !c.awaiting_root());
+            let we_left = self.molecule_locals.iter().any(|(g, l)| *g == gid && l.phase == MoleculePhase::Left);
+            if !keys_held && !we_left {
                 if !self.bond_offers.iter().any(|o| o.molecule_id == gid) {
                     if let Some((_, roster)) = self.molecule_rosters.iter().find(|(g, _)| *g == gid) {
                         self.bond_offers.push(BondOffer { molecule_id: gid, sponsor, row_osc, snapshot: roster.clone(), accepted: true });
                     }
                 }
-                crate::logf!("MOLECULE: re-offer for {} from {} while still joining; our Join went missing, sending it again", hex::encode(&gid.0[..4]), sponsor_fp);
+                crate::logf!("MOLECULE: re-offer for {} from {} and its keys are not held here; our Join went missing, sending it again", hex::encode(&gid.0[..4]), sponsor_fp);
                 self.bind_offer(gid);
             }
             return;
@@ -331,12 +334,7 @@ impl PhotonApp {
             self.fleet_holds_molecule(gid);
             return false;
         }
-        // Joined = the group is held AND past Joining: a joining group is listed from the moment Join is pressed (below), and a re-tap while the wrap is lost must send the join again, not report it done.
-        let joining = self.molecule_locals.iter().any(|(g, l)| *g == gid && l.phase == MoleculePhase::Joining);
-        if offer.accepted && !joining && self.molecule_rosters.iter().any(|(g, _)| *g == gid) {
-            crate::logf!("MOLECULE: join of {} — already joined", hex::encode(&gid.0[..4]));
-            return false;
-        }
+        // Joined = the group's keys are held, which the check above already answers. A held roster or an accepted offer is not joined: the roster arrives with the offer's snapshot, and a Join whose wrap never came (2026-11-17, Jon: "Neither one of his devices is letting him bind") was refused here as "already joined" forever, so a tap must send it again.
         let Some(ci) = self.contacts.iter().position(|c| c.handle_hash == offer.sponsor && !c.is_sibling) else {
             crate::logf!("MOLECULE: join of {} — the sponsor is no longer a contact; offer expired", hex::encode(&gid.0[..4]));
             return false;
