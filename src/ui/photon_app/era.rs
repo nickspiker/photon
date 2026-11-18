@@ -191,6 +191,12 @@ pub(crate) struct FanoutSeen {
     pub locked: Vec<[u8; 32]>,
 }
 
+/// Must the key sync mint: the count test on every edge (fgtw fanout_needs_rotation: more wraps than the fold minus the locked), OR a member's lockout this device owes a mint for, while the live fan-out is still under the key it held at the lock (`owed`, that key's fingerprint; `live_kfp`, the fan-out's).
+/// The count alone misses a grow between the lock and the rotation: it rewraps the fold minus the locked under the OLD key, the counts read equal, and the locked member keeps a live key (the grow gap, 2026-11-18). A fan-out under any other key is a mint since the lock, which wrapped the fold minus the locked alone, and pays the debt.
+pub(crate) fn rotation_due(wraps: usize, desired: usize, owed: Option<[u8; 32]>, live_kfp: [u8; 32]) -> bool {
+    fgtw::fanout::fanout_needs_rotation(wraps, desired) || owed == Some(live_kfp)
+}
+
 /// The fan-out revision a member's lockout re-key waits for: the first whose key the locked device cannot hold.
 /// A fan-out that still reaches it wraps a key it holds, so the wait is for the next revision, which is the rotation the lock starts (a mint wraps the fold minus the locked alone, and every later one does the same); one that no longer reaches it is that revision already.
 /// Never a checkpoint counted from the lock: a routine checkpoint between the lock and the rotation folds the old key, and an era sealed under it would reach the locked device (the leak, 2026-11-18).
@@ -1055,6 +1061,34 @@ mod tests {
         assert!(lockout_wait_over(late, folded_fanout_revision(&chain, 3)));
         assert!(!lockout_wait_over(LOCKOUT_FANOUT_UNKNOWN, Some(9)), "nothing goes before a key sync has said where the fan-out stands");
         assert!(lockout_wait_over(1, None), "a device that never held the fleet key: at once");
+    }
+
+    /// The grow gap, 2026-11-18: a grow between the lock and the rotation rewraps the fold minus the locked under the OLD key, so the counts read equal; the lock's debt still forces the mint, the key sync reports the fan-out as still reaching the locked device, and the re-key waits for the mint's revision, not the grow's.
+    #[test]
+    fn a_grow_between_the_lock_and_the_rotation_still_mints_and_the_rekey_waits_for_it() {
+        let old_key = [0x0Au8; 32];
+        let new_key = [0x0Bu8; 32];
+        let k0 = fgtw::fanout::fleet_key_fingerprint(&old_key);
+        let k1 = fgtw::fanout::fleet_key_fingerprint(&new_key);
+        // Three members, one locked: two wanted. Before the grow the old fan-out wraps all three, and the count alone mints.
+        assert!(rotation_due(3, 2, Some(k0), k0));
+        // A grow at revision 6 rewraps the two under the old key: the count reads equal, and the count alone would never mint.
+        assert!(!fgtw::fanout::fanout_needs_rotation(2, 2), "the gap: the count test sees nothing to rotate");
+        let reaches = rotation_due(2, 2, Some(k0), k0);
+        assert!(reaches, "the lock's debt forces the mint under the old key");
+        let due = lockout_fanout_due(&FanoutSeen { revision: 6, reaches_locked: reaches, locked: vec![[2; 32]] });
+        assert_eq!(due, 7, "the re-key waits for the mint after the grow");
+        let mut c = friend(1);
+        c.is_online = true;
+        c.era_lockout_due = due;
+        c.era_lockout_from = 0xA1;
+        assert!(!lockout_rekey_ready(&c, Some(6), Some([7u8; 32])), "an epoch folding the grow is under the old key");
+        // The mint at revision 7 is under a new key: the debt is paid, nothing mints again, and the re-key goes once an epoch folds it.
+        assert!(!rotation_due(2, 2, Some(k0), k1));
+        assert!(lockout_rekey_ready(&c, Some(7), Some([7u8; 32])));
+        // Every other edge keeps the count test alone.
+        assert!(!rotation_due(2, 2, None, k0));
+        assert!(rotation_due(3, 2, None, k0));
     }
 
     /// One at a time and only when it can go: due, online, complete, nothing in flight, and ours to run; done once the bond moved off the armed era.

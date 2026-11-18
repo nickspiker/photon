@@ -1886,6 +1886,12 @@ impl PhotonApp {
 
     /// Also the removal-rotates sentinel (braid.md §14.2 / §14.12-1): before recovering, the thread folds our chain (genesis-verified) and fetches the fan-out; a fan-out wrapping MORE devices than the fold holds means a departed member's wrap lingers, so this device — any surviving member, never the leaver — mints the next epoch and re-seals the fstate slot across the re-key (pull under the OLD cached key first, push the CRDT merge under the new; skipping the pull would let `push_roster`'s AEAD fallback silently drop the settings layer). One heal at a time (`fleet_heal_busy`, also parking plain syncs so they can't re-cache the pre-rotation key mid-heal); concurrent siblings converge on the worker's monotonic epoch guard — a `stale` loser adopts the winner's key and pushes nothing. The winner's UI-thread follow-up (avatar bearer-pin rotate) rides `fleet_rotated_tx`.
     pub(super) fn spawn_fleet_key_sync(&self) {
+        self.spawn_fleet_key_sync_owing(false);
+    }
+
+    /// [`spawn_fleet_key_sync`], and when `owe_mint`, a member was just locked out: the rotation must MINT, whatever the wrap count says (the grow gap, 2026-11-18: a grow between the lock and the rotation wraps the fold minus the locked under the OLD key, the count reads equal and the count test alone would never mint, so the locked member would keep a live key).
+    /// The debt is this device's own: the fingerprint of the fleet key it holds when it learns of the lock, kept in the vault (`fleet_mint_owed`) and paid by the first fan-out seen under another key, whoever minted it (rotation_due).
+    pub(super) fn spawn_fleet_key_sync_owing(&self, owe_mint: bool) {
         use crate::network::fgtw::fleet;
         let (Some(hp), Some(device_key), Some(storage), Some(session)) = (
             self.our_handle_proof(),
@@ -1926,8 +1932,17 @@ impl PhotonApp {
                 .map(|fs| fs.devices.clone())
                 .unwrap_or_default(),
         };
+        let owed_addr = crate::storage::vault_key("fleet_mint_owed", &session.vault_seed);
         std::thread::spawn(move || {
             use std::sync::atomic::Ordering;
+            // The debt is written before anything else, so a heal already running cannot drop it: the next sync pays it.
+            if owe_mint && matches!(storage.read_addr(&owed_addr), Ok(None)) {
+                if let Some(held) = storage.read_addr(&addr).ok().flatten().and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok()) {
+                    crate::log_err!(storage.write_addr(&owed_addr, &fgtw::fanout::fleet_key_fingerprint(&held)), "the owed mint to the vault");
+                    crate::log("FANOUT: a member was locked out; the next rotation mints a fresh key whatever the wrap count says");
+                }
+            }
+            let owed: Option<[u8; 32]> = storage.read_addr(&owed_addr).ok().flatten().and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok());
             if busy.load(Ordering::Acquire) {
                 return; // a heal is mid-flight; it caches the freshest key itself, and its fanout_put fires a fresh `fleet` bump for a clean re-sync
             }
@@ -1938,14 +1953,20 @@ impl PhotonApp {
                     .into_iter()
                     .filter(|m| !locked.contains(m))
                     .collect();
-                let (revision, _, _, wraps) = fleet::fetch_fanout(&hp).ok().flatten()?;
-                Some((fleet::fanout_needs_rotation(wraps.len(), desired.len()), revision, desired))
+                let (revision, kfp, _, wraps) = fleet::fetch_fanout(&hp).ok().flatten()?;
+                Some((super::era::rotation_due(wraps.len(), desired.len(), owed, kfp), revision, desired, kfp))
             })();
+            // The live key is not the one this device held at the lock: someone minted since, and the debt is paid.
+            if let (Some(o), Some((_, _, _, kfp))) = (owed, probe.as_ref()) {
+                if o != *kfp {
+                    crate::log_err!(storage.delete_addr(&owed_addr), "the paid mint debt");
+                }
+            }
             // What a lockout's re-key waits for (era.rs FanoutSeen): the fan-out as this sync saw it, against the locked set it measured with.
-            if let Some((reaches, revision, _)) = probe.as_ref() {
+            if let Some((reaches, revision, _, _)) = probe.as_ref() {
                 crate::log_err!(seen_tx.send(super::era::FanoutSeen { revision: *revision, reaches_locked: *reaches, locked: locked.clone() }), "the fan-out seen to the UI thread");
             }
-            let heal_members = probe.and_then(|(reaches, _, desired)| reaches.then_some(desired));
+            let heal_members = probe.and_then(|(reaches, _, desired, _)| reaches.then_some(desired));
             if let Some(members) = heal_members {
                 // RAII latch — released on every exit including a panic mid-mint (the old manual store left it poisoned).
                 let Some(_latch) = HealLatch::acquire(&busy) else {
@@ -1963,6 +1984,7 @@ impl PhotonApp {
                 match fleet::mint_fleet_key(&hp, &device_key, &members, &identity_seed) {
                     Ok((revision, new_key)) => {
                         // A mint wraps the desired set alone: this revision reaches no locked device.
+                        crate::log_err!(storage.delete_addr(&owed_addr), "the paid mint debt");
                         crate::log_err!(seen_tx.send(super::era::FanoutSeen { revision, reaches_locked: false, locked: locked.clone() }), "the minted fan-out to the UI thread");
                         if let Err(e) = crate::network::fgtw::alias::replace_fleet_key(&storage, &vault_seed, &new_key) {
                             crate::logf!("FLEET: minted key cache failed: {}", e);
@@ -2872,7 +2894,7 @@ impl PhotonApp {
             self.arm_lockout_rekeys(due, "a device was locked out");
             // The key sync is the rotation sentinel and the report of where the fan-out stands; a device that learned of the lock after the rotation finds it done there, and its re-key goes as soon as its epoch folds that revision.
             if member {
-                self.spawn_fleet_key_sync();
+                self.spawn_fleet_key_sync_owing(true);
             }
             // Rebuild the answerable ping set so a freshly-locked device's PINGS stop being answered immediately (answerable_pubkeys now drops locked_out contacts) — not just its chain/ceremony frames, which the downstream knows_device gates already refused.
             // Without this the flat set kept the device until the next fold reseed, so it went on exchanging presence.
@@ -2915,7 +2937,7 @@ impl PhotonApp {
         }
         // ORDER IS LOAD-BEARING for a SELF-revoke (the Security page's desk case): apply_locked_set tears down our own session the moment it sees our pubkey in the set, and spawn_fleet_key_sync needs that session to mint the next epoch. Rotate and push FIRST, go dark second — otherwise a device revoking itself would leave its own key live in the current epoch and never reach the worker.
         // Rotation NOW, not at the next sentinel pass: the revoked device holds the current fleet key until an epoch it isn't wrapped into exists.
-        self.spawn_fleet_key_sync();
+        self.spawn_fleet_key_sync_owing(true);
         // Push the lock to the worker so the refusal SURVIVES A WIPE: the local fleet.locked set (and the fleet-key rotation) only bind devices that still hold local state, but a wiped-and-reattested stolen device lost all of that — the worker's device_lock entry is the one authority a wipe can't erase, refusing the device at announce.
         self.spawn_worker_lock_push(pk);
         self.apply_locked_set();
