@@ -6,6 +6,15 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Joining a group works even if your first answer got lost.** If your "join" never reached the person who invited you, you could see the members but never any messages, and tapping Join again did nothing; now the next invitation sends your join again, and you can always tap Join until you are in.
+- **Friends' pictures stop disappearing.** When a friend's picture changed, Photon threw away the copy it had before the new one arrived, so pictures vanished one by one after restarts; now the old picture stays until the new one is ready.
+- **Your devices share your friends' pictures.** If one of your devices is missing a friend's picture, it asks your other devices for theirs, and only your own devices ever pass a friend's picture along.
+- **Signing in on a phone is faster.** The start screen now holds still while your handle is checked, so the check gets the phone's full speed.
+- **Choose how much Photon keeps.** The Vault page now has an age limit and a size limit for wave recordings, beam video and files, set for this device or for all your devices, and it shows sizes in exact bytes.
+- **Default pictures are made once and kept.** A contact without a photo gets its pattern drawn once and stored, so it no longer has to be drawn again every time the screen size changes.
+- **Your identity survives a change of devices.** When your devices change the key they share, the key your identity rests on now moves to the new one too; before, it could be left locked under the old one.
+- **Smoother scrolling.** A scrolling list now redraws only the part that changed.
+- **Photon on ferros.** A Photon on ferros now receives your contacts and conversations from your other devices, sealed for it alone, and sends through them; it never holds your friendship keys, so removing it cuts it off.
 
 ## v153
 - **Friends see your groups again after a device changes keys.** When one of your devices moved to a new key, the group records it had signed were refused by your friends, so a friend you invited could see the members but none of the messages; your devices now sign those records again with a current key.
