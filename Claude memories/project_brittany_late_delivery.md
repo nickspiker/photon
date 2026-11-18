@@ -22,3 +22,5 @@ Side: Nick pings c9b5f417, a Brittany key no longer in her fleet (~880 lines); h
 - Side: desktop pings c9b5f417 which her fleet released (fold refresh only for an unknown replying device, status.rs ~3855; release not published to friends = fgtw); her history asks for 4 tokens every 2-3 min forever (desktop "no chain for token"; MacBook answers under a different history key); her group 5b0bef4e also hit "length overflows" (63eb3f01).
 - Avatar loss: pong answered by another device dropped pin (~877 vs 1 direct, certain); roster single clock very likely at 20:57:33 "adopted 15 newer roster entries"; desktop never fetched her avatar in 17 h.
 - BLIND divergent S epoch: Nick's own recovery-secret split, not delivery; check MacBook/132bdf93 logs for "S: CRITICAL".
+
+**Still happening 2026-11-18** (desktop log from 15:17 UTC): her phone 29ad7ff5 still asks the desktop for the same 4 unknown conversations (tokens b620fc96, d4a5bef5, 569b06de, 66d03a35; "HISTORY: request rejected — no chain"), and frames on b620fc96 and 7e7e1ad7 are held "arrived before its chains loaded" (309 times), never released. Her log is still the missing piece.
