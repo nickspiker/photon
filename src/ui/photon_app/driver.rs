@@ -44,6 +44,17 @@ impl FluorApp<Px> for PhotonApp {
         self.keyboard_rows = rows;
     }
 
+    /// The frame's safe circle as the host tells it (ferros: `EV_SAFE` at the window's first show and as its full screen turns, WINDOWS.md "Drawn under the controls"): where nothing of the system's covers Photon, so its orb, beads and text stay inside.
+    /// It replaces the first frame's guess from the panel's constants (`SafeCircle::of_panel`); the next frame lays out again round it. No other host calls it, so the desktop and Android never have a safe circle.
+    fn on_safe_area(&mut self, area: fluor::host::app::SafeArea) {
+        let c = crate::ui::SafeCircle { cx: area.cx, cy: area.cy, r: area.r };
+        self.safe_told = true;
+        if crate::ui::set_safe_circle(c) {
+            crate::logf!("SAFE: the display's safe circle, centre ({:.1}, {:.1}) radius {:.1} (top {:.1}), the system holding the top {} and the bottom {}", c.cx, c.cy, c.r, c.top(), area.top, area.bottom);
+            self.dirty_from("the host's safe circle");
+        }
+    }
+
     /// Honest-IME read: the FOCUSED textbox's text + cursor (chars), thru the one registry — any box (compose, search, profile fields) mirrors truthfully to the Android InputConnection.
     fn ime_editor_state(&mut self) -> Option<(String, usize)> {
         let focus = self.focused?;
@@ -644,6 +655,12 @@ impl FluorApp<Px> for PhotonApp {
             #[cfg(not(target_os = "android"))]
             chrome.set_full_edge(ctx.is_maximized);
         }
+        // ferros: until the display tells the safe circle (`on_safe_area`), it is the display's own formula over this panel's measured cutout, so the first frame lays out where the told one will be.
+        #[cfg(target_os = "ferros")]
+        if !self.safe_told {
+            crate::ui::set_safe_circle(crate::ui::SafeCircle::of_panel(ctx.viewport.width_px as usize, ctx.viewport.height_px as usize));
+        }
+        self.place_orb(ctx);
         self.update_widget_layout(ctx);
     }
 
@@ -3460,9 +3477,14 @@ impl FluorApp<Px> for PhotonApp {
 
         // The host's keyboard watch (ferros, `on_keyboard_inset`): as Android's above, the frame never resizes for the keyboard, so a change of its rows lays the bottom-anchored widgets out again here; and so does the launch form's extra lift coming or going (the permanence warning under the button, `launch_lift_below`), which can change with the keyboard already up. The rows are never set on a host without a composited keyboard, so they stay 0 there.
         let lift_below = self.launch_lift_below(ctx.viewport.width_px as usize, ctx.viewport.height_px as usize, ctx.viewport.ru);
-        if self.keyboard_rows != self.keyboard_rows_laid || lift_below != self.lift_below_laid {
+        // The safe circle (ferros, `on_safe_area`) moves the orb and everything laid round it; elsewhere it is never set and this never fires.
+        if crate::ui::safe_circle() != self.safe_laid {
+            self.place_orb(ctx);
+        }
+        if self.keyboard_rows != self.keyboard_rows_laid || lift_below != self.lift_below_laid || crate::ui::safe_circle() != self.safe_laid {
             self.keyboard_rows_laid = self.keyboard_rows;
             self.lift_below_laid = lift_below;
+            self.safe_laid = crate::ui::safe_circle();
             self.update_widget_layout(ctx);
             self.scene_dirty = true;
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }

@@ -26,6 +26,65 @@ pub mod display_profile;
 pub mod lms2006so;
 pub mod state;
 
+/// THE SAFE CIRCLE (ferros, WINDOWS.md there, "Drawn under the controls"): the frame fills the glass and the system's controls float in front of its corners (the console's circles at the top, the helm's wedges at the bottom), so Photon keeps its own buttons and text inside this circle.
+/// Centre and radius in the frame's pixels; the circle is wider than the glass, so it bounds the top and the bottom and leaves the sides to the frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SafeCircle {
+    pub cx: f32,
+    pub cy: f32,
+    pub r: f32,
+}
+
+impl SafeCircle {
+    /// The circle's top row, just under the camera on ferros's glass.
+    pub fn top(&self) -> f32 {
+        self.cy - self.r
+    }
+
+    /// The circle's bottom row, between the helm's Back and Deck.
+    pub fn bottom(&self) -> f32 {
+        self.cy + self.r
+    }
+
+    /// The display's own circle for a `w × h` frame before it tells one, as ferros_sys's `active_circle` makes it: tangent to the camera hole's bottom and to the glass's bottom, `r = (h − cutout) / 2`, centred on the width.
+    /// The cutout's bottom is a measured fact of each panel (ferros_sys `CUTOUT_BOTTOM`, the Pixel 8 Pro at 1344 × 2992; `CUTOUT_BOTTOM_AKITA`, the Pixel 8a at 1080 × 2400); another panel takes the Pro's as a share of its height until its display tells it.
+    pub fn of_panel(w: usize, h: usize) -> Self {
+        const PRO: (usize, usize, f32) = (1344, 2992, 118.5610);
+        const AKITA: (usize, usize, f32) = (1080, 2400, 101.8303);
+        let cutout = if (w, h) == (AKITA.0, AKITA.1) { AKITA.2 } else { PRO.2 * h as f32 / PRO.1 as f32 };
+        let r = (h as f32 - cutout) * 0.5;
+        SafeCircle { cx: w as f32 * 0.5, cy: cutout + r, r }
+    }
+}
+
+/// The safe circle as three f32 bit patterns, and whether one is set: written by the app thread when the host tells it (or the first frame guesses it), read by every layout on the same thread.
+static SAFE_CIRCLE: [std::sync::atomic::AtomicU32; 3] = [const { std::sync::atomic::AtomicU32::new(0) }; 3];
+static SAFE_CIRCLE_SET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The frame's safe circle, on a host that has one (ferros); None elsewhere, where the whole frame is Photon's.
+/// Every ferros-only placement reads this, so a host that never tells one (the desktop, Android) lays out exactly as before.
+pub fn safe_circle() -> Option<SafeCircle> {
+    use std::sync::atomic::Ordering::Relaxed;
+    SAFE_CIRCLE_SET.load(Relaxed).then(|| SafeCircle {
+        cx: f32::from_bits(SAFE_CIRCLE[0].load(Relaxed)),
+        cy: f32::from_bits(SAFE_CIRCLE[1].load(Relaxed)),
+        r: f32::from_bits(SAFE_CIRCLE[2].load(Relaxed)),
+    })
+}
+
+/// Set the frame's safe circle (the host's word, or the first frame's guess); returns whether it changed.
+pub fn set_safe_circle(c: SafeCircle) -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    if safe_circle() == Some(c) {
+        return false;
+    }
+    SAFE_CIRCLE[0].store(c.cx.to_bits(), Relaxed);
+    SAFE_CIRCLE[1].store(c.cy.to_bits(), Relaxed);
+    SAFE_CIRCLE[2].store(c.r.to_bits(), Relaxed);
+    SAFE_CIRCLE_SET.store(true, Relaxed);
+    true
+}
+
 /// THE SAFE TOP (Nick 2026-09-17, "the top bit of Android is now the notification bar"): with the surface edge to edge, the status bar (or camera cutout) sits over the first N pixels of every screen. Every top-anchored layout starts its block here — the launch stack, the ready screen's avatar row, the settings header, the conversation's back arrow and call pill — and the chrome orb insets by the same amount. Zero everywhere but Android, where the Activity mirrors the OS inset.
 pub fn safe_top_px() -> usize {
     #[cfg(target_os = "android")]
@@ -97,6 +156,9 @@ pub mod launch_layout;
 
 // Ready-screen layout calculator — slice-based port of legacy `app::ContactsUnifiedLayout`.
 pub mod ready_layout;
+
+// Photon round the safe circle (ferros): the orb at its top under the camera, Wave and Beam on its shoulders.
+pub mod safe_layout;
 
 // VSF RGB → BT.2020 RGB conversion for display output on Android (γ=2.0 end-to-end).
 pub mod colour_convert;

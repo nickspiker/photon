@@ -33,6 +33,18 @@ impl PhotonApp {
         }
     }
 
+    /// Put the orb where the frame wants it: at the top of the safe circle, centred under the camera, on a host with one (ferros, `ui::safe_circle`); in the corner by the chrome's own rule elsewhere.
+    /// Called at each resize, zoom included, and when the safe circle moves (the tick's watch).
+    pub(super) fn place_orb(&mut self, ctx: &Context) {
+        let place = crate::ui::safe_circle().map(|c| {
+            let l = crate::ui::safe_layout::OrbLayout::compute(&c, ctx.viewport.width_px as f32, ctx.viewport.effective_span() / 32.);
+            l.orb
+        });
+        if let Some(chrome) = self.chrome.as_mut() {
+            chrome.set_orb_place(place);
+        }
+    }
+
     /// Point the top-left orb at the right subject: in a conversation it becomes the PEER's avatar with a ring in THEIR presence-tier colour (their online state, not ours); everywhere else it's the Photon brand orb with our own FGTW-connectivity ring. SIBLINGS count — a bridge conversation shows the target machine's gradient avatar and ITS tier ring, not the brand orb with our own ring (field 2026-09-04). Diffed on (contact, has-avatar) so the Icon rebuild only fires on a real change, not every frame.
     pub(super) fn update_orb(&mut self) {
         // THE WAVE ORB (Nick 2026-09-28): while an Active wave owns the screen, the orb is a solid disk in the path colour — no logo, no avatar (both avatars are already on screen). An icon-less orb renders as its ring colour, filled.
