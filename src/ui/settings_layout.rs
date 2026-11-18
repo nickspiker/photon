@@ -41,6 +41,15 @@ impl SettingsLayout {
         let portrait = root.h > root.w;
         let unit = hm((root.span / 32.0) * vp.ru.max(0.2), root.h / 13.0);
         let header_h = (unit * 2.1).min(root.w * 0.13).min(root.h * 0.15);
+        // A safe circle (ferros): the settings circle's grammar instead of the rail. The header is the band under the orb where the page title rides its arc; the body takes the whole width below it, down to where the circle's floor meets its sides (clear of the helm); the rail has no width (the page picker borrows the body when it is up).
+        if let Some(c) = crate::ui::safe_circle() {
+            let orb = crate::ui::safe_layout::OrbLayout::compute(&c, vp.width_px as Coord, vp.effective_span() / 32.);
+            let top = orb.orb_bottom();
+            let header = Region::new(root.x, top, root.w, unit * 2.);
+            let bottom = root.y + root.h - crate::ui::safe_layout::bar_floor(&c, vp.height_px as Coord, root.w * 0.06, unit);
+            let content = Region::new(root.x, header.bottom(), root.w, bottom - header.bottom());
+            return Self { header, rail: Region::new(root.x, content.y, 0.0, content.h), content, portrait, unit };
+        }
         // The rail|content divider is ALWAYS at 1/3 of the width (split [1.0, 2.0] → rail = 1/3, content = 2/3), portrait and landscape alike — so the background texture origin can sit exactly on it (docs: the bg mirrors left/right around the divider, each half scrolling with its pane).
         if portrait {
             let header = Region::new(root.x + root.w * 0.12, root.y, root.w * 0.88, header_h);

@@ -445,6 +445,8 @@ impl PhotonApp {
         // The conversation's compose bar lifts by the keyboard and, on a safe circle (ferros), by the circle's floor at its corners (`bottom_lift`, the layout pass's same term).
         let conv_lift = self.bottom_lift(buf_h, ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height);
         // The orb's unread dot (a safe circle's orb, ferros): any conversation but the one open waits unread.
+        // The title arc (ferros): the pages this screen goes round and the open one, read before the chrome borrow.
+        let title_arc = if self.title_arc_screen() { self.title_arc_pages() } else { None };
         let orb_dot = crate::ui::safe_circle().is_some() && self.conversations.iter().any(|v| v.unread_count > 0 && Some(v.id()) != self.active_conversation);
         // The launch form's lift: the keyboard, plus the permanence warning under the button while it shows (input.rs `launch_lift_below`).
         let launch_lift = ime_lift + self.launch_lift_below(buf_w, buf_h, ctx.viewport.ru);
@@ -2545,6 +2547,10 @@ impl PhotonApp {
         if let AppState::ConversationPanel(page) = self.state {
             use crate::ui::state::ConversationPage;
             let layout = SettingsLayout::compute(&ctx.viewport);
+            // The title arc (ferros): no rail; the page picker, while it is up, lays the rail's rows across the body.
+            let arc = crate::ui::safe_circle().zip(title_arc.as_ref());
+            let picker = arc.is_some() && self.settings_picker;
+            let layout = if picker { SettingsLayout { rail: layout.content, ..layout } } else { layout };
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             if conv_hdr.is_some() {
                 // Our pid keys the colours below — a keyed colour, not a self-check. "Is this only me" is the participant count.
@@ -2644,7 +2650,11 @@ impl PhotonApp {
                 };
                 let panel_lines: Vec<&str> = title.split('\n').collect();
                 let panel_step = hspan * 1.15;
-                for (k, line) in panel_lines.iter().enumerate() {
+                // Under the title arc (ferros) the header is the pages' titles; the orb above is the conversation's face.
+                if let Some((c, (titles, at))) = arc {
+                    draw_title_arc(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, c, layout.header, layout.unit * 1.05, titles, *at, self.settings_turn, self.settings_title_hit, name_colour);
+                }
+                for (k, line) in panel_lines.iter().enumerate().filter(|_| arc.is_none()) {
                     ctx.text.draw_text_center(&mut canvas, line, layout.content.x, layout.header.center_y() - (panel_lines.len() as f32 - 1.0) * 0.5 * panel_step + k as f32 * panel_step, &TextStyle::new(hspan, name_colour).weight(600).font("Oxanium"), None, None);
                 }
 
@@ -2652,7 +2662,8 @@ impl PhotonApp {
                 let rail_inset = layout.rail_inset();
                 let nav_h = layout.nav_row_h();
                 let rspan = layout.unit * 0.58;
-                {
+                // No pinned Back under the title arc (ferros): the helm's Back and the orb leave the panel.
+                if arc.is_none() {
                     let r = fluor::region::Region::new(rail_inset.x, rail_inset.y, rail_inset.w, nav_h);
                     let back_held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
                     // WHY/PROOF (a rect, not the paint): its hits first, over the fill's own rect (the label and the fill paint next, the fill covering the whole rect, so the rect is what shows).
@@ -2662,9 +2673,11 @@ impl PhotonApp {
                     // Full rail column, up to the rail's true top — no padding (Nick 2026-09-02).
                     paint::fill_rect(&mut canvas, layout.rail.x as isize, layout.rail.y as isize, layout.rail.w as isize, (r.bottom() - layout.rail.y) as isize, fill, None, None);
                 }
-                let pages_top = rail_inset.y + nav_h;
+                let pages_top = rail_inset.y + if arc.is_none() { nav_h } else { 0.0 };
                 let pages_clip = fluor::paint::Clip::new(layout.rail.x as usize, pages_top.max(layout.rail.y) as usize, layout.rail.right() as usize, layout.rail.bottom() as usize);
-                for (i, p) in rail_pages.iter().enumerate() {
+                // Under the title arc the rows show only in the picker.
+                let rows_shown = arc.is_none() || picker;
+                for (i, p) in rail_pages.iter().enumerate().filter(|_| rows_shown) {
                     let r = fluor::region::Region::new(rail_inset.x, pages_top - settings_rail_scroll + i as Coord * nav_h, rail_inset.w, nav_h);
                     if r.bottom() <= pages_top || r.y >= layout.rail.bottom() {
                         continue;
@@ -2684,7 +2697,14 @@ impl PhotonApp {
                         paint::fill_rect(&mut canvas, layout.rail.x as isize, r.y as isize, layout.rail.w as isize, r.h as isize, theme::RAIL_ACTIVE_COLOUR, Some(pages_clip), None);
                     }
                 }
-                paint::fill_rect(&mut canvas, layout.content.x as isize, layout.content.y as isize, 1, layout.content.h as isize, theme::SEPARATOR_COLOUR, None, None);
+                // The picker (ferros): an opaque page over the body, in front of it and its taps, its rows above; no hairline under the title arc.
+                if picker {
+                    claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, layout.content.x as isize, layout.content.y as isize, layout.content.right() as isize, layout.content.bottom() as isize, HIT_BLOCK);
+                    paint::fill_rect(&mut canvas, layout.content.x as isize, layout.content.y as isize, layout.content.w as isize, layout.content.h as isize, *theme::VIEWER_BG_COLOUR, None, None);
+                }
+                if arc.is_none() {
+                    paint::fill_rect(&mut canvas, layout.content.x as isize, layout.content.y as isize, 1, layout.content.h as isize, theme::SEPARATOR_COLOUR, None, None);
+                }
 
                 // --- Selected page body: natural-height rows over the shared content scroll, clipped to the reading column. ---
                 let inset = layout.content_inset();
@@ -5383,6 +5403,10 @@ impl PhotonApp {
         // Settings panel (STUB) — nav rail + selected page body. Controls render but wire nothing (a checkbox may flip its own visual state; every button / dropdown / slider is inert).
         if let AppState::Settings(page) = self.state {
             let layout = SettingsLayout::compute(&ctx.viewport);
+            // The title arc (ferros): no rail; the page picker, while it is up, lays the rail's rows across the body.
+            let arc = crate::ui::safe_circle().zip(title_arc.as_ref());
+            let picker = arc.is_some() && self.settings_picker;
+            let layout = if picker { SettingsLayout { rail: layout.content, ..layout } } else { layout };
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
 
             // Open dropdown popup FIRST (under-blend: topmost content paints first) so it composites over everything painted after it, and its hits likewise: its rows claim theirs, its frame claims the rest of it (HIT_BLOCK), and nothing drawn after takes any of it.
@@ -5405,23 +5429,27 @@ impl PhotonApp {
             }
 
             // --- Header: the title LEFT-aligned beside the orb, level with its centre (Nick 2026-09-29) — the chrome title's own rule (orb right edge + a quarter button, the button being 8/9 of the orb radius), in the heading's style. Without an orb, the old place on the divider. ---
-            let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
-            let (title_x, title_y, title_left) = match chrome.orb_geometry() {
-                Some((ocx, ocy, r)) => ((ocx + r) as f32 + r as f32 * 2.0 / 9.0, ocy as f32, true),
-                None => (layout.content.x, layout.header.center_y(), false),
-            };
-            let title_style = TextStyle::new(hspan, *theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium");
-            if title_left {
-                ctx.text.draw_text_left(&mut canvas, &tr(Msg::SettingsTitle), title_x, title_y, &title_style, None, None);
+            if let Some((c, (titles, at))) = arc {
+                draw_title_arc(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, c, layout.header, layout.unit * 1.05, titles, *at, self.settings_turn, self.settings_title_hit, *theme::CONTACT_NAME_COLOUR);
             } else {
-                ctx.text.draw_text_center(&mut canvas, &tr(Msg::SettingsTitle), title_x, title_y, &title_style, None, None);
+                let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
+                let (title_x, title_y, title_left) = match chrome.orb_geometry() {
+                    Some((ocx, ocy, r)) => ((ocx + r) as f32 + r as f32 * 2.0 / 9.0, ocy as f32, true),
+                    None => (layout.content.x, layout.header.center_y(), false),
+                };
+                let title_style = TextStyle::new(hspan, *theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium");
+                if title_left {
+                    ctx.text.draw_text_left(&mut canvas, &tr(Msg::SettingsTitle), title_x, title_y, &title_style, None, None);
+                } else {
+                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::SettingsTitle), title_x, title_y, &title_style, None, None);
+                }
             }
             // --- Nav rail: Back is PINNED at the top (never scrolls — you never have to scroll up to go back); the nine page labels scroll BELOW it. Natural row height, no clamp-to-fit. Fills are painted AFTER the label so, under the settings pane's topmost-first (under-blend) compositing, the text sits in FRONT of the fill. ---
             let rail_inset = layout.rail_inset();
             let nav_h = layout.nav_row_h();
             let rspan = layout.unit * 0.58;
-            // Pinned Back row at the very top of the rail.
-            {
+            // Pinned Back row at the very top of the rail (none under the title arc, ferros: the helm's Back and the orb close the page).
+            if arc.is_none() {
                 let r = fluor::region::Region::new(rail_inset.x, rail_inset.y, rail_inset.w, nav_h);
                 let back_held =
                     ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
@@ -5457,14 +5485,16 @@ impl PhotonApp {
                 );
             }
             // The page rows scroll within the region BELOW the pinned Back row — clipped so a scrolled row never paints over Back.
-            let pages_top = rail_inset.y + nav_h;
+            let pages_top = rail_inset.y + if arc.is_none() { nav_h } else { 0.0 };
             let pages_clip = fluor::paint::Clip::new(
                 layout.rail.x as usize,
                 pages_top.max(layout.rail.y) as usize,
                 layout.rail.right() as usize,
                 layout.rail.bottom() as usize,
             );
-            for (i, p) in settings_pages.iter().enumerate() {
+            // Under the title arc the rows show only in the picker.
+            let rows_shown = arc.is_none() || picker;
+            for (i, p) in settings_pages.iter().enumerate().filter(|_| rows_shown) {
                 let r = fluor::region::Region::new(
                     rail_inset.x,
                     pages_top - settings_rail_scroll + i as Coord * nav_h,
@@ -5524,17 +5554,15 @@ impl PhotonApp {
                 }
             }
 
-            // Hairline between rail and content.
-            paint::fill_rect(
-                &mut canvas,
-                layout.content.x as isize,
-                layout.content.y as isize,
-                1,
-                layout.content.h as isize,
-                theme::SEPARATOR_COLOUR,
-                None,
-                None,
-            );
+            // The picker (ferros): an opaque page over the body, in front of it and its taps, its rows above.
+            if picker {
+                claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, layout.content.x as isize, layout.content.y as isize, layout.content.right() as isize, layout.content.bottom() as isize, HIT_BLOCK);
+                paint::fill_rect(&mut canvas, layout.content.x as isize, layout.content.y as isize, layout.content.w as isize, layout.content.h as isize, *theme::VIEWER_BG_COLOUR, None, None);
+            }
+            // Hairline between rail and content (none under the title arc).
+            if arc.is_none() {
+                paint::fill_rect(&mut canvas, layout.content.x as isize, layout.content.y as isize, 1, layout.content.h as isize, theme::SEPARATOR_COLOUR, None, None);
+            }
 
             // --- Selected page body ---
             // (page body is computed per-arm as a scrolled, natural-height region — see `layout.content_scrolled`) Everything sizes off layout.unit — the ONE span·ru harmonic unit — so text, pills, rows, and controls all scale together with window shape AND zoom. (The old mix — text × ru inside fixed rows, controls off bare region fractions — is what made zoom hit-or-miss.)
@@ -8234,4 +8262,34 @@ mod blind_tests {
 /// A test-pattern colour from the buffer's own g2t codes (the Beam page): stored darkness-inverted, opaque, in the platform's byte order.
 fn beam_test_colour(r: u32, g: u32, b: u32) -> u32 {
     fluor::theme::dark(fluor::theme::fmt((r.min(255) << 16) | (g.min(255) << 8) | b.min(255)))
+}
+
+/// THE TITLE ARC (ferros, a safe circle; ferros COMPOSITOR.md "Titles ride the circle", owner: "rotate around with the circle"): the open page's title centred in `header` under the orb, its neighbours the angle apart whose arc is the frame's width, each standing on the arc about the circle's centre thru the title's place with its baseline the arc's tangent there.
+/// `turn` is how far the pages have turned toward the next, in pages; each title shows at α = cos²(π · its offset), gone at half a page with the slope 0 there (C¹).
+/// The open title claims `title_hit` over its band while it is the nearer, so its tap opens the picker; the turned ones claim nothing.
+#[allow(clippy::too_many_arguments)]
+fn draw_title_arc(canvas: &mut Canvas, text: &mut fluor::text::TextRenderer, hit_map: &mut [HitId], buf_w: usize, buf_h: usize, c: crate::ui::SafeCircle, header: fluor::region::Region, size: f32, titles: &[String], at: usize, turn: f32, title_hit: HitId, colour: u32) {
+    let n = titles.len() as isize;
+    let ty = header.center_y();
+    let arc = c.cy - ty;
+    let step = buf_w as f32 / arc;
+    for k in -1isize..=1 {
+        let o = k as f32 - turn;
+        if o.abs() >= 0.5 {
+            continue;
+        }
+        let a = (std::f32::consts::PI * o).cos().powi(2);
+        let theta = o * step;
+        let (x, y) = (c.cx + arc * theta.sin(), c.cy - arc * theta.cos());
+        let title = &titles[(at as isize + k).rem_euclid(n) as usize];
+        let alpha = (((colour >> 24) & 0xFF) as f32 * a) as u32;
+        let style = TextStyle::new(size, (colour & 0x00FF_FFFF) | (alpha << 24)).weight(600).font("Oxanium").rotation(theta);
+        if o.abs() < 0.25 {
+            let w = text.measure_text(title, &style);
+            claim_hit_rect_under(hit_map, canvas.pixels, buf_w, buf_h, (x - w * 0.5 - size) as isize, (y - size) as isize, (x + w * 0.5 + size) as isize, (y + size) as isize, title_hit);
+        }
+        // fluor turns a styled line about the frame's origin, not its anchor (its glyphs' places go thru the rotation as they are), so the anchor goes in turned back by θ and comes out at (x, y).
+        let (s, k) = theta.sin_cos();
+        text.draw_text_center(canvas, title, k * x + s * y, k * y - s * x, &style, None, None);
+    }
 }

@@ -309,6 +309,10 @@ impl FluorApp<Px> for PhotonApp {
         reserve_hits(&mut self.hit_counter, 1);
         self.back_btn_hit_id = self.hit_counter;
 
+        // The settings title on ferros's title arc: its tap opens the page picker.
+        reserve_hits(&mut self.hit_counter, 1);
+        self.settings_title_hit = self.hit_counter;
+
         // "Start fresh (wipe this device)" tappable on the JOIN words screen — the only clean path for a device that was REMOVED from a fleet and so can't attest (can't reach the Security page). Two-tap confirm → clean_device_for_reuse.
         reserve_hits(&mut self.hit_counter, 1);
         self.join_startfresh_hit_id = self.hit_counter;
@@ -950,70 +954,7 @@ impl FluorApp<Px> for PhotonApp {
             {
                 let idx = (hit_id - self.settings_nav_base) as usize;
                 if let Some(p) = self.settings_pages().get(idx).copied() { // (hit past the list — see above)
-                    let p = &p;
-                    self.change_focus(None);
-                    // Leaving a page clears its selection/destructive-action arms (interaction-cleared).
-                    if *p != SettingsPage::Fleet {
-                        self.settings_fleet_selected = None;
-                        self.fleet_release_armed = None;
-                        self.fleet_lock_armed = None;
-                    }
-                    if *p != SettingsPage::Octopus {
-                        self.octopus_armed = None;
-                    }
-                    if *p != SettingsPage::Security {
-                        self.settings_removeshred_armed = false;
-                        self.settings_shred_armed = false;
-                        // A stranded unattended-confirm modal must not survive navigating away.
-                        self.unattended_confirm = None;
-                        self.unattended_confirm_failed = false;
-                    }
-                    // Fresh page starts at the top — a leftover scroll from a longer page would strand a short one mid-air.
-                    self.settings_content_scroll = 0.0;
-                    // Opening the You page reloads its field boxes from the current settings (fleet-synced state).
-                    if *p == SettingsPage::You {
-                        self.you_fields_loaded = false;
-                    }
-                    // Opening the Updates page auto-checks BOTH channels so each button shows its target version + colour.
-                    if *p == SettingsPage::Updates {
-                        self.update_checked = false;
-                        self.update_release = ChannelCheck::Idle;
-                        self.update_dev = ChannelCheck::Idle;
-                        self.check_update_channels();
-                    }
-                    // Opening the Fleet page refreshes the retired-device rows (chain history minus current members minus already-released brands).
-                    if *p == SettingsPage::Fleet {
-                        self.refresh_fleet_retired();
-                    }
-                    // Opening the Vault page snapshots the engine off-thread (the librarian's mailbox queues behind commits — never read it on the UI thread) and walks the in-memory rows for the space breakdown.
-                    if *p == SettingsPage::Vault {
-                        self.request_vault_stats();
-                        self.compute_vault_breakdown();
-                    }
-                    // Opening the Ideas page reloads the sent list and asks the worker for each one's status.
-                    if *p == SettingsPage::Ideas {
-                        self.load_my_gripes();
-                        self.refresh_gripe_states();
-                        self.refresh_public_gripes();
-                    }
-                    // Opening the Octopus page copies this device's phonebook and asks fgtw.org for its buckets and log.
-                    if *p == SettingsPage::Octopus {
-                        self.octopus_refresh();
-                    }
-                    // Opening the Wave page snapshots the profile list (the render reads a copy).
-                    if *p == SettingsPage::Wave {
-                        self.wave_profiles = self.voice_profiles();
-                    }
-                    // Navigating away abandons a rename in progress (Nick 2026-09-10): the box goes, nothing written.
-                    if self.fleet_rename.is_some() && self.state != AppState::Settings(*p) {
-                        self.fleet_rename = None;
-                        self.change_focus(None);
-                    }
-                    // Entering the Base page zeroes its live counter (the clock beside it is a pure function of now).
-                    if *p == SettingsPage::Dozenal && self.state != AppState::Settings(*p) {
-                        self.base_opened_osc = Some(vsf::eagle_time_oscillations());
-                    }
-                    self.state = AppState::Settings(*p);
+                    self.open_settings_page(p);
                     ctx.window.request_redraw();
                 }
                 return EventResponse::Handled;
@@ -1452,6 +1393,13 @@ impl FluorApp<Px> for PhotonApp {
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
+        }
+
+        // The title on ferros's title arc: its tap brings up the picker of every page, or puts it away.
+        if hit_id == self.settings_title_hit && hit_id != HIT_NONE && self.title_arc_screen() {
+            self.toggle_page_picker();
+            ctx.window.request_redraw();
+            return EventResponse::Handled;
         }
 
         // Orb tap (chrome app-icon) — a no-op widget, so intercept here. Destined for the settings/about/help panel; until that exists it carries the INTERIM add-device entry on Ready (AddDevice cancel is now the dedicated back button, not the orb). Routed by `on_orb_click`.
@@ -2354,6 +2302,25 @@ impl FluorApp<Px> for PhotonApp {
                     ctx.window.request_redraw();
                     return EventResponse::Handled;
                 }
+                // THE TITLE ARC (ferros, a safe circle): a finger that goes across a settings or conversation panel page turns the pages (the title riding the arc with it), one that goes down or up scrolls the page; it chooses once it has gone a 64th of the span.
+                if let (true, MouseScrollDelta::Pixels(dx, dy)) = (self.press_held && self.title_arc_screen(), delta) {
+                    let (dx, dy) = (*dx as f32, *dy as f32);
+                    if self.turn_axis == 0 {
+                        self.turn_travel.0 += dx.abs();
+                        self.turn_travel.1 += dy.abs();
+                        if self.turn_travel.0 + self.turn_travel.1 > ctx.viewport.effective_span() / 64. {
+                            self.turn_axis = if self.turn_travel.0 > self.turn_travel.1 { 1 } else { 2 };
+                        }
+                    }
+                    if self.turn_axis != 2 {
+                        if self.turn_axis == 1 {
+                            self.settings_turn -= dx / ctx.viewport.width_px as f32;
+                            self.dirty_from("the title arc's turn");
+                            ctx.window.request_redraw();
+                        }
+                        return EventResponse::Handled;
+                    }
+                }
                 // Bg-noise scroll. Vertical-only for now — horizontal trackpad gestures and shift-modified wheel both fold into the same `bg_scroll` axis. Discrete wheel notches (`Lines`) get multiplied to feel like a normal scroll step; continuous trackpad pixels (`Pixels`) are used directly. The scroll value feeds both `scroll_offset` (translates the noise pattern up/down on screens that want it) and `shimmer` (colour-bias cycle on every screen) in `render`.
                 // Pixel deltas (touch drag, trackpads) are REAL distances — they must track 1:1 (Android touch was riding the conversation arm's extra ×8 and outran the finger 8-fold). Discrete notches keep their synthetic step.
                 let (dy, is_pixel_delta) = match delta {
@@ -2370,6 +2337,10 @@ impl FluorApp<Px> for PhotonApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                // A new finger chooses its way afresh on the title arc (ferros), and catches the turning pages where they are.
+                self.turn_axis = 0;
+                self.turn_travel = (0.0, 0.0);
+                self.settings_turn_v = 0.0;
                 // A new finger ends any fling (the tick's fling waits on the release; a tap with no drag must not resume the old one).
                 if self.list_fling != 0 {
                     if crate::is_dev_build() {
@@ -2588,6 +2559,11 @@ impl FluorApp<Px> for PhotonApp {
             } => {
                 self.press_held = false;
                 self.file_drag_from = None;
+                // The title arc (ferros): a finger lifted past a quarter page turns to that page, and the spring takes the rest of the way home.
+                if self.turn_axis == 1 {
+                    self.settle_title_arc();
+                    ctx.window.request_redraw();
+                }
                 // THE LIFT (2026-10-06 phone log: a 187 px/frame flick sampled [187, 182, 2, 0, 0] and died at 2; 2026-10-07: the fastest flicks moved everything in one or two frames and then showed three or four still frames before Android reported UP — the finger was already off the glass). Up to FOUR trailing still frames (≈ 67 ms, the UP's latency) are dropped before the median; five or more (≈ 83 ms+) is a genuine hold and the fling is zero, as Nick asked.
                 if self.drag_px > 0 {
                     let oldest_first: Vec<i32> = self.fling_recent.iter().rev().copied().collect();
@@ -2784,6 +2760,12 @@ impl FluorApp<Px> for PhotonApp {
                             // Rename abandoned — drop the box, nothing written.
                             self.fleet_rename = None;
                             self.change_focus(None);
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
+                        // The page picker (ferros's title arc) goes first, leaving the page it was over.
+                        if self.settings_picker && self.title_arc_screen() {
+                            self.settings_picker = false;
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
@@ -3477,6 +3459,10 @@ impl FluorApp<Px> for PhotonApp {
 
         // The host's keyboard watch (ferros, `on_keyboard_inset`): as Android's above, the frame never resizes for the keyboard, so a change of its rows lays the bottom-anchored widgets out again here; and so does the launch form's extra lift coming or going (the permanence warning under the button, `launch_lift_below`), which can change with the keyboard already up. The rows are never set on a host without a composited keyboard, so they stay 0 there.
         let lift_below = self.launch_lift_below(ctx.viewport.width_px as usize, ctx.viewport.height_px as usize, ctx.viewport.ru);
+        // The title arc's spring (ferros): one step a tick while the pages turn home.
+        if self.title_arc_tick() {
+            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+        }
         // The safe circle (ferros, `on_safe_area`) moves the orb and everything laid round it; elsewhere it is never set and this never fires.
         if crate::ui::safe_circle() != self.safe_laid {
             self.place_orb(ctx);
@@ -4463,7 +4449,8 @@ impl PhotonApp {
                 AppState::Settings(_) | AppState::ConversationPanel(_)
             ) {
                 // Settings + the contact panel (its structural mirror): the wheel scrolls the nav rail when the cursor is over it, else the content pane. Down-scroll (negative dy) reveals lower rows → add.
-                let over_rail = {
+                // Under the title arc (ferros) the rail is the picker's list over the whole body while it is up, so the wheel is the rail's then.
+                let over_rail = (self.settings_picker && self.title_arc_screen()) || {
                     let sl = SettingsLayout::compute(&ctx.viewport);
                     (ctx.cursor_x as f32) < sl.content.x
                 };

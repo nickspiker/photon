@@ -2645,6 +2645,18 @@ pub struct PhotonApp {
     keyboard_rows: u32,
     /// The `keyboard_rows` the layout was last made for: the tick lays out again when they differ.
     keyboard_rows_laid: u32,
+    /// THE TITLE ARC (ferros, a safe circle; the settings circle's grammar, ferros COMPOSITOR.md "Titles ride the circle"): how far the pages have turned, in pages, toward the next (the finger's across the page while it holds, then the spring's back to 0).
+    settings_turn: f32,
+    /// The spring's speed, pages a frame: critically damped, stepped once a tick, so the motion has no clock of its own.
+    settings_turn_v: f32,
+    /// The page picker is up: a tap on the title shows every page as a list over the body, a tap on one opens it.
+    settings_picker: bool,
+    /// Which way the finger on a settings page went: 0 not yet, 1 across (turning the pages), 2 down or up (scrolling the page).
+    turn_axis: u8,
+    /// How far the finger has gone, across and down, before it chose a way.
+    turn_travel: (f32, f32),
+    /// The title's own hit id (the picker opens on its tap).
+    settings_title_hit: HitId,
     /// Whether the host told the frame's safe circle (`on_safe_area`, ferros): until it does, each resize guesses it from the panel's constants (`SafeCircle::of_panel`).
     safe_told: bool,
     /// The safe circle the layout was last made for (`ui::safe_circle`): the tick lays out again, and places the orb, when it differs.
@@ -3628,6 +3640,12 @@ impl PhotonApp {
             last_ime_inset: 0,
             keyboard_rows: 0,
             keyboard_rows_laid: 0,
+            settings_turn: 0.0,
+            settings_turn_v: 0.0,
+            settings_picker: false,
+            turn_axis: 0,
+            turn_travel: (0.0, 0.0),
+            settings_title_hit: HIT_NONE,
             safe_told: false,
             safe_laid: None,
             lift_below_laid: 0.,

@@ -3,6 +3,74 @@
 use super::*;
 
 impl PhotonApp {
+    /// Open settings page `p`: leaving a page clears its arms, a fresh page starts at the top, and each page refreshes what it shows (the rail's tap, the picker's, and a turn of the title arc on ferros all land here).
+    pub(super) fn open_settings_page(&mut self, p: SettingsPage) {
+        let p = &p;
+        self.settings_picker = false;
+        self.change_focus(None);
+        // Leaving a page clears its selection/destructive-action arms (interaction-cleared).
+        if *p != SettingsPage::Fleet {
+            self.settings_fleet_selected = None;
+            self.fleet_release_armed = None;
+            self.fleet_lock_armed = None;
+        }
+        if *p != SettingsPage::Octopus {
+            self.octopus_armed = None;
+        }
+        if *p != SettingsPage::Security {
+            self.settings_removeshred_armed = false;
+            self.settings_shred_armed = false;
+            // A stranded unattended-confirm modal must not survive navigating away.
+            self.unattended_confirm = None;
+            self.unattended_confirm_failed = false;
+        }
+        // Fresh page starts at the top — a leftover scroll from a longer page would strand a short one mid-air.
+        self.settings_content_scroll = 0.0;
+        // Opening the You page reloads its field boxes from the current settings (fleet-synced state).
+        if *p == SettingsPage::You {
+            self.you_fields_loaded = false;
+        }
+        // Opening the Updates page auto-checks BOTH channels so each button shows its target version + colour.
+        if *p == SettingsPage::Updates {
+            self.update_checked = false;
+            self.update_release = ChannelCheck::Idle;
+            self.update_dev = ChannelCheck::Idle;
+            self.check_update_channels();
+        }
+        // Opening the Fleet page refreshes the retired-device rows (chain history minus current members minus already-released brands).
+        if *p == SettingsPage::Fleet {
+            self.refresh_fleet_retired();
+        }
+        // Opening the Vault page snapshots the engine off-thread (the librarian's mailbox queues behind commits — never read it on the UI thread) and walks the in-memory rows for the space breakdown.
+        if *p == SettingsPage::Vault {
+            self.request_vault_stats();
+            self.compute_vault_breakdown();
+        }
+        // Opening the Ideas page reloads the sent list and asks the worker for each one's status.
+        if *p == SettingsPage::Ideas {
+            self.load_my_gripes();
+            self.refresh_gripe_states();
+            self.refresh_public_gripes();
+        }
+        // Opening the Octopus page copies this device's phonebook and asks fgtw.org for its buckets and log.
+        if *p == SettingsPage::Octopus {
+            self.octopus_refresh();
+        }
+        // Opening the Wave page snapshots the profile list (the render reads a copy).
+        if *p == SettingsPage::Wave {
+            self.wave_profiles = self.voice_profiles();
+        }
+        // Navigating away abandons a rename in progress (Nick 2026-09-10): the box goes, nothing written.
+        if self.fleet_rename.is_some() && self.state != AppState::Settings(*p) {
+            self.fleet_rename = None;
+            self.change_focus(None);
+        }
+        // Entering the Base page zeroes its live counter (the clock beside it is a pure function of now).
+        if *p == SettingsPage::Dozenal && self.state != AppState::Settings(*p) {
+            self.base_opened_osc = Some(vsf::eagle_time_oscillations());
+        }
+        self.state = AppState::Settings(*p);
+    }
     /// Kick an off-thread update check against `channel`'s manifest; `apply` = install on any version DIFFERENCE (the Get-latest buttons — explicit channel hop, downgrade allowed by user intent), else report-only (the Check button). One op at a time.
     /// Ensure the shared update channel exists; return a fresh Sender clone for a worker thread.
     pub(super) fn update_sender(&mut self) -> std::sync::mpsc::Sender<UpdateEvent> {
@@ -2000,3 +2068,89 @@ impl PhotonApp {
 
 /// The waveform's length in 5 ms frames (about 1.3 s).
 pub(super) const MIC_LEVEL_FRAMES: usize = 1 << 8;
+
+/// THE TITLE ARC (ferros, a safe circle; the settings circle's grammar, ferros COMPOSITOR.md "Titles ride the circle"): the pages under the orb go round under a finger across the page, the open page's title centred under the orb and its neighbours riding the arc in from either side.
+impl PhotonApp {
+    /// Whether this screen's pages ride the title arc: the settings and the conversation panel, on a safe circle.
+    pub(super) fn title_arc_screen(&self) -> bool {
+        crate::ui::safe_circle().is_some() && matches!(self.state, AppState::Settings(_) | AppState::ConversationPanel(_))
+    }
+
+    /// The pages the arc goes round on this screen, as their titles, and the open one's place among them.
+    pub(super) fn title_arc_pages(&self) -> Option<(Vec<String>, usize)> {
+        match self.state {
+            AppState::Settings(page) => {
+                let pages = self.settings_pages();
+                let at = pages.iter().position(|p| *p == page)?;
+                Some((pages.iter().map(|p| tr(Msg::PageName(*p)).into_owned()).collect(), at))
+            }
+            AppState::ConversationPanel(page) => {
+                let rail = self.conversation_rail();
+                // A Person page sits under Bonds, as the rail lights Bonds while one is open.
+                let at = rail.iter().position(|p| *p == page).or_else(|| rail.iter().position(|p| *p == crate::ui::state::ConversationPage::Bonds))?;
+                Some((rail.iter().map(|p| tr(Msg::ConversationPageName(*p)).into_owned()).collect(), at))
+            }
+            _ => None,
+        }
+    }
+
+    /// Open the page `step` places round from the open one (wrapping: the pages go round).
+    fn turn_page(&mut self, step: isize) {
+        match self.state {
+            AppState::Settings(page) => {
+                let pages = self.settings_pages();
+                if let Some(at) = pages.iter().position(|p| *p == page) {
+                    let n = pages.len() as isize;
+                    self.open_settings_page(pages[(at as isize + step).rem_euclid(n) as usize]);
+                }
+            }
+            AppState::ConversationPanel(_) => {
+                let rail = self.conversation_rail();
+                if let Some((_, at)) = self.title_arc_pages() {
+                    let n = rail.len() as isize;
+                    self.goto_conversation_page(rail[(at as isize + step).rem_euclid(n) as usize]);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The finger lifted from a turn: past a quarter page it opens that page (the turn counted from it now), and the spring takes the rest home.
+    pub(super) fn settle_title_arc(&mut self) {
+        self.turn_axis = 0;
+        let step = (self.settings_turn * 4.).trunc() as isize;
+        let step = step.signum();
+        if step != 0 {
+            self.turn_page(step);
+            self.settings_turn -= step as f32;
+        }
+        self.settings_turn_v = 0.0;
+        self.dirty_from("the title arc's settle");
+    }
+
+    /// One frame of the title arc's spring: critically damped toward 0, so from rest it never overshoots; stepped in ticks, so the motion has no clock of its own. Returns whether it moved.
+    pub(super) fn title_arc_tick(&mut self) -> bool {
+        if self.press_held && self.turn_axis == 1 || (self.settings_turn == 0.0 && self.settings_turn_v == 0.0) {
+            return false;
+        }
+        // ω = 1/4 a frame: from a page away the spring is within a hundredth of home in about two dozen frames (a fifth of a second at 120 Hz).
+        let w = 1. / ((1 << 2) as f32);
+        self.settings_turn_v += -w * w * self.settings_turn - 2. * w * self.settings_turn_v;
+        self.settings_turn += self.settings_turn_v;
+        // Home once neither the place nor the speed is a 4096th of a page: below a pixel's share of the width.
+        let near = 1. / ((1 << 12) as f32);
+        if self.settings_turn.abs() < near && self.settings_turn_v.abs() < near {
+            self.settings_turn = 0.0;
+            self.settings_turn_v = 0.0;
+        }
+        self.dirty_from("the title arc's spring");
+        true
+    }
+
+    /// The open page's title tapped: the picker of every page comes up over the body, or goes.
+    pub(super) fn toggle_page_picker(&mut self) {
+        self.settings_picker = !self.settings_picker;
+        self.change_focus(None);
+        self.dirty_from("the page picker");
+    }
+}

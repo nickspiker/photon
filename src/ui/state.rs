@@ -98,13 +98,13 @@ impl SettingsPage {
     ];
 
     /// On ferros the person's identity is the OS's, not Photon's (2026-10-27, the owner via the ferros session: "Photon is the comms app; the identity/fleet/You surfaces belong to the OS"): You, Fleet, Security and Recovery live in `ahau`, the OS capsule, there, so the rail shows the messenger's pages alone. The Vault page goes too: the device vault is the kernel's there (kete's ferros backend answers no stats), so device storage health lives in the OS. Their render arms and the logic behind them stay compiled — the pages are unreachable, not removed — so ahau can take the logic over.
+    /// Updates goes as well (the ferros design of 2026-11-18: ferros installs updates, the pandok offering a new Photon like any kist).
     #[cfg(target_os = "ferros")]
-    pub const ALL: [SettingsPage; 10] = [
+    pub const ALL: [SettingsPage; 9] = [
         SettingsPage::Conversations,
         SettingsPage::Wave,
         SettingsPage::Beam,
         SettingsPage::Notifications,
-        SettingsPage::Updates,
         SettingsPage::Diagnostics,
         SettingsPage::Ideas,
         SettingsPage::Language,
@@ -135,12 +135,11 @@ impl SettingsPage {
 
     /// ferros's rail with the Octopus page at its end.
     #[cfg(target_os = "ferros")]
-    pub const ALL_OCTOPUS: [SettingsPage; 11] = [
+    pub const ALL_OCTOPUS: [SettingsPage; 10] = [
         SettingsPage::Conversations,
         SettingsPage::Wave,
         SettingsPage::Beam,
         SettingsPage::Notifications,
-        SettingsPage::Updates,
         SettingsPage::Diagnostics,
         SettingsPage::Ideas,
         SettingsPage::Language,

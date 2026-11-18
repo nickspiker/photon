@@ -66,11 +66,12 @@ impl PhotonApp {
     }
 
     /// Show one page of the panel, fresh from its top (the settings rule).
-    fn goto_conversation_page(&mut self, page: ConversationPage) {
+    pub(super) fn goto_conversation_page(&mut self, page: ConversationPage) {
         // A group member's page reached from Bonds returns to Bonds only while it is open; any other page of a group's panel returns to the conversation. A two-person conversation's panel keeps where it was opened from across its pages (About and In numbers are both the person's).
         if self.person_return == PersonReturn::Bonds {
             self.person_return = PersonReturn::Conversation;
         }
+        self.settings_picker = false;
         self.change_focus(None);
         self.disarm_conversation_panel();
         self.settings_content_scroll = 0.0;

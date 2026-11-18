@@ -547,9 +547,10 @@ impl PhotonApp {
             {
                 &[SettingsPage::About, SettingsPage::Updates, SettingsPage::Security]
             }
+            // Updates is ferros's own there (it installs every kist's), so About alone.
             #[cfg(target_os = "ferros")]
             {
-                &[SettingsPage::About, SettingsPage::Updates]
+                &[SettingsPage::About]
             }
         }
     }
@@ -560,6 +561,7 @@ impl PhotonApp {
                 self.change_focus(None);
                 // Reload the profile field boxes from settings on open.
                 self.you_fields_loaded = false;
+                self.settings_picker = false;
                 // The rail's first page: You here, the messenger's first page on ferros, where You lives in `ahau`, the OS capsule.
                 self.state = AppState::Settings(SettingsPage::ALL[0]);
                 true
@@ -572,7 +574,22 @@ impl PhotonApp {
                 true
             }
             // In a Conversation the orb opens the conversation's panel — the same panel at every size (docs/conversations.md Phase 1; the orb is a panel entry, never a direct action).
-            AppState::Conversation => self.open_conversation_panel(text),
+            AppState::Conversation =>  {
+                self.settings_picker = false;
+                self.open_conversation_panel(text)
+            }
+            // ferros (a safe circle): the pages hang from the orb with no drawn back control, so the orb closes them again, as the settings circle closes on the deck (the design of 2026-11-18); the helm's Back does the same thru Escape.
+            AppState::Settings(_) if crate::ui::safe_circle().is_some() => {
+                self.change_focus(None);
+                self.settings_picker = false;
+                self.state = if self.signed_in() { AppState::Ready } else { self.not_signed_in_screen() };
+                true
+            }
+            AppState::ConversationPanel(_) if crate::ui::safe_circle().is_some() => {
+                self.settings_picker = false;
+                self.leave_conversation_panel();
+                true
+            }
             // Settings / AddDevice / the conversation panel fall thru: navigation off those screens is a dedicated control (back button), never the orb.
             _ => false,
         }
