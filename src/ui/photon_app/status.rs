@@ -6258,11 +6258,11 @@ impl PhotonApp {
                 if let Some(hp) = self.contacts.get(i).map(|c| c.handle_proof) {
                     self.avatar_dl_started.remove(&hp);
                 }
-                // Evict the party-id avatar cache too — the fetch worker is local-first now, and a raw-AV1 cache entry decodes fine under ANY pin, so without this eviction the old face would be re-served forever.
-                if let (Some(c), Some(storage)) = (self.contacts.get(i), self.storage.as_ref()) {
-                    crate::log_err!(storage.delete_addr(&crate::storage::vault_key("avatar", &c.handle_hash)), "evict a cached avatar");
+                // NEVER EVICT BEFORE A REPLACEMENT (2026-11-17, every device and every identity losing faces one restart at a time): the held copy stays in the vault and on screen; the fetch tries the new source first (fresh) and only a replacement that decodes overwrites it. The peer ask is re-armed too, so the friend's own device is asked for the new picture.
+                if let Some(dk) = self.contacts.get(i).and_then(|c| c.device_key()) {
+                    self.avatar_req_pending.remove(&dk);
                 }
-                self.spawn_avatar_download(i);
+                self.spawn_avatar_download_with(i, true);
             }
         }
         // A fresh pin or published name is roster state (PRST4) — push so offline-at-the-time siblings still converge (merge-idempotent, so a field that ARRIVED via roster merge just round-trips a no-op).

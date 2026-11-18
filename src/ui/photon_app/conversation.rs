@@ -1355,6 +1355,11 @@ impl PhotonApp {
 
     /// half of the avatar feature — the self avatar loads from the local vault; peers fetch by handle.
     pub(super) fn spawn_avatar_download(&mut self, ci: usize) {
+        self.spawn_avatar_download_with(ci, false);
+    }
+
+    /// The avatar fetch, `fresh` after the friend's pin changed: then the new source is tried FIRST and the copy already held here is the fallback, overwritten only by a replacement that decoded (2026-11-17: the pin change deleted the held copy before anything replaced it, and avatars vanished on every device at the next restart).
+    pub(super) fn spawn_avatar_download_with(&mut self, ci: usize, fresh: bool) {
         let Some(c) = self.contacts.get(ci) else {
             return;
         };
@@ -1394,7 +1399,7 @@ impl PhotonApp {
                 .flatten();
             // The friend's PREFERRED NAME rides the pinned VSF beside the pixels (same pin) — collected wherever we decode that form so the drain can adopt it into published_name.
             let mut peer_name: Option<String> = None;
-            let mut pixels = cached.as_ref().and_then(|bytes| {
+            let held_px = cached.as_ref().and_then(|bytes| {
                 crate::ui::avatar_scoped::decode_avatar_plaintext(bytes)
                     .map(|(_, px)| px)
                     .or_else(|| {
@@ -1410,8 +1415,8 @@ impl PhotonApp {
                     })
             });
             // Scoped blob (docs/scoped-blobs.md): our private slot names the ciphertext and carries its key; only a signed, publisher-pinned, non-rollback object is accepted (avatar_scoped::fetch_pinned).
-            if pixels.is_none() {
-                pixels = scoped_kek
+            let scoped = || {
+                scoped_kek
                     .and_then(|kek| {
                         // THEIR avatar, so the purpose carries THEIR pid — the friend is the publisher of the blob we are reading.
                         let raw = crate::ui::avatar_scoped::fetch_pinned(
@@ -1429,8 +1434,13 @@ impl PhotonApp {
                         }
                         crate::log("AVATAR: fetched from our scoped slot");
                         Some(px)
-                    });
+                    })
                 // No network fallback to the legacy pin: an old-form avatar is read only from our own vault (the cache read above). The pin-sealed wall copy can be written by anyone who holds the pin, which is every friend, and the host is assumed hostile.
+            };
+            // Local first, as always; after a pin change the new source first, the held copy kept as the fallback (and kept in the vault, which only a decoded replacement overwrites).
+            let pixels = if fresh { scoped().or(held_px) } else { held_px.or_else(scoped) };
+            if fresh && pixels.is_some() {
+                crate::log("AVATAR: the pin changed; showing the newest copy at hand (the held one stays until a replacement decodes)");
             }
             crate::log_err!(tx.send(crate::ui::avatar::AvatarDownloadResult {
                 owner: Some(hp),
