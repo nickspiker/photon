@@ -3543,9 +3543,14 @@ impl PhotonApp {
                             if !sender_is_sibling {
                                 return None;
                             }
-                            let (k, epoch) = self.fleet_epoch?;
-                            let key =
-                                crate::crypto::clutch::fleet_epoch_seal_key(&epoch, b"hist_page");
+                            // An alias sibling (a ferros Photon of ours) is answered under the pair key our sibling ceremony made with it, never the fleet's (alias_seal_key); a fleet sibling under the epoch's.
+                            let (key, k) = match self.alias_seal_key(&sender_pubkey.key, b"hist_page") {
+                                Some(a) => (a, 0),
+                                None => {
+                                    let (k, epoch) = self.fleet_epoch?;
+                                    (crate::crypto::clutch::fleet_epoch_seal_key(&epoch, b"hist_page"), k)
+                                }
+                            };
                             // The table: a roster conversation's own id, else the conversation the token derives for a contact (notes, a pair, a conversation the sibling knows only from the roster).
                             let table = match self.friendship_chains.iter().find(|(_, c)| c.conversation_token == conversation_token && c.molecule) {
                                 Some((fid, _)) => *fid.as_bytes(),
@@ -4689,7 +4694,11 @@ impl PhotonApp {
                     let from_sibling = self.contacts.iter().any(|c| {
                         c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
                     });
-                    let (key, contact_idx) = if from_sibling {
+                    // An alias sibling's page (a ferros Photon's, or the fleet's to one) seals under the pair key our sibling ceremony made, never the fleet's (alias_seal_key).
+                    let alias_key = if from_sibling { self.alias_seal_key(&sender_pubkey.key, b"hist_page") } else { None };
+                    let (key, contact_idx) = if let Some(k) = alias_key {
+                        (Some(k), self.contact_idx_for_conversation_token(&conversation_token))
+                    } else if from_sibling {
                         // Fleet-route pages seal under the EPOCH hist_page key (the B-arc re-seal): `ek` names the sealing epoch; we open at our k or k−1 across a checkpoint crossing. Behind the sender → request spine state (the chain_sync catch-up move) and drop; the request re-fires and self-heals. `ek` absent from a sibling = a pre-epoch build — flag-day drop, loudly.
                         let key = match (epoch_k, self.fleet_epoch, self.fleet_epoch_prev) {
                             (Some(ek), Some((k, e)), _) if ek == k => Some(

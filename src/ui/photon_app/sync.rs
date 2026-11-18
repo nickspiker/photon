@@ -1356,16 +1356,12 @@ impl PhotonApp {
     /// The push itself, for rows already shaped as page rows (an invitation carries its snapshot in the `gpl` column, which a chat row never has).
     pub(super) fn push_history_rows_to_siblings(&self, token: [u8; 32], label: &str, hist_rows: Vec<crate::network::history_pages::HistoryRow>, exclude_device: Option<[u8; 32]>) {
         use crate::network::history_pages::{seal_history_page, HistoryPagePlain};
-        // The B-arc re-seal: live fleet pages seal under the EPOCH hist_page key, never the raw fleet key. No spine yet = the bounded bootstrap window — hold the push (the sibling-online history sweep re-covers these rows) rather than fork the seal, exactly the chain_sync rule.
-        let (Some((epoch_k, epoch)), Some(kp), Some(checker), Some(_)) = (
-            self.fleet_epoch,
-            self.device_keypair.as_ref(),
-            self.status_checker.as_ref(),
-            self.session.as_ref(),
-        ) else {
+        let (Some(kp), Some(checker)) = (self.device_keypair.as_ref(), self.status_checker.as_ref()) else {
             return;
         };
-        let page_key = crate::crypto::clutch::fleet_epoch_seal_key(&epoch, b"hist_page");
+        // The B-arc re-seal: live fleet pages seal under the EPOCH hist_page key, never the raw fleet key. No spine yet = the bounded bootstrap window — the push to fleet siblings is held (the sibling-online history sweep re-covers these rows) rather than fork the seal, exactly the chain_sync rule.
+        // An ALIAS sibling (a Photon of ours outside the fleet, a ferros one) gets the page sealed under the pair secret our sibling ceremony made with it instead (alias_seal_key, 2026-11-17): it holds no fleet key, and no friendship key ever reaches it, so a lost device is cut off by removing it. That needs no fleet epoch or session, which is how Photon on the alias alone forwards its own sends.
+        let fleet_seal = self.fleet_epoch.filter(|_| self.session.is_some()).map(|(k, e)| (k, crate::crypto::clutch::fleet_epoch_seal_key(&e, b"hist_page")));
         if hist_rows.is_empty() {
             return;
         }
@@ -1382,6 +1378,7 @@ impl PhotonApp {
             Option<std::net::SocketAddr>,
             [u8; 32],
             Vec<[u8; 32]>,
+            Option<[u8; 32]>,
         )> = Vec::new();
         let mut skipped = 0usize;
         let mut parked = 0usize;
@@ -1407,6 +1404,11 @@ impl PhotonApp {
             if self.sibling_awaits_list(sib) {
                 continue;
             }
+            // Its seal: the pair key for an alias sibling, else the fleet's (none yet = held, see above).
+            let alias = self.alias_seal_key(&sib_key, b"hist_page");
+            if alias.is_none() && fleet_seal.is_none() {
+                continue;
+            }
             let (primary, alt, relay_to) = match sib.race_addrs() {
                 Some((p, a)) => (
                     p,
@@ -1423,14 +1425,15 @@ impl PhotonApp {
                     (unspecified, None, relays)
                 }
             };
-            targets.push((primary, alt, sib_key, relay_to));
+            targets.push((primary, alt, sib_key, relay_to, alias));
         }
         // ALWAYS log, zero included — a silently-no-op fleet push is exactly how this path shipped broken.
         crate::logf!(
-            "FLEET-HIST: live push {} row(s) for {} → {} sibling(s) ({} unreachable, {} parked offline)",
+            "FLEET-HIST: live push {} row(s) for {} → {} sibling(s) ({} alias, {} unreachable, {} parked offline)",
             page.rows.len(),
             label,
             targets.len(),
+            targets.iter().filter(|t| t.4.is_some()).count(),
             skipped,
             parked
         );
@@ -1441,31 +1444,38 @@ impl PhotonApp {
         let kp_sec = *kp.secret.as_bytes();
         let dispatch = checker.history_dispatch();
         queue_job(&self.seal_job_tx, move || {
-            let skf = u32::from_le_bytes(blake3::hash(&page_key).as_bytes()[..4].try_into().unwrap()) as u64;
-            let vsf_bytes = match seal_history_page(&page, &page_key).and_then(|sealed| {
-                crate::network::fgtw::protocol::build_history_page_vsf(
-                    &token,
-                    &rid,
-                    Some(epoch_k),
-                    Some(skf),
-                    sealed,
-                    &kp_pub,
-                    &kp_sec,
-                )
-            }) {
-                Ok(b) => b,
-                Err(e) => {
-                    crate::logf!("FLEET-HIST: live push build failed: {}", e);
-                    return;
-                }
+            // One frame per seal: the fleet's (built once, for every fleet sibling) and each alias sibling's own.
+            let build = |key: &[u8; 32], epoch_k: u64| {
+                let skf = u32::from_le_bytes(blake3::hash(key).as_bytes()[..4].try_into().unwrap()) as u64;
+                seal_history_page(&page, key).and_then(|sealed| crate::network::fgtw::protocol::build_history_page_vsf(&token, &rid, Some(epoch_k), Some(skf), sealed, &kp_pub, &kp_sec))
             };
-            for (primary, alt, pk, relay_to) in targets {
+            let mut fleet_frame: Option<Vec<u8>> = None;
+            for (primary, alt, pk, relay_to, alias) in targets {
+                let vsf_bytes = match (alias, fleet_seal) {
+                    // An alias sibling opens by its pair key, never by the epoch the frame names (0 here).
+                    (Some(key), _) => build(&key, 0),
+                    (None, Some((epoch_k, key))) => match fleet_frame.as_ref() {
+                        Some(f) => Ok(f.clone()),
+                        None => build(&key, epoch_k).map(|f| {
+                            fleet_frame = Some(f.clone());
+                            f
+                        }),
+                    },
+                    (None, None) => continue,
+                };
+                let vsf_bytes = match vsf_bytes {
+                    Ok(b) => b,
+                    Err(e) => {
+                        crate::logf!("FLEET-HIST: live push build failed: {}", e);
+                        continue;
+                    }
+                };
                 crate::log_err!(dispatch.send(crate::network::status::HistorySendRequest {
                     peer_addr: primary,
                     alt_addr: alt,
                     recipient_pubkey: pk,
                     relay_to,
-                    vsf_bytes: vsf_bytes.clone(),
+                    vsf_bytes,
                     tag: None,
                 }), "queue a history page to a sibling");
             }
@@ -1744,18 +1754,21 @@ impl PhotonApp {
         let device_pubkey = *kp.public.as_bytes();
         let device_secret = *kp.secret.as_bytes();
 
+        // Photon on the alias alone (a ferros one) asks an alias sibling, which answers under their pair key (alias_seal_key); a fleet member asks only fleet siblings (an alias sibling holds part of the history at best).
+        let alias_only = self.photon_keys.as_ref().is_some_and(|k| k.legacy_seed.is_none());
+        let eligible = |c: &crate::types::Contact| c.device_key().is_some_and(|d| self.alias_pairs.iter().any(|(x, _)| *x == d) == alias_only);
         // Route material computed once: a sibling serves fleet-route requests, and the fleet key gates them (the sibling seals under it). Presence discipline (2026-08-26): prefer an online sibling with a direct address; the fallback arms accept UNPROBED siblings (a hard is_online gate starved the fleet backfill during the boot race) but exclude a POSITIVE offline verdict — the relay already said that pipe is closed, and re-asking every expiry cycle was the 497-retry storm.
         let sibling_target: Option<(
             std::net::SocketAddr,
             Option<std::net::SocketAddr>,
             [u8; 32],
             Vec<[u8; 32]>,
-        )> = if self.fleet_key_cached().is_some() {
+        )> = if self.fleet_key_cached().is_some() || alias_only {
             // EVERY arm excludes a locked-out sibling: the lockout also stops pings, so the ghost never earns the probed-offline verdict the fallback arms key on — the pre-fix phone selected its own locked dead desktop as the fleet-history target forever (7,458 requests + 7,316 expiry re-requests + 5,700 dropped relay frames in ONE submitted log, 2026-08-31 — the "abnormally long log").
             let unspecified = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
             self.contacts
                 .iter()
-                .filter(|c| c.is_sibling && !c.locked_out && c.is_online)
+                .filter(|c| c.is_sibling && !c.locked_out && c.is_online && eligible(c))
                 .find_map(|c| {
                     c.race_addrs().and_then(|(p, a)| {
                         Some((
@@ -1770,7 +1783,7 @@ impl PhotonApp {
                     // Fallback arms exclude only a POSITIVE offline verdict (probed + 3-timeout), never the unprobed boot state — the ungated version picked the offline phone as the relay-only target and fired a request into its closed pipe every expiry cycle forever (497 retries + ~470 dropped 17KB frames in one 35-min field log). The came-online edge re-includes the device naturally.
                     self.contacts
                         .iter()
-                        .filter(|c| c.is_sibling && !c.locked_out && !(c.presence_probed && !c.is_online))
+                        .filter(|c| c.is_sibling && !c.locked_out && !(c.presence_probed && !c.is_online) && eligible(c))
                         .find_map(|c| {
                             c.race_addrs().and_then(|(p, a)| {
                                 Some((p, a, c.device_key()?, c.relay_device_list()))
@@ -1780,7 +1793,7 @@ impl PhotonApp {
                 .or_else(|| {
                     self.contacts
                         .iter()
-                        .filter(|c| c.is_sibling && !c.locked_out && !(c.presence_probed && !c.is_online))
+                        .filter(|c| c.is_sibling && !c.locked_out && !(c.presence_probed && !c.is_online) && eligible(c))
                         .find_map(|c| {
                             let relays = c.relay_device_list();
                             if relays.is_empty() {

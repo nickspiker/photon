@@ -80,6 +80,8 @@ impl PhotonApp {
                 self.fleet_state_push(Some(d));
             }
         }
+        // Every settle: the alias siblings' pair secrets, which their frames seal under (alias_seal_key).
+        self.refresh_alias_pairs();
         match ready.list {
             Some((binding, list)) => {
                 self.alias_retry = None;
@@ -172,6 +174,55 @@ impl PhotonApp {
     pub(super) fn alias_sibling_root(&self, device: &[u8; 32], fleet: &[[u8; 32]]) -> Option<[u8; 32]> {
         let keys = self.photon_keys.as_ref()?;
         (keys.legacy_seed.is_none() || !fleet.contains(device)).then(|| keys.sibling_root())
+    }
+
+    /// The seal for a frame of `purpose` to alias sibling `device` (2026-11-17, the owner: the person's conversations on a ferros Photon, and a way to cut a lost one off): a key from the pair secret our sibling ceremony made with that one device (fanout_pairs, kept in `alias_pairs`), so no fleet key and no friendship key ever reaches an alias sibling, and removing it from the alias's list is the whole roll. None for a fleet sibling, or an alias sibling whose ceremony has not completed.
+    pub(super) fn alias_seal_key(&self, device: &[u8; 32], purpose: &[u8]) -> Option<[u8; 32]> {
+        let (_, pair) = self.alias_pairs.iter().find(|(d, _)| d == device)?;
+        let mut h = blake3::Hasher::new_derive_key("photon 2026-11-17 frames to an alias sibling");
+        h.update(purpose);
+        h.update(pair);
+        Some(*h.finalize().as_bytes())
+    }
+
+    /// Read the pair secrets of every alias sibling into `alias_pairs`, off the UI thread (a vault read each): on the alias's settle, on resume, and when a sibling ceremony completes.
+    pub(super) fn refresh_alias_pairs(&mut self) {
+        let fleet = self.fleet_members_held();
+        let devices: Vec<[u8; 32]> = self
+            .contacts
+            .iter()
+            .filter(|c| c.is_sibling && !c.locked_out)
+            .filter_map(|c| c.device_key())
+            .filter(|d| self.alias_sibling_root(d, &fleet).is_some())
+            .collect();
+        let (Some(ours), Some(storage)) = (self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()), self.storage.clone()) else {
+            return;
+        };
+        if devices.is_empty() {
+            self.alias_pairs.clear();
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let wake = self.event_proxy.clone();
+        crate::log_err!(std::thread::Builder::new().name("alias pairs".into()).spawn(move || {
+            let pairs: Vec<([u8; 32], [u8; 32])> = devices.iter().filter_map(|d| crate::storage::fanout_pairs::load(&ours, d, storage.as_ref()).map(|p| (*d, p))).collect();
+            crate::log_err!(tx.send(pairs), "the alias siblings' pair secrets to the UI");
+            if let Some(w) = wake {
+                super::wake_ui(&w);
+            }
+        }), "spawn the alias pair read");
+        self.alias_pairs_rx = Some(rx);
+    }
+
+    /// Take the pair secrets the worker read. True when they landed.
+    pub(super) fn drain_alias_pairs(&mut self) -> bool {
+        let Some(pairs) = self.alias_pairs_rx.as_ref().and_then(|rx| rx.try_recv().ok()) else {
+            return false;
+        };
+        self.alias_pairs_rx = None;
+        crate::logf!("ALIAS: {} alias sibling(s) with a pair secret: frames to them seal under it", pairs.len());
+        self.alias_pairs = pairs;
+        true
     }
 
     /// A settle or join that did not reach fgtw.org (ferros's Pro lost its WiFi at the one moment it tried, 2026-11-14): owed again on the next network edge, each try at least twice as far from the last as the one before, so a down fgtw.org is never hammered. Nothing waits on a clock: an edge that comes too soon is let pass, the next one tries.

@@ -1035,6 +1035,8 @@ impl PhotonApp {
                         // A newly egged SIBLING just completed its consent ceremony — GROW the fan-out so its wrap exists (same key, docs/fleet-key.md). Idempotent by the worker's monotonic revision guard; a race loser refetches. A friend's secret changes no fleet state, so no publish.
                         if is_sibling {
                             self.fanout_grow_pending = true;
+                            // An alias sibling's frames seal under this pair: read the pairs again.
+                            self.refresh_alias_pairs();
                         }
                     }
                     Err(e) => crate::logf!("PAIR: secret store failed: {}", e),

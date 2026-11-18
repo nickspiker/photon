@@ -2983,6 +2983,9 @@ pub struct PhotonApp {
     space_rx: Option<std::sync::mpsc::Receiver<Option<space::SpaceReading>>>,
     /// The alias settle running off the UI thread (photon_app/alias.rs).
     alias_rx: Option<std::sync::mpsc::Receiver<Result<crate::network::fgtw::alias::AliasReady, String>>>,
+    /// Each alias sibling's pair secret (fanout_pairs), read by a worker: what frames to it seal under (alias::alias_seal_key).
+    alias_pairs: Vec<([u8; 32], [u8; 32])>,
+    alias_pairs_rx: Option<std::sync::mpsc::Receiver<Vec<([u8; 32], [u8; 32])>>>,
     /// The alias's device list as last checked, beside its binding: the devices that are this person's Photons (PHOTON.md M3).
     alias_list: Option<(Vec<u8>, fgtw::alias_devices::DeviceList)>,
     /// A settle owed to fgtw.org after one did not reach it: (tries so far, not before this Eagle time), tried again on the next network edge.
@@ -3779,6 +3782,8 @@ impl PhotonApp {
             release_when_copied: false,
             space_rx: None,
             alias_rx: None,
+            alias_pairs: Vec::new(),
+            alias_pairs_rx: None,
             alias_list: None,
             alias_retry: None,
             alias_peer_answered: false,
