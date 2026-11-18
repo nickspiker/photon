@@ -3029,6 +3029,8 @@ pub struct PhotonApp {
     lockout_rekey_busy: Option<crate::types::ContactId>,
     /// Friendships whose lockout re-key could not be proposed while their friend was online: passed over until that friend's next online edge, so one that cannot go never holds the rest.
     lockout_rekey_skip: Vec<crate::types::ContactId>,
+    /// The group whose lockout re-key (a fresh era minted without the locked device) is in flight: the next waits until its era cuts over.
+    lockout_group_busy: Option<crate::types::molecule::MoleculeId>,
     /// A peer answered since the tick last looked: a network edge for an owed alias settle.
     alias_peer_answered: bool,
     /// ferros's network generation as the tick last saw it.
@@ -3844,6 +3846,7 @@ impl PhotonApp {
             alias_sign_out_rx: None,
             lockout_rekey_busy: None,
             lockout_rekey_skip: Vec::new(),
+            lockout_group_busy: None,
             alias_peer_answered: false,
             #[cfg(target_os = "ferros")]
             alias_net_generation: 0,

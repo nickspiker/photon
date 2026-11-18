@@ -325,6 +325,10 @@ pub struct MoleculeLocal {
     pub phase: MoleculePhase,
     /// Offers THIS device sent: (invitee party, the offer row's eagle time in that friendship conversation) — what labels the sponsor-side row "waiting" / "joined" and what a roster edge refreshes.
     pub offered: Vec<([u8; 32], i64)>,
+    /// A LOCKOUT re-key owed for this group (the owner 2026-11-18: a locked device holds every group's keys too): due once the cached fleet epoch reaches this value, at 1 at once, 0 none. Device-local, like the friendships' era_lockout_due.
+    pub lockout_due: u64,
+    /// The group's era tag when the lockout re-key was armed: done once the group stands on any other era.
+    pub lockout_from: u32,
 }
 
 /// The phase this device is in for a group (docs/molecules.md §10.1). Offered/Expired live on the parked offer, not here; None = not held.
@@ -368,6 +372,8 @@ fn molecule_local_schema() -> SectionSchema {
         .field("phase", TypeConstraint::AnyUnsigned)
         .field("offered_party", TypeConstraint::AnyHash)
         .field("offered_osc", TypeConstraint::Any)
+        .field("lockout_due", TypeConstraint::AnyUnsigned)
+        .field("lockout_from", TypeConstraint::AnyUnsigned)
 }
 
 fn molecule_local_key(molecule_id: &MoleculeId) -> [u8; 32] {
@@ -380,6 +386,10 @@ pub fn save_molecule_local(molecule_id: &MoleculeId, local: &MoleculeLocal, stor
         .set("muted", VsfType::u(local.muted as usize, false))
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set("phase", VsfType::u(local.phase.to_u8() as usize, false))
+        .map_err(|e| StorageError::Parse(e.to_string()))?
+        .set("lockout_due", VsfType::u(local.lockout_due as usize, false))
+        .map_err(|e| StorageError::Parse(e.to_string()))?
+        .set("lockout_from", VsfType::u(local.lockout_from as usize, false))
         .map_err(|e| StorageError::Parse(e.to_string()))?;
     for (party, osc) in &local.offered {
         builder = builder
@@ -430,7 +440,7 @@ pub fn load_molecule_local(molecule_id: &MoleculeId, storage: &FlatStorage) -> R
         MoleculePhase::CatchingUp => MoleculePhase::Standing,
         p => p,
     };
-    Ok(MoleculeLocal { muted: u("muted") != 0, phase, offered })
+    Ok(MoleculeLocal { muted: u("muted") != 0, phase, offered, lockout_due: u("lockout_due"), lockout_from: u("lockout_from") as u32 })
 }
 
 /// A PARKED OFFER (§10.1 Offered): a friend's offer we have not answered — the roster snapshot they sent and who sent it. No secret rides here (D10). Persisted so a relaunch between offer and Join keeps the row alive; deleted on Join or expiry.
@@ -769,7 +779,7 @@ mod tests {
         let storage = FlatStorage::new(crate::storage::APP, [0xD3; 32], [0xD4; 32]).expect("storage");
         // Local state: default when absent; mute + phase persist; and the mute is NOT in the roster bytes.
         assert_eq!(load_molecule_local(&birth.molecule_id, &storage).expect("absent"), MoleculeLocal::default());
-        let local = MoleculeLocal { muted: true, phase: MoleculePhase::Joining, offered: vec![([0x0C; 32], 4242)] };
+        let local = MoleculeLocal { muted: true, phase: MoleculePhase::Joining, offered: vec![([0x0C; 32], 4242)], lockout_due: 9, lockout_from: 0xA1B2_C3D4 };
         save_molecule_local(&birth.molecule_id, &local, &storage).expect("save local");
         assert_eq!(load_molecule_local(&birth.molecule_id, &storage).expect("load"), local);
         // A stored Catching up loads as Standing: nothing held survives a restart.

@@ -1804,6 +1804,8 @@ impl PhotonApp {
             crate::logf!("MOLECULE: {} cut over — the mint that waited on it runs now", hex::encode(&gid.0[..4]));
             self.mint_molecule_era(gid, None);
         }
+        // A cutover may finish a group's lockout re-key: the next group's may go (era.rs).
+        self.lockout_rekey_step("a group cut over");
     }
 
     /// Re-queue every undelivered outgoing chat row of a group (a cutover cleared its pendings; a relaunch found them held) — control rows never re-serve bare.

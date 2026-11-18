@@ -189,6 +189,19 @@ pub(crate) fn lockout_due(held_fleet_key: bool, after_lock: Option<u64>, latest_
     after_lock.unwrap_or_else(|| latest_ckpt.unwrap_or(0) + 1)
 }
 
+/// Arm one group's lockout re-key, the friendships' rule: the later due wins, measured from the era the group stands on now.
+pub(crate) fn arm_group_lockout(local: &mut crate::storage::molecule::MoleculeLocal, tag: u32, due: u64) {
+    if due > local.lockout_due {
+        local.lockout_due = due;
+    }
+    local.lockout_from = tag;
+}
+
+/// May this device mint a group's lockout era now: it is owed and due, this device is the group's minter, and no era of the group is pending (a mint in flight, or a cutover not yet taken), so one group at a time and never two mints from one era.
+pub(crate) fn group_lockout_ready(due: u64, epoch_now: u64, we_mint: bool, pending: bool) -> bool {
+    due != 0 && (due == 1 || epoch_now >= due) && we_mint && !pending
+}
+
 /// A lockout re-key is done once the bond stands on an era other than the one it was armed on.
 pub(crate) fn lockout_rekey_done(c: &crate::types::Contact, tag: Option<u32>) -> bool {
     c.era_lockout_due != 0 && tag.is_some_and(|t| t != c.era_lockout_from)
@@ -579,8 +592,69 @@ impl PhotonApp {
         let armed = arm_lockout_rekeys(&mut self.contacts, &tags, due);
         let dirty: Vec<crate::types::Contact> = armed.iter().map(|&i| self.contacts[i].clone()).collect();
         self.save_contacts_off_thread(dirty);
-        crate::logf!("ERA: lockout re-key owed by {} friendship(s), due at epoch {} ({})", armed.len(), due, why);
+        let groups = self.arm_group_lockout_rekeys(due);
+        crate::logf!("ERA: lockout re-key owed by {} friendship(s) and {} group(s), due at epoch {} ({})", armed.len(), groups, due, why);
         self.lockout_rekey_step(why);
+    }
+
+    /// Every group this device stands in owes one fresh era too (the owner 2026-11-18: a locked device holds every group's keys as well): armed on the group's device-local state, so a restart cannot lose it.
+    /// Only the group's minter (its lowest standing party, on the one device of that fleet that acts, molecules.rs) can mint; a group another member mints is left armed here and done when that member's next mint lands, which wraps nothing to our locked device once our fold or our pongs name it locked.
+    fn arm_group_lockout_rekeys(&mut self, due: u64) -> usize {
+        let groups: Vec<(crate::types::molecule::MoleculeId, u32)> = self
+            .molecule_rosters
+            .iter()
+            .map(|(g, _)| *g)
+            .filter(|g| !self.molecule_is_left(g))
+            .filter_map(|g| {
+                let fid = crate::types::FriendshipId::from_bytes(g.0);
+                self.friendship_chains.iter().find(|(id, _)| *id == fid).and_then(|(_, c)| c.era_tag()).map(|t| (g, t))
+            })
+            .collect();
+        for (g, tag) in &groups {
+            self.set_molecule_local(g, |l| arm_group_lockout(l, *tag, due));
+        }
+        groups.len()
+    }
+
+    /// Start at most ONE group's lockout mint: a group whose era moved off the one it was armed on is done; while one this device minted is still pending (its era not cut over), the next waits; the next goes only where this device is the group's minter.
+    fn group_lockout_step(&mut self, why: &str) {
+        let armed: Vec<(crate::types::molecule::MoleculeId, u64, u32)> = self.molecule_locals.iter().filter(|(_, l)| l.lockout_due != 0).map(|(g, l)| (*g, l.lockout_due, l.lockout_from)).collect();
+        if armed.is_empty() {
+            self.lockout_group_busy = None;
+            return;
+        }
+        let chains_of = |app: &Self, g: &crate::types::molecule::MoleculeId| {
+            let fid = crate::types::FriendshipId::from_bytes(g.0);
+            app.friendship_chains.iter().find(|(id, _)| *id == fid).map(|(_, c)| (c.era_tag(), c.pending_era().is_some()))
+        };
+        for (g, _, from) in &armed {
+            if chains_of(self, g).and_then(|(t, _)| t).is_some_and(|t| t != *from) {
+                crate::logf!("MOLECULE: {} re-keyed since the lockout", hex::encode(&g.0[..4]));
+                self.set_molecule_local(g, |l| {
+                    l.lockout_due = 0;
+                    l.lockout_from = 0;
+                });
+            }
+        }
+        if let Some(g) = self.lockout_group_busy {
+            if self.molecule_locals.iter().any(|(id, l)| *id == g && l.lockout_due != 0) && chains_of(self, &g).is_some_and(|(_, pending)| pending) {
+                return;
+            }
+            self.lockout_group_busy = None;
+        }
+        let epoch_now = self.fleet_epoch.map(|(e, _)| e).unwrap_or(0);
+        let us = self.own_party_id();
+        let acts = self.fleet_device_acts(None);
+        let pick = self.molecule_locals.iter().filter(|(_, l)| l.lockout_due != 0).map(|(g, l)| (*g, l.lockout_due)).find(|(g, due)| {
+            let minter = self.molecule_rosters.iter().find(|(id, _)| id == g).and_then(|(_, r)| r.standing().first().copied());
+            let pending = chains_of(self, g).is_some_and(|(_, p)| p);
+            group_lockout_ready(*due, epoch_now, us.is_some() && us == minter && acts, pending)
+        });
+        if let Some((g, _)) = pick {
+            crate::logf!("MOLECULE: {} lockout re-key: minting the next era without the locked device ({})", hex::encode(&g.0[..4]), why);
+            self.lockout_group_busy = Some(g);
+            self.mint_molecule_era(g, None);
+        }
     }
 
     /// The era tag of the bond a friendship's eras run on, as this device holds it; None without chains.
@@ -594,7 +668,11 @@ impl PhotonApp {
     /// While one friend's re-key is in flight and that friend is online, the next waits; one going offline lets the next go, and it is tried again at its own next online edge.
     /// Only the friendship's ceremony owner starts one: the light ratchet when the friend can ratchet in band, else the woven CLUTCH (`arm_heavy_weave_for`), whose own pickup runs one at a time.
     pub(super) fn lockout_rekey_step(&mut self, why: &str) {
-        if self.alias_alone() || self.contacts.iter().all(|c| c.era_lockout_due == 0) {
+        if self.alias_alone() {
+            return;
+        }
+        self.group_lockout_step(why);
+        if self.contacts.iter().all(|c| c.era_lockout_due == 0) {
             return;
         }
         let tags: Vec<Option<u32>> = self.contacts.iter().map(|c| self.bond_era_tag(c)).collect();
@@ -869,6 +947,22 @@ mod tests {
         let again = arm_lockout_rekeys(&mut rows, &[None, Some(0xB1), Some(0xA2), Some(0xA3), Some(0xA4), None, None], 9);
         assert_eq!(again, vec![1, 2, 3]);
         assert_eq!((rows[1].era_lockout_due, rows[1].era_lockout_from), (9, 0xB1));
+    }
+
+    /// Groups after a lockout: every group armed, and only the group's minter mints, one group at a time, after the lock's epoch, never over a pending era.
+    #[test]
+    fn a_lockout_arms_every_group_and_only_the_minter_mints() {
+        let mut local = crate::storage::molecule::MoleculeLocal::default();
+        arm_group_lockout(&mut local, 0xC1, 5);
+        assert_eq!((local.lockout_due, local.lockout_from), (5, 0xC1));
+        arm_group_lockout(&mut local, 0xC2, 3);
+        assert_eq!((local.lockout_due, local.lockout_from), (5, 0xC2), "the later due wins, from the era it stands on now");
+        assert!(group_lockout_ready(5, 5, true, false));
+        assert!(!group_lockout_ready(5, 4, true, false), "waits for the lock's epoch");
+        assert!(!group_lockout_ready(5, 5, false, false), "another member mints this group");
+        assert!(!group_lockout_ready(5, 5, true, true), "an era pending: one mint at a time");
+        assert!(group_lockout_ready(1, 0, true, false), "a device that never held the fleet key: at once");
+        assert!(!group_lockout_ready(0, 9, true, false), "nothing owed");
     }
 
     /// The stall, 2026-11-18: a device that learns of a member's lock after its fleet epoch already moved past the epoch that followed the lock re-keys at once, never waiting for "its epoch plus one".
