@@ -39,10 +39,12 @@ pub mod attest_stage {
 }
 
 /// The UI's waker on the desktop (Android's Choreographer ticks regardless): the attest screen holds still while the proof runs, so each stage change wakes it to draw the new stage.
+#[cfg(not(target_os = "android"))]
 static ATTEST_WAKER: std::sync::Mutex<Option<Arc<dyn WakeSender<PhotonEvent>>>> = std::sync::Mutex::new(None);
 
 fn set_attest_stage(stage: u8) {
     ATTEST_STAGE.store(stage, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(not(target_os = "android"))]
     if let Some(w) = ATTEST_WAKER.lock().ok().and_then(|g| g.clone()) {
         // WHY: a refused wake means the event loop has closed; nothing is waiting to draw.
         let _ = w.send(PhotonEvent::NetworkUpdate);
