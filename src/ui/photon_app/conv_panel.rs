@@ -20,6 +20,14 @@ pub(super) const CONV_PANEL_SLOTS: HitId = SLOT_BONDS + 40;
 
 impl PhotonApp {
     /// The one other person the open conversation is with — None for a group, our own notes, or a sibling's row. Such a conversation's panel IS that person's page (Nick 2026-11-01: "the person management page is distinct from the one in a conversation, can we combine those?").
+    /// The rows a page leaves out ahead of its own: on a safe circle (ferros) the person page of a two-person conversation draws no big picture, since the orb above is already that person's face, so its five face rows go; 0 everywhere else. The render shifts the page's rows by these and the scroll extent counts without them.
+    pub(super) fn conversation_page_skip(&self, page: crate::ui::state::ConversationPage) -> usize {
+        match page {
+            crate::ui::state::ConversationPage::Person(p) if crate::ui::safe_circle().is_some() && self.pair_person() == Some(p) => PERSON_FACE_ROWS,
+            _ => 0,
+        }
+    }
+
     pub(super) fn pair_person(&self) -> Option<[u8; 32]> {
         if self.active_molecule().is_some() {
             return None;
@@ -291,3 +299,6 @@ impl PhotonApp {
         true
     }
 }
+
+/// The rows the person page's picture takes at its top (render: the avatar block spans the first five).
+pub(super) const PERSON_FACE_ROWS: usize = 5;

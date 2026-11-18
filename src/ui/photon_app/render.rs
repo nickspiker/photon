@@ -417,7 +417,7 @@ impl PhotonApp {
             // The conversation panel rides the SAME scroll fields + extents machinery as settings (it's the structural mirror). Rail = pinned Back + the rail pages; content rows come from the one budget the render arm also reads (Bonds sized by the rows as last drawn).
             let sl = SettingsLayout::compute(&ctx.viewport);
             self.settings_rail_extent = (sl.nav_row_h() * (crate::ui::state::ConversationPage::RAIL.len() as Coord + 1.0) - sl.rail_inset().h).max(0.0); // (no scroll when it fits)
-            let n = conversation_page_rows(page, self.bond_rows.len(), self.active_molecule().is_some());
+            let n = conversation_page_rows(page, self.bond_rows.len(), self.active_molecule().is_some()) - self.conversation_page_skip(page);
             self.settings_content_extent = (sl.content_line_h() * n as Coord - sl.content_inset().h).max(0.0); // (no scroll when it fits)
             (self.settings_rail_scroll, self.settings_content_scroll)
         } else {
@@ -2735,8 +2735,10 @@ impl PhotonApp {
                 let content_clip = fluor::paint::Clip::new(inset.x as usize, inset.y as usize, inset.right() as usize, inset.bottom() as usize);
                 let tspan = layout.unit * 0.72;
                 let hspan2 = tspan * 0.75;
-                let n = super::conversation_page_rows(page, bonds.len(), roster_src.is_some());
-                let rows = rows_n(layout.content_scrolled(n, settings_content_scroll), n);
+                // A page's rows, the ones it leaves out (`conversation_page_skip`: the pair's person page on ferros drops its picture, the orb's face) standing empty ahead so every row keeps its number.
+                let skip = if crate::ui::safe_circle().is_some() && own_pair_page { super::conv_panel::PERSON_FACE_ROWS } else { 0 }; // conversation_page_skip, from what is held before the chrome borrow
+                let n = super::conversation_page_rows(page, bonds.len(), roster_src.is_some()) - skip;
+                let rows: Vec<fluor::region::Region> = std::iter::repeat(fluor::region::Region::new(0., 0., 0., 0.)).take(skip).chain(rows_n(layout.content_scrolled(n, settings_content_scroll), n)).collect();
                 let pill = |r: fluor::region::Region, frac: f32| fluor::region::Region::new(r.x + r.w * 0.1, r.y, r.w * frac, r.h * 0.9);
                 let btn = self.conv_panel_btn_base;
                 let conv = self.active_conversation.and_then(|id| self.conversations.iter().find(|v| v.id() == id));
@@ -2968,6 +2970,8 @@ impl PhotonApp {
                         let peer = self.molecule_peers.iter().find(|p| p.party == party);
                         let granted = roster_src.as_ref().and_then(|(_, r, ..)| r.members.get(&party)).map(|m| m.name.clone()).unwrap_or_default();
                         match contact.and_then(|c| c.avatar_scaled.as_ref()) {
+                            // No picture where the page skips its face rows (ferros: the orb above is this person).
+                            _ if skip > 0 => {}
                             Some(scaled) => crate::ui::avatar_render::draw_avatar(&mut canvas, cx, cy, avatar_r, scaled, diam, Some(content_clip)),
                             None => {
                                 let gd = diam.max(1); // an avatar is at least one pixel across — see `disk_px`
@@ -2975,7 +2979,7 @@ impl PhotonApp {
                                 crate::ui::avatar_render::draw_avatar(&mut canvas, cx, cy, avatar_r, &gradient_avatar_rgb(seed, gd), gd, Some(content_clip));
                             }
                         }
-                        if let Some(c) = contact {
+                        if let Some(c) = contact.filter(|_| skip == 0) {
                             // +1 keeps the presence ring visible at small avatar sizes (see the contacts-row `ring_thickness`).
                             paint::draw_circle(&mut canvas, cx, cy, avatar_r + super::ring_thickness(avatar_r), row_ring_tier_in(&self.contacts, c, true), Some(content_clip));
                         }
