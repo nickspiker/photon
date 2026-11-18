@@ -1809,6 +1809,10 @@ impl PhotonApp {
                 }
             }
         }
+        // THE ROLL (2026-11-18): a device gone from the list leaves the pair secrets at once, so no frame to it seals again and none is owed to it; the next refresh would drop it too, as it reads only the sibling rows left.
+        let gone: Vec<[u8; 32]> = removed.iter().filter_map(|c| c.device_key()).collect();
+        self.alias_pairs.retain(|(d, _)| !gone.contains(d));
+        self.alias_chains_owed.retain(|d| !gone.contains(d));
         if !removed.is_empty() {
             // Removal rotates (braid.md §14.2): a shrink in OUR OWN fold is the live trigger — any surviving member mints the next epoch so the leaver's cached fleet key goes stale. The sentinel inside re-checks against server state (fold + fan-out), so a stale local cache can't force a bogus rotation.
             self.spawn_fleet_key_sync();

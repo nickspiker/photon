@@ -112,6 +112,10 @@ impl PhotonApp {
     /// MEMBER RELAY (Nick 2026-10-25: "if steve sends and only mike is online, then steve goes offline and jan comes online, jan should get steve's messages"): a member device `peer` just advertised its lane heads for group `gid`.
     /// Every frame we hold that it is behind on, from an author whose own devices are away, goes to it byte for byte inside a `grp_relay`, so it reaches every member by whoever is online, hop by hop. Only frames on the era that device is on (it opens nothing else), at most three tries per frame per device.
     pub(super) fn relay_group_frames(&mut self, gid: MoleculeId, peer: [u8; 32], peer_era: u32, heads: &[([u8; 32], i64)]) {
+        // Photon on the alias alone holds the group's keys for reading only: a member's device takes no frame from it yet.
+        if self.alias_alone() {
+            return;
+        }
         if self.device_keypair.as_ref().is_some_and(|k| *k.public.as_bytes() == peer) || self.contacts.iter().any(|c| c.is_sibling && c.knows_device(&peer)) {
             return;
         }

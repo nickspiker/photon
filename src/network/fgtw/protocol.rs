@@ -2674,6 +2674,7 @@ pub fn parse_history_page_vsf(
 }
 
 /// Build a `chain_sync` frame — fleet chain-state replication ("if another device is ahead, I just catch up"). `sealed_chains` = the friendship's canonical chains VSF bytes (storage::friendship::chains_to_vsf_bytes) AEAD-sealed under the EPOCH chain_sync key (`fleet_epoch_seal_key(epoch_k, b"chain_sync")` — the B3 re-seal, 2026-08-12); `epoch_k` rides beside the blob so the receiver picks the right epoch (it accepts k and k−1 across a checkpoint crossing). The outer frame is device-signed like every sibling frame. Receiver: open, decode, adopt iff the embedded mutated_osc is NEWER than the local copy's.
+/// To an ALIAS sibling (a Photon of ours outside the fleet, 2026-11-18) the blob seals instead under the key from the pair secret our sibling ceremony made with it (photon_app/alias.rs `alias_frame_key`, purpose b"chain_sync"), and `epoch_k` is 0: it opens by the pair, never by an epoch.
 pub fn build_chain_sync_vsf(
     conversation_token: &[u8; 32],
     epoch_k: u64,

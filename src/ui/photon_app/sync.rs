@@ -634,7 +634,9 @@ impl PhotonApp {
         self.contacts[ci].consent_mutual = true;
         crate::logf!("CONSENT: mutual add confirmed with {} ({}) — arming the ceremony", crate::fp(&self.contacts[ci].handle_proof), via);
         let us = self.own_party_id();
-        if let Some(us) = us {
+        // On the alias alone the consent is recorded and no ceremony arms (the keygen pick's gate, conversation.rs): a friend's ceremony there waits for the friend CLUTCH on the alias.
+        let may_start = super::alias::ceremony_may_start(self.alias_alone(), self.contacts[ci].is_sibling);
+        if let Some(us) = us.filter(|_| may_start) {
             if self.contacts[ci].clutch_our_keypairs.is_none() && !self.contacts[ci].clutch_keygen_in_progress {
                 let (id, them) = (self.contacts[ci].id.clone(), self.contacts[ci].handle_hash);
                 self.contacts[ci].clutch_keygen_in_progress = true;
@@ -725,6 +727,10 @@ impl PhotonApp {
         use crate::network::fgtw::protocol::build_clutch_offer_vsf;
         use crate::network::status::ClutchOfferRequest;
 
+        // Never an offer at a friend from the alias alone (no keygen runs for one there; this holds if keys ever did).
+        if !super::alias::ceremony_may_start(self.alias_alone(), self.contacts[idx].is_sibling) {
+            return;
+        }
         // §4.2: a parked ceremony never re-fires its offer — the owner drives; our re-send would hand the friend a competing instance.
         if self.ceremony_parked(&self.contacts[idx]) {
             crate::logf!(
@@ -1084,6 +1090,11 @@ impl PhotonApp {
         else {
             return;
         };
+        // Never a friend's re-key on the alias alone: its chains come from its siblings, and a lie of Complete here is theirs to answer, never a fresh ceremony at the friend.
+        if !super::alias::ceremony_may_start(self.alias_alone(), self.contacts[ci].is_sibling) {
+            crate::logf!("CLUTCH: no re-key of {} on the alias alone — its chains come from our siblings", crate::fp(&self.contacts[ci].handle_proof));
+            return;
+        }
         let them = self.contacts[ci].handle_hash;
         let id = self.contacts[ci].id.clone();
         self.contacts[ci].discard_clutch_round();
@@ -1105,15 +1116,18 @@ impl PhotonApp {
     }
 
     /// Fleet chain replication, the PUSH half ("if another device is ahead, I just catch up" — the catch-up is the ChainSyncReceived adopt arm). Per tick: any FRIEND chain whose mutated_osc is newer than the last push ships to EVERY sibling as a fleet-sealed chain_sync frame (canonical chains VSF bytes, kete-sealed under the fleet key, device-signed). Sibling 1:1 chains never replicate (device-pair-local by definition). The receiving sibling adopts iff the stamp is newer than its copy — so after any device advances a friendship (send ACK, receive), the whole fleet converges on the new head within transport latency, and any device can transmit next. Concurrent same-instant sends from two devices can still fork the braid (the §14 linearizer is the real serializer); catch-up shrinks that window to transport latency, and the fork-repair machinery (reset + re-key streak) is the backstop.
+    /// ALIAS SIBLINGS TOO (the owner 2026-11-18: "Yes, friendship keys get copied to every device"): a Photon of ours outside the fleet (a ferros one) gets every frame sealed under the pair secret our sibling ceremony made with it (alias_seal_key), one frame per alias sibling, and a fleet member serves it every friendship whole when its pair secret is first read and each time it comes online (alias_chains_owed).
+    /// A device dropped from the alias's list loses its sibling row, its place in `alias_pairs` and so every frame; what it already holds still reads each friendship's current era (its lane root derives every lane of it, its history key opens that era's pages) until that friendship re-keys.
     pub(super) fn drive_chain_replication(&mut self) {
-        // The B3 re-seal: chain_sync frames seal under the EPOCH chain_sync key, never the raw fleet key. No spine yet = the bounded bootstrap window — hold the push (the lane re-pushes the moment it next advances) rather than fork the seal.
-        let Some((epoch_k, epoch)) = self.fleet_epoch else {
-            return;
+        // The B3 re-seal: fleet siblings' chain_sync frames seal under the EPOCH chain_sync key, never the raw fleet key. No spine yet = the bounded bootstrap window — a member holds the whole push (the lane re-pushes the moment it next advances) rather than fork the seal, or stamp a lane pushed past a fleet sibling that never had it.
+        // Photon on the alias alone has no spine and no fleet sibling: every sibling of its is an alias sibling, and its frames need only the pair keys.
+        let fleet_seal = match (self.fleet_epoch, self.fleet_key_cached()) {
+            (Some((k, epoch)), Some(_)) => Some((k, crate::crypto::clutch::fleet_epoch_seal_key(&epoch, b"chain_sync"))),
+            _ => None,
         };
-        let chain_seal_key = crate::crypto::clutch::fleet_epoch_seal_key(&epoch, b"chain_sync");
-        let Some(_fleet_key) = self.fleet_key_cached() else {
+        if fleet_seal.is_none() && !self.alias_alone() {
             return;
-        };
+        }
         let (Some(kp), Some(checker)) =
             (self.device_keypair.as_ref(), self.status_checker.as_ref())
         else {
@@ -1195,16 +1209,17 @@ impl PhotonApp {
         for f in &frames {
             self.era_serves.remove(&f.0);
         }
-        if frames.is_empty() {
+        if frames.is_empty() && self.alias_chains_owed.is_empty() {
             return;
         }
-        // Sibling targets once — identical for every frame this tick. EVERY sibling, reachable or not: direct legs race, the relay covers the rest.
+        // Sibling targets once — identical for every frame this tick. EVERY sibling, reachable or not: direct legs race, the relay covers the rest. Each carries its seal: the pair key for an alias sibling, else the fleet's epoch key (none yet = not a target, see the hold above).
         let unspecified = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
         let mut targets: Vec<(
             std::net::SocketAddr,
             Option<std::net::SocketAddr>,
             [u8; 32],
             Vec<[u8; 32]>,
+            Option<[u8; 32]>,
         )> = Vec::new();
         for sib in self
             .contacts
@@ -1214,6 +1229,10 @@ impl PhotonApp {
             let Some(sib_key) = sib.device_key() else {
                 continue; // a sibling row always carries its key; never fabricate one
             };
+            let alias = self.alias_seal_key(&sib_key, b"chain_sync");
+            if alias.is_none() && fleet_seal.is_none() {
+                continue;
+            }
             let (primary, alt, relay_to) = match sib.race_addrs() {
                 Some((p, a)) => (
                     p,
@@ -1228,20 +1247,21 @@ impl PhotonApp {
                     (unspecified, None, relays)
                 }
             };
-            targets.push((primary, alt, sib_key, relay_to));
+            targets.push((primary, alt, sib_key, relay_to, alias));
         }
         let kp_pub = *kp.public.as_bytes();
         let kp_sec = *kp.secret.as_bytes();
         let dispatch = checker.history_dispatch();
-        let mut work: Vec<([u8; 32], crate::types::friendship::FriendshipChains, usize)> =
-            Vec::new();
+        // (friendship, subset, lanes in it, only these devices — None for every target)
+        let mut work: Vec<([u8; 32], crate::types::friendship::FriendshipChains, usize, Option<Vec<[u8; 32]>>)> = Vec::new();
+        let alias_targets = targets.iter().filter(|t| t.4.is_some()).count();
         for (fid_bytes, osc, changed, subset) in frames {
             // A subset-less entry is the "stamp moved but no lane did" case: record the coarse stamp and move on, no transmit.
             let Some(subset) = subset else {
                 self.chain_pushed_osc.insert(fid_bytes, osc);
                 continue;
             };
-            crate::logf!("CHAIN-SYNC: pushing {} changed lane(s) for {} to {} sibling(s) (per-lane checkpoint{})", changed.len(), crate::fp(&fid_bytes), targets.len(), if subset.molecule { ", group roster" } else { "" });
+            crate::logf!("CHAIN-SYNC: pushing {} changed lane(s) for {} to {} sibling(s) ({} alias; per-lane checkpoint{})", changed.len(), crate::fp(&fid_bytes), targets.len(), alias_targets, if subset.molecule { ", group roster" } else { "" });
             if subset.molecule {
                 self.molecule_roster_pushed.insert(fid_bytes, *blake3::hash(subset.molecule_roster()).as_bytes());
             }
@@ -1253,13 +1273,32 @@ impl PhotonApp {
                 key[32..].copy_from_slice(label);
                 self.lane_pushed_pos.insert(key, *pos);
             }
-            work.push((fid_bytes, subset, changed.len()));
+            work.push((fid_bytes, subset, changed.len(), None));
+        }
+        // THE WHOLE SET to each alias sibling owed it (alias::owe_alias_chains): every friendship and group we hold, every lane, to that device alone, so a ferros Photon holds every friendship's chains from first contact, not only those that advance later. The fleet's watermarks stay as they are; a sibling holding a lane already adopts nothing from it.
+        // One not reachable this tick stays owed for the next.
+        let (serve, later): (Vec<[u8; 32]>, Vec<[u8; 32]>) = std::mem::take(&mut self.alias_chains_owed).into_iter().partition(|d| targets.iter().any(|t| t.2 == *d && t.4.is_some()));
+        self.alias_chains_owed = later;
+        if !serve.is_empty() {
+            let mut whole = 0usize;
+            for (fid, chains) in &self.friendship_chains {
+                let fid_bytes = *fid.as_bytes();
+                if sibling_fids.contains(&fid_bytes) || unconfirmed.contains(&fid_bytes) {
+                    continue;
+                }
+                let labels: Vec<[u8; 32]> = chains.lane_summary().into_iter().map(|(l, _)| l).collect();
+                work.push((fid_bytes, chains.replication_subset(&labels), labels.len(), Some(serve.clone())));
+                whole += 1;
+            }
+            for d in &serve {
+                crate::logf!("CHAIN-SYNC: every friendship's chains ({}) to alias sibling {} under its pair key", whole, crate::fp(d));
+            }
         }
         if work.is_empty() || targets.is_empty() {
             return;
         }
         queue_job(&self.seal_job_tx, move || {
-            for (fid_bytes, subset, lane_count) in work {
+            for (fid_bytes, subset, lane_count, only) in work {
                 let bytes = match crate::storage::friendship::chains_to_vsf_bytes(&subset) {
                     Ok(b) => b,
                     Err(e) => {
@@ -1267,33 +1306,34 @@ impl PhotonApp {
                         continue;
                     }
                 };
-                let sealed = match kete::encrypt_bytes(&bytes, &chain_seal_key) {
-                    Ok(s) => s,
-                    Err(e) => {
-                        crate::logf!("CHAIN-SYNC CRITICAL: seal failed off-thread: {} — {} lane(s) for {} unpushed until the lane next advances", e, lane_count, crate::fp(&fid_bytes));
-                        continue;
-                    }
-                };
-                let frame = match crate::network::fgtw::protocol::build_chain_sync_vsf(
-                    &subset.conversation_token,
-                    epoch_k,
-                    sealed,
-                    &kp_pub,
-                    &kp_sec,
-                ) {
-                    Ok(f) => f,
-                    Err(e) => {
-                        crate::logf!("CHAIN-SYNC CRITICAL: frame build failed off-thread: {} — {} lane(s) for {} unpushed until the lane next advances", e, lane_count, crate::fp(&fid_bytes));
-                        continue;
-                    }
-                };
-                for (primary, alt, pk, relay_to) in &targets {
+                // One frame per seal: the fleet's (built once, for every fleet sibling) and each alias sibling's own.
+                let mut fleet_frame: Option<Vec<u8>> = None;
+                for (primary, alt, pk, relay_to, alias) in targets.iter().filter(|t| only.as_ref().is_none_or(|o| o.contains(&t.2))) {
+                    let frame = match (alias, fleet_seal) {
+                        // An alias sibling opens by its pair key, never by the epoch the frame names (0 here).
+                        (Some(key), _) => seal_chain_sync(&bytes, &subset.conversation_token, key, 0, &kp_pub, &kp_sec),
+                        (None, Some((epoch_k, key))) => match fleet_frame.as_ref() {
+                            Some(f) => Ok(f.clone()),
+                            None => seal_chain_sync(&bytes, &subset.conversation_token, &key, epoch_k, &kp_pub, &kp_sec).map(|f| {
+                                fleet_frame = Some(f.clone());
+                                f
+                            }),
+                        },
+                        (None, None) => continue,
+                    };
+                    let frame = match frame {
+                        Ok(f) => f,
+                        Err(e) => {
+                            crate::logf!("CHAIN-SYNC CRITICAL: seal or frame build failed off-thread: {} — {} lane(s) for {} unpushed to {} until the lane next advances", e, lane_count, crate::fp(&fid_bytes), crate::fp(pk));
+                            continue;
+                        }
+                    };
                     crate::log_err!(dispatch.send(crate::network::status::HistorySendRequest {
                         peer_addr: *primary,
                         alt_addr: *alt,
                         recipient_pubkey: *pk,
                         relay_to: relay_to.clone(),
-                        vsf_bytes: frame.clone(),
+                        vsf_bytes: frame,
                         tag: None,
                     }), "queue a history page to a sibling");
                 }
@@ -1646,7 +1686,8 @@ impl PhotonApp {
                 continue;
             }
             // A device that can transmit itself owns delivery thru its own retransmit ladder — re-serving to siblings is the CHAINLESS origin's only path.
-            if c.chain_woven || self.lane_transmit_capable(ci) {
+            // Photon on the alias alone is such an origin whatever chains it holds: it sends a friend nothing itself (transmit_core), so its forwards are re-served like a chainless device's.
+            if !self.alias_alone() && (c.chain_woven || self.lane_transmit_capable(ci)) {
                 continue;
             }
             let Some(conv) = self.conv_of(ci) else { continue };
@@ -1832,7 +1873,8 @@ impl PhotonApp {
                     return None;
                 }
                 // Friend route: token from the chain (identical to the derived one — same participant set). No chain_woven gate — the page-seal capability is the HISTORY KEY (required just below), and stale woven flags from the wedge/rotation era stranded a behind device with an armed walk it could never drive (2026-08-11).
-                if c.is_online {
+                // Never on the alias alone: a friend's device takes no request from it, and an alias sibling serves the walk (the fleet route below).
+                if c.is_online && !alias_only {
                     if let Some(fid) = c.friendship_id {
                         if let Some((_, chains)) =
                             self.friendship_chains.iter().find(|(id, _)| *id == fid)
@@ -1895,7 +1937,9 @@ impl PhotonApp {
                     Some((addrs.first().copied().unwrap_or(crate::network::status::RELAY_ADDR), addrs.get(1).copied(), dev, vec![dev]))
                 })
             };
-            if let Some((primary, alt, pk, relay)) = friend.or_else(any_member).or_else(|| sibling_target.clone()) {
+            // On the alias alone only an alias sibling is asked, as for a pair.
+            let route = if alias_only { sibling_target.clone() } else { friend.or_else(any_member).or_else(|| sibling_target.clone()) };
+            if let Some((primary, alt, pk, relay)) = route {
                 candidates.push((fid, Some(fid), chains.conversation_token, primary, alt, pk, relay));
             }
         }
@@ -2006,6 +2050,10 @@ impl PhotonApp {
 
     /// Blind-ops driver (every tick, beside `drive_history_recovery`): keeps the friend-blinded private-identity-secret machinery converged. Per eligible friend (online, woven, mutual, not a sibling): expire a lost in-flight op (~15s), then fire the ONE op this contact needs — a `blind_get` while S is unknown and this friend hasn't answered `found=0` yet (probe and reconstitute are the SAME op), or a `blind_put` while S exists and this friend hasn't disk-confirmed our deposit. One op in flight per contact; responses land in the `BlindFrameReceived` arm. Steady state (S live, deposits confirmed everywhere) is a pure no-op.
     pub(super) fn drive_blind_ops(&mut self) {
+        // A friend made Complete by replicated chains on the alias alone gets no blind op from us: its devices take no frame from us yet, and the private identity secret is the fleet's business.
+        if self.alias_alone() {
+            return;
+        }
         use crate::crypto::blind::PrivateS;
         const BLIND_INFLIGHT_TIMEOUT_OSC: i64 = 15 * crate::OSC_PER_SEC;
         let now_osc = vsf::eagle_time_oscillations();
@@ -2258,4 +2306,15 @@ impl PhotonApp {
         }
     }
 
+}
+
+/// Seal a friendship's chains (storage::friendship::chains_to_vsf_bytes) under `key` into a device-signed chain_sync frame naming epoch `epoch_k`: the fleet's epoch key for a fleet sibling, an alias sibling's pair key with epoch 0 (it opens by the pair, never by an epoch).
+pub(super) fn seal_chain_sync(chains: &[u8], token: &[u8; 32], key: &[u8; 32], epoch_k: u64, device_pubkey: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
+    let sealed = kete::encrypt_bytes(chains, key)?;
+    crate::network::fgtw::protocol::build_chain_sync_vsf(token, epoch_k, sealed, device_pubkey, device_secret)
+}
+
+/// Open a chain_sync blob under the first of `keys` it opens under (an AEAD failure under one key is the answer "not this one").
+pub(super) fn open_chain_sync(sealed: &[u8], keys: &[[u8; 32]]) -> Option<Vec<u8>> {
+    keys.iter().find_map(|k| kete::decrypt_bytes(sealed, k).ok())
 }

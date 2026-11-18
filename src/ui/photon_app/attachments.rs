@@ -327,6 +327,10 @@ impl PhotonApp {
     /// The load, the seal and the dispatch run on the attach worker: the UI thread makes no vault call (2026-09-18 ANR).
     /// `token` names the conversation the blob belongs to when it is not the pair's own (a roster conversation's push to one of its members).
     pub(super) fn send_attach_blob(&mut self, ci: usize, content_hash: &[u8; 32], token: Option<[u8; 32]>) {
+        // On the alias alone a friend gets no push from us (its devices take no frame from us yet); a sibling fetches lazily as ever.
+        if self.alias_alone() {
+            return;
+        }
         let token_for = token;
         let Some(seed) = self.messenger_root() else {
             return;
@@ -401,6 +405,10 @@ impl PhotonApp {
 
     /// Push a CHUNKED blob to the friend: the sealed manifest, then every chunk, each its own PT frame — sealed and dispatched from the worker (256 seals of 256 KB do not belong on the render thread).
     pub(super) fn send_attach_chunks(&mut self, ci: usize, content_hash: &[u8; 32], m: crate::storage::BlobManifest, token: Option<[u8; 32]>) {
+        // As send_attach_blob: nothing to a friend from the alias alone.
+        if self.alias_alone() {
+            return;
+        }
         let token_for = token;
         let (device, addr_pair, relay_to, token) = {
             let Some(c) = self.contacts.get(ci) else {
@@ -531,8 +539,10 @@ impl PhotonApp {
         // A PULL (holdings.rs, removal safety): the leaving device holds the only copy and asked us to take it — it outranks everyone; every other rank sits one lower.
         let prefer = self.attach_fetch_prefer.get(content_hash).copied();
         let ranked = |k: [u8; 32], rank: u8| if prefer == Some(k) { 0 } else { rank + 1 };
+        let alias_alone = self.alias_alone();
         for c in &self.contacts {
-            let is_friend = !c.is_sibling && members.contains(&c.handle_hash);
+            // On the alias alone a friend is never asked (its devices take no frame from us yet): only our siblings are.
+            let is_friend = !alias_alone && !c.is_sibling && members.contains(&c.handle_hash);
             let is_target = c.is_sibling || is_friend;
             if !is_target {
                 continue;
@@ -569,7 +579,7 @@ impl PhotonApp {
         }
         // STRANGERS IN THE ROOM (Nick 2026-10-26: "we know who's in it"): a standing member we never friended is asked like a friend — their devices from the roster's fold (member_devices), their addresses from the phonebook (device_addresses), the relay alone when none is known. They rank with a friend's offline devices: after the friends' live paths and our own siblings, before nobody.
         let us = self.own_party_id();
-        let strangers: Vec<[u8; 32]> = members.iter().copied().filter(|p| Some(*p) != us && !self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == *p)).collect();
+        let strangers: Vec<[u8; 32]> = members.iter().copied().filter(|p| !alias_alone && Some(*p) != us && !self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == *p)).collect();
         for party in &strangers {
             for dev in super::molecules::member_devices(&self.contacts, &self.molecule_peers, party) {
                 let addrs = self.device_addresses(&dev);

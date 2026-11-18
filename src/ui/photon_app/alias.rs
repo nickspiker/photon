@@ -176,13 +176,26 @@ impl PhotonApp {
         (keys.legacy_seed.is_none() || !fleet.contains(device)).then(|| keys.sibling_root())
     }
 
-    /// The seal for a frame of `purpose` to alias sibling `device` (2026-11-17, the owner: the person's conversations on a ferros Photon, and a way to cut a lost one off): a key from the pair secret our sibling ceremony made with that one device (fanout_pairs, kept in `alias_pairs`), so no fleet key and no friendship key ever reaches an alias sibling, and removing it from the alias's list is the whole roll. None for a fleet sibling, or an alias sibling whose ceremony has not completed.
+    /// The seal for a frame of `purpose` to alias sibling `device` (2026-11-17, the owner: the person's conversations on a ferros Photon, and a way to cut a lost one off): a key from the pair secret our sibling ceremony made with that one device (fanout_pairs, kept in `alias_pairs`), so no fleet key ever reaches an alias sibling, and removing it from the alias's list stops every frame to it. None for a fleet sibling, or an alias sibling whose ceremony has not completed.
+    /// The friendship chains themselves do reach it, sealed under this key (the owner 2026-11-18: "friendship keys get copied to every device"); what a removed device keeps of them is said in drive_chain_replication.
     pub(super) fn alias_seal_key(&self, device: &[u8; 32], purpose: &[u8]) -> Option<[u8; 32]> {
         let (_, pair) = self.alias_pairs.iter().find(|(d, _)| d == device)?;
-        let mut h = blake3::Hasher::new_derive_key("photon 2026-11-17 frames to an alias sibling");
-        h.update(purpose);
-        h.update(pair);
-        Some(*h.finalize().as_bytes())
+        Some(alias_frame_key(pair, purpose))
+    }
+
+    /// Photon on the alias alone (a ferros one): PhotonKeys handed in, no identity seed, never a member of the fleet.
+    /// No friend's device takes a frame from it until contacts accept photons from the alias's device list, so it never starts a friend ceremony or sends a friend anything itself: its sends go thru an alias sibling (f43fba37's forward), even while it holds every friendship's chains.
+    pub(super) fn alias_alone(&self) -> bool {
+        self.photon_keys.as_ref().is_some_and(|k| k.legacy_seed.is_none())
+    }
+
+    /// Owe alias sibling `device` every friendship's chains, served whole by the next replication pass under its pair key: when its pair secret is first read here, and each time it comes online.
+    /// Only a fleet member serves this way; Photon on the alias alone pushes what it advances, and its siblings hold everything already.
+    pub(super) fn owe_alias_chains(&mut self, device: [u8; 32]) {
+        if self.alias_alone() || !self.alias_pairs.iter().any(|(d, _)| *d == device) || self.alias_chains_owed.contains(&device) {
+            return;
+        }
+        self.alias_chains_owed.push(device);
     }
 
     /// Read the pair secrets of every alias sibling into `alias_pairs`, off the UI thread (a vault read each): on the alias's settle, on resume, and when a sibling ceremony completes.
@@ -221,7 +234,12 @@ impl PhotonApp {
         };
         self.alias_pairs_rx = None;
         crate::logf!("ALIAS: {} alias sibling(s) with a pair secret: frames to them seal under it", pairs.len());
+        let fresh: Vec<[u8; 32]> = pairs.iter().map(|(d, _)| *d).filter(|d| !self.alias_pairs.iter().any(|(x, _)| x == d)).collect();
         self.alias_pairs = pairs;
+        // A device whose pair secret is new here could open none of our chains before: it is owed all of them.
+        for d in fresh {
+            self.owe_alias_chains(d);
+        }
         true
     }
 
@@ -274,5 +292,66 @@ impl PhotonApp {
             let opened = crate::storage::open_session_vault(root, root, device_secret);
             self.finish_resume_load(None, opened, t_boot);
         }
+    }
+}
+
+/// The key a frame of `purpose` to or from an alias sibling seals under: hashed from the pair secret our sibling ceremony made with that one device, so each purpose and each device has its own.
+pub(super) fn alias_frame_key(pair: &[u8; 32], purpose: &[u8]) -> [u8; 32] {
+    let mut h = blake3::Hasher::new_derive_key("photon 2026-11-17 frames to an alias sibling");
+    h.update(purpose);
+    h.update(pair);
+    *h.finalize().as_bytes()
+}
+
+/// May a frame on a conversation's keys leave here for these recipients: anything from a fleet member; from Photon on the alias alone, only what goes to its own siblings (no friend's device takes a frame from it yet, whatever chains it holds).
+pub(super) fn alias_may_send(alias_alone: bool, every_recipient_ours: bool) -> bool {
+    !alias_alone || every_recipient_ours
+}
+
+/// May a ceremony with this contact start here (a keygen, an offer, a re-key): a sibling's weave always; a friend's never on the alias alone, chains held or not (PHOTON.md group 0 brings the friend CLUTCH on the alias).
+pub(super) fn ceremony_may_start(alias_alone: bool, is_sibling: bool) -> bool {
+    is_sibling || !alias_alone
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{alias_frame_key, alias_may_send, ceremony_may_start};
+    use super::super::sync::{open_chain_sync, seal_chain_sync};
+
+    fn keypair(seed: u8) -> ([u8; 32], [u8; 32]) {
+        let sk = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
+        (sk.verifying_key().to_bytes(), [seed; 32])
+    }
+
+    /// A friendship's chains to an alias sibling: sealed under the pair key, carried in a signed chain_sync frame naming epoch 0, opened under the same pair key and nothing else.
+    #[test]
+    fn chains_round_trip_under_the_pair_key() {
+        let (pubkey, secret) = keypair(23);
+        let pair = [0x5Au8; 32];
+        let token = [0xC3u8; 32];
+        let chains = vec![0x71u8; 4096];
+        let key = alias_frame_key(&pair, b"chain_sync");
+        let frame = seal_chain_sync(&chains, &token, &key, 0, &pubkey, &secret).unwrap();
+        let ((ptok, pek, sealed), signer) = crate::network::fgtw::protocol::parse_chain_sync_vsf(&frame).unwrap();
+        assert_eq!((ptok, pek, signer), (token, 0, pubkey));
+        assert_eq!(open_chain_sync(&sealed, &[key]), Some(chains.clone()));
+        // Another device's pair, another purpose's key, or the fleet's epoch key opens nothing.
+        let other_pair = alias_frame_key(&[0x5Bu8; 32], b"chain_sync");
+        let other_purpose = alias_frame_key(&pair, b"hist_page");
+        let epoch = crate::crypto::clutch::fleet_epoch_seal_key(&[0x11u8; 32], b"chain_sync");
+        assert_eq!(open_chain_sync(&sealed, &[other_pair, other_purpose, epoch]), None);
+        // The receiver tries each key it holds for the sender; the pair key opens wherever it sits among them.
+        assert_eq!(open_chain_sync(&sealed, &[epoch, key]), Some(chains));
+    }
+
+    /// Photon on the alias alone holding every friendship's chains: no direct send to a friend and no friend ceremony; its siblings are still reached, and their weaves still run. A fleet member is unchanged.
+    #[test]
+    fn the_alias_alone_reaches_only_its_siblings() {
+        assert!(!alias_may_send(true, false));
+        assert!(alias_may_send(true, true));
+        assert!(alias_may_send(false, false));
+        assert!(!ceremony_may_start(true, false));
+        assert!(ceremony_may_start(true, true));
+        assert!(ceremony_may_start(false, false));
     }
 }

@@ -756,7 +756,8 @@ impl PhotonApp {
                     crate::logf!("MOLECULE: dropped a held row in {} — we left and hold no root", hex::encode(&gid.0[..4]));
                     continue;
                 }
-                p.queued = if phase == crate::storage::molecule::MoleculePhase::Joining || !keyed || minting { u64::MAX } else { serial };
+                // On the alias alone a keyed group still sends nothing itself (transmit_core): the row parks, as it did while this device held no root, instead of retrying every frame.
+                p.queued = if phase == crate::storage::molecule::MoleculePhase::Joining || !keyed || minting || self.alias_alone() { u64::MAX } else { serial };
                 self.pending_sends.push(p);
                 continue;
             }
@@ -1070,6 +1071,13 @@ impl PhotonApp {
         molecule: Option<&crate::network::message_package::MoleculeWire>,
         control: Option<&crate::types::RowControl>,
     ) -> bool {
+        // PHOTON ON THE ALIAS ALONE SENDS A FRIEND NOTHING ITSELF (2026-11-18): it now holds every friendship's chains, and a friend's device drops a sender outside the fleet until contacts accept photons from the alias's device list.
+        // A frame for anyone but our own siblings is refused here, the one door every chain send passes: a pair row then goes thru an alias sibling (drain_pending_sends' forward), a group row parks, and a control row (a probe, a wave signal, an era row, a bond's) is simply not sent.
+        let ours = routes.iter().all(|r| self.contacts.iter().any(|c| c.is_sibling && c.knows_device(&r.recipient_pubkey)));
+        if !super::alias::alias_may_send(self.alias_alone(), ours) {
+            crate::logf!("CHAT: conversation {} — Photon on the alias alone sends a friend nothing itself; a sibling carries it", hex::encode(&conv_id.as_bytes()[..4]));
+            return false;
+        }
         let conv = self.conversations.iter().find(|v| v.id() == conv_id);
         // Read before any chains borrow: the row's own marks (a tagged phrase carries a destination the text cannot rebuild — a re-serve reads the row, 2026-09-09).
         let row_marks: Vec<crate::types::MessageMark> = conv

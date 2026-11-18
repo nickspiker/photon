@@ -427,6 +427,7 @@ impl PhotonApp {
             .as_bytes();
 
         let mut claimed_ownership = false;
+        let alias_alone = self.alias_alone();
         while let Ok(result) = self.clutch_keygen_rx.try_recv() {
             self.clutch_jobs_in_flight.set(self.clutch_jobs_in_flight.get() - 1); // its spawn counted it (spawn_clutch_*)
             let result_id_hex = hex::encode(&result.contact_id.as_bytes()[..4]);
@@ -457,6 +458,14 @@ impl PhotonApp {
                             "CLUTCH: keygen result for zero-remote conversation {} — discarded (nothing to exchange)",
                             crate::fp(&contact.handle_proof).as_str()
                         );
+                        break;
+                    }
+
+                    // NO FRIEND CEREMONY ON THE ALIAS ALONE, chains held or not (2026-11-18): keys for a friend that reach here anyway are thrown away, never offered.
+                    if !super::alias::ceremony_may_start(alias_alone, contact.is_sibling) {
+                        crate::logf!("CLUTCH: keygen result for friend {} on the alias alone — discarded, no friend ceremony here", crate::fp(&contact.handle_proof).as_str());
+                        contact.discard_clutch_round();
+                        changed = true;
                         break;
                     }
 

@@ -701,7 +701,8 @@ impl PhotonApp {
             let gid = self.molecule_rosters[gi].0;
             let fid = crate::types::FriendshipId::from_bytes(gid.0);
             let phase = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
-            return matches!(phase, crate::storage::molecule::MoleculePhase::Standing | crate::storage::molecule::MoleculePhase::CatchingUp) && self.friendship_chains.iter().any(|(id, c)| *id == fid && c.lane_capable());
+            // On the alias alone the group's keys are held for reading only: nothing here sends in it (transmit_core), and no sibling forwards a group row, so no compose box.
+            return !self.alias_alone() && matches!(phase, crate::storage::molecule::MoleculePhase::Standing | crate::storage::molecule::MoleculePhase::CatchingUp) && self.friendship_chains.iter().any(|(id, c)| *id == fid && c.lane_capable());
         }
         let Some(ci) = self.active_contact() else {
             return false;
@@ -3300,7 +3301,8 @@ impl PhotonApp {
                 crate::logf!("FLEET-HIST: {} re-served row(s) already delivered here — answering the delivered tick back", answer_back.len());
                 self.push_rows_to_siblings(idx, &answer_back, None);
             }
-            if from_sibling && (self.contacts[idx].chain_woven || self.lane_transmit_capable(idx)) {
+            // Never on the alias alone: replicated chains make it look able to write the braid, but it sends a friend nothing itself (transmit_core); the sibling that forwarded the rows carries them.
+            if from_sibling && !self.alias_alone() && (self.contacts[idx].chain_woven || self.lane_transmit_capable(idx)) {
                 // KNOWN rows drain too when re-served undelivered with no live pending here: they reached us before we could transmit, and the fresh-only rule stranded them.
                 let pending: crate::linear_map::SortedSet<i64> = self.contacts[idx]
                     .friendship_id

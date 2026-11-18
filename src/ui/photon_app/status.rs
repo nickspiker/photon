@@ -136,6 +136,8 @@ impl PhotonApp {
             let now = vsf::eagle_time_oscillations();
             // Probe cache taken out for the closure (contacts holds the self borrow), restored after. The vault read behind a miss takes the VAULT MUTEX that persist workers hold thru whole table writes — per-tick probing turned every background write into a UI stall (2026-08-15 "status pre-loop" 400-1794ms). One probe per contact per session; avatar installs / pin adoptions clear the map.
             let mut probe_cache = std::mem::take(&mut self.avatar_probe_cache);
+            // A friend made Complete by replicated chains on the alias alone is never asked directly: its devices take no frame from us yet, so its avatar comes as it did before the chains (FGTW, or a sibling).
+            let alias_alone = self.alias_alone();
             let plans: Vec<AvatarPlan> = self
                 .contacts
                 .iter()
@@ -151,7 +153,7 @@ impl PhotonApp {
                     if cached {
                         return AvatarPlan::LocalCached { ci };
                     }
-                    if c.is_mutual() {
+                    if c.is_mutual() && !alias_alone {
                         if let (Some((addr, _alt)), Some(recipient_key)) = (c.race_addrs(), c.device_key()) {
                             return AvatarPlan::P2pThenFgtw {
                                 peer_addr: addr,
@@ -4167,13 +4169,21 @@ impl PhotonApp {
                         );
                         continue;
                     }
-                    // The B3 re-seal: the blob opens under the chain_sync key of the epoch it names — current, or prev across a checkpoint crossing. A frame ahead of our spine means we lag; ask the sender to serve its state and drop (the chain re-pushes on its next advance).
+                    // An ALIAS sibling's frame (a ferros Photon's, or the fleet's to one) opens under the pair key our sibling ceremony made with it (alias_seal_key, 2026-11-18), whatever epoch it names; it never asks for spine state, which an alias sibling neither holds nor serves.
+                    let alias_key = self.alias_seal_key(&sender_pubkey.key, b"chain_sync");
+                    // The B3 re-seal: a fleet sibling's blob opens under the chain_sync key of the epoch it names — current, or prev across a checkpoint crossing. A frame ahead of our spine means we lag; ask the sender to serve its state and drop (the chain re-pushes on its next advance).
                     let epoch = match (self.fleet_epoch, self.fleet_epoch_prev) {
                         (Some((k, e)), _) if k == epoch_k => Some(e),
                         (_, Some((k, e))) if k == epoch_k => Some(e),
                         _ => None,
                     };
-                    let Some(epoch) = epoch else {
+                    let keys: Vec<[u8; 32]> = alias_key.into_iter().chain(epoch.map(|e| crate::crypto::clutch::fleet_epoch_seal_key(&e, b"chain_sync"))).collect();
+                    // No key to open it: from an alias sibling whose pair secret is not read here yet (or on the alias alone, where every sibling is one) it is dropped, never a spine request; its next push, or our owed serve, lands once the pair is read.
+                    if keys.is_empty() && (self.alias_alone() || self.alias_sibling_root(&sender_pubkey.key, &self.fleet_members_held()).is_some()) {
+                        crate::logf!("CHAIN-SYNC: frame from alias sibling {} before its pair secret is read here — dropped", crate::fp(&sender_pubkey.key));
+                        continue;
+                    }
+                    if keys.is_empty() {
                         let our_k = self.fleet_epoch.map(|(k, _)| k).unwrap_or(0);
                         crate::logf!("CKPT: chain_sync sealed at k={} but our spine is at k={} — requesting state from {}", epoch_k, our_k, crate::fp(&sender_pubkey.key));
                         if let Some(kp) = self.device_keypair.as_ref() {
@@ -4186,15 +4196,13 @@ impl PhotonApp {
                             }
                         }
                         continue;
-                    };
-                    let seal_key =
-                        crate::crypto::clutch::fleet_epoch_seal_key(&epoch, b"chain_sync");
+                    }
                     // OFF-THREAD: the kete open + VSF decode ran inline — 17KB+ per lane, and a fresh sibling join repushes EVERY friendship at once (an adopt storm on the render thread). The worker opens and decodes; the adopt (cheap position compares) runs in drain_chain_syncs.
                     let tx = self.chain_sync_opened_tx.clone();
                     let wake = self.event_proxy.clone();
                     queue_job(&self.seal_job_tx, move || {
-                        let Ok(plain) = kete::decrypt_bytes(&sealed, &seal_key) else {
-                            crate::log("CHAIN-SYNC: blob failed to open under the epoch chain_sync key — dropped (stale epoch?)");
+                        let Some(plain) = super::sync::open_chain_sync(&sealed, &keys) else {
+                            crate::log("CHAIN-SYNC: blob failed to open under the pair key or the epoch chain_sync key — dropped (stale epoch?)");
                             return;
                         };
                         let incoming =
@@ -5902,6 +5910,8 @@ impl PhotonApp {
         }
         for dev in fstate_to_siblings_after {
             self.fleet_state_push(Some(dev));
+            // An alias sibling back online is owed every friendship's chains too: lanes that moved while it was away reached it only if they moved again since.
+            self.owe_alias_chains(dev);
         }
         for dev in reachable_after {
             if self.depart_asking() || self.depart_asked().is_some() {
