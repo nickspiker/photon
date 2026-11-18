@@ -721,7 +721,7 @@ pub struct Contact {
     pub era_prior_claim: Option<(u32, u64)>,
     /// A heavy weave is DUE for this friendship once the cached fleet epoch reaches this value (0 = none): armed on a fleet shrink (Revoke / Release) at epoch+1 so the woven era's chain-sync seals only under the key the leaver never gets, or at 1 by a repair verdict. Persisted, so a restart cannot lose a shrink's re-key.
     pub era_weave_due: u64,
-    /// A LOCKOUT re-key is owed for this friendship (the owner 2026-11-18: a device locked out from another re-keys every friendship by the light era ratchet, one friend at a time as each comes online): due once the cached fleet epoch reaches this value, at 1 at once, 0 none. Persisted, so a restart cannot lose a lockout's re-key.
+    /// A LOCKOUT re-key is owed for this friendship (the owner 2026-11-18: a device locked out from another re-keys every friendship by the light era ratchet, one friend at a time as each comes online): due once this device's fleet epoch folds this fan-out revision, the first whose key the locked device cannot hold (era.rs lockout_fanout_due; u64::MAX while no key sync has said which), at 1 at once, 0 none. Persisted, so a restart cannot lose a lockout's re-key.
     pub era_lockout_due: u64,
     /// The bond's era tag when the lockout re-key was armed: the re-key is done once the bond stands on any other era.
     pub era_lockout_from: u32,

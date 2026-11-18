@@ -838,6 +838,11 @@ impl PhotonApp {
         }
 
         // Removal-heal follow-up, winner only (braid.md §14.2): our heal thread won a rotation, so revoke the one fleet-held bearer credential OUTSIDE the fstate slot — the avatar pin. Losers adopted the winner's key off-thread and have nothing to do here.
+        // Where the fan-out stands, as each key sync saw it: what a member's lockout re-key waits for (era.rs).
+        let seen: Vec<super::era::FanoutSeen> = self.fanout_seen_rx.try_iter().collect();
+        for s in seen {
+            self.adopt_fanout_seen(s);
+        }
         if self.fleet_rotated_rx.try_iter().count() > 0 {
             self.rotate_avatar_pin();
             // A won rotation is the PCS boundary — fold the fresh fleet key into the epoch spine NOW, not up to a full row-cadence later.

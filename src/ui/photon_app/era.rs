@@ -180,13 +180,37 @@ pub(crate) fn arm_lockout_rekeys(contacts: &mut [crate::types::Contact], tags: &
     armed
 }
 
-/// The fleet epoch a lockout's re-key waits for. A device that held the fleet key (a member) waits for the epoch that followed its lock on the chain, `after_lock` (fgtw MembershipBlob::epoch_after_lock), the first whose key it never holds; with the lock not on the chain yet, the checkpoint after `latest_ckpt`, the newest one known. A device that never held it (a Photon on the alias alone) waits for nothing: 1, at once.
-/// Never "this device's epoch plus one": a device that learns of the lock after its epoch moved would wait for a rotation that is not coming (the stall, 2026-11-18).
-pub(crate) fn lockout_due(held_fleet_key: bool, after_lock: Option<u64>, latest_ckpt: Option<u64>) -> u64 {
-    if !held_fleet_key {
-        return 1;
+/// A member's lockout armed before any key sync has said where the fan-out stands: no epoch is due until one does (`adopt_fanout_seen`).
+pub(crate) const LOCKOUT_FANOUT_UNKNOWN: u64 = u64::MAX;
+
+/// The fan-out as one key sync saw it (devices.rs spawn_fleet_key_sync): its revision, whether it still reaches a locked device, and the locked set it measured against.
+/// "Reaches" is the rotation code's own criterion (fgtw fanout_needs_rotation): the fan-out wraps more devices than the fold minus the locked, so a locked device's wrap lingers; the wraps are unlabelled, so neither the chain nor the slot says which devices a fan-out reached, and this count is the one test the rotation itself acts on.
+pub(crate) struct FanoutSeen {
+    pub revision: u64,
+    pub reaches_locked: bool,
+    pub locked: Vec<[u8; 32]>,
+}
+
+/// The fan-out revision a member's lockout re-key waits for: the first whose key the locked device cannot hold.
+/// A fan-out that still reaches it wraps a key it holds, so the wait is for the next revision, which is the rotation the lock starts (a mint wraps the fold minus the locked alone, and every later one does the same); one that no longer reaches it is that revision already.
+/// Never a checkpoint counted from the lock: a routine checkpoint between the lock and the rotation folds the old key, and an era sealed under it would reach the locked device (the leak, 2026-11-18).
+/// The value 1 doubles as "at once" (a device that never held the fleet key): a revision-1 fan-out that reaches no locked device means every key there ever was is past the lock anyway.
+pub(crate) fn lockout_fanout_due(seen: &FanoutSeen) -> u64 {
+    if seen.reaches_locked {
+        seen.revision + 1
+    } else {
+        seen.revision
     }
-    after_lock.unwrap_or_else(|| latest_ckpt.unwrap_or(0) + 1)
+}
+
+/// Is a lockout's wait over: at once, or the fan-out revision folded into this device's current fleet epoch (the checkpoint's `ckpt_fanout_epoch`) is the one the wait names or later, so every chain_sync sealed from here is under a key the locked device never held.
+pub(crate) fn lockout_wait_over(due: u64, folded: Option<u64>) -> bool {
+    due == 1 || (due != LOCKOUT_FANOUT_UNKNOWN && folded.is_some_and(|r| r >= due))
+}
+
+/// The fan-out revision the checkpoint `k` folded, as the chain records it.
+pub(crate) fn folded_fanout_revision(chain: &fgtw::fleet::MembershipBlob, k: u64) -> Option<u64> {
+    chain.ops.iter().find(|op| op.kind == fgtw::fleet::OpKind::Checkpoint && op.ckpt_k == k).map(|op| op.ckpt_fanout_epoch)
 }
 
 /// Arm one group's lockout re-key, the friendships' rule: the later due wins, measured from the era the group stands on now.
@@ -197,9 +221,9 @@ pub(crate) fn arm_group_lockout(local: &mut crate::storage::molecule::MoleculeLo
     local.lockout_from = tag;
 }
 
-/// May this device mint a group's lockout era now: it is owed and due, this device is the group's minter, and no era of the group is pending (a mint in flight, or a cutover not yet taken), so one group at a time and never two mints from one era.
-pub(crate) fn group_lockout_ready(due: u64, epoch_now: u64, we_mint: bool, pending: bool) -> bool {
-    due != 0 && (due == 1 || epoch_now >= due) && we_mint && !pending
+/// May this device mint a group's lockout era now: it is owed, its wait is over (`lockout_wait_over`, against `folded`, the fan-out revision this device's epoch folded), this device is the group's minter, and no era of the group is pending (a mint in flight, or a cutover not yet taken), so one group at a time and never two mints from one era.
+pub(crate) fn group_lockout_ready(due: u64, folded: Option<u64>, we_mint: bool, pending: bool) -> bool {
+    due != 0 && lockout_wait_over(due, folded) && we_mint && !pending
 }
 
 /// A lockout re-key is done once the bond stands on an era other than the one it was armed on.
@@ -207,10 +231,10 @@ pub(crate) fn lockout_rekey_done(c: &crate::types::Contact, tag: Option<u32>) ->
     c.era_lockout_due != 0 && tag.is_some_and(|t| t != c.era_lockout_from)
 }
 
-/// May this device start the lockout re-key of `c` now: it is owed and due (the fleet epoch reached, or due at once), the friend is online, the friendship is complete with nothing of its own in flight, and this device is its ceremony owner (unclaimed reads as ours, the park rule).
-pub(crate) fn lockout_rekey_ready(c: &crate::types::Contact, epoch_now: u64, ours: Option<[u8; 32]>) -> bool {
+/// May this device start the lockout re-key of `c` now: it is owed and its wait is over (`lockout_wait_over`), the friend is online, the friendship is complete with nothing of its own in flight, and this device is its ceremony owner (unclaimed reads as ours, the park rule).
+pub(crate) fn lockout_rekey_ready(c: &crate::types::Contact, folded: Option<u64>, ours: Option<[u8; 32]>) -> bool {
     c.era_lockout_due != 0
-        && (c.era_lockout_due == 1 || epoch_now >= c.era_lockout_due)
+        && lockout_wait_over(c.era_lockout_due, folded)
         && !c.is_sibling
         && !c.locked_out
         && c.is_online
@@ -585,7 +609,7 @@ impl PhotonApp {
     }
 
     /// LOCKOUT EDGE (the owner 2026-11-18: "one of which triggers a re-key and locks out that device"): every friendship with a live era owes one re-key, by the light era ratchet, started one friend at a time as each comes online (`lockout_rekey_step`).
-    /// `due` is the fleet epoch the re-key waits for (`lockout_due`): the epoch that followed a member's lock on the chain, so the new era's chain_sync seals only under a fleet key the locked device never holds; 1 for a device that never held the fleet key (a Photon on the alias alone), which waits for nothing.
+    /// `due` is the fan-out revision the re-key waits for (`lockout_fanout_due`): for a member, the first whose key the locked device cannot hold, unknown until a key sync reports (`LOCKOUT_FANOUT_UNKNOWN`, resolved by `adopt_fanout_seen`), so the new era's chain_sync seals only under a key it never held; 1 for a device that never held the fleet key (a Photon on the alias alone), which waits for nothing.
     /// A device that signed itself out arms nothing: it asserted it wiped its keys (the other path). Persisted per contact, so a restart cannot lose a lockout's re-key.
     pub(super) fn arm_lockout_rekeys(&mut self, due: u64, why: &str) {
         let tags: Vec<Option<u32>> = self.contacts.iter().map(|c| self.bond_era_tag(c)).collect();
@@ -593,7 +617,7 @@ impl PhotonApp {
         let dirty: Vec<crate::types::Contact> = armed.iter().map(|&i| self.contacts[i].clone()).collect();
         self.save_contacts_off_thread(dirty);
         let groups = self.arm_group_lockout_rekeys(due);
-        crate::logf!("ERA: lockout re-key owed by {} friendship(s) and {} group(s), due at epoch {} ({})", armed.len(), groups, due, why);
+        crate::logf!("ERA: lockout re-key owed by {} friendship(s) and {} group(s), {} ({})", armed.len(), groups, if due == LOCKOUT_FANOUT_UNKNOWN { "waiting for a fan-out without the locked device".to_string() } else { format!("due at fan-out revision {due}") }, why);
         self.lockout_rekey_step(why);
     }
 
@@ -642,19 +666,49 @@ impl PhotonApp {
             }
             self.lockout_group_busy = None;
         }
-        let epoch_now = self.fleet_epoch.map(|(e, _)| e).unwrap_or(0);
+        let folded = self.folded_fanout_now();
         let us = self.own_party_id();
         let acts = self.fleet_device_acts(None);
         let pick = self.molecule_locals.iter().filter(|(_, l)| l.lockout_due != 0).map(|(g, l)| (*g, l.lockout_due)).find(|(g, due)| {
             let minter = self.molecule_rosters.iter().find(|(id, _)| id == g).and_then(|(_, r)| r.standing().first().copied());
             let pending = chains_of(self, g).is_some_and(|(_, p)| p);
-            group_lockout_ready(*due, epoch_now, us.is_some() && us == minter && acts, pending)
+            group_lockout_ready(*due, folded, us.is_some() && us == minter && acts, pending)
         });
         if let Some((g, _)) = pick {
             crate::logf!("MOLECULE: {} lockout re-key: minting the next era without the locked device ({})", hex::encode(&g.0[..4]), why);
             self.lockout_group_busy = Some(g);
             self.mint_molecule_era(g, None);
         }
+    }
+
+    /// The fan-out revision folded into this device's current fleet epoch, as our held chain's checkpoint records it; None before an epoch or the chain is held. Read only while a lockout re-key waits.
+    fn folded_fanout_now(&self) -> Option<u64> {
+        let k = self.fleet_epoch.map(|(k, _)| k)?;
+        let chain = crate::network::fgtw::fleet::held_chain(&self.our_handle_proof()?)?;
+        folded_fanout_revision(&chain, k)
+    }
+
+    /// A key sync said where the fan-out stands: every lockout re-key still waiting to learn its revision (`LOCKOUT_FANOUT_UNKNOWN`) learns it here, when the sync measured against every member lock this device knows (one begun before a lock would count the locked device as wanted).
+    pub(super) fn adopt_fanout_seen(&mut self, seen: FanoutSeen) {
+        if !self.fleet_locked_members().iter().all(|d| seen.locked.contains(d)) {
+            return;
+        }
+        let due = lockout_fanout_due(&seen);
+        let mut dirty: Vec<crate::types::Contact> = Vec::new();
+        for c in self.contacts.iter_mut().filter(|c| c.era_lockout_due == LOCKOUT_FANOUT_UNKNOWN) {
+            c.era_lockout_due = due;
+            dirty.push(c.clone());
+        }
+        let groups: Vec<crate::types::molecule::MoleculeId> = self.molecule_locals.iter().filter(|(_, l)| l.lockout_due == LOCKOUT_FANOUT_UNKNOWN).map(|(g, _)| *g).collect();
+        for g in &groups {
+            self.set_molecule_local(g, |l| l.lockout_due = due);
+        }
+        if dirty.is_empty() && groups.is_empty() {
+            return;
+        }
+        crate::logf!("ERA: the fan-out is at revision {} and {} a locked device; {} friendship(s) and {} group(s) re-key once this device's epoch folds revision {}", seen.revision, if seen.reaches_locked { "still reaches" } else { "no longer reaches" }, dirty.len(), groups.len(), due);
+        self.save_contacts_off_thread(dirty);
+        self.lockout_rekey_step("the fan-out was seen");
     }
 
     /// The era tag of the bond a friendship's eras run on, as this device holds it; None without chains.
@@ -693,9 +747,9 @@ impl PhotonApp {
             self.lockout_rekey_busy = None;
         }
         let ours = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
-        let epoch_now = self.fleet_epoch.map(|(e, _)| e).unwrap_or(0);
+        let folded = self.folded_fanout_now();
         let skip = &self.lockout_rekey_skip;
-        let Some(ci) = self.contacts.iter().position(|c| !skip.contains(&c.id) && lockout_rekey_ready(c, epoch_now, ours)) else {
+        let Some(ci) = self.contacts.iter().position(|c| !skip.contains(&c.id) && lockout_rekey_ready(c, folded, ours)) else {
             return;
         };
         let id = self.contacts[ci].id;
@@ -957,31 +1011,50 @@ mod tests {
         assert_eq!((local.lockout_due, local.lockout_from), (5, 0xC1));
         arm_group_lockout(&mut local, 0xC2, 3);
         assert_eq!((local.lockout_due, local.lockout_from), (5, 0xC2), "the later due wins, from the era it stands on now");
-        assert!(group_lockout_ready(5, 5, true, false));
-        assert!(!group_lockout_ready(5, 4, true, false), "waits for the lock's epoch");
-        assert!(!group_lockout_ready(5, 5, false, false), "another member mints this group");
-        assert!(!group_lockout_ready(5, 5, true, true), "an era pending: one mint at a time");
-        assert!(group_lockout_ready(1, 0, true, false), "a device that never held the fleet key: at once");
-        assert!(!group_lockout_ready(0, 9, true, false), "nothing owed");
+        assert!(group_lockout_ready(5, Some(5), true, false));
+        assert!(!group_lockout_ready(5, Some(4), true, false), "waits for the fan-out without the locked device");
+        assert!(!group_lockout_ready(5, Some(5), false, false), "another member mints this group");
+        assert!(!group_lockout_ready(5, Some(5), true, true), "an era pending: one mint at a time");
+        assert!(group_lockout_ready(1, None, true, false), "a device that never held the fleet key: at once");
+        assert!(!group_lockout_ready(LOCKOUT_FANOUT_UNKNOWN, Some(9), true, false), "no key sync has said where the fan-out stands");
+        assert!(!group_lockout_ready(0, Some(9), true, false), "nothing owed");
     }
 
-    /// The stall, 2026-11-18: a device that learns of a member's lock after its fleet epoch already moved past the epoch that followed the lock re-keys at once, never waiting for "its epoch plus one".
+    /// The leak, 2026-11-18: a routine checkpoint minted between the lock and the rotation folds the old fleet key, which the locked member still holds, so the re-key must not go on it; it goes on the first checkpoint that folds the fan-out the rotation minted without the locked device.
     #[test]
-    fn a_late_learner_rekeys_at_once() {
-        let me = [7u8; 32];
-        // The lock was followed on the chain by epoch 5; this device already holds epoch 8 when it learns of it.
-        let due = lockout_due(true, Some(5), Some(8));
-        assert_eq!(due, 5);
+    fn a_routine_checkpoint_between_the_lock_and_the_rotation_carries_no_rekey() {
+        use fgtw::fleet::{bindreq_signing_bytes, scheme, MembershipBlob};
+        use fgtw::pq::FleetSigner;
+        let hp = [0x48u8; 32];
+        let a = fgtw::keys::Keypair::from_seed(&[1; 32]);
+        let b = fgtw::keys::Keypair::from_seed(&[2; 32]);
+        let bpk = b.public.to_bytes();
+        let mut chain = MembershipBlob::genesis(&a, hp, &[7; 32], 100);
+        chain.add(&a, bpk, 101, 101, b.eggs(&bindreq_signing_bytes(&hp, &bpk, 101), scheme::MASK_BASE));
+        chain.checkpoint(&a, 102, 1, [0x11; 32], 3);
+        chain.lock(&a, bpk, 103);
+        // A key sync right after the lock: fan-out revision 3 still wraps the locked device, so the wait is for the rotation's revision 4.
+        let due = lockout_fanout_due(&FanoutSeen { revision: 3, reaches_locked: true, locked: vec![bpk] });
+        assert_eq!(due, 4);
+        // A routine checkpoint (k 2) between the lock and the rotation folds revision 3, the old key.
+        chain.checkpoint(&a, 104, 2, [0x22; 32], 3);
+        assert!(chain.fold().is_ok());
         let mut c = friend(1);
         c.is_online = true;
         c.era_lockout_due = due;
         c.era_lockout_from = 0xA1;
-        assert!(lockout_rekey_ready(&c, 8, Some(me)), "an epoch already past the lock's: at once");
-        assert!(!lockout_rekey_ready(&c, 4, Some(me)), "an epoch before it: waits");
-        // The lock not on the chain yet: the checkpoint after the newest known.
-        assert_eq!(lockout_due(true, None, Some(8)), 9);
-        // A device that never held the fleet key waits for nothing.
-        assert_eq!(lockout_due(false, Some(5), Some(8)), 1);
+        let me = [7u8; 32];
+        assert_eq!(folded_fanout_revision(&chain, 2), Some(3));
+        assert!(!lockout_rekey_ready(&c, folded_fanout_revision(&chain, 2), Some(me)), "the routine checkpoint after the lock folds a key the locked device holds");
+        // The rotation mints revision 4 without the locked device, and the checkpoint after it (k 3) folds it.
+        chain.checkpoint(&a, 105, 3, [0x33; 32], 4);
+        assert!(lockout_rekey_ready(&c, folded_fanout_revision(&chain, 3), Some(me)), "the first epoch folding the rotation's key");
+        // A device that learns of the lock only after the rotation sees a fan-out that no longer reaches it: its wait is that revision, and an epoch already folding it re-keys at once.
+        let late = lockout_fanout_due(&FanoutSeen { revision: 4, reaches_locked: false, locked: vec![bpk] });
+        assert_eq!(late, 4);
+        assert!(lockout_wait_over(late, folded_fanout_revision(&chain, 3)));
+        assert!(!lockout_wait_over(LOCKOUT_FANOUT_UNKNOWN, Some(9)), "nothing goes before a key sync has said where the fan-out stands");
+        assert!(lockout_wait_over(1, None), "a device that never held the fleet key: at once");
     }
 
     /// One at a time and only when it can go: due, online, complete, nothing in flight, and ours to run; done once the bond moved off the armed era.
@@ -991,17 +1064,17 @@ mod tests {
         let mut c = friend(1);
         c.era_lockout_due = 1;
         c.era_lockout_from = 0xA1;
-        assert!(!lockout_rekey_ready(&c, 0, Some(me)), "offline: waits for its online edge");
+        assert!(!lockout_rekey_ready(&c, None, Some(me)), "offline: waits for its online edge");
         c.is_online = true;
-        assert!(lockout_rekey_ready(&c, 0, Some(me)));
+        assert!(lockout_rekey_ready(&c, None, Some(me)));
         c.ceremony_owner = Some([6u8; 32]);
-        assert!(!lockout_rekey_ready(&c, 0, Some(me)), "another device of ours owns this friendship's ceremonies");
+        assert!(!lockout_rekey_ready(&c, None, Some(me)), "another device of ours owns this friendship's ceremonies");
         c.ceremony_owner = Some(me);
         c.era_lockout_due = 5;
-        assert!(!lockout_rekey_ready(&c, 4, Some(me)), "a member's lockout waits for the rotation");
-        assert!(lockout_rekey_ready(&c, 5, Some(me)));
+        assert!(!lockout_rekey_ready(&c, Some(4), Some(me)), "a member's lockout waits for the fan-out without it");
+        assert!(lockout_rekey_ready(&c, Some(5), Some(me)));
         c.era_weave_due = 1;
-        assert!(!lockout_rekey_ready(&c, 5, Some(me)), "a woven CLUTCH already owed carries it");
+        assert!(!lockout_rekey_ready(&c, Some(5), Some(me)), "a woven CLUTCH already owed carries it");
         assert!(!lockout_rekey_done(&c, Some(0xA1)));
         assert!(!lockout_rekey_done(&c, None));
         assert!(lockout_rekey_done(&c, Some(0xA2)));

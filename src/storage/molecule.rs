@@ -325,7 +325,7 @@ pub struct MoleculeLocal {
     pub phase: MoleculePhase,
     /// Offers THIS device sent: (invitee party, the offer row's eagle time in that friendship conversation) — what labels the sponsor-side row "waiting" / "joined" and what a roster edge refreshes.
     pub offered: Vec<([u8; 32], i64)>,
-    /// A LOCKOUT re-key owed for this group (the owner 2026-11-18: a locked device holds every group's keys too): due once the cached fleet epoch reaches this value, at 1 at once, 0 none. Device-local, like the friendships' era_lockout_due.
+    /// A LOCKOUT re-key owed for this group (the owner 2026-11-18: a locked device holds every group's keys too): due once this device's fleet epoch folds this fan-out revision (as the friendships' era_lockout_due), at 1 at once, 0 none. Device-local, like the friendships' era_lockout_due.
     pub lockout_due: u64,
     /// The group's era tag when the lockout re-key was armed: done once the group stands on any other era.
     pub lockout_from: u32,

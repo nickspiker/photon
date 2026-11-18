@@ -2192,6 +2192,9 @@ pub struct PhotonApp {
     /// Heal thread → tick: a removal rotation WE won landed; the drain runs the winner-only UI-thread follow-up (avatar bearer-pin rotate). Losers adopt the winner's key off-thread and send nothing.
     fleet_rotated_tx: std::sync::mpsc::Sender<()>,
     fleet_rotated_rx: std::sync::mpsc::Receiver<()>,
+    /// The fan-out as each key sync saw it (era.rs FanoutSeen): what resolves the fan-out revision a member's lockout re-key waits for.
+    fanout_seen_tx: std::sync::mpsc::Sender<era::FanoutSeen>,
+    fanout_seen_rx: std::sync::mpsc::Receiver<era::FanoutSeen>,
     /// Stop flag for the fleet-event subscription task (dropped app / de-attest).
     fleet_evt_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Off-thread contact-fleet refresh results: (contact handle_proof, current member pubkeys folded from their chain, chain-tip eagle time). Drained in tick into the matching contact's `fleet_members`, gated on the tip being fresher than the last adopted one, then `reseed_contact_pubkeys`. Lets a friend's NEW device be honoured — and a REMOVED device revoked — without waiting for our next launch.
@@ -3098,6 +3101,7 @@ impl PhotonApp {
         let (holdings_tx, holdings_rx) = std::sync::mpsc::channel();
         let (group_face_tx, group_face_rx) = std::sync::mpsc::channel();
         let (flow_tx, flow_rx) = std::sync::mpsc::channel();
+        let (fanout_seen_tx, fanout_seen_rx) = std::sync::mpsc::channel();
         // The fleet key's RAM copy sits inside this Arc for the life of the process, so its address never moves: pinned out of swap once, here (CSTV-08).
         let fleet_key_ram = std::sync::Arc::new(std::sync::Mutex::new(None));
         crate::crypto::pin_in_ram("the fleet key", &*fleet_key_ram);
@@ -3293,6 +3297,8 @@ impl PhotonApp {
                 tx
             },
             fleet_rotated_rx: std::sync::mpsc::channel().1,
+            fanout_seen_tx,
+            fanout_seen_rx,
             avatar_dl_started: crate::linear_map::SortedSet::new(),
             avatar_req_pending: crate::linear_map::LinearMap::new(),
             avatar_want_sent: crate::linear_map::SortedSet::new(),

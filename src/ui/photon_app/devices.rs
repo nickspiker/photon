@@ -1901,6 +1901,7 @@ impl PhotonApp {
         let busy = self.fleet_heal_busy.clone();
         let fkc = self.fleet_key_ram.clone();
         let rotated_tx = self.fleet_rotated_tx.clone();
+        let seen_tx = self.fanout_seen_tx.clone();
         let wake = self.event_proxy.clone();
         // Locked devices (treat-as-stolen) are chain members that must NOT be wrapped: the heal rotates whenever the live fan-out covers more devices than the DESIRED set (fold minus locked), which fires on a member's self-departure AND on a lockout identically.
         let locked = self.locked_devices();
@@ -1931,15 +1932,20 @@ impl PhotonApp {
                 return; // a heal is mid-flight; it caches the freshest key itself, and its fanout_put fires a fresh `fleet` bump for a clean re-sync
             }
             // Fail toward no-mint: any fetch/verify miss here just falls thru to the plain recover path.
-            let heal_members = (|| {
+            let probe = (|| {
                 let members = fleet::current_members_verified(&hp).ok()?;
                 let desired: Vec<[u8; 32]> = members
                     .into_iter()
                     .filter(|m| !locked.contains(m))
                     .collect();
-                let (_, _, _, wraps) = fleet::fetch_fanout(&hp).ok().flatten()?;
-                fleet::fanout_needs_rotation(wraps.len(), desired.len()).then_some(desired)
+                let (revision, _, _, wraps) = fleet::fetch_fanout(&hp).ok().flatten()?;
+                Some((fleet::fanout_needs_rotation(wraps.len(), desired.len()), revision, desired))
             })();
+            // What a lockout's re-key waits for (era.rs FanoutSeen): the fan-out as this sync saw it, against the locked set it measured with.
+            if let Some((reaches, revision, _)) = probe.as_ref() {
+                crate::log_err!(seen_tx.send(super::era::FanoutSeen { revision: *revision, reaches_locked: *reaches, locked: locked.clone() }), "the fan-out seen to the UI thread");
+            }
+            let heal_members = probe.and_then(|(reaches, _, desired)| reaches.then_some(desired));
             if let Some(members) = heal_members {
                 // RAII latch — released on every exit including a panic mid-mint (the old manual store left it poisoned).
                 let Some(_latch) = HealLatch::acquire(&busy) else {
@@ -1956,6 +1962,8 @@ impl PhotonApp {
                     .unwrap_or_default();
                 match fleet::mint_fleet_key(&hp, &device_key, &members, &identity_seed) {
                     Ok((revision, new_key)) => {
+                        // A mint wraps the desired set alone: this revision reaches no locked device.
+                        crate::log_err!(seen_tx.send(super::era::FanoutSeen { revision, reaches_locked: false, locked: locked.clone() }), "the minted fan-out to the UI thread");
                         if let Err(e) = crate::network::fgtw::alias::replace_fleet_key(&storage, &vault_seed, &new_key) {
                             crate::logf!("FLEET: minted key cache failed: {}", e);
                         }
@@ -2741,7 +2749,7 @@ impl PhotonApp {
     }
 
     /// The fleet-synced locked set alone: the members Revoke locked.
-    fn fleet_locked_members(&self) -> Vec<[u8; 32]> {
+    pub(super) fn fleet_locked_members(&self) -> Vec<[u8; 32]> {
         self.fleet_settings
             .as_ref()
             .map(|fs| fs.pubkey_set_union("fleet.locked."))
@@ -2848,17 +2856,11 @@ impl PhotonApp {
         }
         if !changed_rows.is_empty() {
             // LOCKOUT ⇒ every friendship re-keys by the light era ratchet (era.rs arm_lockout_rekeys): a locked device keeps its lane roots, and a new era it cannot follow is the one thing that shuts it out.
-            // A member's lock waits for the epoch that followed it on the chain (era::lockout_due), so the new era never seals under a fleet key the device still holds; a device only on the alias's list never held the fleet key and waits for nothing.
-            // Keyed to the chain, never to where this device stands: one that learns of the lock after its epoch already moved past it re-keys at once.
+            // A member's lock waits for the first fan-out revision whose key it cannot hold (era::lockout_fanout_due), which a key sync reports (era::adopt_fanout_seen): until then the wait is unknown and nothing goes, so a routine checkpoint over the old key never carries the new era.
+            // A device only on the alias's list never held the fleet key and waits for nothing.
             let members_locked = self.fleet_locked_members();
-            let chain = self.our_handle_proof().and_then(|hp| crate::network::fgtw::fleet::held_chain(&hp));
-            let latest_ckpt = chain.as_ref().and_then(|c| c.latest_checkpoint()).map(|(k, _, _)| k).or(self.fleet_epoch.map(|(e, _)| e));
-            let due = changed_rows
-                .iter()
-                .filter_map(|&i| self.contacts[i].device_key())
-                .map(|d| super::era::lockout_due(members_locked.contains(&d), chain.as_ref().and_then(|c| c.epoch_after_lock(&d)), latest_ckpt))
-                .max()
-                .unwrap_or(1);
+            let member = changed_rows.iter().filter_map(|&i| self.contacts[i].device_key()).any(|d| members_locked.contains(&d));
+            let due = if member { super::era::LOCKOUT_FANOUT_UNKNOWN } else { 1 };
             for &i in &changed_rows {
                 crate::logf!(
                     "FLEET: {} is LOCKED OUT — frames refused, friendships re-keying",
@@ -2868,6 +2870,10 @@ impl PhotonApp {
             let dirty: Vec<crate::types::Contact> = changed_rows.iter().map(|&i| self.contacts[i].clone()).collect();
             self.save_contacts_off_thread(dirty);
             self.arm_lockout_rekeys(due, "a device was locked out");
+            // The key sync is the rotation sentinel and the report of where the fan-out stands; a device that learned of the lock after the rotation finds it done there, and its re-key goes as soon as its epoch folds that revision.
+            if member {
+                self.spawn_fleet_key_sync();
+            }
             // Rebuild the answerable ping set so a freshly-locked device's PINGS stop being answered immediately (answerable_pubkeys now drops locked_out contacts) — not just its chain/ceremony frames, which the downstream knows_device gates already refused.
             // Without this the flat set kept the device until the next fold reseed, so it went on exchanging presence.
             self.reseed_contact_pubkeys();
