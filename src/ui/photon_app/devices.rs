@@ -2848,10 +2848,17 @@ impl PhotonApp {
         }
         if !changed_rows.is_empty() {
             // LOCKOUT ⇒ every friendship re-keys by the light era ratchet (era.rs arm_lockout_rekeys): a locked device keeps its lane roots, and a new era it cannot follow is the one thing that shuts it out.
-            // A member's lock waits for the rotation it starts (revoke_device), so the new era never seals under a fleet key the device still holds; a device only on the alias's list never held the fleet key and waits for nothing.
+            // A member's lock waits for the epoch that followed it on the chain (era::lockout_due), so the new era never seals under a fleet key the device still holds; a device only on the alias's list never held the fleet key and waits for nothing.
+            // Keyed to the chain, never to where this device stands: one that learns of the lock after its epoch already moved past it re-keys at once.
             let members_locked = self.fleet_locked_members();
-            let waits = changed_rows.iter().any(|&i| self.contacts[i].device_key().is_some_and(|k| members_locked.contains(&k)));
-            let due = if waits { self.fleet_epoch.map(|(e, _)| e).unwrap_or(0) + 1 } else { 1 };
+            let chain = self.our_handle_proof().and_then(|hp| crate::network::fgtw::fleet::held_chain(&hp));
+            let latest_ckpt = chain.as_ref().and_then(|c| c.latest_checkpoint()).map(|(k, _, _)| k).or(self.fleet_epoch.map(|(e, _)| e));
+            let due = changed_rows
+                .iter()
+                .filter_map(|&i| self.contacts[i].device_key())
+                .map(|d| super::era::lockout_due(members_locked.contains(&d), chain.as_ref().and_then(|c| c.epoch_after_lock(&d)), latest_ckpt))
+                .max()
+                .unwrap_or(1);
             for &i in &changed_rows {
                 crate::logf!(
                     "FLEET: {} is LOCKED OUT — frames refused, friendships re-keying",

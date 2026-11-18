@@ -180,6 +180,15 @@ pub(crate) fn arm_lockout_rekeys(contacts: &mut [crate::types::Contact], tags: &
     armed
 }
 
+/// The fleet epoch a lockout's re-key waits for. A device that held the fleet key (a member) waits for the epoch that followed its lock on the chain, `after_lock` (fgtw MembershipBlob::epoch_after_lock), the first whose key it never holds; with the lock not on the chain yet, the checkpoint after `latest_ckpt`, the newest one known. A device that never held it (a Photon on the alias alone) waits for nothing: 1, at once.
+/// Never "this device's epoch plus one": a device that learns of the lock after its epoch moved would wait for a rotation that is not coming (the stall, 2026-11-18).
+pub(crate) fn lockout_due(held_fleet_key: bool, after_lock: Option<u64>, latest_ckpt: Option<u64>) -> u64 {
+    if !held_fleet_key {
+        return 1;
+    }
+    after_lock.unwrap_or_else(|| latest_ckpt.unwrap_or(0) + 1)
+}
+
 /// A lockout re-key is done once the bond stands on an era other than the one it was armed on.
 pub(crate) fn lockout_rekey_done(c: &crate::types::Contact, tag: Option<u32>) -> bool {
     c.era_lockout_due != 0 && tag.is_some_and(|t| t != c.era_lockout_from)
@@ -563,7 +572,7 @@ impl PhotonApp {
     }
 
     /// LOCKOUT EDGE (the owner 2026-11-18: "one of which triggers a re-key and locks out that device"): every friendship with a live era owes one re-key, by the light era ratchet, started one friend at a time as each comes online (`lockout_rekey_step`).
-    /// `due` is the fleet epoch the re-key waits for: one past the rotation a member's lockout starts (`spawn_fleet_key_sync`), so the new era's chain_sync seals only under a fleet key the locked device never holds; 1 for a device that never held the fleet key (a Photon on the alias alone), which waits for nothing.
+    /// `due` is the fleet epoch the re-key waits for (`lockout_due`): the epoch that followed a member's lock on the chain, so the new era's chain_sync seals only under a fleet key the locked device never holds; 1 for a device that never held the fleet key (a Photon on the alias alone), which waits for nothing.
     /// A device that signed itself out arms nothing: it asserted it wiped its keys (the other path). Persisted per contact, so a restart cannot lose a lockout's re-key.
     pub(super) fn arm_lockout_rekeys(&mut self, due: u64, why: &str) {
         let tags: Vec<Option<u32>> = self.contacts.iter().map(|c| self.bond_era_tag(c)).collect();
@@ -860,6 +869,25 @@ mod tests {
         let again = arm_lockout_rekeys(&mut rows, &[None, Some(0xB1), Some(0xA2), Some(0xA3), Some(0xA4), None, None], 9);
         assert_eq!(again, vec![1, 2, 3]);
         assert_eq!((rows[1].era_lockout_due, rows[1].era_lockout_from), (9, 0xB1));
+    }
+
+    /// The stall, 2026-11-18: a device that learns of a member's lock after its fleet epoch already moved past the epoch that followed the lock re-keys at once, never waiting for "its epoch plus one".
+    #[test]
+    fn a_late_learner_rekeys_at_once() {
+        let me = [7u8; 32];
+        // The lock was followed on the chain by epoch 5; this device already holds epoch 8 when it learns of it.
+        let due = lockout_due(true, Some(5), Some(8));
+        assert_eq!(due, 5);
+        let mut c = friend(1);
+        c.is_online = true;
+        c.era_lockout_due = due;
+        c.era_lockout_from = 0xA1;
+        assert!(lockout_rekey_ready(&c, 8, Some(me)), "an epoch already past the lock's: at once");
+        assert!(!lockout_rekey_ready(&c, 4, Some(me)), "an epoch before it: waits");
+        // The lock not on the chain yet: the checkpoint after the newest known.
+        assert_eq!(lockout_due(true, None, Some(8)), 9);
+        // A device that never held the fleet key waits for nothing.
+        assert_eq!(lockout_due(false, Some(5), Some(8)), 1);
     }
 
     /// One at a time and only when it can go: due, online, complete, nothing in flight, and ours to run; done once the bond moved off the armed era.
