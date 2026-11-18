@@ -105,8 +105,8 @@ impl PhotonApp {
                 c.is_online || !orb_has_remote,
             )
         });
-        // On a safe circle (ferros) the orb outside a conversation is our own face, the one under the camera that the Ready screen used to draw large: keyed on our picture (a sample of its bytes, so a new pick shows) or our gradient's seed.
-        let orb_self = (target.is_none() && crate::ui::safe_circle().is_some()).then(|| self.own_face_key());
+        // On a safe circle (ferros) the orb outside a conversation is our own face once we are someone (before, the brand orb), the one under the camera that the Ready screen used to draw large: keyed on our picture (a sample of its bytes, so a new pick shows) or our gradient's seed.
+        let orb_self = (target.is_none() && self.signed_in() && crate::ui::safe_circle().is_some()).then(|| self.own_face_key());
         if orb_key == self.orb_key && target.is_some() == self.orb_contact.is_some() && orb_self == self.orb_self {
             return;
         }
@@ -114,6 +114,7 @@ impl PhotonApp {
         self.orb_self = orb_self;
         self.orb_contact = target.map(|ci| self.contacts[ci].id); // PROOF: `target` came from active_contact() this call
         self.orb_had_avatar = has_avatar;
+        let own_seed = self.own_gradient_seed();
         let Some(chrome) = self.chrome.as_mut() else {
             return;
         };
@@ -151,7 +152,7 @@ impl PhotonApp {
                     Some(_) => {
                         let (src, diam) = match self.device_avatar_pixels.as_ref() {
                             Some(px) if px.len() == crate::ui::avatar::AVATAR_SIZE * crate::ui::avatar::AVATAR_SIZE * 3 => (px.clone(), crate::ui::avatar::AVATAR_SIZE),
-                            _ => (gradient_avatar_rgb(self.session.as_ref().map(|s| proof_gradient_seed(&s.handle_proof)).unwrap_or(0), 64), 64),
+                            _ => (gradient_avatar_rgb(own_seed, 64), 64),
                         };
                         Some(orb_icon_of(&src, diam))
                     }
@@ -166,7 +167,7 @@ impl PhotonApp {
     fn own_face_key(&self) -> u64 {
         match self.device_avatar_pixels.as_ref() {
             Some(px) => px.iter().step_by(px.len() / 64 + 1).fold(1u64, |h, &b| h.rotate_left(5) ^ b as u64),
-            None => self.session.as_ref().map(|s| proof_gradient_seed(&s.handle_proof)).unwrap_or(0),
+            None => self.own_gradient_seed(),
         }
     }
 
@@ -3742,3 +3743,10 @@ fn orb_icon_of(src: &[u8], diam: usize) -> fluor::host::icon::Icon {
 
 /// The compose bar's rest above whatever it is lifted off (the frame's bottom, the keyboard, the safe circle's floor), in layout units: the layout pass and the render share it.
 pub(super) const COMPOSE_MARGIN: f32 = 0.8;
+
+impl PhotonApp {
+    /// Our gradient's seed, from our public handle proof: the session's on the desktop and Android, PhotonKeys' on ferros, where there is no session; 0 before either.
+    fn own_gradient_seed(&self) -> u64 {
+        self.session.as_ref().map(|s| s.handle_proof).or(self.photon_keys.as_ref().map(|k| k.handle_proof)).map(|p| proof_gradient_seed(&p)).unwrap_or(0)
+    }
+}
