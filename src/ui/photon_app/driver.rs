@@ -1033,9 +1033,9 @@ impl FluorApp<Px> for PhotonApp {
                                     self.session = None;
                                     self.private_s = crate::crypto::blind::PrivateS::None;
                                     self.pending_broadcast_signal = -1;
-                                    self.state = AppState::Launch(LaunchState::Error(
-                                        tr(Msg::ConfirmRevoke { name: &name, last_unlocker: other_live == 0 }).into_owned(),
-                                    ));
+                                    // A Photon on the alias alone is locked out for good and never reinstates anything, so its confirm says Lock out and carries no last-unlocker warning.
+                                    let confirm = if self.is_alias_only_device(&pk) { tr(Msg::ConfirmLockOut(&name)) } else { tr(Msg::ConfirmRevoke { name: &name, last_unlocker: other_live == 0 }) };
+                                    self.state = AppState::Launch(LaunchState::Error(confirm.into_owned()));
                                     self.clear_handle_for_reproof();
                                     crate::logf!("FLEET: lock-out of {} armed — de-attested, awaiting handle confirmation", name);
                                 }
@@ -1346,6 +1346,9 @@ impl FluorApp<Px> for PhotonApp {
                         // The passless weblink → system browser, every platform thru the one opener (Android rides the Kotlin Intent bridge now).
                         open_url_in_browser("https://passless.org/");
                         crate::log("ABOUT: passless.org link tapped");
+                    } else if slot == 5 && self.alias_alone() {
+                        // Photon on the alias alone signs itself out (two taps): the list without it, then its state here discarded (alias.rs).
+                        self.alias_sign_out_tap();
                     }
                 } else if page == SettingsPage::Conversations {
                     // 0/1 = the default newcomer-history policy for groups we found (a linked fleet setting); 2.. = Mute pill per group row (this device only).
@@ -3844,6 +3847,10 @@ impl FluorApp<Px> for PhotonApp {
             ctx.window.request_redraw();
         }
         self.drain_alias_pairs();
+        if self.drain_alias_removal() {
+            self.scene_dirty = true;
+            ctx.window.request_redraw();
+        }
         // The fleet key moved (a mint, a sync, a recovery): settle again while the key it replaced is kept, so the person key is sealed under the new one (network/fgtw/alias.rs). Taken only when a settle can start, so an edge during one waits for it.
         if self.alias_rx.is_none() && crate::network::fgtw::alias::FLEET_KEY_MOVED.swap(false, std::sync::atomic::Ordering::AcqRel) {
             self.spawn_alias_settle("the fleet key moved");
@@ -5264,6 +5271,13 @@ impl PhotonApp {
                             "PERF: resume load — vault {}ms, contacts {}ms, messages {}ms, chains {}ms, keypairs {}ms ({} rehydrated), settings {}ms → local Ready in {}ms (UI thread)",
                             ms_vault, ms_contacts, ms_messages, ms_chains, ms_keypairs, rehydrated, ms_settings, t_boot.elapsed().as_millis()
                         );
+                    }
+                    Err(_) if super::alias::SIGNED_OUT_HELD.swap(false, std::sync::atomic::Ordering::AcqRel) => {
+                        // This device signed out of the person whose keys came in (alias.rs): the keys are let go and Photon waits, signed out.
+                        crate::log("RESUME: this device signed out of this person; the keys handed in are let go");
+                        self.photon_keys = None;
+                        self.state = self.not_signed_in_screen();
+                        return;
                     }
                     Err(e) => {
                         crate::logf!("STORAGE: init failed on resume: {}", e);

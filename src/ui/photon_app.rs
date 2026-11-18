@@ -1702,6 +1702,8 @@ pub struct FleetSchemes {
     pub members: usize,
     /// What each member says its hardware is (fgtw::fleet::plate constants); absent = unstated (an older build). The level shown is derived from it and is the device's own statement.
     pub kinds: crate::linear_map::LinearMap<[u8; 32], u8>,
+    /// The devices outside the membership the chain has locked out (OpKind::LockListed).
+    pub listed_locked: Vec<[u8; 32]>,
 }
 
 impl FleetSchemes {
@@ -3014,6 +3016,17 @@ pub struct PhotonApp {
     alias_list: Option<(Vec<u8>, fgtw::alias_devices::DeviceList)>,
     /// A settle owed to fgtw.org after one did not reach it: (tries so far, not before this Eagle time), tried again on the next network edge.
     alias_retry: Option<(u32, i64)>,
+    /// The devices outside the membership our chain has locked out (fgtw OpKind::LockListed), as the last fold this device saw read them: refused like the fleet-locked set (photon_app/alias.rs).
+    chain_listed_locked: Vec<[u8; 32]>,
+    /// A Lock out of an alias sibling running off the UI thread: the device and what the chain and the list came to.
+    alias_lock_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Result<crate::network::fgtw::alias::Joined, String>)>>,
+    /// This Photon's own Sign out on the alias alone: armed by the first tap, running off the UI thread after the second.
+    alias_sign_out_armed: bool,
+    alias_sign_out_rx: Option<std::sync::mpsc::Receiver<Result<(), String>>>,
+    /// The friendship whose lockout re-key is in flight (era.rs lockout_rekey_step): the next waits while that friend is online.
+    lockout_rekey_busy: Option<crate::types::ContactId>,
+    /// Friendships whose lockout re-key could not be proposed while their friend was online: passed over until that friend's next online edge, so one that cannot go never holds the rest.
+    lockout_rekey_skip: Vec<crate::types::ContactId>,
     /// A peer answered since the tick last looked: a network edge for an owed alias settle.
     alias_peer_answered: bool,
     /// ferros's network generation as the tick last saw it.
@@ -3822,6 +3835,12 @@ impl PhotonApp {
             alias_chains_owed: Vec::new(),
             alias_list: None,
             alias_retry: None,
+            chain_listed_locked: Vec::new(),
+            alias_lock_rx: None,
+            alias_sign_out_armed: false,
+            alias_sign_out_rx: None,
+            lockout_rekey_busy: None,
+            lockout_rekey_skip: Vec::new(),
             alias_peer_answered: false,
             #[cfg(target_os = "ferros")]
             alias_net_generation: 0,

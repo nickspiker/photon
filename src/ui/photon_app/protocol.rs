@@ -914,6 +914,8 @@ impl PhotonApp {
 
         // Scheme facts off our own chain (spawn_scheme_refresh): latest wins.
         if let Some(facts) = self.fleet_schemes_rx.as_ref().and_then(|rx| rx.try_iter().last()) {
+            // The chain's locks on devices outside the membership ride the same read: a lock another device of ours recorded reaches this one here.
+            self.adopt_listed_locked(facts.listed_locked.clone());
             let changed = self.fleet_schemes.as_ref().map_or(true, |c| c.floor != facts.floor || c.declared != facts.declared || c.locked != facts.locked || c.kinds != facts.kinds);
             if changed {
                 crate::logf!(
@@ -969,6 +971,10 @@ impl PhotonApp {
                     self.spawn_scheme_refresh(&hp);
                     // Cutover: OUR fold is the primary registry's truth — converge on the fold-change edge (any member may; writes are idempotent and epoch-guarded, so racing siblings settle).
                     if self.registry_converged_fold != members {
+                        // The first fold of a session is the edge our chain loaded: only now can a sibling be told a fleet member from an alias one (alias::alias_only_sibling), so the alias siblings' pair secrets are read again.
+                        if self.registry_converged_fold.is_empty() && self.photon_keys.is_some() {
+                            self.refresh_alias_pairs();
+                        }
                         self.registry_converged_fold = members.clone();
                         self.spawn_registry_converge(hp, members.clone());
                     }

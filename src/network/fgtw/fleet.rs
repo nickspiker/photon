@@ -487,6 +487,42 @@ pub fn lock_device_chain(signer: &impl FleetSigner, handle_proof: &[u8; 32], loc
     fgtw::client::lock_device_chain(&PhotonTransport, signer, handle_proof, locked)
 }
 
+/// Lock out a device OUTSIDE the membership on the chain (fgtw OpKind::LockListed): a Photon on the alias alone, which the alias's device list names and the chain never holds (the owner 2026-11-18).
+/// The chain is the record the alias alone cannot write, so this is what keeps a stolen alias holder out of every list a reader checks. Held first, then sent to fgtw.org: a seed that does not take it (one built before the kind) leaves the held chain carrying it, and the mesh carries it to the siblings.
+/// Returns the devices the chain has locked this way. Idempotent: already locked = Ok.
+pub fn lock_listed_device_chain(signer: &impl FleetSigner, handle_proof: &[u8; 32], device: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
+    let me = signer.keypair().public.to_bytes();
+    for _ in 0..4 {
+        let mut blob = fetch(handle_proof)?.ok_or("no fleet chain to lock into")?;
+        let members = blob.fold().map_err(|e| format!("our chain does not fold: {e:?}"))?;
+        if !members.contains(&me) {
+            return Err("this device is not a member of our chain, so it cannot lock a device out".into());
+        }
+        if members.contains(device) {
+            return Err("that device is a member of our chain: it is locked out with Revoke".into());
+        }
+        let listed = blob.listed_locked().map_err(|e| format!("our chain does not fold: {e:?}"))?;
+        if listed.contains(device) {
+            return Ok(listed);
+        }
+        let head = blob.ops.last().map_or(0, |op| op.eagle_time);
+        // WHY/PROOF: `max` is the rule (fgtw client::stamp_after), not a guard: a clock that trails the tip would stamp the op below it, and the tip tripwire would not read it as new.
+        let at = vsf::eagle_time_oscillations().max(head);
+        blob.lock_listed(signer, *device, at);
+        let listed = blob.listed_locked().map_err(|e| format!("the lock does not fold: {e:?}"))?;
+        match publish(&blob) {
+            Ok(()) => return Ok(listed),
+            Err(e) if e.contains("stale") => continue,
+            Err(e) => {
+                // Held already: the lock stands on this device and goes to the siblings over the mesh; fgtw.org takes it once it can.
+                crate::logf!("FLEET: fgtw.org did not take the lock ({}); held here and carried by the mesh", e);
+                return Ok(listed);
+            }
+        }
+    }
+    Err("fleet: the lock kept racing a concurrent chain extension".into())
+}
+
 /// Reverse [`lock_device_chain`]. Idempotent.
 pub fn unlock_device_chain(signer: &impl FleetSigner, handle_proof: &[u8; 32], locked: &[u8; 32]) -> Result<(), String> {
     fgtw::client::unlock_device_chain(&PhotonTransport, signer, handle_proof, locked)

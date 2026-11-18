@@ -1775,9 +1775,10 @@ impl PhotonApp {
 
         // Drop de-folded members (device removed from OUR chain) — AND keyless sibling rows (2026-09-01, the ocean-phone ghost): a sibling contact whose device key is None (or stale-era) can never be pinged, never earns a presence verdict, and the old is_some_and kept it forever — where it wedged the fleet-first keygen gate for every friend ceremony. The fold is the authority; a sibling row it can't vouch for is debris.
         // A sibling row carrying OUR OWN key goes too: the Android root conversion's old device folded the chain that already held the new key and rowed it before exiting, and the carried vault handed that row to the new device, which then relayed history to itself (2026-11-02, "recipient is OUR OWN device — echo refused" ×14).
+        // A LOCKED row stays (the lockout path, 2026-11-18): it is the record that this device's lock was acted on here, its re-key armed once, and the refusal it carries outlives the device's leaving the list.
         let mut removed: Vec<crate::types::Contact> = Vec::new();
         self.contacts.retain(|c| {
-            if c.is_sibling && c.device_key().map_or(true, |k| !wanted.contains(&k) || k == our_device) {
+            if c.is_sibling && c.device_key().map_or(true, |k| (!wanted.contains(&k) && !c.locked_out) || k == our_device) {
                 removed.push(c.clone());
                 false
             } else {
@@ -1815,9 +1816,10 @@ impl PhotonApp {
         self.alias_chains_owed.retain(|d| !gone.contains(d));
         if !removed.is_empty() {
             // Removal rotates (braid.md §14.2): a shrink in OUR OWN fold is the live trigger — any surviving member mints the next epoch so the leaver's cached fleet key goes stale. The sentinel inside re-checks against server state (fold + fan-out), so a stale local cache can't force a bogus rotation.
+            // Kept for a device that signed itself out too: its sign out asserts it wiped, and the rotation makes that true of the fleet key whatever it kept, at the cost of one mint among our own devices and nothing for any friend; the leaver's wrap is gone from the fan-out either way, so no current member could recover a key it was not meant to.
+            // A sibling only on the alias's list never held the fleet key, so the sentinel finds nothing to rotate for it.
             self.spawn_fleet_key_sync();
-            // SHRINK ⇒ every friendship re-keys with the old roots woven in (stage 4, decision 1): armed for the epoch AFTER this rotation, so the woven era's chain-sync only ever seals under a key the leaver never held.
-            self.arm_heavy_weaves("a device left the fold");
+            // NO RE-KEY HERE (the owner 2026-11-18, the two paths): leaving the fold or the list is a sign out, which asserts the device wiped its keys, so no friendship re-keys. Only a LOCKOUT re-keys, armed where the locked set grows (apply_locked_set).
         }
 
         if changed {
@@ -2711,13 +2713,14 @@ impl PhotonApp {
             let Ok((members, floor)) = chain.fold_full() else { return };
             let declared = members.iter().map(|m| (*m, chain.declared_mask(m))).collect();
             let locked = chain.locked_out().unwrap_or_default();
+            let listed_locked = chain.listed_locked().unwrap_or_default();
             // Each member's stated hardware kind; unstated members are left out and show as such.
             let kinds = members
                 .iter()
                 .map(|m| (*m, chain.declared_plate_kind(m)))
                 .filter(|(_, k)| *k != fgtw::fleet::plate::UNSTATED)
                 .collect();
-            let facts = super::FleetSchemes { floor, declared, locked, members: members.len(), kinds };
+            let facts = super::FleetSchemes { floor, declared, locked, members: members.len(), kinds, listed_locked };
             if tx.send(facts).is_ok() {
                 if let Some(w) = wake.as_ref() {
                     super::wake_ui(w);
@@ -2726,7 +2729,19 @@ impl PhotonApp {
         });
     }
 
+    /// Every device the fleet has locked out: members by the fleet-synced set, and the devices outside the membership our chain locks (Photons on the alias alone, alias.rs).
     pub(super) fn locked_devices(&self) -> Vec<[u8; 32]> {
+        let mut locked = self.fleet_locked_members();
+        for d in &self.chain_listed_locked {
+            if !locked.contains(d) {
+                locked.push(*d);
+            }
+        }
+        locked
+    }
+
+    /// The fleet-synced locked set alone: the members Revoke locked.
+    fn fleet_locked_members(&self) -> Vec<[u8; 32]> {
         self.fleet_settings
             .as_ref()
             .map(|fs| fs.pubkey_set_union("fleet.locked."))
@@ -2760,6 +2775,12 @@ impl PhotonApp {
                     return;
                 }
             }
+        }
+        // Photon on the alias alone, locked out by our chain: the lock is the person's word that this device is lost, so its state here is discarded (alias.rs).
+        if self.alias_alone() && self.device_keypair.as_ref().is_some_and(|kp| self.chain_listed_locked.contains(kp.public.as_bytes())) {
+            crate::log("SELF-LOCK: our chain has locked this Photon out; discarding its state here");
+            self.spawn_alias_sign_out(false);
+            return;
         }
         // The forgiveness side of the sweep: an EXPLICIT emptied entry (reinstate_fleet_device here, or a sibling's synced tombstone) clears the row. Absence alone never clears — at boot the settings cache lags and the persisted rows below are the only truth, so only an affirmative tombstone may forgive.
         let unlocked = self.unlocked_tombstones();
@@ -2805,25 +2826,41 @@ impl PhotonApp {
         if locked.is_empty() {
             return;
         }
-        let mut changed_rows: Vec<usize> = Vec::new();
-        for (i, c) in self.contacts.iter_mut().enumerate() {
-            if c.is_sibling && !c.locked_out && c.device_key().is_some_and(|k| locked.contains(&k)) {
-                c.locked_out = true;
-                changed_rows.push(i);
+        let mut changed_rows = super::era::newly_locked_rows(&self.contacts, &locked);
+        for &i in &changed_rows {
+            self.contacts[i].locked_out = true;
+        }
+        // A device our chain locked that has no row here (its row left with the list before the lock reached this device): a locked row is made for it, the record that the lock was acted on here, so its re-key is armed once and never again at a restart.
+        let ours = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
+        let rowless: Vec<[u8; 32]> = self
+            .chain_listed_locked
+            .iter()
+            .filter(|d| Some(**d) != ours && !self.contacts.iter().any(|c| c.is_sibling && c.device_key() == Some(**d)))
+            .copied()
+            .collect();
+        if let (Some(hp), false) = (self.our_handle_proof(), rowless.is_empty()) {
+            for d in rowless {
+                let mut row = crate::types::Contact::new_sibling(hp, crate::types::DevicePubkey::from_bytes(d));
+                row.locked_out = true;
+                self.contacts.push(row);
+                changed_rows.push(self.contacts.len() - 1);
             }
         }
         if !changed_rows.is_empty() {
-            // REVOKE ⇒ the same weave (a revoked device keeps its lane_root; the woven era is the one thing it cannot follow).
-            self.arm_heavy_weaves("a device was revoked");
-            if let Some(storage) = self.storage.as_ref() {
-                for &i in &changed_rows {
-                    crate::logf!(
-                        "FLEET: {} is LOCKED OUT — frames refused, key rotating away",
-                        crate::fp(&self.contacts[i].device_key().unwrap_or_default())
-                    );
-                    crate::log_err!(crate::storage::contacts::save_contact(&self.contacts[i], storage), "the contact save after a lockout");
-                }
+            // LOCKOUT ⇒ every friendship re-keys by the light era ratchet (era.rs arm_lockout_rekeys): a locked device keeps its lane roots, and a new era it cannot follow is the one thing that shuts it out.
+            // A member's lock waits for the rotation it starts (revoke_device), so the new era never seals under a fleet key the device still holds; a device only on the alias's list never held the fleet key and waits for nothing.
+            let members_locked = self.fleet_locked_members();
+            let waits = changed_rows.iter().any(|&i| self.contacts[i].device_key().is_some_and(|k| members_locked.contains(&k)));
+            let due = if waits { self.fleet_epoch.map(|(e, _)| e).unwrap_or(0) + 1 } else { 1 };
+            for &i in &changed_rows {
+                crate::logf!(
+                    "FLEET: {} is LOCKED OUT — frames refused, friendships re-keying",
+                    crate::fp(&self.contacts[i].device_key().unwrap_or_default())
+                );
             }
+            let dirty: Vec<crate::types::Contact> = changed_rows.iter().map(|&i| self.contacts[i].clone()).collect();
+            self.save_contacts_off_thread(dirty);
+            self.arm_lockout_rekeys(due, "a device was locked out");
             // Rebuild the answerable ping set so a freshly-locked device's PINGS stop being answered immediately (answerable_pubkeys now drops locked_out contacts) — not just its chain/ceremony frames, which the downstream knows_device gates already refused.
             // Without this the flat set kept the device until the next fold reseed, so it went on exchanging presence.
             self.reseed_contact_pubkeys();
@@ -2857,7 +2894,7 @@ impl PhotonApp {
     /// Treat-as-stolen: lock a fleet device out WITHOUT touching the membership chain (removal is self-signed only, zero exceptions). The device stays a permanent member; the fleet stops trusting it — the locked set syncs fleet-wide, every trust gate refuses it, and the fleet key rotates so its cached key goes stale.
     pub(super) fn revoke_device(&mut self, pk: [u8; 32]) {
         // PER-KEY write, never read-union-write on one blob: two devices locking DIFFERENT pubkeys concurrently each unioned old+own into the same LWW key and one lock was DROPPED — a stolen device stayed trusted on part of the fleet until someone re-locked. Distinct keys commute under merge_global_settings, so a lock can no longer lose a race.
-        if !self.is_locked_device(&pk) {
+        if !self.fleet_locked_members().contains(&pk) {
             self.settings_set(
                 &format!("fleet.locked.{}", hex::encode(pk)),
                 vsf::VsfType::ke(pk.to_vec()),
@@ -3039,7 +3076,7 @@ impl PhotonApp {
 
     /// Re-push every locally-locked device to the worker (durable reconcile). Called on attest-success — an infrequent, non-spammy edge — so a lock whose initial push failed (offline, stale-chain race) eventually reaches the worker; the puts are idempotent so re-pushing a known lock costs one no-op write.
     pub(super) fn reconcile_worker_locks(&self) {
-        for pk in self.locked_devices() {
+        for pk in self.fleet_locked_members() {
             self.spawn_worker_lock_push(pk);
         }
     }

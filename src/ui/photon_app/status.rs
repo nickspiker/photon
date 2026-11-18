@@ -6019,10 +6019,17 @@ impl PhotonApp {
         for ci in knock_back_after {
             self.send_friend_knock_back(ci);
         }
+        let friend_came_online = !reoffer_after.is_empty();
+        let came_online_ids = reoffer_after.clone();
         for id in reoffer_after {
             if let Some(ci) = self.contacts.iter().position(|c| c.id == id) {
                 self.reoffer_pending_bonds(ci);
             }
+        }
+        // A friend back online is the edge a lockout re-key waits for (era.rs): one goes, never a storm.
+        if friend_came_online {
+            self.lockout_rekey_skip.retain(|id| !came_online_ids.contains(id));
+            self.lockout_rekey_step("a friend came online");
         }
         for id in knock_consent {
             if let Some(ci) = self.contacts.iter().position(|c| c.id == id) {

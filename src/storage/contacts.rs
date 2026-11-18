@@ -151,6 +151,8 @@ fn contact_state_schema() -> SectionSchema {
         .field("consent", TypeConstraint::AnyUnsigned)
         .field("era_cap", TypeConstraint::AnyUnsigned)
         .field("era_weave_due", TypeConstraint::AnyUnsigned)
+        .field("era_lockout_due", TypeConstraint::AnyUnsigned)
+        .field("era_lockout_from", TypeConstraint::AnyUnsigned)
         .field("era_prior_tag", TypeConstraint::AnyUnsigned)
         .field("era_prior_idx", TypeConstraint::AnyUnsigned)
         .field("pubkey", TypeConstraint::Ed25519Key)
@@ -205,6 +207,10 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
         .set("era_cap", contact.peer_era_capable as u8)
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set("era_weave_due", contact.era_weave_due as usize)
+        .map_err(|e| StorageError::Parse(e.to_string()))?
+        .set("era_lockout_due", contact.era_lockout_due as usize)
+        .map_err(|e| StorageError::Parse(e.to_string()))?
+        .set("era_lockout_from", contact.era_lockout_from as usize)
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set("era_prior_tag", contact.era_prior_claim.map(|(t, _)| t as usize).unwrap_or(0))
         .map_err(|e| StorageError::Parse(e.to_string()))?
@@ -453,6 +459,8 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
     contact.consent_mutual = section.get_value::<u8>("consent").unwrap_or(1) != 0;
     contact.peer_era_capable = section.get_value::<u8>("era_cap").unwrap_or(0) != 0;
     contact.era_weave_due = section.get_value::<i64>("era_weave_due").map(|v| v.max(0) as u64).unwrap_or(0); // WHY/PROOF: a stored i64 decoded through a u64 cast that would wrap a negative
+    contact.era_lockout_due = section.get_value::<u64>("era_lockout_due").unwrap_or(0);
+    contact.era_lockout_from = section.get_value::<u32>("era_lockout_from").unwrap_or(0);
     contact.era_prior_claim = match (section.get_value::<i64>("era_prior_tag").ok(), section.get_value::<i64>("era_prior_idx").ok()) {
         (Some(t), Some(i)) if t != 0 => Some((t as u32, i.max(0) as u64)), // WHY/PROOF: as above
         _ => None,

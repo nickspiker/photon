@@ -150,7 +150,11 @@ impl PhotonApp {
                 }
                 // An armed lock-out fires HERE and only here — the handle just proved itself. A different identity attesting (thief typing their own name) discards the arm instead: their lock was never this fleet's to execute.
                 if let Some((pk, armer_hp, name)) = self.pending_lock.take() {
-                    if data.handle_proof == armer_hp {
+                    if data.handle_proof == armer_hp && self.is_alias_only_device(&pk) {
+                        // A Photon on the alias alone (a ferros one) is no member: the chain records its lock with LockListed and the list drops it (alias.rs).
+                        crate::logf!("FLEET: {} lock out confirmed by the handle", name);
+                        self.lock_out_alias_device(pk);
+                    } else if data.handle_proof == armer_hp {
                         self.revoke_device(pk);
                         crate::logf!(
                             "FLEET: {} locked out — handle confirmed, key rotating away",

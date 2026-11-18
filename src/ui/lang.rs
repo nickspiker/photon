@@ -544,6 +544,14 @@ pub enum Msg<'a> {
     BridgePill,
     ReinstatePill { armed: bool },
     RevokePill { armed: bool },
+    /// A Photon on the alias alone (a ferros one) locked out from another device of ours: the Fleet page pill, its handle confirm, and what came of it.
+    LockOutPill { armed: bool },
+    ConfirmLockOut(&'a str),
+    LockedOutToast,
+    LockOutFailed,
+    /// Photon on the alias alone signs itself out (the About page there): the pill and what it does.
+    SignOutPill { armed: bool },
+    SignOutHint,
     SingleCopyWarning,
     DeviceSignsItselfOut,
     RenamePill,

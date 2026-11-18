@@ -161,6 +161,54 @@ pub(crate) fn era_owner(ours: [u8; 32], fold: &[[u8; 32]], locked: &[[u8; 32]], 
     candidates.into_iter().min().unwrap_or(ours)
 }
 
+/// The lockout arming rule, pure: every friendship (mutual, with a bond on a live era, not locked) owes one re-key due at `due`; `tags[i]` is row i's bond era tag. Siblings, one-sided contacts and friendships with no era yet owe none.
+/// A row that already owes one keeps the later due, and is measured from the era it stands on now, so the second of two lockouts is not satisfied by a re-key minted before its own rotation began.
+/// Returns the rows armed.
+pub(crate) fn arm_lockout_rekeys(contacts: &mut [crate::types::Contact], tags: &[Option<u32>], due: u64) -> Vec<usize> {
+    let mut armed = Vec::new();
+    for (i, c) in contacts.iter_mut().enumerate() {
+        if c.is_sibling || !c.consent_mutual || c.friendship_id.is_none() || c.locked_out {
+            continue;
+        }
+        let Some(tag) = tags[i] else { continue };
+        if due > c.era_lockout_due {
+            c.era_lockout_due = due;
+        }
+        c.era_lockout_from = tag;
+        armed.push(i);
+    }
+    armed
+}
+
+/// A lockout re-key is done once the bond stands on an era other than the one it was armed on.
+pub(crate) fn lockout_rekey_done(c: &crate::types::Contact, tag: Option<u32>) -> bool {
+    c.era_lockout_due != 0 && tag.is_some_and(|t| t != c.era_lockout_from)
+}
+
+/// May this device start the lockout re-key of `c` now: it is owed and due (the fleet epoch reached, or due at once), the friend is online, the friendship is complete with nothing of its own in flight, and this device is its ceremony owner (unclaimed reads as ours, the park rule).
+pub(crate) fn lockout_rekey_ready(c: &crate::types::Contact, epoch_now: u64, ours: Option<[u8; 32]>) -> bool {
+    c.era_lockout_due != 0
+        && (c.era_lockout_due == 1 || epoch_now >= c.era_lockout_due)
+        && !c.is_sibling
+        && !c.locked_out
+        && c.is_online
+        && c.clutch_state == crate::types::ClutchState::Complete
+        && !c.clutch_keygen_in_progress
+        && c.era_ephemeral.is_none()
+        && c.era_weave_due == 0
+        && c.ceremony_owner.map_or(true, |o| Some(o) == ours)
+}
+
+/// Which sibling rows the locked set newly locks: rows of ours not yet flagged whose device the set names. Only these arm a re-key; a sibling that left by signing itself out is in no locked set, so its leaving arms nothing.
+pub(crate) fn newly_locked_rows(contacts: &[crate::types::Contact], locked: &[[u8; 32]]) -> Vec<usize> {
+    contacts
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| c.is_sibling && !c.locked_out && c.device_key().is_some_and(|k| locked.contains(&k)))
+        .map(|(i, _)| i)
+        .collect()
+}
+
 impl PhotonApp {
     /// THE BALL STAYS WITH WHOEVER GRABBED IT (Nick 2026-10-01: "pin that to the first device to grab the ball, rather than a low hash … for a device that may not be online very often"). Per friendship: the CLAIM on the roster entry (`ceremony_owner`, set by the adding device, synced LWW thru the roster) stands while that device is live (`device_live`); only a dead or absent claim falls back to the computed lowest-live device — and when the fallback is THIS device it TAKES OVER by writing a fresh claim and pushing the roster, so the sleepy claimant does not reclaim the ball when it wakes (it adopts the newer entry instead). Deterministic across the fleet because every device reads the same claim; the two places presence views can still disagree are arbitrated as before — the peer takes the first Init, and the loser discards on park.
     /// Called on the evidence EDGES (a sibling's presence verdict, a fold adopt, a locked-set change, a roster adopt) — never on a timer. A round this device holds for a friendship that just moved to another owner is discarded (fleet-sync.md §4.2 discard-on-park), so the friend never sees two instances from one fleet.
@@ -514,21 +562,70 @@ impl PhotonApp {
         }
     }
 
-    /// SHRINK EDGE (stage 4, decision 1): every friendship with a live era re-keys with the old roots woven in. Armed for the epoch AFTER the rotation the shrink just started (`spawn_fleet_key_sync`), so the keygen pickup waits until the cached fleet key is one the leaver never held — chain_sync opens k−1, so a woven era pushed under the old epoch would still reach it. Persisted per contact: a restart cannot lose a shrink's re-key.
-    pub(super) fn arm_heavy_weaves(&mut self, why: &str) {
-        let due = self.fleet_epoch.map(|(e, _)| e).unwrap_or(0) + 1;
-        let mut armed = 0usize;
+    /// LOCKOUT EDGE (the owner 2026-11-18: "one of which triggers a re-key and locks out that device"): every friendship with a live era owes one re-key, by the light era ratchet, started one friend at a time as each comes online (`lockout_rekey_step`).
+    /// `due` is the fleet epoch the re-key waits for: one past the rotation a member's lockout starts (`spawn_fleet_key_sync`), so the new era's chain_sync seals only under a fleet key the locked device never holds; 1 for a device that never held the fleet key (a Photon on the alias alone), which waits for nothing.
+    /// A device that signed itself out arms nothing: it asserted it wiped its keys (the other path). Persisted per contact, so a restart cannot lose a lockout's re-key.
+    pub(super) fn arm_lockout_rekeys(&mut self, due: u64, why: &str) {
+        let tags: Vec<Option<u32>> = self.contacts.iter().map(|c| self.bond_era_tag(c)).collect();
+        let armed = arm_lockout_rekeys(&mut self.contacts, &tags, due);
+        let dirty: Vec<crate::types::Contact> = armed.iter().map(|&i| self.contacts[i].clone()).collect();
+        self.save_contacts_off_thread(dirty);
+        crate::logf!("ERA: lockout re-key owed by {} friendship(s), due at epoch {} ({})", armed.len(), due, why);
+        self.lockout_rekey_step(why);
+    }
+
+    /// The era tag of the bond a friendship's eras run on, as this device holds it; None without chains.
+    fn bond_era_tag(&self, c: &crate::types::Contact) -> Option<u32> {
+        let fid = self.bond_chains_id(c)?;
+        self.friendship_chains.iter().find(|(id, _)| *id == fid).and_then(|(_, ch)| ch.era_tag())
+    }
+
+    /// Start at most ONE lockout re-key, never a storm: called on the edges that can let one go (the lockout itself, a friend coming online, an era cutting over) and by the keygen pickup scan.
+    /// A friendship whose bond moved off the era it was armed on is done, whichever device moved it (the owner's ratchet replicates to every sibling).
+    /// While one friend's re-key is in flight and that friend is online, the next waits; one going offline lets the next go, and it is tried again at its own next online edge.
+    /// Only the friendship's ceremony owner starts one: the light ratchet when the friend can ratchet in band, else the woven CLUTCH (`arm_heavy_weave_for`), whose own pickup runs one at a time.
+    pub(super) fn lockout_rekey_step(&mut self, why: &str) {
+        if self.alias_alone() || self.contacts.iter().all(|c| c.era_lockout_due == 0) {
+            return;
+        }
+        let tags: Vec<Option<u32>> = self.contacts.iter().map(|c| self.bond_era_tag(c)).collect();
         let mut dirty: Vec<crate::types::Contact> = Vec::new();
-        for c in self.contacts.iter_mut().filter(|c| !c.is_sibling && c.consent_mutual && c.friendship_id.is_some() && !c.locked_out) {
-            if c.era_weave_due >= due {
-                continue;
+        for (i, c) in self.contacts.iter_mut().enumerate() {
+            if lockout_rekey_done(c, tags[i]) {
+                crate::logf!("ERA: {} re-keyed since the lockout ({:08x} → {:08x})", crate::fp(&c.handle_proof), c.era_lockout_from, tags[i].unwrap_or(0));
+                c.era_lockout_due = 0;
+                c.era_lockout_from = 0;
+                dirty.push(c.clone());
             }
-            c.era_weave_due = due;
-            armed += 1;
-            dirty.push(c.clone());
         }
         self.save_contacts_off_thread(dirty);
-        crate::logf!("ERA: heavy weave armed for {} friendship(s) at epoch ≥ {} — {}", armed, due, why);
+        if let Some(id) = self.lockout_rekey_busy {
+            if self.contacts.iter().any(|c| c.id == id && c.era_lockout_due != 0 && c.is_online) {
+                return;
+            }
+            self.lockout_rekey_busy = None;
+        }
+        let ours = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
+        let epoch_now = self.fleet_epoch.map(|(e, _)| e).unwrap_or(0);
+        let skip = &self.lockout_rekey_skip;
+        let Some(ci) = self.contacts.iter().position(|c| !skip.contains(&c.id) && lockout_rekey_ready(c, epoch_now, ours)) else {
+            return;
+        };
+        let id = self.contacts[ci].id;
+        let fp = crate::fp(&self.contacts[ci].handle_proof);
+        if self.contacts[ci].peer_era_capable {
+            if self.propose_light_ratchet(ci) {
+                self.lockout_rekey_busy = Some(id);
+                crate::logf!("ERA: {} lockout re-key by the light ratchet: proposed ({})", fp, why);
+            } else {
+                // Passed over until this friend's next online edge (status.rs clears the entry), so the next friend is not held behind it.
+                self.lockout_rekey_skip.push(id);
+                crate::logf!("ERA: {} lockout re-key not proposed; tried again at its next online edge ({})", fp, why);
+            }
+        } else {
+            self.lockout_rekey_busy = Some(id);
+            self.arm_heavy_weave_for(ci, "a device was locked out and this friend cannot ratchet in band");
+        }
     }
 
     /// One friendship, now (no rotation to wait for): a repair verdict that resolved to HeavyWeave.
@@ -614,6 +711,8 @@ impl PhotonApp {
         } else {
             self.resend_held_messages(ci);
         }
+        // A cutover may finish a lockout re-key: the next friend's may go.
+        self.lockout_rekey_step("an era cut over");
     }
 }
 
@@ -718,5 +817,71 @@ mod tests {
         assert_eq!(era_owner(b, &[], &[], &[(a, false, true)], &[]), b);
         // A fold member with no contact row yet counts as present.
         assert_eq!(era_owner(c, &fold, &[], &[(b, false, true)], &[]), a);
+    }
+
+    fn friend(n: u8) -> crate::types::Contact {
+        let mut c = crate::types::Contact::new(crate::types::HandleText::new("f"), [n; 32], crate::types::DevicePubkey::from_bytes([n | 0x80; 32]));
+        c.friendship_id = Some(crate::types::FriendshipId::from_bytes([n; 32]));
+        c.consent_mutual = true;
+        c.clutch_state = crate::types::ClutchState::Complete;
+        c
+    }
+
+    fn sibling(n: u8) -> crate::types::Contact {
+        crate::types::Contact::new_sibling([0x48; 32], crate::types::DevicePubkey::from_bytes([n; 32]))
+    }
+
+    /// The owner's two paths, side by side: a sibling that signed itself out leaves the rows and is in no locked set, so nothing arms; a sibling locked out flips its row and arms exactly one re-key per friendship, none for siblings, a one-sided contact or a friendship with no era yet.
+    #[test]
+    fn a_sign_out_arms_no_rekey_and_a_lockout_arms_one_per_friendship() {
+        let gone = [0x31u8; 32];
+        let stays = [0x32u8; 32];
+        let mut one_sided = friend(4);
+        one_sided.consent_mutual = false;
+        let no_era = friend(5);
+        let mut rows = vec![sibling(0x32), friend(1), friend(2), friend(3), one_sided, no_era];
+        let tags = vec![None, Some(0xA1), Some(0xA2), Some(0xA3), Some(0xA4), None];
+
+        // SIGN-OUT: the departed sibling's row is gone and the locked set does not name it.
+        assert!(newly_locked_rows(&rows, &[]).is_empty(), "a self-signed departure locks no row, so it arms no re-key");
+        assert!(rows.iter().all(|c| c.era_lockout_due == 0));
+
+        // LOCKOUT: the sibling still listed is locked; one row flips and every friendship owes one re-key.
+        rows.push(sibling(0x31));
+        let mut tags = tags;
+        tags.push(None);
+        let flipped = newly_locked_rows(&rows, &[gone]);
+        assert_eq!(flipped, vec![6]);
+        assert!(!flipped.contains(&0), "the sibling that stays is not locked: {:?}", stays);
+        let armed = arm_lockout_rekeys(&mut rows, &tags, 1);
+        assert_eq!(armed, vec![1, 2, 3], "one per friendship");
+        assert!(armed.iter().all(|&i| rows[i].era_lockout_due == 1 && Some(rows[i].era_lockout_from) == tags[i]));
+        // A member's lockout later waits for its rotation: the later due wins, measured from the era it stands on then.
+        let again = arm_lockout_rekeys(&mut rows, &[None, Some(0xB1), Some(0xA2), Some(0xA3), Some(0xA4), None, None], 9);
+        assert_eq!(again, vec![1, 2, 3]);
+        assert_eq!((rows[1].era_lockout_due, rows[1].era_lockout_from), (9, 0xB1));
+    }
+
+    /// One at a time and only when it can go: due, online, complete, nothing in flight, and ours to run; done once the bond moved off the armed era.
+    #[test]
+    fn a_lockout_rekey_goes_only_to_an_online_friend_this_device_owns() {
+        let me = [7u8; 32];
+        let mut c = friend(1);
+        c.era_lockout_due = 1;
+        c.era_lockout_from = 0xA1;
+        assert!(!lockout_rekey_ready(&c, 0, Some(me)), "offline: waits for its online edge");
+        c.is_online = true;
+        assert!(lockout_rekey_ready(&c, 0, Some(me)));
+        c.ceremony_owner = Some([6u8; 32]);
+        assert!(!lockout_rekey_ready(&c, 0, Some(me)), "another device of ours owns this friendship's ceremonies");
+        c.ceremony_owner = Some(me);
+        c.era_lockout_due = 5;
+        assert!(!lockout_rekey_ready(&c, 4, Some(me)), "a member's lockout waits for the rotation");
+        assert!(lockout_rekey_ready(&c, 5, Some(me)));
+        c.era_weave_due = 1;
+        assert!(!lockout_rekey_ready(&c, 5, Some(me)), "a woven CLUTCH already owed carries it");
+        assert!(!lockout_rekey_done(&c, Some(0xA1)));
+        assert!(!lockout_rekey_done(&c, None));
+        assert!(lockout_rekey_done(&c, Some(0xA2)));
     }
 }

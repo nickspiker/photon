@@ -721,6 +721,10 @@ pub struct Contact {
     pub era_prior_claim: Option<(u32, u64)>,
     /// A heavy weave is DUE for this friendship once the cached fleet epoch reaches this value (0 = none): armed on a fleet shrink (Revoke / Release) at epoch+1 so the woven era's chain-sync seals only under the key the leaver never gets, or at 1 by a repair verdict. Persisted, so a restart cannot lose a shrink's re-key.
     pub era_weave_due: u64,
+    /// A LOCKOUT re-key is owed for this friendship (the owner 2026-11-18: a device locked out from another re-keys every friendship by the light era ratchet, one friend at a time as each comes online): due once the cached fleet epoch reaches this value, at 1 at once, 0 none. Persisted, so a restart cannot lose a lockout's re-key.
+    pub era_lockout_due: u64,
+    /// The bond's era tag when the lockout re-key was armed: the re-key is done once the bond stands on any other era.
+    pub era_lockout_from: u32,
     /// Flag to prevent multiple concurrent KEM encapsulations
     pub clutch_kem_encap_in_progress: bool,
     /// Flag to serialize KEM decapsulation jobs — a queued KEM re-arrival mid-flight waits in clutch_pending_kem until the running decap drains.
@@ -925,6 +929,8 @@ impl Contact {
             era_resp_cache: None,
             era_prior_claim: None,
             era_weave_due: 0,
+            era_lockout_due: 0,
+            era_lockout_from: 0,
             clutch_kem_encap_in_progress: false, // No KEM encap running yet
             clutch_kem_decap_in_progress: false,
             clutch_ceremony_in_progress: false, // No ceremony completion running yet

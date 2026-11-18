@@ -452,6 +452,9 @@ impl PhotonApp {
         let launch_lift = ime_lift + self.launch_lift_below(buf_w, buf_h, ctx.viewport.ru);
         // Same hoist for the Fleet page's locked set (treat-as-stolen rows): the row loop can't re-borrow self.
         let fleet_locked_set = self.locked_devices();
+        // And which rows are Photons on the alias alone (Lock out, never Revoke), and whether this one is (its About page signs it out).
+        let alias_only_set: Vec<[u8; 32]> = self.alias_listed_devices().into_iter().chain(self.chain_listed_locked.iter().copied()).filter(|d| self.is_alias_only_device(d)).collect();
+        let alias_alone = self.alias_alone();
         let fleet_schemes = self.fleet_schemes.clone();
         // Hoisted for the wave overlay (the chrome borrow below outlives it): SHOW the ☎ pill for any real friend conversation (discoverable, dimmed when it can't connect); ENABLE it only when the friend is online with a usable chain. Also whether a wave is live (phase + peer name for the bar). All read before the chrome `as_mut` since the overlay draws early, under-blend-topmost, on every screen.
         // A MOLECULE waves too (docs/group-waves.md): the pill shows once the conversation stands, and lights when any other standing member is online.
@@ -5875,9 +5878,16 @@ impl PhotonApp {
                             let bridge_fill = if *online { Some(*theme::PILL_GREEN) } else { Some(*theme::PILL_GREY) };
                             pills.push((tr(Msg::BridgePill), (btn_base + 8 + i as HitId), true, bridge_fill));
                             pills.push((tr(Msg::RenamePill), (btn_base + 56 + i as HitId), true, None));
+                            // A Photon on the alias alone (a ferros one) is locked out by the chain for good (LockListed has no reversal), so its locked row offers nothing, and its live row says Lock out (the owner 2026-11-18).
+                            let alias_only = alias_only_set.contains(pk);
                             if row_locked {
-                                let armed = self.fleet_unlock_armed.as_ref() == Some(pk);
-                                pills.push((tr(Msg::ReinstatePill { armed }), (btn_base + 40 + i as HitId), true, if armed { Some(*theme::PILL_RED) } else { None }));
+                                if !alias_only {
+                                    let armed = self.fleet_unlock_armed.as_ref() == Some(pk);
+                                    pills.push((tr(Msg::ReinstatePill { armed }), (btn_base + 40 + i as HitId), true, if armed { Some(*theme::PILL_RED) } else { None }));
+                                }
+                            } else if alias_only {
+                                let armed = self.fleet_lock_armed.as_ref() == Some(pk);
+                                pills.push((tr(Msg::LockOutPill { armed }), (btn_base + 32 + i as HitId), true, Some(*theme::PILL_RED)));
                             } else {
                                 let armed = self.fleet_lock_armed.as_ref() == Some(pk);
                                 pills.push((tr(Msg::RevokePill { armed }), (btn_base + 32 + i as HitId), true, Some(*theme::PILL_RED)));
@@ -7720,6 +7730,33 @@ impl PhotonApp {
                             None,
                         );
                         y += line_h * 1.4;
+                    }
+                    // SIGN OUT (the owner 2026-11-18): Photon on the alias alone (a ferros one) shows no Fleet or Security page, so its own sign out lives here; a fleet member's is Release on the Security page.
+                    if alias_alone {
+                        y += line_h * 0.6;
+                        let s = tr(Msg::SignOutHint);
+                        for line in s.lines() {
+                            y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, about_clip);
+                            y += line_h * 0.3;
+                        }
+                        let label = tr(Msg::SignOutPill { armed: self.alias_sign_out_armed });
+                        let pill_w = ctx.text.measure_text(&label, &TextStyle::new(hspan2 * 0.9, *theme::LABEL_COLOUR).font("Oxanium")) + hspan2 * 2.;
+                        let pill_h = line_h * 1.1;
+                        draw_stub_pill_filled(
+                            &mut canvas,
+                            ctx.text,
+                            &mut chrome.hit_test_map,
+                            buf_w,
+                            buf_h,
+                            fluor::region::Region::new(cx - pill_w * 0.5, y, pill_w, pill_h),
+                            &label,
+                            btn_base + 5,
+                            ctx.pressed_hit,
+                            true,
+                            Some(*theme::PILL_RED),
+                            "Oxanium",
+                        );
+                        y += pill_h + line_h * 0.4;
                     }
                     // MEASURED extent (Flow doctrine): the card's true height from the final cursor — retires the hand-counted row arithmetic next frame.
                     measured_extent = Some((y + settings_content_scroll - inset.y + line_h, inset.h));

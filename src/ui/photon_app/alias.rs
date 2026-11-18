@@ -1,7 +1,7 @@
 //! The app's side of Photon's alias (network/fgtw/alias.rs holds the work): start the settle off the UI thread, take its answer, keep the alias's device list in the vault, and let the list's devices be siblings.
 //! The desktop and Android settle the person key and sign their own binding; ferros's Photon was handed both (PhotonKeys) and only joins the list.
 
-use super::PhotonApp;
+use super::{tr, Msg, PhotonApp};
 
 impl PhotonApp {
     /// Settle the alias off the UI thread: on the desktop and Android once the session and the fleet key are in hand (after an attest or a resume), on ferros once PhotonKeys came in. A settle already running is left to finish.
@@ -19,8 +19,8 @@ impl PhotonApp {
             Some(keys) => {
                 let keys = keys.clone();
                 std::thread::Builder::new().name("alias".into()).spawn(move || {
-                    let list = crate::network::fgtw::alias::join_list(&keys, &device);
-                    crate::log_err!(tx.send(Ok(crate::network::fgtw::alias::AliasReady { keys, list })), "the alias list to the UI thread");
+                    let joined = crate::network::fgtw::alias::join_list(&keys, &device);
+                    crate::log_err!(tx.send(Ok(crate::network::fgtw::alias::AliasReady { keys, joined })), "the alias list to the UI thread");
                 })
             }
             None => {
@@ -82,14 +82,181 @@ impl PhotonApp {
         }
         // Every settle: the alias siblings' pair secrets, which their frames seal under (alias_seal_key).
         self.refresh_alias_pairs();
-        match ready.list {
+        let joined = ready.joined;
+        self.adopt_listed_locked(joined.listed_locked);
+        if joined.self_locked {
+            if self.alias_alone() {
+                crate::log("ALIAS: our chain has locked this Photon out; discarding its state here");
+                self.spawn_alias_sign_out(false);
+            }
+            return true;
+        }
+        match joined.list {
             Some((binding, list)) => {
                 self.alias_retry = None;
                 self.keep_alias_list(binding, list);
             }
             None => self.alias_owe(),
         }
+        self.redrive_alias_locks();
         true
+    }
+
+    /// The chain's locks on devices outside the membership, as a fold just read them: kept in RAM, and on a change the locked set is applied again, so a newly locked device is refused, its row flagged and every friendship's re-key armed on every device of ours.
+    pub(super) fn adopt_listed_locked(&mut self, listed: Vec<[u8; 32]>) {
+        let mut merged = self.chain_listed_locked.clone();
+        for d in listed {
+            if !merged.contains(&d) {
+                merged.push(d);
+            }
+        }
+        if merged != self.chain_listed_locked {
+            crate::logf!("ALIAS: our chain locks {} device(s) outside the membership", merged.len());
+            self.chain_listed_locked = merged;
+            self.apply_locked_set();
+        }
+    }
+
+    /// LOCK OUT an alias sibling (the owner 2026-11-18: "triggers a re-key and locks out that device"), from a member of the fleet: refused here at once (its row flagged, every friendship's re-key armed, nothing sealed to it again), then off the UI thread the chain records the lock (OpKind::LockListed, the record a stolen alias holder cannot write) and the list is published without it.
+    pub(super) fn lock_out_alias_device(&mut self, pk: [u8; 32]) {
+        if self.alias_lock_rx.is_some() {
+            crate::log("ALIAS: a lock out is already running; this one waits for it");
+            return;
+        }
+        let (Some(hp), Some(signer), Some(kp)) = (self.our_handle_proof(), self.device_signer(), self.device_keypair.as_ref()) else {
+            crate::log("ALIAS: lock out needs our identity and this device's signer; not held yet");
+            return;
+        };
+        // The alias prunes the list; without it yet the chain's lock alone is written, and the settle that brings the alias prunes the list (join_list leaves locked devices out).
+        let keys = self.photon_keys.clone();
+        if self.alias_alone() {
+            crate::log("ALIAS: Photon on the alias alone is no member of the chain and cannot lock a device out");
+            return;
+        }
+        let me = kp.public.to_bytes();
+        crate::logf!("ALIAS: locking out {} — refused here now, the chain and the list follow", crate::fp(&pk));
+        if !self.chain_listed_locked.contains(&pk) {
+            self.chain_listed_locked.push(pk);
+        }
+        self.alias_pairs.retain(|(d, _)| *d != pk);
+        self.alias_chains_owed.retain(|d| *d != pk);
+        self.apply_locked_set();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let wake = self.event_proxy.clone();
+        let spawned = std::thread::Builder::new().name("alias lock".into()).spawn(move || {
+            let r = crate::network::fgtw::fleet::lock_listed_device_chain(&signer, &hp, &pk).map(|listed_locked| match keys {
+                Some(keys) => crate::network::fgtw::alias::join_list(&keys, &me),
+                None => crate::network::fgtw::alias::Joined { list: None, listed_locked, self_locked: false },
+            });
+            crate::log_err!(tx.send((pk, r)), "the lock out to the UI thread");
+            if let Some(w) = wake {
+                super::wake_ui(&w);
+            }
+        });
+        match spawned {
+            Ok(_) => self.alias_lock_rx = Some(rx),
+            Err(e) => crate::logf!("ALIAS: the lock out thread did not start ({}); the next settle records it", e),
+        }
+    }
+
+    /// A locked alias sibling row the chain does not hold the lock for yet (a lock out whose chain write did not land): recorded again, one at a time, on each settle.
+    fn redrive_alias_locks(&mut self) {
+        if self.alias_alone() || self.alias_lock_rx.is_some() {
+            return;
+        }
+        let members = self.fleet_members_held();
+        if members.is_empty() {
+            return;
+        }
+        let unrecorded = self.contacts.iter().filter(|c| c.is_sibling && c.locked_out).filter_map(|c| c.device_key()).find(|d| !members.contains(d) && !self.chain_listed_locked.contains(d));
+        if let Some(d) = unrecorded {
+            crate::logf!("ALIAS: {} is locked here but not on our chain; recording it again", crate::fp(&d));
+            self.lock_out_alias_device(d);
+        }
+    }
+
+    /// SIGN OUT on Photon on the alias alone (the owner 2026-11-18: "the other needs the device present to sign itself out, thus asserting it wiped its keys"): the first tap arms, the second sends. The list is published without this device, then Photon's state here is discarded; nothing is re-keyed.
+    pub(super) fn alias_sign_out_tap(&mut self) {
+        if !self.alias_sign_out_armed {
+            self.alias_sign_out_armed = true;
+            return;
+        }
+        self.alias_sign_out_armed = false;
+        self.spawn_alias_sign_out(true);
+    }
+
+    /// Off the UI thread: leave the list (when `publish`, the sign out; a locked out device has nothing to publish), discard every entry of Photon's vault here, and mark this device signed out of this person, so the keys handed in at the next start do not join it again.
+    pub(super) fn spawn_alias_sign_out(&mut self, publish: bool) {
+        if self.alias_sign_out_rx.is_some() {
+            return;
+        }
+        let (Some(keys), Some(kp)) = (self.photon_keys.clone(), self.device_keypair.as_ref()) else {
+            return;
+        };
+        let me = kp.public.to_bytes();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let wake = self.event_proxy.clone();
+        let spawned = std::thread::Builder::new().name("alias sign out".into()).spawn(move || {
+            let r = if publish { crate::network::fgtw::alias::leave_list(&keys, &me) } else { Ok(()) };
+            let r = r.and_then(|()| discard_photon_vault(&keys.handle_proof));
+            crate::log_err!(tx.send(r), "the sign out to the UI thread");
+            if let Some(w) = wake {
+                super::wake_ui(&w);
+            }
+        });
+        match spawned {
+            Ok(_) => self.alias_sign_out_rx = Some(rx),
+            Err(e) => crate::logf!("ALIAS: the sign out thread did not start ({})", e),
+        }
+    }
+
+    /// Take a lock out's or a sign out's answer. True when one landed.
+    pub(super) fn drain_alias_removal(&mut self) -> bool {
+        let mut landed = false;
+        if let Some((pk, r)) = self.alias_lock_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.alias_lock_rx = None;
+            landed = true;
+            match r {
+                Ok(joined) => {
+                    crate::logf!("ALIAS: {} is locked out on our chain", crate::fp(&pk));
+                    // The held chain carries the lock: kept in the vault and sent to the siblings and every contact.
+                    self.fleet_chain_store();
+                    if let Some(hp) = self.our_handle_proof() {
+                        self.chain_news(hp);
+                    }
+                    self.adopt_listed_locked(joined.listed_locked);
+                    if let Some((binding, list)) = joined.list {
+                        self.keep_alias_list(binding, list);
+                    }
+                    self.ready_toast = Some(tr(Msg::LockedOutToast).into_owned());
+                }
+                Err(e) => {
+                    crate::logf!("ALIAS: the chain did not record the lock of {} ({}); it stays refused here and is recorded again at the next settle", crate::fp(&pk), e);
+                    self.ready_toast = Some(tr(Msg::LockOutFailed).into_owned());
+                }
+            }
+        }
+        if let Some(r) = self.alias_sign_out_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+            self.alias_sign_out_rx = None;
+            landed = true;
+            match r {
+                Ok(()) => {
+                    crate::log("ALIAS: signed out; Photon's state on this device is discarded");
+                    self.photon_keys = None;
+                    self.alias_list = None;
+                    self.alias_pairs.clear();
+                    self.alias_chains_owed.clear();
+                    self.chain_listed_locked.clear();
+                    self.lockout_rekey_busy = None;
+                    self.clean_device_for_reuse();
+                }
+                Err(e) => {
+                    crate::logf!("ALIAS: the sign out did not complete ({}); nothing was discarded", e);
+                    self.ready_toast = Some(tr(Msg::SignOutPublishFailed).into_owned());
+                }
+            }
+        }
+        landed
     }
 
     /// The vault entry the alias's device list (its slot document) is kept at.
@@ -157,6 +324,12 @@ impl PhotonApp {
             && c.device_key().is_some_and(|d| !self.alias_listed_devices().contains(&d))
     }
 
+    /// A sibling of ours that is a Photon on the alias alone (a ferros one): the list names it, or our chain locked it as such, and the chain does not hold it as a member. Its Lock out is the chain's LockListed, never Revoke. False until our chain is held (alias_only_sibling).
+    pub(super) fn is_alias_only_device(&self, device: &[u8; 32]) -> bool {
+        // The fold as last adopted, never a fresh fold: the Fleet page asks this per row per frame.
+        (self.alias_listed_devices().contains(device) || self.chain_listed_locked.contains(device)) && alias_only_sibling(self.alias_alone(), &self.registry_converged_fold, device)
+    }
+
     /// The devices the alias's list names (this device among them).
     pub(super) fn alias_listed_devices(&self) -> Vec<[u8; 32]> {
         self.alias_list.as_ref().map(|(_, l)| l.devices.clone()).unwrap_or_default()
@@ -173,7 +346,7 @@ impl PhotonApp {
     /// The secret shared with sibling `device` when it is an alias sibling: a Photon of ours that is not a member of the fleet (a ferros one), or any sibling when this Photon is on the alias alone. Both ends reach the same answer: the ferros end always mixes the alias, and the member end mixes it for a sibling the chain does not hold. None for a sibling that shares the identity seed (both members of the fleet).
     pub(super) fn alias_sibling_root(&self, device: &[u8; 32], fleet: &[[u8; 32]]) -> Option<[u8; 32]> {
         let keys = self.photon_keys.as_ref()?;
-        (keys.legacy_seed.is_none() || !fleet.contains(device)).then(|| keys.sibling_root())
+        alias_only_sibling(keys.legacy_seed.is_none(), fleet, device).then(|| keys.sibling_root())
     }
 
     /// The seal for a frame of `purpose` to alias sibling `device` (2026-11-17, the owner: the person's conversations on a ferros Photon, and a way to cut a lost one off): a key from the pair secret our sibling ceremony made with that one device (fanout_pairs, kept in `alias_pairs`), so no fleet key ever reaches an alias sibling, and removing it from the alias's list stops every frame to it. None for a fleet sibling, or an alias sibling whose ceremony has not completed.
@@ -277,11 +450,19 @@ impl PhotonApp {
             return;
         };
         let device_secret = *kp.secret.as_bytes();
+        let hp = self.photon_keys.as_ref().map(|k| k.handle_proof).unwrap_or_default();
         let t_boot = std::time::Instant::now();
         let (tx, rx) = std::sync::mpsc::channel();
         let spawned = std::thread::Builder::new()
             .name("vault-open".into())
             .spawn(move || {
+                // A device signed out of this person opens nothing for it: the vault was discarded, and opening it would join the list again.
+                crate::storage::install_device_secret(device_secret);
+                if signed_out_of(&hp) {
+                    SIGNED_OUT_HELD.store(true, std::sync::atomic::Ordering::Release);
+                    crate::log_err!(tx.send(Err(crate::storage::StorageError::Vault("this device signed out of this person".to_string()))), "the sign out mark to the UI thread");
+                    return;
+                }
                 crate::log_err!(tx.send(crate::storage::open_session_vault(root, root, device_secret)), "the opened vault to the UI thread");
             })
             .is_ok();
@@ -303,6 +484,33 @@ pub(super) fn alias_frame_key(pair: &[u8; 32], purpose: &[u8]) -> [u8; 32] {
     *h.finalize().as_bytes()
 }
 
+/// Is sibling `device` one we share only the alias with: every sibling on the alias alone; on a member Photon, a sibling the chain's members do not include.
+/// A member Photon is always in its own chain, so no members means the held chain has not loaded yet: until that edge no sibling is read as alias-only (5b1926dc's startup race: read so in that window, a fleet sibling's frames sealed under a pair key it never made).
+pub(super) fn alias_only_sibling(alias_alone: bool, fleet: &[[u8; 32]], device: &[u8; 32]) -> bool {
+    alias_alone || (!fleet.is_empty() && !fleet.contains(device))
+}
+
+/// Discard every entry of Photon's vault on this device (the owner 2026-09-27: deletion is a mark for discard, never a shred claim) and mark the device signed out of the person `handle_proof`, so the keys handed in at the next start do not join it again. Off the UI thread.
+fn discard_photon_vault(handle_proof: &[u8; 32]) -> Result<(), String> {
+    let vault = crate::storage::device_vault().ok_or("no vault")?;
+    let addrs = vault.live_addrs().map_err(|e| format!("the vault's entries did not list ({e})"))?;
+    vault.delete_addr_batch(&addrs).map_err(|e| format!("the vault's entries were not discarded ({e})"))?;
+    vault.write_device(SIGNED_OUT_FLAG, handle_proof).map_err(|e| format!("the sign out mark was not written ({e})"))?;
+    crate::logf!("ALIAS: {} vault entries discarded; this device is signed out of its person", addrs.len());
+    Ok(())
+}
+
+/// The device-scope entry naming the person this device signed out of (their handle proof, 32 bytes): set by a sign out, read where the keys are handed in.
+const SIGNED_OUT_FLAG: &str = "flags/signed_out";
+
+/// The vault-open worker found this device signed out of the person whose keys came in: the resume drops the keys instead of reporting a lost vault.
+pub(super) static SIGNED_OUT_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether this device signed out of the person `handle_proof`: a Photon handed that person's keys again stays out of it. Off the UI thread (a vault read).
+pub(super) fn signed_out_of(handle_proof: &[u8; 32]) -> bool {
+    crate::storage::device_vault().is_some_and(|v| matches!(v.read_device(SIGNED_OUT_FLAG), Ok(Some(b)) if b.as_slice() == handle_proof))
+}
+
 /// May a frame on a conversation's keys leave here for these recipients: anything from a fleet member; from Photon on the alias alone, only what goes to its own siblings (no friend's device takes a frame from it yet, whatever chains it holds).
 pub(super) fn alias_may_send(alias_alone: bool, every_recipient_ours: bool) -> bool {
     !alias_alone || every_recipient_ours
@@ -315,8 +523,19 @@ pub(super) fn ceremony_may_start(alias_alone: bool, is_sibling: bool) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{alias_frame_key, alias_may_send, ceremony_may_start};
+    use super::{alias_frame_key, alias_may_send, alias_only_sibling, ceremony_may_start};
     use super::super::sync::{open_chain_sync, seal_chain_sync};
+
+    /// The startup race (5b1926dc): on a member Photon, before its chain loads, no sibling is read as alias-only, so no fleet sibling's frame seals under a pair key it never made; once the chain is held, a sibling outside it is an alias one; on the alias alone every sibling is.
+    #[test]
+    fn no_alias_classification_before_the_chain_loads() {
+        let (me, fleet_sib, ferros) = ([1u8; 32], [2u8; 32], [3u8; 32]);
+        assert!(!alias_only_sibling(false, &[], &fleet_sib), "chain not loaded: a fleet sibling is not misread");
+        assert!(!alias_only_sibling(false, &[], &ferros), "chain not loaded: nothing is classified yet");
+        assert!(!alias_only_sibling(false, &[me, fleet_sib], &fleet_sib));
+        assert!(alias_only_sibling(false, &[me, fleet_sib], &ferros));
+        assert!(alias_only_sibling(true, &[], &fleet_sib));
+    }
 
     fn keypair(seed: u8) -> ([u8; 32], [u8; 32]) {
         let sk = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
