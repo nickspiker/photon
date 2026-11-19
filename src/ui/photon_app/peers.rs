@@ -80,6 +80,8 @@ impl PhotonApp {
 
         store.lock().unwrap().add_peer(rec);
         self.self_record_published_for = Some(addr);
+        // Our address changed: each alias sibling, which cannot ask fgtw.org where we went, gets our book with the new record in it.
+        self.addr_book_push(None, "our address changed");
         // Same edge, second registry: a fresh reflexive publish is also the moment to re-check the primary registry against the last-adopted fold (empty plan when in sync — one cheap GET).
         if !self.registry_converged_fold.is_empty() {
             if let Some(our_hp) = self.our_handle_proof() {
@@ -180,19 +182,28 @@ impl PhotonApp {
         }
         crate::logf!("PHONEBOOK: {}'s new address passed on to our siblings", who);
         self.dispatch_frame_to_siblings(bytes);
+        // An alias sibling gets it in our address book too, sealed for it alone and checked there against the folds it holds.
+        self.addr_book_push(None, "a friend's address changed");
     }
 
-    pub(super) fn push_address_record_to(&mut self, targets: Vec<[u8; 32]>) {
-        let (Some(kp), Some(hp)) = (self.device_keypair.as_ref(), self.our_handle_proof()) else {
-            return;
-        };
+    /// Is anyone answering us without fgtw.org: a device beaconed on this network (cleared at a network change), or a device of ours or a friend's answers our pings? fgtw.org is asked only when this is false (the owner 2026-11-18: the bootstrap is the last rung).
+    pub(super) fn mesh_heard(&self) -> bool {
+        !self.lan_answered.is_empty() || self.contacts.iter().any(|c| c.is_online && self.has_remote(c))
+    }
+
+    /// The edge that opens the last rung: nobody is heard (mesh_heard) and every contact we hold an address for has had its presence verdict, so the silence is a finding and not a start that has not asked yet.
+    pub(super) fn mesh_silent(&self) -> bool {
+        !self.mesh_heard() && self.contacts.iter().filter(|c| self.has_remote(c)).all(|c| c.presence_probed || c.race_addrs().is_none())
+    }
+
+    /// Our own record, signed now: where peers see us (the reflexive address), else our LAN address, which is one-sided but enough to open a path from the side holding it. None with nothing honest to say.
+    pub(super) fn own_peer_record(&self) -> Option<crate::network::fgtw::PeerRecord> {
+        let (kp, hp) = (self.device_keypair.as_ref()?, self.our_handle_proof()?);
         let local_ip = self.our_lan_ip.or_else(crate::network::udp::get_local_ip).map(std::net::IpAddr::V4);
         let lan_sock = local_ip.zip(self.handle_query.as_ref().map(|hq| hq.port())).map(|(ip, port)| std::net::SocketAddr::new(ip, port));
-        let Some(addr) = self.our_reflexive.or(lan_sock) else {
-            return; // nothing honest to say at all
-        };
-        if crate::network::traverse::gather::is_bogus_addr(&addr) || targets.is_empty() {
-            return;
+        let addr = self.our_reflexive.or(lan_sock)?;
+        if crate::network::traverse::gather::is_bogus_addr(&addr) {
+            return None;
         }
         let mut rec = crate::network::fgtw::PeerRecord {
             handle_proof: hp,
@@ -206,6 +217,20 @@ impl PhotonApp {
             local_seen: crate::network::time_base::now_osc(),
         };
         rec.sign(&kp.secret);
+        Some(rec)
+    }
+
+    pub(super) fn push_address_record_to(&mut self, targets: Vec<[u8; 32]>) {
+        let Some(kp) = self.device_keypair.as_ref() else {
+            return;
+        };
+        if targets.is_empty() {
+            return;
+        }
+        let Some(rec) = self.own_peer_record() else {
+            return; // nothing honest to say at all
+        };
+        let addr = rec.ip;
         let provenance = *blake3::hash(&rec.device_pubkey.as_bytes()[..]).as_bytes();
         let sig = kp.sign(&provenance);
         let mut sig_bytes = [0u8; 64];
@@ -387,6 +412,7 @@ impl PhotonApp {
             );
             self.ping_contacts();
             self.attach_address_edge("the seed registry resolved an address");
+            self.addr_book_push(None, "the seed registry resolved an address");
             return true;
         }
         false

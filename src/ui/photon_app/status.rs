@@ -353,6 +353,7 @@ impl PhotonApp {
                 StatusUpdate::FleetStatePushed { .. } => "FleetStatePushed",
                 StatusUpdate::AvatarWanted { .. } => "AvatarWanted",
                 StatusUpdate::AvatarGiven { .. } => "AvatarGiven",
+                StatusUpdate::AddrBookReceived { .. } => "AddrBookReceived",
                 StatusUpdate::FleetChainReceived { .. } => "FleetChainReceived",
                 StatusUpdate::AddressPushed { .. } => "AddressPushed",
                 StatusUpdate::BindSelectReceived { .. } => "BindSelectReceived",
@@ -485,6 +486,8 @@ impl PhotonApp {
         // A friend's avatar among our own devices, asked or answered by a sibling: handled after the loop (it needs &mut self).
         let mut avatar_wants_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
         let mut avatar_gives_after: Vec<([u8; 32], Vec<u8>, [u8; 32])> = Vec::new();
+        // A sibling's address book (sealed, sender), opened and adopted after the loop.
+        let mut addr_books_after: Vec<(Vec<u8>, [u8; 32])> = Vec::new();
         // An address edge this drain (a device came online, a new direct path proved out): fetches that found nobody to ask are asked again after the loop.
         let mut addr_edge = false;
         // Siblings that just came online, owed our fleet state.
@@ -4534,6 +4537,12 @@ impl PhotonApp {
                         avatar_gives_after.push((who, sealed, sender_pubkey.key));
                     }
                 }
+                // A sibling's address book: only a live device of ours hands us one; anything else is dropped unopened.
+                StatusUpdate::AddrBookReceived { sealed, sender_pubkey } => {
+                    if self.contacts.iter().any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)) {
+                        addr_books_after.push((sealed, sender_pubkey.key));
+                    }
+                }
                 StatusUpdate::FanoutReceived { handle_proof, blob, sender_pubkey, .. } => {
                     let joining = self.session.is_none() && self.add_join_hp == Some(handle_proof);
                     let ours = self.our_handle_proof() == Some(handle_proof) && self.contacts.iter().any(|c| c.is_sibling && c.knows_device(&sender_pubkey.key));
@@ -5918,6 +5927,8 @@ impl PhotonApp {
             self.fleet_state_push(Some(dev));
             // An alias sibling back online is owed every friendship's chains too: lanes that moved while it was away reached it only if they moved again since.
             self.owe_alias_chains(dev);
+            // …and our address book, which it cannot ask fgtw.org for.
+            self.addr_book_push(Some(dev), "it came online");
         }
         for dev in reachable_after {
             if self.depart_asking() || self.depart_asked().is_some() {
@@ -5932,6 +5943,11 @@ impl PhotonApp {
         }
         for (who, sealed, sender) in avatar_gives_after {
             self.take_avatar_give(who, sealed, sender);
+        }
+        for (sealed, sender) in addr_books_after {
+            if self.take_addr_book(&sealed, sender) {
+                changed = true;
+            }
         }
         if addr_edge {
             self.attach_address_edge("a device came online or a direct path proved out");

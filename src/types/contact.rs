@@ -521,6 +521,8 @@ pub enum AddrSource {
     Beacon,
     /// A signed phonebook or gossip record the device published.
     Record,
+    /// A sibling of ours heard the device there (its address book, network/addr_book.rs): nothing signed says so, so it is only somewhere to probe.
+    Hint,
 }
 
 /// One address a device has been known at, and when it was last heard there (Eagle oscillations).
@@ -585,6 +587,19 @@ impl DeviceEndpoint {
         // WHY: a phone that roams gathers a new address per network it touches; without a bound the set grows for as long as the app runs.
         // PROOF: the least recently heard address is the one most likely gone, and a device's live interfaces are far fewer than DEVICE_ADDRS_MAX.
         self.addrs.truncate(DEVICE_ADDRS_MAX);
+    }
+
+    /// A sibling of ours heard the device at `addr` when `heard`: kept LAST, behind everything heard or signed here, so it is probed without outranking a proven address; one already held is left as it is.
+    /// Returns whether it was new.
+    pub fn hint(&mut self, addr: SocketAddr, heard: i64) -> bool {
+        let addr = SocketAddr::new(addr.ip().to_canonical(), addr.port());
+        // WHY: a full table keeps what this device learned itself; a hint never takes a heard or signed address's place.
+        // PROOF: `note` keeps at most DEVICE_ADDRS_MAX, cutting from the tail; a hint pushed onto a full table would grow it past that bound until the next `note` cut it again.
+        if self.has(addr) || self.addrs.len() >= DEVICE_ADDRS_MAX {
+            return false;
+        }
+        self.addrs.push(SeenAddr { addr, how: AddrSource::Hint, heard });
+        true
     }
 
     /// The device is no longer at `addr` (another device of the contact holds that mapping now).

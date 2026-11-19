@@ -237,12 +237,19 @@ impl PhotonApp {
                     }
                 } else {
                     self.stalled_gossip_asked = false;
-                    if targets.is_empty() {
-                        crate::log("FGTW: a contact has no proven path and no peer address is held — asking fgtw.org");
+                    // THE BOOTSTRAP IS THE LAST RUNG (the owner 2026-11-18: "If I don't see anyone on the LAN with a broadcast and my WAN is not hitting anything, then we should probably use the bootstrap, otherwise? FGTW baby!!!"): while a LAN beacon was heard on this network or any device of ours or a friend's answers, the mesh is asked (siblings' address books, then the friends' and peers' phonebooks above) and fgtw.org is not; nor before every contact we can ping has had its verdict (mesh_silent).
+                    if self.mesh_heard() {
+                        crate::log("FGTW: a contact has no proven path, but peers answer here (a LAN beacon or a device online) — their phonebooks are asked again next pulse; fgtw.org stays the last rung");
+                    } else if !self.mesh_silent() {
+                        crate::log("FGTW: a contact has no proven path and nobody has answered yet, but not every contact has had its verdict — fgtw.org waits for that");
                     } else {
-                        crate::log("FGTW: the peers' phonebooks taught nothing last pulse — asking fgtw.org");
+                        if targets.is_empty() {
+                            crate::log("FGTW: a contact has no proven path, no LAN beacon was heard and no peer answers — asking fgtw.org");
+                        } else {
+                            crate::log("FGTW: no LAN beacon was heard and no peer answers — asking fgtw.org");
+                        }
+                        self.resolve_stalled_addresses_from_seed();
                     }
-                    self.resolve_stalled_addresses_from_seed();
                 }
             }
             // Apply whatever the seed answered (a resolve spawned on an earlier tick).

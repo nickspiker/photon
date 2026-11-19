@@ -49,6 +49,7 @@ use std::time::{Duration, Instant};
 use fluor::host::WakeSender;
 
 // The method bodies live in per-concern child modules: each is a further `impl PhotonApp` (plus the `FluorApp` trait impl in `driver`) over this same struct, glob-importing the root's items via `use super::*;`.
+mod addr_book;
 mod attachments;
 mod viewer;
 mod bridge;

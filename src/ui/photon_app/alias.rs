@@ -425,9 +425,14 @@ impl PhotonApp {
         crate::logf!("ALIAS: {} alias sibling(s) with a pair secret: frames to them seal under it", pairs.len());
         let fresh: Vec<[u8; 32]> = pairs.iter().map(|(d, _)| *d).filter(|d| !self.alias_pairs.iter().any(|(x, _)| x == d)).collect();
         self.alias_pairs = pairs;
-        // A device whose pair secret is new here could open none of our chains before: it is owed all of them.
-        for d in fresh {
+        // A device whose pair secret is new here could open none of our chains before: it is owed all of them, and our address book, which it cannot ask fgtw.org for.
+        for d in fresh.iter().copied() {
             self.owe_alias_chains(d);
+            self.addr_book_push(Some(d), "its pair secret was read here");
+        }
+        if !fresh.is_empty() {
+            // A pair key read is a key edge: a fetch no device could open may find one now.
+            self.attach_address_edge("an alias sibling's pair secret was read");
         }
         true
     }

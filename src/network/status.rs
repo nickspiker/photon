@@ -581,6 +581,11 @@ pub enum StatusUpdate {
         sealed: Vec<u8>,
         sender_pubkey: DevicePubkey,
     },
+    /// A sibling's address book (network/addr_book.rs), sealed for us alone (`addr_book`).
+    AddrBookReceived {
+        sealed: Vec<u8>,
+        sender_pubkey: DevicePubkey,
+    },
     /// A departure frame (`depart_req` or `depart_deny`), whole, for the Depart machine (fgtw::flow) to open and check: the bytes, where they came from, and the signer the cheap parse read.
     DepartFrame {
         bytes: Vec<u8>,
@@ -2360,6 +2365,9 @@ async fn run_checker(
                                         send_status_update(&status_tx_recv, StatusUpdate::AvatarWanted { handle_proof, who, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) }, &event_proxy_recv);
                                     } else if let Ok((handle_proof, who, sealed, sender_pubkey)) = crate::network::fgtw::protocol::parse_avatar_give_vsf(&data) {
                                         send_status_update(&status_tx_recv, StatusUpdate::AvatarGiven { handle_proof, who, sealed, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) }, &event_proxy_recv);
+                                    } else if let Ok((sealed, sender_pubkey)) = crate::network::fgtw::protocol::parse_addr_book_vsf(&data) {
+                                        // A sibling's address book past one datagram: the UI checks the sender is a live device of ours before opening it.
+                                        send_status_update(&status_tx_recv, StatusUpdate::AddrBookReceived { sealed, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) }, &event_proxy_recv);
                                     } else if let Ok((handle_proof, blob, sender_pubkey)) = crate::network::fgtw::protocol::parse_fanout_resp_vsf(&data) {
                                         send_status_update(
                                             &status_tx_recv,
@@ -3386,6 +3394,13 @@ async fn run_checker(
                                     },
                                     &event_proxy_recv,
                                 );
+                                continue;
+                            }
+                            // A sibling's address book (network/addr_book.rs), sealed for us alone: small, signed, same mandatory packet-ack; the UI checks the sender is a live device of ours before opening it.
+                            if let Ok((sealed, sender_pubkey)) = crate::network::fgtw::protocol::parse_addr_book_vsf(msg_bytes) {
+                                let ack_bytes = pt_recv.lock().unwrap().build_packet_ack(msg_bytes);
+                                udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                send_status_update(&status_tx_recv, StatusUpdate::AddrBookReceived { sealed, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) }, &event_proxy_recv);
                                 continue;
                             }
                             // Wi-Fi Direct credential provisioning (docs/offgrid.md) — a small signed frame with a pair-sealed blob; same mandatory packet-ack.

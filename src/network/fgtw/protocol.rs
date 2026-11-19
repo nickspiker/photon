@@ -3622,6 +3622,46 @@ pub fn parse_wfd_cred_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], Vec<u8>), [u8;
     Ok(((conversation_token, sealed), sender_pubkey))
 }
 
+/// Build an `addr_book` frame: our address book (network/addr_book.rs) sealed for one sibling under the key we share with it alone, in a device-signed envelope like every sibling frame.
+pub fn build_addr_book_vsf(sealed_book: Vec<u8>, device_pubkey: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+
+    let mut section = VsfSection::new("addr_book");
+    let blob_len = sealed_book.len();
+    section.add_field("data", VsfType::t_u3(vsf::Tensor::new(vec![blob_len], sealed_book)));
+
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build addr_book VSF: {}", e))?;
+
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
+}
+
+/// Parse + verify an `addr_book` frame. Returns (sealed book, sender pubkey); the book opens only under the key the sender shares with us.
+pub fn parse_addr_book_vsf(vsf_bytes: &[u8]) -> Result<(Vec<u8>, [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None).map_err(|e| format!("addr_book verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "addr_book" {
+        return Err(format!("Expected 'addr_book' section, got '{}'", section_name));
+    }
+    let sealed = section
+        .fields
+        .iter()
+        .find(|f| f.name == "data")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::t_u3(tensor) => Some(tensor.data.clone()),
+            _ => None,
+        })
+        .ok_or("addr_book missing data")?;
+    Ok((sealed, sender_pubkey))
+}
+
 pub fn build_chain_reset_vsf(
     conversation_token: &[u8; 32],
     sealed_nonce: Vec<u8>,
