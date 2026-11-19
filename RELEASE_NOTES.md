@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v155
 - **Joining a group no longer waits on one particular device.** Whichever of the inviter's devices hears your join now lets you in, and all of their devices agree on the same new keys, so a join can no longer sit unanswered.
 - **Every one of your devices follows up your invitations.** An invitation you send from any device is now known to all of them, so whichever device sees the person come online asks them again, instead of only the device you invited from.
 - **Only people you invited can join.** Your devices let someone into a group only when one of them invited that person, or another of that person's devices is already in.
@@ -18,6 +20,8 @@ One sentence per line, however long; plain language for the person who installs 
 - **Photon on ferros: your devices fill it in.** It receives your friendship keys, your address book and your own picture from your other devices, so it reaches your friends without asking any server.
 - **Photon on ferros: Back stops at your contacts.** Back steps up one page at a time and stays on the contacts screen instead of leaving Photon.
 - **Photon on ferros: smoother scrolling.** Scrolling and flings now keep pace with the screen's 120 frames a second and redraw only the strip that changes.
+
+Built from photon 59e2aca1 · chirp b01db995 · fgtw 97ec059e · fluor 7c538211 · ihi 92796ee6 · kete 8d5f11c1 · limbus 30ab5cc3 · manifestus add362f6 · nunc b518ad11 · opsin 595cf0c9 · rarangi 387b44ab · spirix 789ed623 · tapuwae 0bc864d7 · tohu 7df2ac9b · voca 04dcf2df · vsf 1255a074
 
 ## v154
 - **Joining a group works even if your first answer got lost.** If your "join" never reached the person who invited you, you could see the members but never any messages, and tapping Join again did nothing; now the next invitation sends your join again, and you can always tap Join until you are in.
