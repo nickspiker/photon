@@ -2199,6 +2199,9 @@ impl PhotonApp {
         let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
         // Contacts a sibling says have added us too, armed after the loop (it can remove contacts, so positions are resolved again by proof).
         let mut consent_from_roster: Vec<[u8; 32]> = Vec::new();
+        // Photon on the alias alone (ferros) hears no friend's pong and runs no ceremony, so the name its siblings carry is the only one it can ever learn.
+        let alias_alone = self.alias_alone();
+        let mut named = 0usize;
         for e in entries {
             // Match FRIEND contacts only — sibling contacts carry OUR handle_proof and must not suppress a roster entry (nor be treated as its holder).
             if let Some(pos) = self
@@ -2206,6 +2209,18 @@ impl PhotonApp {
                 .iter()
                 .position(|c| !c.is_sibling && c.handle_proof == e.handle_proof)
             {
+                // On the alias alone a friend's name follows the entry whatever the clock: this device's clock cannot hold a name it never heard, and a held owner-signed record still wins (fill_from_roster).
+                // The Pro 2026-11-18 kept "Pending…" rows and an old name while its siblings carried the names, its rows' clocks ahead of every entry.
+                if alias_alone && !e.tombstone && !e.published_name.is_empty() && self.contacts[pos].published_name != e.published_name {
+                    self.contacts[pos].fill_from_roster(&e.published_name, &[0u8; 64]);
+                    if self.contacts[pos].published_name == e.published_name {
+                        self.contacts[pos].published_name_dirty = true;
+                        named += 1;
+                        if let Some(storage) = self.storage.as_ref() {
+                            crate::log_err!(crate::storage::contacts::save_contact(&self.contacts[pos], storage), "a friend's name from the siblings' roster");
+                        }
+                    }
+                }
                 if e.updated <= self.contacts[pos].roster_updated {
                     continue; // ours is as new or newer — our push carries it
                 }
@@ -2313,7 +2328,8 @@ impl PhotonApp {
                 self.forget_booted(&e.handle_proof);
             }
             // SELF-GUARD: never mint a NEW row bearing OUR handle_proof under a foreign key — that is the self-contact stub (an empty duplicate whose keygen queue CLUTCHes at our own fleet; the census caught two of them beside the legit self row, 2026-08-11). The true notes-to-self row keys on our identity pid and merges thru the position() match above; anything else claiming our proof is stale roster debris.
-            if let (Some(our_proof), Some(our_pid)) = (self.session.as_ref().map(|s| s.handle_proof), self.own_party_id())
+            // Keyed on our_handle_proof, which PhotonKeys answers where there is no session (ferros): the guard read the session alone and stood open on the alias.
+            if let (Some(our_proof), Some(our_pid)) = (self.our_handle_proof(), self.own_party_id())
             {
                 // OLD-SELF IMPORT — MIGRATION-EXPIRES: 2027-02-01 (Nick 2026-10-27: "that import of old will be english only and version out in 12 versions, no reason to keep old non atoms around in the code"); grep the tag to find every piece.
                 // Our own identity is never a contact: under a foreign key it is self-stub debris, under our own the retired self row (the conversation with only us in it is an atom now — an older device still pushes it).
@@ -2352,6 +2368,10 @@ impl PhotonApp {
             if let Some(ci) = self.contacts.iter().position(|c| !c.is_sibling && c.handle_proof == hp) {
                 self.consent_confirmed(ci, "a sibling heard their knock");
             }
+        }
+        if named > 0 {
+            crate::logf!("FLEET: {} friend name(s) taken from the siblings' roster (Photon on the alias alone)", named);
+            self.dirty_from("a friend's name from the roster");
         }
         if removed > 0 {
             // The index row must go with the contact, or the next launch resurrects it from the list.
