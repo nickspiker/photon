@@ -1744,6 +1744,9 @@ pub struct PhotonApp {
     attest_stage_drawn: u8,
     /// Last `tick()` timestamp; used to compute the per-frame `delta_time` that `attest_anim_phase` advances by. `None` until the first tick fires.
     last_tick: Option<Instant>,
+    /// The display frames passed between ticks (driver.rs FrameClock): every per-frame step runs once for each.
+    #[cfg_attr(not(target_os = "ferros"), allow(dead_code))]
+    frame_clock: driver::FrameClock,
     /// Top-level app state machine. Launch(LaunchState) at startup; transitions to Ready after a successful attestation lands via `tick`'s `HandleQuery::try_recv` poll. Cloned out of [`super::state::AppState::Default`] at construction; mutated in `on_event` (textbox edits flip `Error → Fresh`), `tick` (handle_query result drives the Launch → Ready transition), and submission (`Fresh → Attesting`).
     state: AppState,
     /// Handle textbox — sits in the launch screen's `attest_block.textbox` slot. Holds the user's typed handle until Enter or Attest-click; geometry recomputed on every resize / zoom via `update_widget_layout`. `None` until [`FluorApp::init`].
@@ -3173,6 +3176,7 @@ impl PhotonApp {
             attest_anim_phase: 0.,
             attest_stage_drawn: u8::MAX,
             last_tick: None,
+            frame_clock: driver::FrameClock::default(),
             state: AppState::default(),
             textbox: None,
             attest_btn: None,

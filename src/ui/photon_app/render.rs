@@ -76,6 +76,11 @@ fn clip_to_damage(clip: fluor::paint::Clip, hinted: bool, damage: fluor::canvas:
 impl PhotonApp {
     /// The contacts screen's drawn title: how many people are online. Read by the render and by the tick, which sets it on the chrome BEFORE the frame's damage is decided, so a count that moves at rest repaints the title's band alone (a title set during the render landed after the damage and showed only when something else redrew there; ferros Pro 2026-11-17).
     pub(super) fn ready_title(&self) -> String {
+        // A safe circle's orb (ferros) has no title beside it, exactly as the render's title says, so the tick and the render set the same string.
+        // Until 2026-11-18 the tick set the count and the render set nothing, each frame undoing the other: the chrome re-rastered every frame at rest (14 % of the Pro's frame, about 60 a second) and every scroll's memmove was refused for a dirty chrome.
+        if crate::ui::safe_circle().is_some() {
+            return String::new();
+        }
         let own_hp = self.session.as_ref().map(|s| s.handle_proof);
         let n = self
             .handle_query

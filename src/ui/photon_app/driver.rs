@@ -3596,6 +3596,11 @@ impl FluorApp<Px> for PhotonApp {
             None => 0.,
         };
         self.last_tick = Some(now);
+        // The display frames this tick spans (FrameClock): on ferros from the real time at the panel's rate, so a slow tick steps every frame it missed; elsewhere one a tick, as every per-frame step ran before.
+        #[cfg(target_os = "ferros")]
+        let frames = self.frame_clock.advance(delta_time, FERROS_PANEL_HZ);
+        #[cfg(not(target_os = "ferros"))]
+        let frames = 1u32;
 
         // Spectrum animation while attesting: wave phase advances at 2π rad/sec = 1 cycle/sec. Provides the visual "query in flight" cue the legacy build had — the bar slowly slides while we wait for FGTW to answer. Idle / Fresh / Error states leave the phase frozen so the screen stays calm.
         // HELD STILL FOR THE PROOF (owner 2026-11-17: a Pixel's handle proof went from 2.5 s to about 14 s while this redrew the whole screen every frame): the memory-hard proof gets the cores and the memory bandwidth, and the screen redraws once per stage change (the stage line under the wave), the stage's own edge.
@@ -3688,18 +3693,29 @@ impl FluorApp<Px> for PhotonApp {
                 *v = bound + ((over.abs() >> 1) * over.signum()) as f32;
                 true
             };
+            // Once for each display frame passed, until the axis is back in range.
+            let relax_frames = |v: &mut f32, hi: f32| -> bool {
+                let mut any = false;
+                for _ in 0..frames {
+                    if !relax(v, hi) {
+                        break;
+                    }
+                    any = true;
+                }
+                any
+            };
             dirty_checkpoint!();
             let mut spring = false;
             if matches!(self.state, AppState::Settings(_)) {
-                spring |= relax(&mut self.settings_rail_scroll, self.settings_rail_extent);
-                spring |= relax(
+                spring |= relax_frames(&mut self.settings_rail_scroll, self.settings_rail_extent);
+                spring |= relax_frames(
                     &mut self.settings_content_scroll,
                     self.settings_content_extent,
                 );
             }
             if matches!(self.state, AppState::Ready) {
                 let mut c = self.contacts_scroll as f32;
-                if relax(&mut c, self.contacts_scroll_extent as f32) {
+                if relax_frames(&mut c, self.contacts_scroll_extent as f32) {
                     self.contacts_scroll = c.round() as isize;
                     spring = true;
                 }
@@ -3707,7 +3723,7 @@ impl FluorApp<Px> for PhotonApp {
             if matches!(self.state, AppState::Conversation) && !self.wave_screen() {
                 let ceiling = self.msg_max_scroll;
                 if let Some(conv) = self.active_conv_mut() {
-                    spring |= relax(&mut conv.scroll_offset, f32::INFINITY);
+                    spring |= relax_frames(&mut conv.scroll_offset, f32::INFINITY);
                     // Clamp the STORED offset to the last-rendered ceiling: the 0-end rubber-bands (relax above, hi=∞), but drifting PAST the top (offset > max_scroll after the viewport shrank/grew) must snap back, else the list sticks above the oldest message until you scroll down thru the excess. Only pull DOWN — never fight an active drag toward 0.
                     if conv.scroll_offset > ceiling {
                         conv.scroll_offset = ceiling;
@@ -3724,11 +3740,17 @@ impl FluorApp<Px> for PhotonApp {
                 }
             }
             // Compose-box fling: apply this frame's velocity, then decay it — magnitude >> 1, minus one — so it lands on exactly zero (zero = done, no timer). Hitting either end of the band ends it early.
-            if self.compose_fling != 0 && !self.pointer_down {
-                let v = self.compose_fling;
-                let moved = self.message_textbox.as_mut().is_some_and(|tb| tb.scroll_by(v as f32));
-                let m = (v.abs() >> 1) - 1;
-                self.compose_fling = if !moved || m <= 0 { 0 } else { m * v.signum() };
+            // Once for each display frame passed.
+            if self.compose_fling != 0 && !self.pointer_down && frames > 0 {
+                for _ in 0..frames {
+                    let v = self.compose_fling;
+                    let moved = self.message_textbox.as_mut().is_some_and(|tb| tb.scroll_by(v as f32));
+                    let m = (v.abs() >> 1) - 1;
+                    self.compose_fling = if !moved || m <= 0 { 0 } else { m * v.signum() };
+                    if self.compose_fling == 0 {
+                        break;
+                    }
+                }
                 self.scene_dirty = true;
                 { needs_redraw = true; self.note_redraw(line!() + 100_000); }
             }
@@ -3736,21 +3758,29 @@ impl FluorApp<Px> for PhotonApp {
             if self.press_held || self.pointer_down {
                 // A FRAME IS A NOMINAL FRAME (2026-10-07 phone log: a flick sampled 523 px in ONE tick — a slow, full-repaint tick had swallowed two or three frames' worth of finger, and the glide then replayed that whole lump every real frame). A tick that spanned n nominal frames contributes n samples of acc/n, so the window counts frames whatever the render cost.
                 // WHY/PROOF: `delta_time` is the OS's frame gap — a doze or a stall makes it seconds, and an unbounded count would flood the five-sample window with one lump; a sub-frame tick still counts as one.
+                // On ferros the frames are the display's own (FrameClock): a tick inside one frame pushes nothing and its movement waits in the accumulator for the frame that ends.
+                #[cfg(target_os = "ferros")]
+                let nominal = frames.min(8) as i32;
+                #[cfg(not(target_os = "ferros"))]
                 let nominal = ((delta_time / (1.0 / 60.0)).round() as i32).clamp(1, 8);
-                let acc = std::mem::take(&mut self.fling_frame_acc);
-                let per = acc / nominal;
-                for i in 0..nominal {
-                    self.fling_recent.rotate_right(1);
-                    // The division's remainder rides the oldest of the n samples so the sum stays exact.
-                    self.fling_recent[0] = if i == nominal - 1 { acc - per * (nominal - 1) } else { per };
+                if nominal > 0 {
+                    let acc = std::mem::take(&mut self.fling_frame_acc);
+                    let per = acc / nominal;
+                    for i in 0..nominal {
+                        self.fling_recent.rotate_right(1);
+                        // The division's remainder rides the oldest of the n samples so the sum stays exact.
+                        self.fling_recent[0] = if i == nominal - 1 { acc - per * (nominal - 1) } else { per };
+                    }
+                    // THE FLING SPEED: the largest by magnitude of the newest three nominal-frame samples, sign kept (Nick 2026-10-07, "I honestly thought max of three was a touch better" — with samples normalised per frame and the lift frames handled at release, the two faults that made max-of-three over-eager are gone). The window keeps five for the lift logic below.
+                    self.list_fling = fling_pick(&self.fling_recent[..3]);
+                    self.drag_frames += nominal as u32;
                 }
-                // THE FLING SPEED: the largest by magnitude of the newest three nominal-frame samples, sign kept (Nick 2026-10-07, "I honestly thought max of three was a touch better" — with samples normalised per frame and the lift frames handled at release, the two faults that made max-of-three over-eager are gone). The window keeps five for the lift logic below.
-                self.list_fling = fling_pick(&self.fling_recent[..3]);
-                self.drag_frames += nominal as u32;
             }
             dirty_checkpoint!();
-            // THE LIST FLING (see pane_scroll): the previous frame's delta, one pixel less each frame, until zero or a bound.
-            if self.list_fling != 0 && !self.pointer_down && !self.press_held {
+            // THE LIST FLING (see pane_scroll): the previous frame's delta, one pixel less each frame, until zero or a bound; a tick moves the pixels of every display frame it spans (fling_frames), none when it spans none.
+            if self.list_fling != 0 && !self.pointer_down && !self.press_held && frames == 0 {
+                ctx.window.request_redraw();
+            } else if self.list_fling != 0 && !self.pointer_down && !self.press_held {
                 let v = self.list_fling;
                 if !self.fling_logged && crate::is_dev_build() {
                     self.fling_logged = true;
@@ -3761,13 +3791,13 @@ impl FluorApp<Px> for PhotonApp {
                         v, samples, self.drag_frames, self.drag_events, self.drag_px, off.round() as i64, max.round() as i64, self.scroll_frames_hinted, self.scroll_frames_full
                     );
                 }
+                let (step, after) = fling_frames(v, frames);
                 let before = self.scroll_signature();
-                self.pane_scroll(ctx, v as isize, true, true);
+                self.pane_scroll(ctx, step, true, true);
                 let moved = self.scroll_signature() != before;
                 // A BOUND ENDS THE FLING (2026-10-06 phone log: every fling frame was a full repaint and the list crept at a fraction of the flick — the fling had run into the rubber zone, where each frame moves a resisted sliver, the spring fights it back, and `moved` stays true forever). Past either end the glide is over; the spring eases whatever overshoot the last step left.
                 let in_bounds = self.pane_in_bounds();
-                let m = v.abs() - 1;
-                self.list_fling = if !moved || !in_bounds || m <= 0 { 0 } else { m * v.signum() };
+                self.list_fling = if !moved || !in_bounds { 0 } else { after };
                 if self.list_fling == 0 {
                     // THE SETTLE FRAME: memmove frames paint only the band, so a row's link tap targets and the like are last-known from its last full paint — one ordinary repaint at rest puts every row's bookkeeping back to truth.
                     self.scene_dirty = true;
@@ -5397,5 +5427,83 @@ impl PhotonApp {
         self.people = people;
         self.reseed_contact_pubkeys();
         self.dirty_from("the people handed in");
+    }
+}
+
+/// The panel's refresh on ferros: fluor's ferros host paces its passes at a 120th of a second (`run_app_with`, `freq() / 120`) and the Pro's panel runs at 120 Hz.
+/// A hardware rate, not a knob; the display's own count of frames started (its op 24) is the truer clock, and fluor does not yet hand it to an app.
+#[cfg(target_os = "ferros")]
+const FERROS_PANEL_HZ: f32 = 120.;
+
+/// THE FRAME CLOCK (owner 2026-11-18: "we essentially always track actual frames passed and decrease the scroll one px per frame, same with snaps"): the display frames that passed since the last tick, from the real time between ticks at the panel's rate, the fraction of a frame carried to the next tick so no time is lost or counted twice.
+/// A tick inside one frame passes none; a slow tick passes as many as went by, and every per-frame step (the fling's pixel, the spring's half) runs once for each.
+#[derive(Default)]
+pub(super) struct FrameClock {
+    carry: f32,
+}
+
+impl FrameClock {
+    /// `dt` seconds at `hz` frames a second: the whole frames passed, the rest kept.
+    #[cfg_attr(not(target_os = "ferros"), allow(dead_code))]
+    pub(super) fn advance(&mut self, dt: f32, hz: f32) -> u32 {
+        self.carry += dt * hz;
+        let n = self.carry as u32; // the cast floors a non-negative count of frames
+        self.carry -= n as f32;
+        n
+    }
+}
+
+/// `frames` display frames of the list fling at `v` pixels a frame (signed): each frame moves `v` and then sheds one pixel, until it rests.
+/// Returns the distance and the speed after, so a tick that spans three frames moves exactly what three ticks of one frame would.
+fn fling_frames(v: i32, frames: u32) -> (isize, i32) {
+    let (mut v, mut d) = (v, 0isize);
+    for _ in 0..frames {
+        if v == 0 {
+            break;
+        }
+        d += v as isize;
+        v -= v.signum();
+    }
+    (d, v)
+}
+
+#[cfg(test)]
+mod frame_step_tests {
+    use super::{fling_frames, FrameClock};
+
+    /// A second of ticks at 60 Hz, at 120 Hz, and at an irregular pace counts the panel's frames in that second, within one.
+    #[test]
+    fn the_clock_counts_the_panels_frames_whatever_the_tick_rate() {
+        let hz = 120.;
+        for dts in [vec![1. / 60.; 60], vec![1. / 120.; 120], [1. / 45., 1. / 240., 1. / 90., 1. / 30., 1. / 160.].iter().cycle().copied().take(60).collect::<Vec<f32>>()] {
+            let total: f32 = dts.iter().sum();
+            let mut clock = FrameClock::default();
+            let n: u32 = dts.iter().map(|dt| clock.advance(*dt, hz)).sum();
+            assert!((n as f32 - total * hz).abs() <= 1., "{n} frames in {total} s");
+        }
+    }
+
+    /// The same flick glides the same pixels over the same frames however the ticks group them: one frame a tick (a 60 Hz panel ticking each frame), two a tick, or an irregular mix.
+    #[test]
+    fn a_fling_covers_the_same_frames_however_the_ticks_fall() {
+        let v0 = 40;
+        let whole: isize = (1..=v0 as isize).sum();
+        for groups in [vec![1u32; 64], vec![2u32; 32], vec![3, 1, 2, 5, 1, 1, 4, 2, 3, 1, 6, 2, 1, 3, 2, 4, 1, 2, 3, 2]] {
+            let (mut v, mut d, mut frames) = (v0, 0isize, 0u32);
+            for n in groups {
+                if v == 0 {
+                    break;
+                }
+                let before = v;
+                let (step, after) = fling_frames(v, n);
+                frames += n.min(before.unsigned_abs());
+                d += step;
+                v = after;
+            }
+            assert_eq!(v, 0);
+            assert_eq!(d, whole, "v(v+1)/2 pixels");
+            assert_eq!(frames, v0 as u32, "one frame a pixel of speed");
+        }
+        assert_eq!(fling_frames(-3, 2), (-5, -1), "a fling up sheds toward zero too");
     }
 }
