@@ -59,7 +59,8 @@ impl PhotonApp {
     }
 
     /// Point the top-left orb at the right subject: in a conversation it becomes the PEER's avatar with a ring in THEIR presence-tier colour (their online state, not ours); everywhere else it's the Photon brand orb with our own FGTW-connectivity ring. SIBLINGS count — a bridge conversation shows the target machine's gradient avatar and ITS tier ring, not the brand orb with our own ring (field 2026-09-04). Diffed on (contact, has-avatar) so the Icon rebuild only fires on a real change, not every frame.
-    pub(super) fn update_orb(&mut self) {
+    /// A rebuilt orb marks the chrome layer for its re-raster (setting `app_icon` alone marks nothing, so a picture that arrived at rest stayed off the orb until something else re-rastered the chrome; the Pro 2026-11-18) and returns true, so the tick asks for the frame that shows it.
+    pub(super) fn update_orb(&mut self) -> bool {
         // THE WAVE ORB (Nick 2026-09-28): while an Active wave owns the screen, the orb is a solid disk in the path colour — no logo, no avatar (both avatars are already on screen). An icon-less orb renders as its ring colour, filled.
         let wave_pi = self
             .active_wave
@@ -73,9 +74,11 @@ impl PhotonApp {
                 if let Some(chrome) = self.chrome.as_mut() {
                     chrome.app_icon = None;
                     chrome.set_orb_tint(fluor::host::chrome::OrbTint::Custom { ring: colour, brighten: true });
+                    chrome.invalidate_chrome();
+                    return true;
                 }
             }
-            return;
+            return false;
         }
         if self.orb_wave.take().is_some() {
             // Leaving the wave: forget the last-built key so the normal orb rebuilds from scratch, brand orb included.
@@ -85,6 +88,7 @@ impl PhotonApp {
             if let Some(chrome) = self.chrome.as_mut() {
                 chrome.app_icon = self.photon_orb.clone();
                 chrome.set_orb_tint(orb_tint_for(self.online));
+                chrome.invalidate_chrome();
             }
         }
         let target: Option<usize> = match self.state {
@@ -108,7 +112,7 @@ impl PhotonApp {
         // On a safe circle (ferros) the orb outside a conversation is our own face once we are someone (before, the brand orb), the one under the camera that the Ready screen used to draw large: keyed on our picture (a sample of its bytes, so a new pick shows) or our gradient's seed.
         let orb_self = (target.is_none() && self.signed_in() && crate::ui::safe_circle().is_some()).then(|| self.own_face_key());
         if orb_key == self.orb_key && target.is_some() == self.orb_contact.is_some() && orb_self == self.orb_self {
-            return;
+            return false;
         }
         self.orb_key = orb_key;
         self.orb_self = orb_self;
@@ -116,8 +120,9 @@ impl PhotonApp {
         self.orb_had_avatar = has_avatar;
         let own_seed = self.own_gradient_seed();
         let Some(chrome) = self.chrome.as_mut() else {
-            return;
+            return false;
         };
+        chrome.invalidate_chrome();
         match target {
             Some(ci) => {
                 let c = &self.contacts[ci];
@@ -161,6 +166,7 @@ impl PhotonApp {
                 chrome.set_orb_tint(orb_tint_for(self.online));
             }
         }
+        true
     }
 
     /// What our own face on the orb is drawn from: a sample of our picture's bytes (any new pick changes it) or, with none, our gradient's seed.
@@ -1573,7 +1579,8 @@ impl PhotonApp {
         });
     }
 
-    /// OUR OWN PICTURE FROM OUR OWN DEVICES (the Pro 2026-11-18 showed no face of its person): a Photon holding none asks its siblings under our own party id, when one that can answer is online, once per value of the fleet's `profile.avatar_ts`.
+    /// OUR OWN PICTURE FROM OUR OWN DEVICES (the Pro 2026-11-18 showed no face of its person): a Photon holding none asks its siblings under our own party id, each sibling that can answer once per coming online (OwnAvatarAsk).
+    /// Second pass, 2026-11-18: the ask is owed to each sibling once per coming online, not once a session, so one that was up but could not answer yet (an older build, a vault still opening) is asked again on its next online edge.
     /// The only other sources are fgtw.org's (the fleet-key slot and the pin-addressed wall); on ferros there is neither fgtw.org nor a fleet key, so this is the way in, and everywhere else it is the first rung (the owner 2026-11-18: the bootstrap is the last).
     /// Photon on the alias alone also asks when it holds a picture and the stamp moves (a sibling picked a new one): its fleet-state adoption cannot pull one from fgtw.org as a member's does, and the answer is kept only when newer than ours.
     /// True when the ask went out.
@@ -1585,20 +1592,21 @@ impl PhotonApp {
             Some(vsf::VsfType::e(vsf::types::EtType::e6(t))) => Some(*t),
             _ => None,
         };
-        if self.own_avatar_asked == Some(ts) || (self.device_avatar_pixels.is_some() && !self.alias_alone()) {
+        if self.device_avatar_pixels.is_some() && !self.alias_alone() {
             return false;
         }
         let (Some(our_hp), Some(secret)) = (self.our_handle_proof(), self.device_keypair.as_ref().map(|kp| *kp.secret.as_bytes())) else {
             return false;
         };
-        let sibs: Vec<[u8; 32]> = self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out && c.is_online).filter_map(|c| c.device_key()).filter(|d| self.sibling_avatar_key(d).is_some()).collect();
+        let online: Vec<[u8; 32]> = self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out && c.is_online).filter_map(|c| c.device_key()).filter(|d| self.sibling_avatar_key(d).is_some()).collect();
+        let sibs = self.own_avatar_asked.targets(ts, self.device_avatar_pixels.is_some(), &online);
         if sibs.is_empty() {
             return false;
         }
         let Ok(frame) = crate::network::fgtw::protocol::build_avatar_want_vsf(&our_hp, &pid, &secret) else {
             return false;
         };
-        self.own_avatar_asked = Some(ts);
+        self.own_avatar_asked.asked(ts, &sibs);
         crate::logf!("AVATAR: no picture of our own held here; asking {} sibling(s) for theirs", sibs.len());
         for d in sibs {
             self.dispatch_frame_to_sibling(frame.clone(), Some(d));
@@ -3589,6 +3597,8 @@ impl PhotonApp {
                 self.own_avatar_row = None;
                 self.device_avatar_scaled = None;
                 self.device_avatar_scaled_diameter = 0;
+                // The picture is drawn on the Ready screen (and on ferros the orb, which update_orb rebuilds from it): a frame is owed.
+                self.scene_dirty = true;
                 crate::log("Avatar: own avatar installed (async vault load / recovery)");
                 continue;
             };
@@ -3600,6 +3610,8 @@ impl PhotonApp {
                 contact.avatar_pixels = Some(display);
                 contact.avatar_scaled = None; // force rebuild at the current diameter on next render
                 contact.avatar_scaled_diameter = 0;
+                // The row draws it: a frame is owed.
+                self.scene_dirty = true;
                 // An install changes what the vault holds — drop the sweep's remembered probes (one re-probe each, rare edge).
                 self.avatar_probe_cache.clear();
                 crate::logf!(
@@ -3864,5 +3876,74 @@ pub(super) fn compose_side(buf_w: usize, buf_h: usize, unit: f32) -> f32 {
     match crate::ui::safe_circle() {
         Some(_) => crate::ui::ready_layout::ReadyLayout::compute(buf_w, buf_h, 1.).unit_height,
         None => unit,
+    }
+}
+
+/// Who has been asked for our own picture (want_own_avatar_from_siblings), and at which fleet `profile.avatar_ts`.
+/// With no picture held, each sibling that can answer is asked once per coming online: one dropped from the online set is forgotten, so its next online edge asks it again (an ask once a session went unanswered on the Pro 2026-11-18 and was never repeated).
+/// With a picture held (Photon on the alias alone), only a moved stamp asks, and then every sibling online.
+#[derive(Default)]
+pub(super) struct OwnAvatarAsk {
+    /// The stamp the asks below were made at; None = never asked.
+    stamp: Option<Option<i64>>,
+    /// The siblings asked at that stamp and online ever since.
+    devices: Vec<[u8; 32]>,
+}
+
+impl OwnAvatarAsk {
+    /// The siblings to ask now, of `online` (those online that can answer), at stamp `ts`, `holding` a picture or not.
+    pub(super) fn targets(&mut self, ts: Option<i64>, holding: bool, online: &[[u8; 32]]) -> Vec<[u8; 32]> {
+        if self.stamp != Some(ts) {
+            return online.to_vec();
+        }
+        if holding {
+            return Vec::new();
+        }
+        self.devices.retain(|d| online.contains(d));
+        online.iter().filter(|d| !self.devices.contains(d)).copied().collect()
+    }
+
+    /// Note that `sibs` were asked at stamp `ts`.
+    pub(super) fn asked(&mut self, ts: Option<i64>, sibs: &[[u8; 32]]) {
+        if self.stamp != Some(ts) {
+            self.stamp = Some(ts);
+            self.devices.clear();
+        }
+        self.devices.extend_from_slice(sibs);
+    }
+}
+
+#[cfg(test)]
+mod own_avatar_ask_tests {
+    use super::OwnAvatarAsk;
+
+    /// With no picture held, a sibling is asked when it is first online, not again while it stays online, and again after it went offline and came back; one that comes online later is asked on its own edge.
+    #[test]
+    fn each_online_edge_asks_again_until_a_picture_is_held() {
+        let (a, b) = ([1u8; 32], [2u8; 32]);
+        let mut ask = OwnAvatarAsk::default();
+        assert!(ask.targets(None, false, &[]).is_empty(), "nobody online, nobody asked");
+        assert_eq!(ask.targets(None, false, &[a]), vec![a]);
+        ask.asked(None, &[a]);
+        assert!(ask.targets(None, false, &[a]).is_empty(), "still online: not asked twice");
+        assert_eq!(ask.targets(None, false, &[a, b]), vec![b], "a new sibling online is asked on its own edge");
+        ask.asked(None, &[b]);
+        assert!(ask.targets(None, false, &[b]).is_empty(), "a goes offline");
+        assert_eq!(ask.targets(None, false, &[a, b]), vec![a], "a's next online edge asks it again");
+        ask.asked(None, &[a]);
+        assert!(ask.targets(None, false, &[]).is_empty() && ask.targets(None, false, &[a, b]) == vec![a, b], "both dropped and back: both asked");
+    }
+
+    /// With a picture held (the alias alone), only a moved stamp asks, and then every sibling online.
+    #[test]
+    fn a_held_picture_asks_only_when_the_stamp_moves() {
+        let (a, b) = ([1u8; 32], [2u8; 32]);
+        let mut ask = OwnAvatarAsk::default();
+        assert_eq!(ask.targets(Some(5), true, &[a]), vec![a], "the first ask at a stamp");
+        ask.asked(Some(5), &[a]);
+        assert!(ask.targets(Some(5), true, &[a, b]).is_empty(), "same stamp, a picture held: no ask on an online edge");
+        assert_eq!(ask.targets(Some(9), true, &[a, b]), vec![a, b], "the stamp moved: everyone online");
+        ask.asked(Some(9), &[a, b]);
+        assert!(ask.targets(Some(9), true, &[a, b]).is_empty());
     }
 }

@@ -3292,7 +3292,7 @@ impl FluorApp<Px> for PhotonApp {
         }
 
         // Point the top-left orb at the current subject (peer avatar + their presence ring in a conversation, else the Photon orb + our connectivity). Self-diffing — a no-op unless the contact / avatar / screen changed.
-        self.update_orb();
+        let orb_redraw = self.update_orb();
 
         // Deferred message delete: runs only AFTER the "deleting…" frame painted (see pending_delete). TOMBSTONE, not removal: the flag propagates monotonically thru fleet sync (push + sweep + merge true-wins), and a hidden DELETE marker rides the chain to the FRIEND so their side tombstones too — delete-for-everyone. Content is preserved internally (braid weave dependency — see ChatMessage::deleted).
         let armed = match self.pending_delete {
@@ -4018,7 +4018,7 @@ impl FluorApp<Px> for PhotonApp {
         } else {
             false
         };
-        let redraw = needs_redraw || blink_redraw || raised || title_redraw;
+        let redraw = needs_redraw || blink_redraw || raised || title_redraw || orb_redraw;
         dirty_checkpoint!();
         self.dirty_blame_line = dirty_blame;
         if redraw {
