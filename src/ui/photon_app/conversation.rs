@@ -3116,8 +3116,13 @@ impl PhotonApp {
                 continue;
             }
             // AN INVITATION ONE OF OUR DEVICES RECEIVED: it carries the sponsor's snapshot, and this device parks it too — the sponsor's offer reaches whichever of our devices answers first, and the fleet ACK stops it from ever being re-sent to the rest (Nick's Pixel 2026-10-25 dropped its copy mid-decrypt and never saw the invitation).
+            // …and an invite OUR fleet sent (an outgoing Offer row): the ledger of outstanding invites is the fleet's, so any of our devices re-offers it on the invitee's online edge (2026-11-19).
             if from_sibling {
-                let offers: Vec<(i64, Vec<u8>)> = page.rows.iter().filter(|r| !r.gpl.is_empty() && matches!(r.control, Some(crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Offer)))).map(|r| (r.timestamp, r.gpl.clone())).collect();
+                let invites: Vec<(crate::types::molecule::MoleculeId, i64, bool)> = page.rows.iter().filter_map(super::molecules::invite_of_row).collect();
+                for (gid, ts, ended) in invites {
+                    self.adopt_fleet_invite(idx, gid, ts, ended);
+                }
+                let offers: Vec<(i64, Vec<u8>)> = page.rows.iter().filter(|r| !r.sender_outgoing && !r.gpl.is_empty() && matches!(r.control, Some(crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Offer)))).map(|r| (r.timestamp, r.gpl.clone())).collect();
                 for (ts, blob) in offers {
                     self.park_fleet_offer(idx, blob, ts);
                 }

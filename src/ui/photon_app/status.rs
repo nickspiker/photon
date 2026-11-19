@@ -6161,6 +6161,7 @@ impl PhotonApp {
             self.kick_fleet_history_sweep("sibling online");
             self.reserve_fleet_forwards();
             self.reshare_fleet_leaves();
+            self.reshare_fleet_invites();
         }
         // Fleet-attention state changes (deferred past the checker borrow): void the dead holder first, then adopt the drain's LWW winner, then run the sweeps against the settled slots, then heal.
         if let Some(dead) = attn_void {

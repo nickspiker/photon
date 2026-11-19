@@ -318,13 +318,19 @@ pub fn load_all_molecules(storage: &FlatStorage) -> Vec<(MoleculeId, Roster, Opt
     out
 }
 
-/// GROUP-LOCAL state (D12): what this DEVICE holds about a group that must never replicate — the mute, and the phase this device is in. Lives beside the roster at `vault_key("molecule-local", gid)`; the roster replicates and this does not.
+/// GROUP-LOCAL state (D12): what this DEVICE holds about a group beside the roster — the mute and the phase this device is in, which never replicate, and the fleet's invite ledger (`offered` / `withdrawn`), which does.
+/// Lives beside the roster at `vault_key("molecule-local", gid)`; the roster replicates by chain sync, the invite ledger by sibling page rows (molecules.rs, "THE FLEET'S INVITES"), and the mute and phase not at all.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MoleculeLocal {
     pub muted: bool,
     pub phase: MoleculePhase,
-    /// Offers THIS device sent: (invitee party, the offer row's eagle time in that friendship conversation) — what labels the sponsor-side row "waiting" / "joined" and what a roster edge refreshes.
+    /// Outstanding invites OUR FLEET sent: (invitee party, the newest offer row's eagle time in our bond with them).
+    /// Fleet state (2026-11-19, the owner: "Oh, well that's dumb"): an invite sent from a laptop that then sleeps is re-offered by whichever of our devices sees the invitee come online.
+    /// What labels the sponsor-side row "waiting" and what the online edge re-offers.
     pub offered: Vec<([u8; 32], i64)>,
+    /// Ended invites: (invitee party, the stamp of the newest offer the end covers) — an undo, a decline, the invitee standing, or our leave.
+    /// The tombstone keeps a sibling's late copy of that same offer from bringing it back; a newer offer from any of our devices does.
+    pub withdrawn: Vec<([u8; 32], i64)>,
     /// A LOCKOUT re-key owed for this group (the owner 2026-11-18: a locked device holds every group's keys too): due once this device's fleet epoch folds this fan-out revision (as the friendships' era_lockout_due), at 1 at once, 0 none. Device-local, like the friendships' era_lockout_due.
     pub lockout_due: u64,
     /// The group's era tag when the lockout re-key was armed: done once the group stands on any other era.
@@ -372,6 +378,8 @@ fn molecule_local_schema() -> SectionSchema {
         .field("phase", TypeConstraint::AnyUnsigned)
         .field("offered_party", TypeConstraint::AnyHash)
         .field("offered_osc", TypeConstraint::Any)
+        .field("withdrawn_party", TypeConstraint::AnyHash)
+        .field("withdrawn_osc", TypeConstraint::Any)
         .field("lockout_due", TypeConstraint::AnyUnsigned)
         .field("lockout_from", TypeConstraint::AnyUnsigned)
 }
@@ -398,6 +406,13 @@ pub fn save_molecule_local(molecule_id: &MoleculeId, local: &MoleculeLocal, stor
             .append_multi("offered_osc", vec![VsfType::e(vsf::types::EtType::e6(*osc))])
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
+    for (party, osc) in &local.withdrawn {
+        builder = builder
+            .append_multi("withdrawn_party", vec![VsfType::hb(party.to_vec())])
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .append_multi("withdrawn_osc", vec![VsfType::e(vsf::types::EtType::e6(*osc))])
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
     let section_bytes = builder.encode().map_err(|e| StorageError::Parse(e.to_string()))?;
     let bytes = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
@@ -416,31 +431,87 @@ pub fn load_molecule_local(molecule_id: &MoleculeId, storage: &FlatStorage) -> R
     let section = vsf::schema::SectionBuilder::parse_document(molecule_local_schema(), &bytes, None)
         .map_err(|e| StorageError::Parse(format!("group local failed verified read: {e}")))?;
     let u = |name: &str| section.get_fields(name).first().and_then(|f| f.values.first()).and_then(|v| v.as_u64()).unwrap_or(0);
-    let parties: Vec<[u8; 32]> = section
-        .get_fields("offered_party")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(|v| match v {
+    // One (party, stamp) list from its two multi-value fields, paired in the order they were appended.
+    let pairs = |party_field: &str, osc_field: &str| -> Vec<([u8; 32], i64)> {
+        let (party_fields, osc_fields) = (section.get_fields(party_field), section.get_fields(osc_field));
+        let parties = party_fields.iter().filter_map(|f| f.values.first()).filter_map(|v| match v {
             VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
             _ => None,
-        })
-        .collect();
-    let oscs: Vec<i64> = section
-        .get_fields("offered_osc")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(|v| match v {
+        });
+        let oscs = osc_fields.iter().filter_map(|f| f.values.first()).filter_map(|v| match v {
             VsfType::e(vsf::types::EtType::e6(o)) => Some(*o),
             other => other.as_i64(),
-        })
-        .collect();
-    let offered = parties.into_iter().zip(oscs).collect();
+        });
+        parties.zip(oscs).collect()
+    };
+    let offered = pairs("offered_party", "offered_osc");
+    let withdrawn = pairs("withdrawn_party", "withdrawn_osc");
     // Catching up is a runtime state: the frames it waits on are held in RAM only, so a stored one has nothing behind it and loads as Standing (Petunia 2026-10-27: a label stuck across restarts).
     let phase = match MoleculePhase::from_u64(u("phase")) {
         MoleculePhase::CatchingUp => MoleculePhase::Standing,
         p => p,
     };
-    Ok(MoleculeLocal { muted: u("muted") != 0, phase, offered, lockout_due: u("lockout_due"), lockout_from: u("lockout_from") as u32 })
+    Ok(MoleculeLocal { muted: u("muted") != 0, phase, offered, withdrawn, lockout_due: u("lockout_due"), lockout_from: u("lockout_from") as u32 })
+}
+
+impl MoleculeLocal {
+    /// A sibling's copy of an outstanding invite of `party` stamped `osc`: taken when it is newer than every offer and every end this device holds for that party.
+    /// Returns whether the ledger changed.
+    pub fn note_invite(&mut self, party: [u8; 32], osc: i64) -> bool {
+        let ended = self.withdrawn.iter().any(|(p, w)| *p == party && *w >= osc);
+        let held = self.offered.iter().any(|(p, o)| *p == party && *o >= osc);
+        if ended || held {
+            return false;
+        }
+        self.offered.retain(|(p, _)| *p != party);
+        self.offered.push((party, osc));
+        self.withdrawn.retain(|(p, _)| *p != party);
+        true
+    }
+
+    /// Our own fresh offer to `party`, sent from this device at `osc`: it stands whatever this device held before (the person tapped invite again).
+    pub fn sent_invite(&mut self, party: [u8; 32], osc: i64) {
+        self.offered.retain(|(p, _)| *p != party);
+        self.offered.push((party, osc));
+        self.withdrawn.retain(|(p, _)| *p != party);
+    }
+
+    /// End the invite of `party` whose newest offer is stamped `osc` (or older): a newer offer from another of our devices outlives it, and an end already held at or past `osc` changes nothing.
+    /// Returns whether the ledger changed.
+    pub fn clear_invite(&mut self, party: [u8; 32], osc: i64) -> bool {
+        if self.offered.iter().any(|(p, o)| *p == party && *o > osc) {
+            return false;
+        }
+        let was_offered = self.offered.iter().any(|(p, _)| *p == party);
+        let ended_already = self.withdrawn.iter().any(|(p, w)| *p == party && *w >= osc);
+        if ended_already && !was_offered {
+            return false;
+        }
+        self.offered.retain(|(p, _)| *p != party);
+        if !ended_already {
+            self.withdrawn.retain(|(p, _)| *p != party);
+            self.withdrawn.push((party, osc));
+        }
+        true
+    }
+
+    /// The outstanding invites whose invitee now stands in `roster`: (party, the offer stamp the end covers).
+    pub fn stood_invites(&self, roster: &Roster) -> Vec<([u8; 32], i64)> {
+        self.offered.iter().filter(|(p, _)| roster.is_standing(p)).copied().collect()
+    }
+}
+
+/// Park `offer` among the offers this device holds (§10.1 Offered): the newest offer row for a group stands, whichever of the sponsor's devices sent it and in whatever order the copies land.
+/// A copy no newer than the parked one changes nothing (`None`): two of the sponsor's devices re-offering on one online edge cost the invitee nothing.
+/// Otherwise the offer replaces any parked for its group, and `Some(true)` says none was parked: the invitation rings once.
+pub fn park_offer_into(parked: &mut Vec<BondOffer>, offer: BondOffer) -> Option<bool> {
+    let held = parked.iter().find(|o| o.molecule_id == offer.molecule_id).map(|o| o.row_osc);
+    if held.is_some_and(|h| h >= offer.row_osc) {
+        return None;
+    }
+    parked.retain(|o| o.molecule_id != offer.molecule_id);
+    parked.push(offer);
+    Some(held.is_none())
 }
 
 /// A PARKED OFFER (§10.1 Offered): a friend's offer we have not answered — the roster snapshot they sent and who sent it. No secret rides here (D10). Persisted so a relaunch between offer and Join keeps the row alive; deleted on Join or expiry.
@@ -779,7 +850,7 @@ mod tests {
         let storage = FlatStorage::new(crate::storage::APP, [0xD3; 32], [0xD4; 32]).expect("storage");
         // Local state: default when absent; mute + phase persist; and the mute is NOT in the roster bytes.
         assert_eq!(load_molecule_local(&birth.molecule_id, &storage).expect("absent"), MoleculeLocal::default());
-        let local = MoleculeLocal { muted: true, phase: MoleculePhase::Joining, offered: vec![([0x0C; 32], 4242)], lockout_due: 9, lockout_from: 0xA1B2_C3D4 };
+        let local = MoleculeLocal { muted: true, phase: MoleculePhase::Joining, offered: vec![([0x0C; 32], 4242), ([0x0E; 32], 4343)], withdrawn: vec![([0x0D; 32], 4141)], lockout_due: 9, lockout_from: 0xA1B2_C3D4 };
         save_molecule_local(&birth.molecule_id, &local, &storage).expect("save local");
         assert_eq!(load_molecule_local(&birth.molecule_id, &storage).expect("load"), local);
         // A stored Catching up loads as Standing: nothing held survives a restart.

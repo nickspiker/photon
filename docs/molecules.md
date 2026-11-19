@@ -149,6 +149,14 @@ Three rules now hold:
 
 Still open: a member we never friended has no bond to carry the heal.
 
+**Invites are the fleet's (2026-11-19).** An invite sent from a rarely used laptop lived in that laptop's `MoleculeLocal.offered` alone, so only the laptop re-offered, and the desktop that talked to the invitee all day turned their history asks away while they waited. The invite ledger is now fleet state:
+- Every offer we send (first or re-sent), every undo or decline, is handed to our siblings as a page row under our pair token with the invitee: an OUTGOING `Offer` control row stamped with the offer, `deleted` once the invite has ended, a records-free roster naming the group in `gpl`. An incoming `Offer` row on the same channel is a received invitation (`share_offer_with_fleet`); the direction tells them apart.
+- The ledger merges newest-stamp-wins per (group, invitee): `offered` holds the newest offer, `withdrawn` the tombstone of an ended one, so a sibling's late copy of an ended offer stays ended and a newer offer from any device revives it.
+- Any device holding an outstanding invite re-offers on the invitee's online edge (`invites_due`), and a device that learns one while the invitee is already online offers at once. Every device answers the Join (above).
+- Each device ends an invite on its own roster edge when the invitee stands, and all of a group's invites when we leave it.
+- Each device hands its whole ledger to a sibling on that sibling's online edge, which is also how an invite made before this build reaches the rest of the fleet.
+- The joiner keeps the newest offer row per group (`park_offer_into`): copies from two of the sponsor's devices never ring twice, and the parked row is the one an undo deletes. A Join sent again keeps the previous Join's decapsulation keys, so whichever Join is answered, its wrap opens.
+
 ### 10.5 Screens
 
 - **Ready list.** Molecule rows beside contact rows, one list, sorted by recency of activity ("frecency"). Ring by phase: dashed while Joining, solid when Standing, grey when Left; unread ring as today. Avatar = composite of standing members' gradients.
@@ -166,7 +174,7 @@ Still open: a member we never friended has no bond to carry the heal.
 Decisions settled at planning, superseding earlier sections where they differ:
 - **D10 Secrets only ever move as wraps.** The OFFER carries a roster snapshot and nothing secret; the invitee's JOIN sends its member record + a per-device KEM bundle back over the friendship; the sponsor vouches, posts the records into the molecule, and answers with a WRAP — the era WHOLE (root ‖ history key) sealed to that bundle (era N under from-genesis; a freshly minted N+1 under from-join, wrapped to every standing device inside the molecule as well). A mint's wraps to existing members carry `fresh` (they derive N+1 from the era they hold). A wrap names its bundle (`bundle_id`) and is matched BEFORE any decapsulation — the HQC decapsulator aborts on a foreign key.
 - **D11 Per-device `BundleRecord`** signed by the owning device, newest wins per (party, device); a device publishes a fresh bundle after every cutover. The private half is `EraDecapKeys` in that device's chains blob (one superseded bundle kept).
-- **D12 `MoleculeLocal { muted, phase, offered }`** beside the roster, never inside it.
+- **D12 `MoleculeLocal { muted, phase, offered, withdrawn }`** beside the roster, never inside it; the invite ledger (`offered`, `withdrawn`) replicates by sibling page rows (§10.4, "Invites are the fleet's"), the mute and phase never.
 - **D13** Carriers: phase 2 = words + NFC; phase 3 = roundcode.
 - **D14** SUPERSEDED 2026-10-24 by docs/conversations.md D3: a person's colour is keyed on the pair (that person, the viewer) — `party_colour(spaghettify(author ‖ viewer))`, the same derivation a two-member conversation uses — so a friend wears one colour on your devices in every conversation; on another member's screen they differ. (Was: `spaghettify(molecule_id ‖ author)`, the same on every member's screen but different in every molecule.)
 
@@ -185,6 +193,6 @@ Decisions settled at planning, superseding earlier sections where they differ:
   Without (a) to (c) the weave cannot be switched on: a from-join member does not hold the rows an earlier member weaves, and without the pull it would hold every frame forever.
 - Step 5's last piece, BUILT 2026-10-26: the receive commit resolves a molecule frame's sender by its signing device thru the roster (`molecules::group_member_of`: a contact, else the MoleculePeer fold), so a never-friended member's frames commit, ACK to the signing device and relay like a friend's (docs/group-waves.md, "A member is a person").
 - Files with a never-friended member, BUILT 2026-10-26: a fetch asks a stranger member's devices after the friends' live paths (their devices from the roster's fold, their addresses from the phonebook, the relay when none is known), and both doors admit a standing member's device on the attachment frames of the conversation its token names — the PT door (which refused any non-contact signer before parsing) and the UI (`attach_peer_known`, one check for asks, blobs, manifests and chunks). Before this a stranger's file reached you only once a mutual friend's device had fetched it.
-- A molecule control row (offer / join / wrap) is never re-served bare; a lost offer is re-sent by the sponsor on the next roster edge (the `offered` list) — that refresh is not yet wired.
+- A molecule control row (offer / join / wrap) is never re-served bare; a lost offer is re-sent on the invitee's online edge by any device of the sponsor's fleet (the replicated `offered` ledger, §10.4).
 - The delivered ring on a molecule row fills at full coverage only; a fractional fill from the ledger is a render change.
 - Phase 1.5 (Withdraw), phase 2 (words, NFC, doors), phase 3 (roundcode, attachments, waves).

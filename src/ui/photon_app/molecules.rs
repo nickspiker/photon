@@ -110,6 +110,34 @@ pub(super) fn join_already_answered(roster: &Roster, joiner: &[u8; 32], bundles:
     roster.is_standing(joiner) && bundles.iter().all(|b| roster.bundles.get(&(b.party, b.device)).is_some_and(|held| held.signed_osc >= b.signed_osc))
 }
 
+/// The groups our fleet still owes `invitee` an offer for: invited, not standing yet, in a group we hold and have not left.
+pub(super) fn invites_due(locals: &[(MoleculeId, MoleculeLocal)], rosters: &[(MoleculeId, Roster)], invitee: &[u8; 32]) -> Vec<MoleculeId> {
+    locals
+        .iter()
+        .filter(|(gid, l)| l.phase != MoleculePhase::Left && l.offered.iter().any(|(p, _)| p == invitee) && rosters.iter().any(|(g, r)| g == gid && !r.is_standing(invitee)))
+        .map(|(gid, _)| *gid)
+        .collect()
+}
+
+/// One invite's state as the page row our devices hand each other: an OUTGOING `Offer` control row stamped with the offer, `deleted` once it has ended, and a roster naming the group and holding no records in `gpl` (a complete VSF document, verified on read).
+pub(super) fn invite_row(gid: &MoleculeId, osc: i64, ended: bool) -> Option<crate::network::history_pages::HistoryRow> {
+    let blob = crate::storage::molecule::roster_to_vsf_bytes(gid, &Roster::default()).ok()?;
+    let mut msg = crate::types::ChatMessage::control(crate::types::RowControl::Molecule(MoleculeSignal::Offer), true, osc);
+    msg.deleted = ended;
+    let mut row = crate::network::history_pages::HistoryRow::from_message(&msg);
+    row.gpl = blob;
+    Some(row)
+}
+
+/// The invite a sibling's page row carries, when it is one: (group, offer stamp, ended). An incoming Offer row is a received invitation, never ours.
+pub(super) fn invite_of_row(row: &crate::network::history_pages::HistoryRow) -> Option<(MoleculeId, i64, bool)> {
+    if !row.sender_outgoing || row.gpl.is_empty() || !matches!(row.control, Some(crate::types::RowControl::Molecule(MoleculeSignal::Offer))) {
+        return None;
+    }
+    let (gid, _) = crate::storage::molecule::roster_from_vsf_bytes(&row.gpl).ok()?;
+    Some((gid, row.timestamp, row.deleted))
+}
+
 /// Frames kept per group for relaying: the newest win.
 const GROUP_FRAMES_KEPT: usize = 256;
 /// At most this many frames handed to one member device per sync record (oldest first; the next record carries on).
@@ -284,9 +312,11 @@ impl PhotonApp {
         }
         let members = snapshot.standing().len();
         let offer = BondOffer { molecule_id: gid, sponsor, row_osc, snapshot, accepted: false };
-        let fresh = !self.bond_offers.iter().any(|o| o.molecule_id == gid);
-        self.bond_offers.retain(|o| o.molecule_id != gid);
-        self.bond_offers.push(offer.clone());
+        // The newest offer row stands: a copy from another of the sponsor's devices, or a sibling's hand-over of one we already parked, changes nothing and never rings twice.
+        let Some(fresh) = crate::storage::molecule::park_offer_into(&mut self.bond_offers, offer.clone()) else {
+            crate::logf!("MOLECULE: offer for {} from {} — a newer copy is parked already", hex::encode(&gid.0[..4]), sponsor_fp);
+            return;
+        };
         if let Some(storage) = self.storage.as_ref() {
             if let Err(e) = crate::storage::molecule::park_bond_offer(&offer, storage) {
                 crate::logf!("MOLECULE: offer park failed for {}: {}", hex::encode(&gid.0[..4]), e);
@@ -381,10 +411,15 @@ impl PhotonApp {
         let member = crate::types::molecule::join_record(our_pid, hp, &name, avatar, offer.sponsor, &seed);
         // A rootless chains blob holds the decapsulation keys until the wrap arrives; from_molecule_root with the wrap's secrets replaces it, carrying the kems across.
         let fid = crate::types::FriendshipId::from_bytes(gid.0);
-        let mut holder = crate::types::FriendshipChains::from_molecule_root(gid, &offer.snapshot.standing(), [0u8; 32], [0u8; 32], era, offer.snapshot.genesis.as_ref().map_or([0u8; 32], |g| g.molecule_id.0));
-        holder.push_molecule_kem(eph.export_decaps(era));
-        self.friendship_chains.retain(|(id, _)| *id != fid);
-        self.friendship_chains.push((fid, holder));
+        // A Join sent again (a re-offer, from any of the sponsor's devices) keeps the last Join's keys beside the new ones: either Join may be the one answered, and its wrap must still open (two of the sponsor's devices re-offering on one edge sent two Joins, and the second replaced the holder the first answer was sealed to).
+        // Only a rootless holder can be here: one holding the group's keys returned above.
+        if let Some((_, held)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid) {
+            held.push_molecule_kem(eph.export_decaps(era));
+        } else {
+            let mut holder = crate::types::FriendshipChains::from_molecule_root(gid, &offer.snapshot.standing(), [0u8; 32], [0u8; 32], era, offer.snapshot.genesis.as_ref().map_or([0u8; 32], |g| g.molecule_id.0));
+            holder.push_molecule_kem(eph.export_decaps(era));
+            self.friendship_chains.push((fid, holder));
+        }
         let mut ours = Roster::default();
         ours.merge_member(member);
         ours.merge_bundle(bundle);
@@ -1105,30 +1140,21 @@ impl PhotonApp {
         // The offer rides the BOND (docs/conversations.md §7): its row lands in the bond's hidden conversation first, then goes on the wire — nothing lands in any chat; the invitee sees it as an invitation row.
         let invitee = self.contacts[ci].handle_hash;
         let sent = self.send_bond_row(ci, crate::types::RowControl::Molecule(MoleculeSignal::Offer), Some(&wire), ts);
-        self.set_molecule_local(&gid, |l| {
-            l.offered.retain(|(p, _)| *p != invitee);
-            l.offered.push((invitee, ts));
-        });
+        self.set_molecule_local(&gid, |l| l.sent_invite(invitee, ts));
+        // Every offer, first or re-sent, is fleet state: our other devices learn the invite and its newest stamp, so any of them re-offers and any of them can undo it.
+        self.share_invites_with_fleet(invitee, &[(gid, ts, false)]);
         crate::logf!("MOLECULE: offer for {} {} to {}", hex::encode(&gid.0[..4]), if sent { "sent" } else { "NOT sent — the next edge retries" }, fp);
         sent
     }
 
-    /// THE NEXT EDGE (field 2026-11-04): a contact came online, so every group this device offered them and has not seen them join or decline is offered again. An offer rides the wire once and friend history pages carry no control rows, so an invitee offline at that moment never received it; a re-offer replaces the parked snapshot on their side, so one they did receive costs nothing.
+    /// THE NEXT EDGE (field 2026-11-04): a contact came online, so every group our fleet offered them and has not seen them join or decline is offered again. An offer rides the wire once and friend history pages carry no control rows, so an invitee offline at that moment never received it; a re-offer replaces the parked snapshot on their side, so one they did receive costs nothing.
     /// Joined invitees are standing in the roster and skipped; a decline already removed the invitee from `offered`.
+    /// The invites are the fleet's (2026-11-19): one sent from a laptop that then sleeps is re-offered here by whichever of our devices sees the invitee.
     pub(super) fn reoffer_pending_bonds(&mut self, ci: usize) {
         let Some(invitee) = self.contacts.get(ci).filter(|c| !c.is_sibling).map(|c| c.handle_hash) else {
             return;
         };
-        let due: Vec<MoleculeId> = self
-            .molecule_locals
-            .iter()
-            .filter(|(gid, l)| {
-                l.offered.iter().any(|(p, _)| *p == invitee)
-                    && self.molecule_rosters.iter().any(|(g, r)| g == gid && !r.is_standing(&invitee))
-            })
-            .map(|(gid, _)| *gid)
-            .collect();
-        for gid in due {
+        for gid in invites_due(&self.molecule_locals, &self.molecule_rosters, &invitee) {
             crate::logf!("MOLECULE: {} is back — offering {} again", crate::fp(&self.contacts[ci].handle_proof), hex::encode(&gid.0[..4]));
             self.send_bond_offer(gid, ci);
         }
@@ -1191,10 +1217,14 @@ impl PhotonApp {
         let invitee = self.contacts[ci].handle_hash;
         let row_ts = self.molecule_locals.iter().find(|(g, _)| *g == gid).and_then(|(_, l)| l.offered.iter().find(|(p, _)| *p == invitee).map(|(_, t)| *t));
         let Some(row_ts) = row_ts else {
-            crate::logf!("MOLECULE: invite of {} into {} {} — no invite of ours (another of our devices sent it, or it is already undone)", crate::fp(&self.contacts[ci].handle_proof), hex::encode(&gid.0[..4]), why);
+            crate::logf!("MOLECULE: invite of {} into {} {} — no invite of ours (never sent, or already undone)", crate::fp(&self.contacts[ci].handle_proof), hex::encode(&gid.0[..4]), why);
             return false;
         };
-        self.set_molecule_local(&gid, |l| l.offered.retain(|(p, _)| *p != invitee));
+        self.set_molecule_local(&gid, |l| {
+            l.clear_invite(invitee, row_ts);
+        });
+        // The end is fleet state too: our other devices stop re-offering it.
+        self.share_invites_with_fleet(invitee, &[(gid, row_ts, true)]);
         // The offer row lives in the bond's hidden conversation (docs/conversations.md §7): tombstone it there, and delete it for everyone on the bond.
         if let Some(conv) = self.bond_conv_mut(ci) {
             if let Some(m) = conv.messages.iter_mut().find(|m| m.timestamp == row_ts && super::is_bond_offer_row(m)) {
@@ -1384,6 +1414,102 @@ impl PhotonApp {
         }
     }
 
+    /// THE FLEET'S INVITES (2026-11-19, the owner: "Oh, well that's dumb"): an invite sent from a rarely used laptop lived only there, so only the laptop re-offered, and the desktop that talked to the invitee all day never did.
+    /// Hand our other devices the state of our invites to `invitee`, one page row per group under our pair token with them (it names the invitee on every device of ours): an outgoing `Offer` row, its stamp the offer's, `deleted` when the invite has ended, and a records-free roster naming the group in `gpl`.
+    /// A received invitation rides the same column as an INCOMING Offer row (`share_offer_with_fleet`); the direction tells the two apart.
+    pub(super) fn share_invites_with_fleet(&self, invitee: [u8; 32], invites: &[(MoleculeId, i64, bool)]) {
+        let Some(us) = self.own_party_id() else {
+            return;
+        };
+        let token = crate::crypto::clutch::derive_conversation_token(&[us, invitee]);
+        let rows: Vec<crate::network::history_pages::HistoryRow> = invites.iter().filter_map(|(gid, osc, ended)| invite_row(gid, *osc, *ended)).collect();
+        self.push_history_rows_to_siblings(token, "our invites", rows, None);
+    }
+
+    /// A sibling came online: every invite this device holds, outstanding or ended, goes to our devices again (a no-op merge on one that holds it already).
+    /// This is also how invites sent before the ledger replicated reach the rest of the fleet: the first time the device that sent one runs this build and sees a sibling.
+    pub(super) fn reshare_fleet_invites(&self) {
+        let mut by_invitee: Vec<([u8; 32], Vec<(MoleculeId, i64, bool)>)> = Vec::new();
+        for (gid, l) in &self.molecule_locals {
+            let roster = self.molecule_rosters.iter().find(|(g, _)| g == gid).map(|(_, r)| r);
+            // An invitee standing already is ended on every device by its own roster edge; it is not handed on as outstanding.
+            let outstanding = l.offered.iter().filter(|(p, _)| !roster.is_some_and(|r| r.is_standing(p))).map(|(p, o)| (*p, *o, false));
+            let ended = l.withdrawn.iter().map(|(p, w)| (*p, *w, true));
+            for (party, osc, is_ended) in outstanding.chain(ended) {
+                match by_invitee.iter_mut().find(|(p, _)| *p == party) {
+                    Some((_, v)) => v.push((*gid, osc, is_ended)),
+                    None => by_invitee.push((party, vec![(*gid, osc, is_ended)])),
+                }
+            }
+        }
+        for (invitee, invites) in by_invitee {
+            crate::logf!("MOLECULE: handing our {} invite record(s) for {} to our devices", invites.len(), crate::fp(&invitee));
+            self.share_invites_with_fleet(invitee, &invites);
+        }
+    }
+
+    /// One of our devices handed us the state of an invite to contact `ci` (a page row from `share_invites_with_fleet`): take it into the ledger, newest stamp wins, an end at or past an offer's stamp ends it.
+    /// An outstanding invite this device did not hold is offered again at once when the invitee is online now: the online edge it would wait for may be hours away (the desktop that talks to the invitee all day).
+    /// Never handed on again; the device that sent it reaches the others.
+    pub(super) fn adopt_fleet_invite(&mut self, ci: usize, gid: MoleculeId, osc: i64, ended: bool) {
+        let Some((invitee, online, fp)) = self.contacts.get(ci).filter(|c| !c.is_sibling).map(|c| (c.handle_hash, c.is_online, crate::fp(&c.handle_proof))) else {
+            return;
+        };
+        let standing = self.molecule_rosters.iter().any(|(g, r)| *g == gid && r.is_standing(&invitee));
+        if !ended && standing {
+            return;
+        }
+        let mut local = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.clone()).unwrap_or_default();
+        let new_here = !local.offered.iter().any(|(p, _)| *p == invitee);
+        let changed = if ended { local.clear_invite(invitee, osc) } else { local.note_invite(invitee, osc) };
+        if !changed {
+            return;
+        }
+        self.set_molecule_local(&gid, |l| {
+            l.offered = local.offered;
+            l.withdrawn = local.withdrawn;
+        });
+        self.scene_dirty = true;
+        crate::logf!("MOLECULE: our fleet's invite of {} into {} {}", fp, hex::encode(&gid.0[..4]), if ended { "ended — no longer offered here" } else { "taken here" });
+        if !ended && new_here && online && !self.molecule_is_left(&gid) {
+            crate::logf!("MOLECULE: {} is online now — offering {} from this device", fp, hex::encode(&gid.0[..4]));
+            self.send_bond_offer(gid, ci);
+        }
+    }
+
+    /// The invitees of `gid` standing in its roster now: their invites have ended on this device.
+    fn clear_stood_invites(&mut self, gid: &MoleculeId) {
+        let Some(roster) = self.molecule_rosters.iter().find(|(g, _)| g == gid).map(|(_, r)| r) else {
+            return;
+        };
+        let stood = self.molecule_locals.iter().find(|(g, _)| g == gid).map(|(_, l)| l.stood_invites(roster)).unwrap_or_default();
+        if stood.is_empty() {
+            return;
+        }
+        for (p, _) in &stood {
+            crate::logf!("MOLECULE: {} stands in {} — the invite is done", crate::fp(p), hex::encode(&gid.0[..4]));
+        }
+        self.set_molecule_local(gid, |l| {
+            for (p, o) in stood {
+                l.clear_invite(p, o);
+            }
+        });
+    }
+
+    /// We left `gid`: nothing of ours is offered into it any more (each of our devices leaves, and ends them, on its own).
+    fn clear_group_invites(&mut self, gid: MoleculeId) {
+        let open: Vec<([u8; 32], i64)> = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.offered.clone()).unwrap_or_default();
+        if open.is_empty() {
+            return;
+        }
+        crate::logf!("MOLECULE: left {} — {} open invite(s) ended", hex::encode(&gid.0[..4]), open.len());
+        self.set_molecule_local(&gid, |l| {
+            for (p, o) in open {
+                l.clear_invite(p, o);
+            }
+        });
+    }
+
     /// Hold a group frame whose signer the roster does not name yet; the oldest go first past 64 for one group (a flood from a device that never joins cannot grow without bound).
     pub(super) fn hold_molecule_frame(&mut self, gid: MoleculeId, update: crate::network::status::StatusUpdate) {
         const HELD_PER_GROUP: usize = 64;
@@ -1490,11 +1616,22 @@ impl PhotonApp {
             }
         };
         f(&mut self.molecule_locals[pos].1);
-        if let Some(storage) = self.storage.as_ref() {
-            if let Err(e) = crate::storage::molecule::save_molecule_local(gid, &self.molecule_locals[pos].1, storage) {
+        // The write rides the seal worker (the UI thread makes no vault call): one worker in order, so the last snapshot queued is the one on disk.
+        let Some(storage) = self.storage.clone() else {
+            return;
+        };
+        let (gid, local) = (*gid, self.molecule_locals[pos].1.clone());
+        let pending = self.durable_pending.clone();
+        *self.durable_pending.0.lock().unwrap() += 1;
+        super::queue_job(&self.seal_job_tx, move || {
+            if let Err(e) = crate::storage::molecule::save_molecule_local(&gid, &local, &storage) {
                 crate::logf!("MOLECULE: local state write failed for {}: {}", hex::encode(&gid.0[..4]), e);
             }
-        }
+            // Quit-drain accounting, the drafts writer's law: a group's state must not die with a quitting process.
+            let (n, cv) = &*pending;
+            *n.lock().unwrap() -= 1; // counted in above, before the queue
+            cv.notify_all();
+        });
     }
 
     /// Persist one chains blob by id (group or friendship) on the calling thread — small, rare edges (found, join, wrap install).
@@ -1675,6 +1812,7 @@ impl PhotonApp {
         self.sync_molecule_conversation(&gid);
         self.persist_molecule(&gid);
         self.set_molecule_local(&gid, |l| l.phase = MoleculePhase::Left);
+        self.clear_group_invites(gid);
         // Our other devices hear the leave directly, not only by the group's chains syncing: those chains die with the root, and a group we were alone in never syncs at all (Nick 2026-10-25: leaving did not reach the whole fleet).
         if let Some(b) = blob.as_ref() {
             self.share_molecule_records_with_fleet(gid, b.clone());
@@ -1854,6 +1992,8 @@ impl PhotonApp {
     pub(super) fn persist_molecule(&mut self, gid: &MoleculeId) {
         // Every roster change passes here: its picture may have changed, so the sweep fetches it and the next tick reads it (group_avatar.rs).
         self.group_faces_dirty = true;
+        // …and an invitee may have come to stand in it, which ends that invite on this device (each of our devices ends it on its own roster edge).
+        self.clear_stood_invites(gid);
         self.replicate_dirty = true;
         let Some(storage) = self.storage.as_ref() else {
             return;
@@ -1885,6 +2025,7 @@ impl PhotonApp {
             if !self.molecule_is_left(&gid) {
                 self.set_molecule_local(&gid, |l| l.phase = MoleculePhase::Left);
                 self.zeroize_molecule_root(gid);
+                self.clear_group_invites(gid);
                 self.pending_molecule_posts.retain(|p| p.gid != gid);
                 self.reseed_molecule_pubkeys();
                 self.scene_dirty = true;
@@ -2060,5 +2201,128 @@ mod join_answer_tests {
         assert!(!join_already_answered(&roster, &joiner, &[fresh]), "a re-sent Join carries a fresh bundle and is answered");
         let other_device = BundleRecord { device: [0x0E; 32], ..bundle };
         assert!(!join_already_answered(&roster, &joiner, &[other_device]), "the person's other device joining is answered");
+    }
+}
+
+#[cfg(test)]
+mod fleet_invite_tests {
+    use super::{invite_of_row, invite_row, invites_due};
+    use crate::network::history_pages::{open_history_page, seal_history_page, HistoryPagePlain};
+    use crate::storage::molecule::{park_offer_into, BondOffer, MoleculeLocal, MoleculePhase};
+    use crate::types::molecule::{found_atom, join_record, vouch_record, MoleculeId, Roster};
+
+    /// A group with its founder standing (us) and nobody else yet.
+    fn group() -> (MoleculeId, Roster, [u8; 32], [u8; 32]) {
+        let (founder, seed) = ([0xF1u8; 32], [0x07u8; 32]);
+        let birth = found_atom(founder, [0xF2; 32], "f", [0u8; 32], "t", false, &seed);
+        let mut roster = Roster { genesis: Some(birth.genesis.clone()), ..Roster::default() };
+        roster.merge_member(birth.founder_member.clone());
+        roster.merge_vouch(birth.founder_vouch.clone());
+        (birth.molecule_id, roster, founder, seed)
+    }
+
+    /// The invitee joins: their member record and our vouch land in the roster.
+    fn stand(roster: &mut Roster, founder: [u8; 32], seed: &[u8; 32], invitee: [u8; 32]) {
+        roster.merge_member(join_record(invitee, [0x0B; 32], "j", [0u8; 32], founder, &[0x09; 32]));
+        roster.merge_vouch(vouch_record(founder, invitee, false, seed));
+        assert!(roster.is_standing(&invitee));
+    }
+
+    /// One device's rows as a sibling page, sealed and opened again: what the other device's drain reads.
+    fn over_the_fleet(rows: Vec<crate::network::history_pages::HistoryRow>) -> Vec<(MoleculeId, i64, bool)> {
+        let key = [0x77u8; 32];
+        let page = HistoryPagePlain { oldest_osc: rows.iter().map(|r| r.timestamp).min().unwrap(), more: false, rows };
+        let opened = open_history_page(&seal_history_page(&page, &key).expect("seal"), &key).expect("open");
+        opened.rows.iter().filter_map(invite_of_row).collect()
+    }
+
+    /// The MacBook's invite reaches the desktop: the row it hands its siblings carries the group, the offer's stamp and its state, and the desktop's ledger takes it.
+    #[test]
+    fn an_invite_replicates() {
+        let (gid, _, _, _) = group();
+        let jon = [0x0Au8; 32];
+        let mut macbook = MoleculeLocal::default();
+        macbook.sent_invite(jon, 1 << 20);
+        let landed = over_the_fleet(vec![invite_row(&gid, 1 << 20, false).expect("row")]);
+        assert_eq!(landed, vec![(gid, 1 << 20, false)]);
+        let mut desktop = MoleculeLocal::default();
+        for (_, osc, ended) in &landed {
+            assert!(!ended);
+            assert!(desktop.note_invite(jon, *osc));
+        }
+        assert_eq!(desktop.offered, macbook.offered);
+        // The same record again (the next sibling-online reshare) changes nothing.
+        assert!(!desktop.note_invite(jon, 1 << 20));
+        // An incoming Offer row (an invitation we received, handed over by a sibling) is never read as one of ours.
+        let mut received = invite_row(&gid, 1 << 20, false).expect("row");
+        received.sender_outgoing = false;
+        assert!(invite_of_row(&received).is_none());
+    }
+
+    /// The desktop never sent the invite, yet on the invitee's online edge it owes them the offer once the ledger holds it; a device that left, or an invitee standing, owes nothing.
+    #[test]
+    fn a_second_device_reoffers_on_the_online_edge() {
+        let (gid, mut roster, founder, seed) = group();
+        let jon = [0x0Au8; 32];
+        let mut desktop = MoleculeLocal::default();
+        let rosters = vec![(gid, roster.clone())];
+        assert!(invites_due(&[(gid, desktop.clone())], &rosters, &jon).is_empty(), "nothing held, nothing owed");
+        for (_, osc, _) in over_the_fleet(vec![invite_row(&gid, 1 << 20, false).expect("row")]) {
+            desktop.note_invite(jon, osc);
+        }
+        assert_eq!(invites_due(&[(gid, desktop.clone())], &rosters, &jon), vec![gid]);
+        assert!(invites_due(&[(gid, desktop.clone())], &rosters, &[0x0Fu8; 32]).is_empty(), "another friend coming online is owed nothing");
+        let left = MoleculeLocal { phase: MoleculePhase::Left, ..desktop.clone() };
+        assert!(invites_due(&[(gid, left)], &rosters, &jon).is_empty());
+        stand(&mut roster, founder, &seed, jon);
+        assert!(invites_due(&[(gid, desktop)], &[(gid, roster)], &jon).is_empty());
+    }
+
+    /// Jon stands: every device ends the invite from its own roster, and a sibling's late copy of that same offer does not bring it back; a newer offer from any of our devices does.
+    #[test]
+    fn an_invite_clears_on_stand() {
+        let (gid, mut roster, founder, seed) = group();
+        let (jon, emma) = ([0x0Au8; 32], [0x0Eu8; 32]);
+        let mut desktop = MoleculeLocal::default();
+        desktop.note_invite(jon, 1 << 20);
+        desktop.note_invite(emma, 1 << 21);
+        assert!(desktop.stood_invites(&roster).is_empty());
+        stand(&mut roster, founder, &seed, jon);
+        let stood = desktop.stood_invites(&roster);
+        assert_eq!(stood, vec![(jon, 1 << 20)]);
+        for (p, o) in stood {
+            assert!(desktop.clear_invite(p, o));
+        }
+        assert_eq!(desktop.offered, vec![(emma, 1 << 21)], "only the invitee who stood is done");
+        assert!(!desktop.note_invite(jon, 1 << 20), "the laptop's late reshare of the same offer stays ended");
+        // An undo on another device reaches this one as an ended row and ends Emma's invite too.
+        for (_, osc, ended) in over_the_fleet(vec![invite_row(&gid, 1 << 21, true).expect("row")]) {
+            assert!(ended);
+            assert!(desktop.clear_invite(emma, osc));
+        }
+        assert!(desktop.offered.is_empty());
+        assert!(!desktop.clear_invite(emma, 1 << 21), "the same end again changes nothing");
+        // An end of an older offer never ends a newer one.
+        desktop.note_invite(emma, 1 << 22);
+        assert!(!desktop.clear_invite(emma, 1 << 21));
+        assert_eq!(desktop.offered, vec![(emma, 1 << 22)]);
+    }
+
+    /// The joiner's side: the sponsor's laptop and desktop both re-offer on one online edge, in either order. One invitation is parked and rings once, the newest row stands (the one an undo deletes), and the older copy arriving last changes nothing.
+    #[test]
+    fn duplicate_offers_merge_harmlessly() {
+        let (gid, roster, founder, _) = group();
+        let offer = |row_osc: i64| BondOffer { molecule_id: gid, sponsor: founder, row_osc, snapshot: roster.clone(), accepted: false };
+        let mut parked: Vec<BondOffer> = Vec::new();
+        assert_eq!(park_offer_into(&mut parked, offer(1 << 20)), Some(true), "the first offer rings");
+        assert_eq!(park_offer_into(&mut parked, offer(1 << 21)), Some(false), "a newer copy replaces it silently");
+        assert_eq!(park_offer_into(&mut parked, offer(1 << 20)), None, "the older copy landing last changes nothing");
+        assert_eq!(park_offer_into(&mut parked, offer(1 << 21)), None, "the same row again changes nothing");
+        assert_eq!(parked.len(), 1);
+        assert_eq!(parked[0].row_osc, 1 << 21);
+        // Another group's offer parks beside it.
+        let other = BondOffer { molecule_id: MoleculeId([0x55; 32]), ..offer(1 << 19) };
+        assert_eq!(park_offer_into(&mut parked, other), Some(true));
+        assert_eq!(parked.len(), 2);
     }
 }
