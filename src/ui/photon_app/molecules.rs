@@ -110,6 +110,11 @@ pub(super) fn join_already_answered(roster: &Roster, joiner: &[u8; 32], bundles:
     roster.is_standing(joiner) && bundles.iter().all(|b| roster.bundles.get(&(b.party, b.device)).is_some_and(|held| held.signed_osc >= b.signed_osc))
 }
 
+/// May this device answer `joiner`'s Join into the group `roster` holds: our fleet's invite to them is open here (an ended one leaves `offered`), or they stand already (another of their devices joining).
+pub(super) fn join_admitted(local: Option<&MoleculeLocal>, roster: &Roster, joiner: &[u8; 32]) -> bool {
+    roster.is_standing(joiner) || local.is_some_and(|l| l.offered.iter().any(|(p, _)| p == joiner))
+}
+
 /// The groups our fleet still owes `invitee` an offer for: invited, not standing yet, in a group we hold and have not left.
 pub(super) fn invites_due(locals: &[(MoleculeId, MoleculeLocal)], rosters: &[(MoleculeId, Roster)], invitee: &[u8; 32]) -> Vec<MoleculeId> {
     locals
@@ -486,6 +491,12 @@ impl PhotonApp {
             crate::logf!("MOLECULE: join from {} for {} — we do not hold that group; ignored", joiner_fp, hex::encode(&gid.0[..4]));
             return;
         };
+        // ONLY AN INVITED JOIN IS ANSWERED (2026-11-19): a Join is consent to OUR offer, so without an outstanding invite of our fleet's to this person, or their standing already, it is refused (any friend who learned a group's id could otherwise vouch themselves in thru us).
+        let local = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l);
+        if !join_admitted(local, &self.molecule_rosters[pos].1, &joiner) {
+            crate::logf!("MOLECULE: join from {} for {} — no invite of ours to them is open here and they do not stand; refused (a Join that beat our invite record comes again with the next re-offer)", joiner_fp, hex::encode(&gid.0[..4]));
+            return;
+        }
         let Some(member) = records.members.get(&joiner).cloned() else {
             crate::logf!("MOLECULE: join from {} carries no member record for the sender — ignored", joiner_fp);
             return;
@@ -1139,10 +1150,11 @@ impl PhotonApp {
         let ts = crate::network::time_base::stamp_osc();
         // The offer rides the BOND (docs/conversations.md §7): its row lands in the bond's hidden conversation first, then goes on the wire — nothing lands in any chat; the invitee sees it as an invitation row.
         let invitee = self.contacts[ci].handle_hash;
-        let sent = self.send_bond_row(ci, crate::types::RowControl::Molecule(MoleculeSignal::Offer), Some(&wire), ts);
+        // Every offer, first or re-sent, is fleet state: our other devices learn the invite and its newest stamp, so any of them re-offers, answers its Join and can undo it.
+        // Handed to them BEFORE the offer goes on the wire, so the record leaves ahead of any Join it can bring back (a sibling that is away takes it on its online edge; a Join that still wins the race is refused and comes again with the next re-offer).
         self.set_molecule_local(&gid, |l| l.sent_invite(invitee, ts));
-        // Every offer, first or re-sent, is fleet state: our other devices learn the invite and its newest stamp, so any of them re-offers and any of them can undo it.
         self.share_invites_with_fleet(invitee, &[(gid, ts, false)]);
+        let sent = self.send_bond_row(ci, crate::types::RowControl::Molecule(MoleculeSignal::Offer), Some(&wire), ts);
         crate::logf!("MOLECULE: offer for {} {} to {}", hex::encode(&gid.0[..4]), if sent { "sent" } else { "NOT sent — the next edge retries" }, fp);
         sent
     }
@@ -2206,7 +2218,7 @@ mod join_answer_tests {
 
 #[cfg(test)]
 mod fleet_invite_tests {
-    use super::{invite_of_row, invite_row, invites_due};
+    use super::{invite_of_row, invite_row, invites_due, join_admitted};
     use crate::network::history_pages::{open_history_page, seal_history_page, HistoryPagePlain};
     use crate::storage::molecule::{park_offer_into, BondOffer, MoleculeLocal, MoleculePhase};
     use crate::types::molecule::{found_atom, join_record, vouch_record, MoleculeId, Roster};
@@ -2324,5 +2336,47 @@ mod fleet_invite_tests {
         let other = BondOffer { molecule_id: MoleculeId([0x55; 32]), ..offer(1 << 19) };
         assert_eq!(park_offer_into(&mut parked, other), Some(true));
         assert_eq!(parked.len(), 2);
+    }
+
+    /// A friend who learned the group's id but holds no invite of ours sends a Join: refused, and refused again once an invite to them has ended.
+    #[test]
+    fn an_uninvited_join_is_refused() {
+        let (_, roster, _, _) = group();
+        let (stranger, jon) = ([0x0Fu8; 32], [0x0Au8; 32]);
+        assert!(!join_admitted(None, &roster, &stranger), "no ledger at all");
+        let mut local = MoleculeLocal::default();
+        local.sent_invite(jon, 1 << 20);
+        assert!(!join_admitted(Some(&local), &roster, &stranger), "an invite to someone else admits nobody else");
+        local.clear_invite(jon, 1 << 20);
+        assert!(!join_admitted(Some(&local), &roster, &jon), "an undone or declined invite admits no Join");
+    }
+
+    /// The invite sent from the laptop reaches the desktop as a page row, and the desktop answers the Join it brings back.
+    #[test]
+    fn an_invited_join_is_answered() {
+        let (gid, roster, _, _) = group();
+        let jon = [0x0Au8; 32];
+        let mut desktop = MoleculeLocal::default();
+        assert!(!join_admitted(Some(&desktop), &roster, &jon), "a Join that beats the record is refused");
+        for (_, osc, _) in over_the_fleet(vec![invite_row(&gid, 1 << 20, false).expect("row")]) {
+            desktop.note_invite(jon, osc);
+        }
+        assert!(join_admitted(Some(&desktop), &roster, &jon));
+    }
+
+    /// Jon stands (his invite ended on his stand), then his second device sends its own Join: answered, since he stands.
+    #[test]
+    fn a_joiners_second_device_is_answered() {
+        let (_, mut roster, founder, seed) = group();
+        let jon = [0x0Au8; 32];
+        let mut local = MoleculeLocal::default();
+        local.sent_invite(jon, 1 << 20);
+        stand(&mut roster, founder, &seed, jon);
+        for (p, o) in local.stood_invites(&roster) {
+            local.clear_invite(p, o);
+        }
+        assert!(local.offered.is_empty());
+        assert!(join_admitted(Some(&local), &roster, &jon));
+        assert!(join_admitted(None, &roster, &jon), "standing alone admits it, whatever this device's ledger");
     }
 }

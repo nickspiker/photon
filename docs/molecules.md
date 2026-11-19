@@ -154,6 +154,7 @@ Still open: a member we never friended has no bond to carry the heal.
 - The ledger merges newest-stamp-wins per (group, invitee): `offered` holds the newest offer, `withdrawn` the tombstone of an ended one, so a sibling's late copy of an ended offer stays ended and a newer offer from any device revives it.
 - Any device holding an outstanding invite re-offers on the invitee's online edge (`invites_due`), and a device that learns one while the invitee is already online offers at once. Every device answers the Join (above).
 - Each device ends an invite on its own roster edge when the invitee stands, and all of a group's invites when we leave it.
+- A Join is answered only by a device holding our fleet's open invite to that joiner, or when the joiner already stands (another of their devices): a Join is consent to OUR offer, never a door for any friend who learned a group's id (`join_admitted`). The invite record goes to every sibling before the offer goes on the wire; a Join that still beats it is refused and comes again with the next re-offer.
 - Each device hands its whole ledger to a sibling on that sibling's online edge, which is also how an invite made before this build reaches the rest of the fleet.
 - The joiner keeps the newest offer row per group (`park_offer_into`): copies from two of the sponsor's devices never ring twice, and the parked row is the one an undo deletes. A Join sent again keeps the previous Join's decapsulation keys, so whichever Join is answered, its wrap opens.
 
