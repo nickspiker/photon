@@ -2843,6 +2843,10 @@ impl FluorApp<Px> for PhotonApp {
                             return EventResponse::Handled;
                         }
                         // Top of the stack (contacts screen / idle launch, nothing focused): Escape = the close button. Resident desktop → the host hides the window; Android → the shell reports unhandled and the Activity moveTaskToBack()s. Either way: hidden, still running, never an exit.
+                        // ferros: Escape is the helm's Back, which stops at the app's root (owner, 2026-11-18: "Back should stop at the root screen of the app, not go to the deck"); unclaimed, fluor's ferros host reports the spare Escape to the deck (op 76) instead of ending Photon.
+                        #[cfg(target_os = "ferros")]
+                        return EventResponse::Pass;
+                        #[cfg(not(target_os = "ferros"))]
                         EventResponse::Close
                     }
                     // Enter submits the handle when the textbox is focused — intercepted before delivery so the textbox doesn't insert a literal newline. When the attest button is focused, route to its on_key (Button activates on Enter / Space and we observe via take_click in tick / on_event Release path). Both Launch and Ready screens follow the same shape with their respective widgets.
