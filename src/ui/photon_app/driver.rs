@@ -5334,6 +5334,8 @@ impl PhotonApp {
             }
             // Kick presence immediately for the just-loaded contacts so their online rings reflect reality without waiting for the FGTW round-trip.
             self.ping_contacts();
+            // Signed in from local state: the hub subscription starts here too, not only on an online attest (2026-11-19: v155's release notice reached no device that had resumed locally, because nothing had subscribed).
+            self.spawn_fleet_event_sub();
     }
 
     /// Polls the vault-open worker; true when the resume finished this tick (a frame is owed).

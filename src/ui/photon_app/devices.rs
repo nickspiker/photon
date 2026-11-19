@@ -1270,60 +1270,88 @@ impl PhotonApp {
         }
         let (tx, rx) = std::sync::mpsc::channel::<(&'static str, [u8; 32])>();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let up = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.fleet_evt_rx = Some(rx);
         self.fleet_evt_stop = Some(stop.clone());
+        self.fleet_evt_up = Some(up.clone());
         let wake = self.event_proxy.clone();
         #[cfg(not(target_os = "ferros"))]
         crate::network::http::runtime().spawn(async move {
             use futures::StreamExt;
+            // Each edge logs once (the field 2026-11-19: v155's notice reached no device, and nothing said whether the subscription was even up): a connect, the first failed attempt of a run of them, and a drop; retries between edges say nothing.
+            let mut down_logged = false;
+            let mut ever_connected = false;
             loop {
                 if stop.load(Ordering::Relaxed) {
                     return;
                 }
-                if let Ok((mut ws, _)) = tokio_tungstenite::connect_async(crate::network::http::SEED_WS).await {
-                    loop {
-                        tokio::select! {
-                            frame = ws.next() => {
-                                match frame {
-                                    Some(Ok(m)) => {
-                                        if stop.load(Ordering::Relaxed) {
-                                            return;
+                match tokio_tungstenite::connect_async(crate::network::http::SEED_WS).await {
+                    Ok((mut ws, _)) => {
+                        crate::logf!("FLEET: hub event subscription {} — the release manifest check is due (a notice may have been missed while it was down)", if ever_connected { "reconnected" } else { "connected" });
+                        ever_connected = true;
+                        up.store(true, Ordering::Relaxed);
+                        if let Some(w) = wake.as_ref() {
+                            super::wake_ui(w);
+                        }
+                        loop {
+                            tokio::select! {
+                                frame = ws.next() => {
+                                    match frame {
+                                        Some(Ok(m)) => {
+                                            if stop.load(Ordering::Relaxed) {
+                                                return;
+                                            }
+                                            // Forward EVERY recognized event with its hp — no our-hp filter. Registry dings (fleet) go photon-wide, so a contact's chain change reaches us here too; tick decides whether an hp is ours (roster/key sync) or a contact's (member refresh). Bumps are tiny and the hub is low-traffic, so receive-all + filter-app-side is cheaper than re-subscribing every time contacts change.
+                                            if let Some((kind, evt_hp)) = crate::network::fgtw::fleet::parse_pair_event(&m.into_data()) {
+                                                let k: &'static str = match kind.as_str() {
+                                                    "fstate" => "fstate",
+                                                    "fleet" => "fleet",
+                                                    "friendship" => "friendship",
+                                                    "release" => "release",
+                                                    "idea" => "idea",
+                                                    "request" => "request",
+                                                    "alias" => "alias",
+                                                    _ => continue,
+                                                };
+                                                if tx.send((k, evt_hp)).is_err() {
+                                                    return; // app side dropped the receiver — subscription retired
+                                                }
+                                                if let Some(w) = wake.as_ref() {
+                                                    super::wake_ui(w);
+                                                }
+                                            }
                                         }
-                                        // Forward EVERY recognized event with its hp — no our-hp filter. Registry dings (fleet) go photon-wide, so a contact's chain change reaches us here too; tick decides whether an hp is ours (roster/key sync) or a contact's (member refresh). Bumps are tiny and the hub is low-traffic, so receive-all + filter-app-side is cheaper than re-subscribing every time contacts change.
-                                        if let Some((kind, evt_hp)) = crate::network::fgtw::fleet::parse_pair_event(&m.into_data()) {
-                                            let k: &'static str = match kind.as_str() {
-                                                "fstate" => "fstate",
-                                                "fleet" => "fleet",
-                                                "friendship" => "friendship",
-                                                "release" => "release",
-                                                "idea" => "idea",
-                                                "request" => "request",
-                                                "alias" => "alias",
-                                                _ => continue,
+                                        // Closed or errored: say so once, then fall out to the reconnect sleep.
+                                        other => {
+                                            let why = match other {
+                                                Some(Err(e)) => e.to_string(),
+                                                _ => "closed by the hub".to_string(),
                                             };
-                                            if tx.send((k, evt_hp)).is_err() {
-                                                return; // app side dropped the receiver — subscription retired
-                                            }
-                                            if let Some(w) = wake.as_ref() {
-                                                super::wake_ui(w);
-                                            }
+                                            crate::logf!("FLEET: hub event subscription dropped ({}) — reconnecting", why);
+                                            down_logged = true;
+                                            break;
                                         }
                                     }
-                                    _ => break, // closed / errored — fall out to the reconnect sleep
+                                }
+                                _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
+                                    if stop.load(Ordering::Relaxed) {
+                                        return;
+                                    }
                                 }
                             }
-                            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
-                                if stop.load(Ordering::Relaxed) {
-                                    return;
-                                }
-                            }
+                        }
+                    }
+                    Err(e) => {
+                        if !down_logged {
+                            crate::logf!("FLEET: hub event subscription could not connect ({}) — retrying quietly until it does", e);
+                            down_logged = true;
                         }
                     }
                 }
                 tokio::time::sleep(crate::jitter_dur(std::time::Duration::from_secs(20))).await;
             }
         });
-        crate::log("FLEET: event subscription started (fstate/fleet/friendship push)");
+        crate::log("FLEET: event subscription started (fstate/fleet/friendship/release push)");
     }
 
     /// Off-thread: fold each given contact's public membership chain (`fleet::current_members_with_ts` by handle_proof, blocking HTTP) and post back the current device set plus the chain-tip eagle time for tick to adopt into `fleet_members` (monotonically — see the drain). Idempotent and best-effort: a fetch failure sends nothing, so the drain never runs and the last-known folded set + arm flag stay untouched (never trust-nobody on a network blip). Results land via `contact_members_rx`. Started on contact load/merge (wake-up catch-up) and on a `fleet` bump for a contact's identity (live).
