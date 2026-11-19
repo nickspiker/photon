@@ -2204,8 +2204,6 @@ pub struct PhotonApp {
     fanout_seen_rx: std::sync::mpsc::Receiver<era::FanoutSeen>,
     /// Stop flag for the fleet-event subscription task (dropped app / de-attest).
     fleet_evt_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    /// Set by the fleet-event task on each connect to the hub: the tick makes the release-manifest check due (a notice may have been missed while the subscription was down).
-    fleet_evt_up: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// Off-thread contact-fleet refresh results: (contact handle_proof, current member pubkeys folded from their chain, chain-tip eagle time). Drained in tick into the matching contact's `fleet_members`, gated on the tip being fresher than the last adopted one, then `reseed_contact_pubkeys`. Lets a friend's NEW device be honoured — and a REMOVED device revoked — without waiting for our next launch.
     contact_members_rx:
         Option<std::sync::mpsc::Receiver<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool, bool)>>,
@@ -3487,7 +3485,6 @@ impl PhotonApp {
             add_stop: None,
             fleet_evt_rx: None,
             fleet_evt_stop: None,
-            fleet_evt_up: None,
             contact_members_rx: None,
             contact_members_tx: None,
             successor_rx: None,

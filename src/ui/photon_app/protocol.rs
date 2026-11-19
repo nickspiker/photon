@@ -864,10 +864,6 @@ impl PhotonApp {
         }
 
         // Fleet roster pull result: merge into the contact list (re-CLUTCH happens via the serialized keygen kick inside merge_roster_entries). Fleet-event push: a sibling device changed the shared roster (fstate) or the membership chain (fleet) — pull the change NOW instead of at our next attest. This is what makes a friend added on one device appear on the rest of the fleet in about a second.
-        // The hub subscription (re)connected: a release notice sent while it was down is lost, so the manifest check is due now, as the notice itself would make it.
-        if self.fleet_evt_up.as_ref().is_some_and(|up| up.swap(false, std::sync::atomic::Ordering::Relaxed)) {
-            self.next_update_check_osc = 1;
-        }
         let fleet_evts: Vec<(&'static str, [u8; 32])> = self
             .fleet_evt_rx
             .as_ref()

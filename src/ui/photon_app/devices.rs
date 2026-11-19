@@ -1270,10 +1270,8 @@ impl PhotonApp {
         }
         let (tx, rx) = std::sync::mpsc::channel::<(&'static str, [u8; 32])>();
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let up = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         self.fleet_evt_rx = Some(rx);
         self.fleet_evt_stop = Some(stop.clone());
-        self.fleet_evt_up = Some(up.clone());
         let wake = self.event_proxy.clone();
         #[cfg(not(target_os = "ferros"))]
         crate::network::http::runtime().spawn(async move {
@@ -1287,12 +1285,8 @@ impl PhotonApp {
                 }
                 match tokio_tungstenite::connect_async(crate::network::http::SEED_WS).await {
                     Ok((mut ws, _)) => {
-                        crate::logf!("FLEET: hub event subscription {} — the release manifest check is due (a notice may have been missed while it was down)", if ever_connected { "reconnected" } else { "connected" });
+                        crate::logf!("FLEET: hub event subscription {} (release notices arrive while it is up; a notice missed while down reaches us from our peers)", if ever_connected { "reconnected" } else { "connected" });
                         ever_connected = true;
-                        up.store(true, Ordering::Relaxed);
-                        if let Some(w) = wake.as_ref() {
-                            super::wake_ui(w);
-                        }
                         loop {
                             tokio::select! {
                                 frame = ws.next() => {
