@@ -114,12 +114,31 @@ BUILT (as of 2026-07-16):
 - **Stamp window as built — reconciled to the counter version scheme** (the "version integer IS the stamp" line above predates major.minor.patch): `t` = the signed manifest header's creation stamp (eagle e6, inside the signature), the floor = `PHOTON_BUILD_STAMP` (eagle time at build, compiled in by build.rs — advances only by exec'ing into a newer build). Accept iff `floor < t ≤ now`; forward-only ordering rides the version tuple.
 - **`now` staged, not always-nunc**: system eagle time on the happy path; the nunc consensus verdict (conservative edge, `offset − confidence`) is consulted exactly when the window fails forward, and a missing verdict spawns a consensus query + defers — the doc's "no system-clock fallback anywhere" tightened to "nunc arbitrates every forward failure", which keeps nunc off the hot path while forward-dated stamps still can't slip in.
 
+BUILT (2026-11-19): the release notice travels peer to peer (network/peer_release.rs, ui/photon_app/peer_release.rs).
+- **What travels:** the signed release manifest itself, byte for byte as the deploy published it, inside a device-signed `release_tell` frame (a binary blob, `v'b'`). The envelope only names who handed it; the receiver trusts the manifest's own eggs.
+- **How it is checked:** the receiver verifies it alone, exactly as its own poll would (every release egg against the pinned release key, release rows), and refuses one stamped ahead of its clock: held, a forward-dated stamp would outrank every honest release and stop them travelling. Only a verified manifest is held, and only the held manifest is ever passed on.
+- **Which edges carry it:** every sealed pong tail claims the newest manifest the device holds (`rel`: its signed stamp, or no value for "holds none"; absent from an older build, which is never sent the frame). A device whose pong claims less than we hold is handed ours, so a peer coming online is brought up to date by its first pong; when we come to hold a newer one (our own poll, the Updates page's check, or a peer's hand-over), every online device that claimed less is handed it at once, our own siblings (fleet and alias) first, then our friends' devices.
+- **Once per link:** a device is handed a given manifest once at a given claim, a giver is never handed back what it gave, and a device that went offline is a fresh link when it returns (it may have restarted holding nothing).
+- **What it makes due:** a peer's manifest that offers this build a newer version runs the update check with the manifest in hand (tuple-forward only, the stamp window, nunc on a forward failure), and the install path then fetches the binary from the host as before.
+- **The hub stays as the fallback, fixed:** the hub subscription starts on every sign-in (a local resume, a PhotonKeys open, an online attest), logs its connect, its first failed attempt and its drop once per edge, and every connect makes the manifest check due, since a notice sent while it was down is lost.
+
 Still to build:
 - In-flight textbox hand-off across the exec.
 - The Android platform NOTIFICATION (today it's the in-app toast) → `REQUEST_INSTALL_PACKAGES` → system-installer path.
 - Idle gating + the event-shown "updated" note.
-- Push trigger (release-notice doorbell via the fleet inbox / hub events) — the poll cadence stands in meanwhile.
 - Rollback (`.prev` auto-revert after N failed starts).
+- Peers carry the binaries (below).
+
+## Peers carry the binaries (design, not built)
+
+The owner, 2026-11-19: "I don't want to host this, I want nodes to share the new version among themselves."
+The manifest already travels peer to peer; the artefacts it names are the next step, and nothing in the trust model changes, because the signature and the hash are what is trusted, never where the bytes came from.
+
+- **What a peer serves:** a device that installed a release keeps the verified artefact it installed from (the desktop binary, the APK) beside the install, and the artefacts for other platforms only when a sibling asked it to fetch them. Each is named by the BLAKE3 its manifest row carries.
+- **How it travels:** the existing attachment transfer (attach_have / attach_blob / attach_chunks over PT, the relay pipe as its fallback), asked for by the row's hash. A device that learns of a newer release asks the peer that handed it the manifest first, then its other siblings, then its friends' devices, the same order the manifest travelled in.
+- **How it is checked:** exactly as a download from the host is: the bytes must hash to the signed row's BLAKE3, and a desktop binary must also pass its appended release signature on disk before it is ever executed. A chunk that fails its hash is dropped and asked of another peer.
+- **The last rung:** the host (R2 behind fgtw.org) is asked only when no peer holding the hash answers, the edge every other peers-first path uses (memory: bootstrap is the last resort).
+- **Open:** whether a device keeps artefacts for platforms it does not run (a desktop serving a sibling phone's APK), and how much disk that may take, are owner decisions; so is whether a ferros kist capsule rides the same path (its device, not Photon, installs it).
 
 ## Decided
 

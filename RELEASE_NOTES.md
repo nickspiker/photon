@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **New versions reach you through your own devices and friends.** When one of your devices or a friend's learns a release is out, it hands the signed release on to the others it is connected to, and each one checks the release's signature itself before it updates, so an update no longer waits for a server to ring.
 
 ## v155
 - **Joining a group no longer waits on one particular device.** Whichever of the inviter's devices hears your join now lets you in, and all of their devices agree on the same new keys, so a join can no longer sit unanswered.
