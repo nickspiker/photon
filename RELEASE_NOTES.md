@@ -6,6 +6,16 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Joining a group no longer waits on one particular device.** Whichever of the inviter's devices hears your join now lets you in, and all of their devices agree on the same new keys, so a join can no longer sit unanswered.
+- **Two ways to remove a device.** A device you still have can sign itself out, which removes it and wipes its keys; a lost or stolen one is locked out from another of your devices, which also re-keys every friendship and group, one friend at a time as each comes online.
+- **Taps go to what you see.** Whatever is in front on the screen now takes the tap, never something hidden behind it, and buttons answer across their whole shape.
+- **Relay connections prove who they are.** Each device now proves its own key when it opens its relay connection, so nobody else can take its messages there.
+- **Opening Photon no longer starts scrolled.** With a saved zoom, the contact list could open part way down; it now opens at the top, on Android as well.
+- **Pictures show the moment they arrive.** A new picture for you or a friend now appears at once, instead of waiting for something else on the screen to change.
+- **Photon on ferros: a layout for the round screen.** Your picture hangs at the top of the circle under the camera with its connection ring, unread messages show as a dot, Wave and Beam sit beside a friend's picture, and the settings pages turn with a sideways swipe under their title.
+- **Photon on ferros: your devices fill it in.** It receives your friendship keys, your address book and your own picture from your other devices, so it reaches your friends without asking any server.
+- **Photon on ferros: Back stops at your contacts.** Back steps up one page at a time and stays on the contacts screen instead of leaving Photon.
+- **Photon on ferros: smoother scrolling.** Scrolling and flings now keep pace with the screen's 120 frames a second and redraw only the strip that changes.
 
 ## v154
 - **Joining a group works even if your first answer got lost.** If your "join" never reached the person who invited you, you could see the members but never any messages, and tapping Join again did nothing; now the next invitation sends your join again, and you can always tap Join until you are in.
