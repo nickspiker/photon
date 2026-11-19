@@ -2447,6 +2447,8 @@ impl PhotonApp {
                 self.publish_avatar_pin();
                 // A sibling may have changed the avatar (profile.avatar_ts bump rides the same merge) — newest-wins sync pulls the fresh copy; a no-change sync is one cheap wall read.
                 self.spawn_avatar_sync();
+                // On the alias alone that sync has no fgtw.org to pull from: a moved stamp asks our siblings for the picture instead.
+                self.want_own_avatar_from_siblings();
                 crate::log("SETTINGS: adopted fleet changes");
             }
         }

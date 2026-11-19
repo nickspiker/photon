@@ -433,6 +433,8 @@ impl PhotonApp {
         if !fresh.is_empty() {
             // A pair key read is a key edge: a fetch no device could open may find one now.
             self.attach_address_edge("an alias sibling's pair secret was read");
+            // Our own picture from the siblings now able to answer, when this device holds none or, on the alias alone, the fleet's stamp moved (conversation.rs want_own_avatar_from_siblings).
+            self.want_own_avatar_from_siblings();
         }
         true
     }

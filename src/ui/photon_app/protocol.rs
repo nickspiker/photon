@@ -309,9 +309,15 @@ impl PhotonApp {
         }
 
         // Deferred own-avatar recovery: the pin arrives with the fleet settings, after the session restore that wanted it.
+        // Our siblings first (once per fleet avatar stamp, when one that can answer is online); fgtw.org only once nobody answers here and every contact has had its verdict (mesh_silent; the owner 2026-11-18: the bootstrap is the last rung). On ferros the siblings are the only way.
         if let Some(seed) = self.self_avatar_recover_pending {
-            if self.device_avatar_pixels.is_some() || self.spawn_self_avatar_recover(seed) {
+            if self.device_avatar_pixels.is_some() {
                 self.self_avatar_recover_pending = None;
+            } else {
+                self.want_own_avatar_from_siblings();
+                if self.mesh_silent() && self.spawn_self_avatar_recover(seed) {
+                    self.self_avatar_recover_pending = None;
+                }
             }
         }
 

@@ -5260,13 +5260,9 @@ impl PhotonApp {
                                 });
                                 // Decode failure (poisoned bytes) arms the FGTW recovery in the drain — never here, or the tick would race the in-flight decode into a pointless network fetch every boot.
                             }
-                            // Local vault had no avatar (e.g. this device was cleared) — recover our own from FGTW, where it was published. Off-thread; installs via the avatar drain.
+                            // Local vault had no avatar (e.g. this device was cleared, or a ferros Photon that never held one): the tick recovers it from our siblings first, and from fgtw.org only while no LAN beacon is heard and no peer answers (the owner 2026-11-18: the bootstrap is the last rung). Installs via the avatar drain.
                             None => {
-                                if !self.spawn_self_avatar_recover(our_root) {
-                                    // No pin at rest yet (settings still loading) — the tick retries once one lands.
-                                    self.self_avatar_recover_pending =
-                                        Some(our_root);
-                                }
+                                self.self_avatar_recover_pending = Some(our_root);
                             }
                         }
                         // Re-key Pending contacts that still lack keypairs after the rehydrate — but ONE AT A TIME (spawn_next_pending_keygen, repeated each tick), never all at once: parallel McEliece keygens on launch starved the UI thread.

@@ -2049,6 +2049,22 @@ pub enum AvatarSyncResult {
 }
 
 /// Read the eagle-time creation stamp embedded in an in-memory avatar VSF buffer (the server's `avatar_get` response). The VSF conduit returns the stripped-but-creation-time-preserving VSF, so the timestamp travels in the body itself — no `X-Avatar-Timestamp` HTTP header (that was the dead REST path). Returns `None` if the buffer has no decodable creation time.
+/// Our OWN picture as one Photon of ours hands it another (avatar_give naming our own party id): the AV1 exactly as the vault keeps it, in a complete VSF document whose creation time is the stamp it was saved under, so the receiver keeps it at that stamp and the two never bounce it as newer.
+pub fn own_avatar_for_sibling(av1: Vec<u8>, stamp: i64) -> Result<Vec<u8>, String> {
+    vsf::VsfBuilder::new()
+        .creation_time_oscillations(stamp)
+        .add_section("own_avatar", vec![("pixels".to_string(), vsf::VsfType::v(b'a', av1))])
+        .build()
+}
+
+/// [`own_avatar_for_sibling`] read back (verified): the AV1 and its stamp.
+pub fn own_avatar_from_sibling(doc: &[u8]) -> Option<(Vec<u8>, i64)> {
+    let schema = vsf::schema::SectionSchema::new("own_avatar").field("pixels", vsf::schema::TypeConstraint::Wrapped(b'a'));
+    let section = vsf::schema::SectionBuilder::parse_document(schema, doc, None).ok()?;
+    let av1 = section.get_value::<Vec<u8>>("pixels").ok()?;
+    Some((av1, avatar_vsf_timestamp(doc)?))
+}
+
 fn avatar_vsf_timestamp(vsf_data: &[u8]) -> Option<i64> {
     use vsf::types::EagleTime;
     use vsf::VsfType;
@@ -2326,6 +2342,19 @@ pub fn scale_avatar(src: &[u8], diameter: usize) -> Option<Vec<u8>> {
 #[cfg(test)]
 mod avatar_seal_tests {
     use super::*;
+
+    /// Our own picture between our devices keeps its AV1 byte for byte and the stamp it was saved under, so the receiver stores it as the same version and neither side reads it as newer; a changed byte is refused.
+    #[test]
+    fn own_avatar_for_a_sibling_keeps_its_bytes_and_stamp() {
+        let av1 = b"pretend-this-is-an-av1-obu-bitstream".to_vec();
+        let stamp = 1i64 << 40;
+        let doc = own_avatar_for_sibling(av1.clone(), stamp).unwrap();
+        assert_eq!(own_avatar_from_sibling(&doc), Some((av1, stamp)));
+        let mut bent = doc.clone();
+        let last = bent.len() - 1;
+        bent[last] ^= 1;
+        assert_eq!(own_avatar_from_sibling(&bent), None, "a changed byte fails the verified read");
+    }
 
     /// XChaCha20-Poly1305 is the ONLY avatar seal — round-trips, and a pre-migration ChaCha20 (12-byte nonce) blob is refused (the read-both fallback died with the flag-day clean start).
     #[test]

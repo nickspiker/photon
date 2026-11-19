@@ -1887,6 +1887,8 @@ pub struct PhotonApp {
     avatar_req_pending: crate::linear_map::LinearMap<[u8; 32], i64>,
     /// Friends whose picture we asked our siblings for this session (want_avatar_from_siblings): once each.
     avatar_want_sent: crate::linear_map::SortedSet<[u8; 32]>,
+    /// Our own picture asked of our siblings (want_own_avatar_from_siblings) at this fleet `profile.avatar_ts` (None = no stamp in the settings yet): asked again only when the stamp moves.
+    own_avatar_asked: Option<Option<i64>>,
     /// Request ids WE minted for history pages, rid → (the conversation the request was FOR, sent osc, the device whose page answered it). The AUTHORITATIVE page-match: the per-conversation `in_flight` rid alone starved recovery when two contact rows resolved the same peer (field, 2026-08-10 — a duplicated contact meant the page's token resolved to one conversation while the rid lived on the OTHER's record, so every served page dropped "rid unmatched" forever). A page matching ANY rid here was asked for by us, whatever contact the token resolves to today.
     /// An answered entry stays until the sweep, so the twin every page has (PT plus the relay copy) is recognised and dropped silently; drive_history_recovery sweeps answered entries after one in-flight timeout and unanswered ones after eight.
     hist_rid_map: crate::linear_map::LinearMap<[u8; 32], (crate::types::ConversationId, i64, Option<[u8; 32]>)>,
@@ -3307,6 +3309,7 @@ impl PhotonApp {
             avatar_dl_started: crate::linear_map::SortedSet::new(),
             avatar_req_pending: crate::linear_map::LinearMap::new(),
             avatar_want_sent: crate::linear_map::SortedSet::new(),
+            own_avatar_asked: None,
             hist_rid_map: crate::linear_map::LinearMap::new(),
             hist_relay_wanted: crate::linear_map::SortedSet::new(),
             keygen_fleet_gate_holding: false,

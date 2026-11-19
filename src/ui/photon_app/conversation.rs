@@ -1525,9 +1525,12 @@ impl PhotonApp {
 
     /// A sibling asks for our copy of friend `who`'s avatar: read it off the UI thread and answer it sealed for that sibling alone; nothing held, no answer.
     pub(super) fn answer_avatar_want(&mut self, who: [u8; 32], sender: [u8; 32]) {
-        if !self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == who) {
+        // Our OWN picture is asked for under our own party id (want_own_avatar_from_siblings): a sibling of ours that holds none.
+        let own = self.own_party_id() == Some(who);
+        if !own && !self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == who) {
             return;
         }
+        let root = self.messenger_root();
         let (Some(key), Some(our_hp), Some(secret), Some(storage), Some(checker)) = (
             self.sibling_avatar_key(&sender),
             self.our_handle_proof(),
@@ -1547,7 +1550,16 @@ impl PhotonApp {
         };
         let dispatch = checker.history_dispatch();
         queue_job(&self.seal_job_tx, move || {
-            let Some(bytes) = storage.read_addr(&crate::storage::vault_key("avatar", &who)).ok().flatten() else {
+            // Ours: the AV1 out of our root-keyed vault copy at the stamp it was saved under, which the asker keeps as is.
+            let held = match (own, root) {
+                (true, Some(root)) => crate::ui::avatar::own_avatar_av1_from_seed(&root, &storage).and_then(|av1| {
+                    let stamp = crate::ui::avatar::get_local_avatar_timestamp_from_seed(&root, &storage).unwrap_or_else(vsf::eagle_time_oscillations);
+                    crate::ui::avatar::own_avatar_for_sibling(av1, stamp).ok()
+                }),
+                (true, None) => None,
+                (false, _) => storage.read_addr(&crate::storage::vault_key("avatar", &who)).ok().flatten(),
+            };
+            let Some(bytes) = held else {
                 return;
             };
             let frame = kete::encrypt_bytes(&bytes, &key).map_err(|e| e.to_string()).and_then(|sealed| crate::network::fgtw::protocol::build_avatar_give_vsf(&our_hp, &who, &sealed, &secret));
@@ -1561,11 +1573,73 @@ impl PhotonApp {
         });
     }
 
+    /// OUR OWN PICTURE FROM OUR OWN DEVICES (the Pro 2026-11-18 showed no face of its person): a Photon holding none asks its siblings under our own party id, when one that can answer is online, once per value of the fleet's `profile.avatar_ts`.
+    /// The only other sources are fgtw.org's (the fleet-key slot and the pin-addressed wall); on ferros there is neither fgtw.org nor a fleet key, so this is the way in, and everywhere else it is the first rung (the owner 2026-11-18: the bootstrap is the last).
+    /// Photon on the alias alone also asks when it holds a picture and the stamp moves (a sibling picked a new one): its fleet-state adoption cannot pull one from fgtw.org as a member's does, and the answer is kept only when newer than ours.
+    /// True when the ask went out.
+    pub(super) fn want_own_avatar_from_siblings(&mut self) -> bool {
+        let Some(pid) = self.own_party_id() else {
+            return false;
+        };
+        let ts = match self.fleet_settings.as_ref().and_then(|fs| fs.effective("profile.avatar_ts")) {
+            Some(vsf::VsfType::e(vsf::types::EtType::e6(t))) => Some(*t),
+            _ => None,
+        };
+        if self.own_avatar_asked == Some(ts) || (self.device_avatar_pixels.is_some() && !self.alias_alone()) {
+            return false;
+        }
+        let (Some(our_hp), Some(secret)) = (self.our_handle_proof(), self.device_keypair.as_ref().map(|kp| *kp.secret.as_bytes())) else {
+            return false;
+        };
+        let sibs: Vec<[u8; 32]> = self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out && c.is_online).filter_map(|c| c.device_key()).filter(|d| self.sibling_avatar_key(d).is_some()).collect();
+        if sibs.is_empty() {
+            return false;
+        }
+        let Ok(frame) = crate::network::fgtw::protocol::build_avatar_want_vsf(&our_hp, &pid, &secret) else {
+            return false;
+        };
+        self.own_avatar_asked = Some(ts);
+        crate::logf!("AVATAR: no picture of our own held here; asking {} sibling(s) for theirs", sibs.len());
+        for d in sibs {
+            self.dispatch_frame_to_sibling(frame.clone(), Some(d));
+        }
+        true
+    }
+
+    /// A sibling's copy of our OWN picture: opened and kept here at the stamp the sibling saved it under (unless ours is as new), then shown as our face, off the UI thread.
+    fn take_own_avatar_give(&mut self, sealed: Vec<u8>, key: [u8; 32]) {
+        let (Some(root), Some(storage)) = (self.messenger_root(), self.storage.clone()) else {
+            return;
+        };
+        let tx = self.avatar_dl_tx.clone();
+        let wake = self.event_proxy.clone();
+        queue_job(&self.seal_job_tx, move || {
+            let Some((av1, stamp)) = kete::decrypt_bytes(&sealed, &key).ok().and_then(|doc| crate::ui::avatar::own_avatar_from_sibling(&doc)) else {
+                return crate::log("AVATAR: a sibling's copy of our own picture did not open or read — dropped");
+            };
+            if crate::ui::avatar::get_local_avatar_timestamp_from_seed(&root, &storage).is_some_and(|l| l >= stamp) {
+                return crate::log("AVATAR: a sibling's copy of our own picture is no newer than ours — kept ours");
+            }
+            if let Err(e) = crate::ui::avatar::save_avatar_from_seed_at(&av1, &root, &storage, stamp) {
+                return crate::logf!("AVATAR: keeping a sibling's copy of our own picture failed ({})", e);
+            }
+            let pixels = crate::ui::avatar::load_cached_avatar_from_seed(&root, &storage).map(|(_, px)| px);
+            crate::log("AVATAR: our own picture from a sibling — kept and shown");
+            crate::log_err!(tx.send(crate::ui::avatar::AvatarDownloadResult { owner: None, pixels, name: None }), "our own avatar from a sibling to the UI");
+            if let Some(w) = wake {
+                super::wake_ui(&w);
+            }
+        });
+    }
+
     /// A sibling's copy of friend `who`'s avatar: opened, decoded (either form the cache holds) and kept here off the UI thread, then shown as any fetched avatar is.
     pub(super) fn take_avatar_give(&mut self, who: [u8; 32], sealed: Vec<u8>, sender: [u8; 32]) {
         let Some(key) = self.sibling_avatar_key(&sender) else {
             return;
         };
+        if self.own_party_id() == Some(who) {
+            return self.take_own_avatar_give(sealed, key);
+        }
         let Some((hp, pin)) = self.contacts.iter().find(|c| !c.is_sibling && c.handle_hash == who).map(|c| (c.handle_proof, c.avatar_pin)) else {
             return;
         };
