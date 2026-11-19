@@ -2472,6 +2472,8 @@ pub struct PhotonApp {
     joiner_selected: bool,
     /// One-shot absolute-zoom restore (the persisted per-device `display.zoom`), handed to the host via `FluorApp::take_zoom_request`. Set when settings load; the host applies + clears it.
     pending_zoom_restore: Option<f32>,
+    /// The restored zoom the host was just handed (`take_zoom_request`), until its relayout has run: a restore is no gesture, so `on_zoom` holds no point still for it and every pane stays where it rests (ferros Pro 2026-11-18: the restore ran as a pinch about the centre and hung the Ready block 425 px up, the search field under the orb).
+    zoom_restore_applying: Option<f32>,
     /// Has the persisted zoom restore already been armed this process? The restore is a STARTUP action, but its trigger (`apply_settings_to_ui`) also runs on every fleet merge, so this latch is what keeps a ~15s poll from re-zooming the window forever. Set on the first `apply_settings_to_ui` regardless of whether a value existed.
     zoom_restored: bool,
     /// The picked avatar's display pixels, arriving from the OFF-THREAD set pipeline (decode runs there too — a 50MP photo must not stall a frame). Installed + repainted in tick.
@@ -3574,6 +3576,7 @@ impl PhotonApp {
             known_mine_hit: HIT_NONE,
             joiner_selected: false,
             pending_zoom_restore: None,
+            zoom_restore_applying: None,
             zoom_restored: false,
             avatar_set_rx: None,
             group_faces: Vec::new(),

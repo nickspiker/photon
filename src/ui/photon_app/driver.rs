@@ -10,6 +10,7 @@ impl FluorApp<Px> for PhotonApp {
             // Seed the persistence tracker with the restored value so launch doesn't immediately re-save what's already on disk.
             self.zoom_saved_ru = v;
         }
+        self.zoom_restore_applying = r;
         r
     }
 
@@ -644,6 +645,8 @@ impl FluorApp<Px> for PhotonApp {
     }
 
     fn on_resize(&mut self, _width: u32, _height: u32, ctx: &mut Context) {
+        // A restore's relayout ends it: any later zoom is a gesture again.
+        self.zoom_restore_applying = None;
         if let Some(chrome) = self.chrome.as_mut() {
             // Use `ctx.viewport` directly — it carries the current `ru` (zoom factor) that fluor's host has already updated from Ctrl/Cmd +/-/0/scroll. Building a fresh `Viewport::new(w, h)` here would reset ru to 1.0 every resize/zoom event and silently strip the user's zoom state. Width/height are redundant with `ctx.viewport.{width_px, height_px}` for the same reason.
             chrome.resize(ctx.viewport);
@@ -691,6 +694,10 @@ impl FluorApp<Px> for PhotonApp {
             }
             self.dirty_from("the host's on_zoom");
             ctx.window.request_redraw();
+            return;
+        }
+        // The persisted zoom put back at launch (`take_zoom_request`) is no gesture: nothing on screen was under a finger, so every pane keeps its resting offset and only the relayout runs.
+        if self.zoom_restore_applying.take().is_some() {
             return;
         }
         let h = ctx.viewport.height_px as f32;
