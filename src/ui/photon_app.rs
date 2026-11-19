@@ -525,6 +525,27 @@ fn self_colour() -> u32 {
 /// WITHIN that slice the draw is uniform by AREA (Nick 2026-10-06: "take the VSF RGB triangle and pick any point within uniform at random, not sure why we are clipping some to the edge and skewing away from grey") — the earlier hue-ray scheme walked every colour out toward the gamut wall with a √ chroma bias, so the population hugged the edges and the wall's distance varied by hue. Uniform area needs no bias: most of a 2-D region's area lies away from its centre, so few draws land greyish on their own, and no hue is stretched.
 /// The region is the slice of the VSF cube INTERSECTED with the slice of the Rec.2020 cube (the display gamut every non-mac surface is tagged with; macOS ships raw VSF and the intersection only costs it a sliver), so a drawn colour never clips on the panel and arrives with its hue intact. Sampling is rejection over the slice's bounding square with digest-deterministic draws — the same digest always yields the same colour on every device.
 fn party_colour(digest: &[u8; 32]) -> u32 {
+    vsf_rgb_to_stored(party_rgb(digest))
+}
+
+/// The party's colour at FULL brightness: its own linear VSF RGB scaled up until its brightest channel reaches white in whichever cube is nearer (the VSF cube, and the Rec.2020 cube the panel is tagged with), so the hue and saturation are kept and nothing goes past diffuse white (VSF white, g2t 0xC2).
+/// Grey (self, or a greyish draw) becomes white; a blue that reads dark at Y = 0.5 becomes the most vivid blue the panel can show at that chromaticity. The delivery ring's "they hold it" wedge (Nick 2026-11-19: "sent, whatever the bright version of their colour is").
+fn party_colour_bright(digest: &[u8; 32]) -> u32 {
+    vsf_rgb_to_stored(brightest(party_rgb(digest)))
+}
+
+/// A linear VSF RGB colour scaled along its own ray until it first meets white: the largest k with every VSF channel of k·rgb at most VSF white's (1), and every Rec.2020 channel at most what VSF white itself puts on that channel.
+/// The Rec.2020 bound is white's, not the cube's: VSF white (illuminant E, no adaptation) lands a hair outside the Rec.2020 cube, so the cube would stop grey short of white, while white's own channels are the level the theme's WHITE is drawn at.
+/// Photopic Y is linear in rgb and every party colour sits at Y = 0.5 inside both cubes, so the peak ratio is positive and at most 1, and k ≥ 1: this only ever brightens.
+fn brightest(rgb: [f32; 3]) -> [f32; 3] {
+    let to_wide = |c: [f32; 3]| vsf::colour::convert::apply_matrix_3x3_f32(&vsf::colour::VSF_RGB2REC2020, &c);
+    let (wide, white) = (to_wide(rgb), to_wide([1.; 3]));
+    let peak = (0..3).fold(0f32, |m, i| m.max(rgb[i]).max(wide[i] / white[i]));
+    [rgb[0] / peak, rgb[1] / peak, rgb[2] / peak]
+}
+
+/// The party's colour as LINEAR VSF RGB, before any display encoding: the draw [`party_colour`] describes.
+fn party_rgb(digest: &[u8; 32]) -> [f32; 3] {
     use vsf::colour::convert::vsf_rgb_to_photopic_f32;
     // Display gamut for the ray clip is Rec.2020 now (colour doctrine: assume wide-gamut, tag BT.2020) — clipping against sRGB needlessly muted saturated party colours a wide panel can actually show. macOS ships raw VSF so its own gamut IS the VSF cube (the first clip already covers it); Rec.2020 is the honest shared display target for the rest.
     use vsf::colour::VSF_RGB2REC2020;
@@ -572,7 +593,7 @@ fn party_colour(digest: &[u8; 32]) -> u32 {
     }
 
     // Display: in both cubes by construction; the shared encoder does the Rec.2020 conversion + OETF + darkness packing.
-    vsf_rgb_to_stored(rgb_vsf)
+    rgb_vsf
 }
 
 /// A fleet machine's job answered from its worker thread (fgtw::flow): for the Depart machine a signed frame or the approve publish, for the Add machine a signed frame, the registry read, the bind or the grow.

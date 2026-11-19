@@ -139,6 +139,11 @@ pub static CLOCK_TEXT: LazyLock<u32> = LazyLock::new(|| c(0x00_C2_7F_00));
 /// Settings back-button idle fill (held state uses fluor::theme::BUTTON_HELD).
 pub const BACK_BUTTON_IDLE_FILL: u32 = 0x80_FF_FF_FF;
 
+/// The delivery ring's waiting wedge (Nick 2026-11-19: "unsent, black"): the theme's black, opaque, so a wedge nobody holds yet is a hole in the ring; its rim (render.rs) is what shows it on the dark background.
+pub static RING_WAITING_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_00_00_00));
+/// The delivery ring's OWN wedge once our fleet holds the row: a neutral light grey, below white (g2t 0xB0 ≈ 0.71 of diffuse white's light), so it never reads as a contact's colour and stays apart from the white a grey contact's wedge brightens to.
+pub static RING_FLEET_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_B0_B0_B0));
+
 /// Dim a stored α+darkness colour to ~half opacity — the undelivered-outgoing message treatment (delivered = the same colour at full α; the RGB never changes, only presence). The stored high byte is opacity, so halving it makes the glyph fainter against the background.
 /// A colour from three 0..=255 components on the γ2 scale (255 = white; the wave card's band-coloured bars) thru the same VSF-RGB path every theme constant takes. Each component moves to the `g2t` code holding its light first, so a bar keeps the brightness it had: read as `g2t`, 255 would be 9.7× white.
 pub fn rgb_colour(r: u8, g: u8, b: u8) -> u32 {
