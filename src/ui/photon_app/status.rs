@@ -485,6 +485,8 @@ impl PhotonApp {
         // A friend's avatar among our own devices, asked or answered by a sibling: handled after the loop (it needs &mut self).
         let mut avatar_wants_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
         let mut avatar_gives_after: Vec<([u8; 32], Vec<u8>, [u8; 32])> = Vec::new();
+        // An address edge this drain (a device came online, a new direct path proved out): fetches that found nobody to ask are asked again after the loop.
+        let mut addr_edge = false;
         // Siblings that just came online, owed our fleet state.
         let mut fstate_to_siblings_after: Vec<[u8; 32]> = Vec::new();
         // Siblings that answered a ping this drain: the Depart machine hands them a departure frame they have not taken (fgtw::flow Reachable).
@@ -1069,6 +1071,9 @@ impl PhotonApp {
                             // A sibling coming online is the fleet-history catch-up trigger: it may hold conversation rows written while we were apart. Deferred — the sweep needs &mut contacts. Also the heal edge: re-announce our STORED attention/claim so the reconnecting sibling sheds any stale holder beliefs.
                             if is_online && contact.is_sibling {
                                 reachable_after.push(peer_pubkey.key);
+                            }
+                            if came_online {
+                                addr_edge = true;
                             }
                             if came_online && contact.is_sibling {
                                 fleet_sweep_due = true;
@@ -5429,6 +5434,7 @@ impl PhotonApp {
                                     remote
                                 );
                                 contact.validated_path = Some((remote, now));
+                                addr_edge = true;
                                 contact.validated_path_lan = remote_is_lan;
                                 // A freshly validated path has carried no message yet: the relay copy rides until one is confirmed across it.
                                 contact.direct_confirmed = None;
@@ -5926,6 +5932,9 @@ impl PhotonApp {
         }
         for (who, sealed, sender) in avatar_gives_after {
             self.take_avatar_give(who, sealed, sender);
+        }
+        if addr_edge {
+            self.attach_address_edge("a device came online or a direct path proved out");
         }
         for (sealed, sender) in fstate_pushes_after {
             // An alias sibling's state is sealed under the alias's state key (a ferros Photon holds no fleet key); a member sibling's under the fleet key.

@@ -201,6 +201,7 @@ impl PhotonApp {
                         self.stalled_refetch_streak = 0;
                         self.stalled_gossip_asked = false;
                         self.ping_contacts();
+                        self.attach_address_edge("a phonebook record was adopted");
                     }
                 }
                 // Persist on the growth edge, observed here where the store is already in hand. Marks dirty; the tick's debounce gate does the off-thread write, coalescing a burst of gossip merges into one.

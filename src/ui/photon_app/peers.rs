@@ -386,6 +386,7 @@ impl PhotonApp {
                 learned
             );
             self.ping_contacts();
+            self.attach_address_edge("the seed registry resolved an address");
             return true;
         }
         false

@@ -588,6 +588,8 @@ impl PhotonApp {
             }
         }
         targets.sort_by_key(|t| t.0);
+        // Whether any device had an address before the key and era checks below: a list those checks empty waits for a key, not an address.
+        let had_address = !targets.is_empty();
         // ASK ONLY WHOM WE CAN OPEN (2026-11-01, Nick's Pixel: every launch asked Emma's desktop for ~200 files and dropped all 1076 chunks it sent, holding no key for that token): a device whose answer `attach_wire_key` cannot open is never asked — the same lookup the receive side runs, so an ask and its answer agree. Why one was passed over is said once per device and token.
         // …AND WHOSE ERA IS OURS (2026-11-01, Nick's Pixel: it held a friendship at era 0 while the friend and Nick's own devices were on era 2 — a key exists, it is just the wrong one, and 103 chunks failed to open): a device that last advertised another era index for this conversation seals under another key.
         let chain_era = self.friendship_chains.iter().find(|(_, ch)| ch.conversation_token == token).map(|(fid, ch)| (*fid, ch.era_index));
@@ -622,8 +624,13 @@ impl PhotonApp {
         if targets.iter().any(|t| !parked.contains(&t.3)) {
             targets.retain(|t| !parked.contains(&t.3));
         }
+        // NOBODY TO ASK WAITS FOR THE EDGE (the Pro 2026-11-18: 1,607 lines of a re-ask per hash per tick): the fetch is held, armed, until an address or a key arrives (attach_address_edge), and the retry tick says the whole wait in one line.
         if targets.is_empty() {
-            crate::log("attach: fetch has nobody to ask — no device of the friend or ours has an address");
+            self.attach_addr_wait.park(*content_hash, had_address);
+            if !self.attach_fetch_inflight.contains_key(content_hash) {
+                let now = std::time::Instant::now();
+                self.attach_fetch_inflight.insert(*content_hash, FetchAsk { conv: id, asked: None, at: now, last_heard: now, asked_online: false, tries: round, fruitless: 0, progressed: false, ended: false, pongs_since: 0 });
+            }
             return;
         }
         let (rank, peer_addr, alt_addr, recipient_pubkey, relay_to) = targets[tries as usize % targets.len()].clone();
@@ -878,7 +885,8 @@ impl PhotonApp {
         for (hash, conv, from) in std::mem::take(&mut self.attach_expect_pushes) {
             self.fetch_expect_push(hash, conv, from);
         }
-        let due: Vec<[u8; 32]> = self.attach_fetch_inflight.iter().filter(|(_, f)| self.fetch_quiet(f)).map(|(h, _)| *h).collect();
+        // A fetch that found nobody to ask is not due until an address or key edge releases it (AddrWait).
+        let due: Vec<[u8; 32]> = self.attach_fetch_inflight.iter().filter(|(h, f)| self.fetch_quiet(f) && !self.attach_addr_wait.is_waiting(h)).map(|(h, _)| *h).collect();
         for hash in due {
             // Presence from the cache alone (the UI thread makes no vault call): held → done; not known yet → its probe is queued, and the tick its answer raises looks again.
             match crate::storage::blob_present_known(&hash) {
@@ -899,11 +907,33 @@ impl PhotonApp {
                 self.holdings_pull_settled(&hash, false);
                 continue;
             }
+            self.attach_fetch_conversation(id, &hash);
+            // Said only for an ask that went out: one that found nobody joins the wait, said once below.
+            if self.attach_addr_wait.is_waiting(&hash) {
+                continue;
+            }
             match asked {
                 None => crate::logf!("attach: replicating {}… — first ask", hex::encode(&hash[..4])),
                 Some(dev) => crate::logf!("attach: fetch of {}… — device {} went quiet, asking the next ({} of {} fruitless)", hex::encode(&hash[..4]), crate::fp(&dev), fruitless, MAX_TRIES),
             }
-            self.attach_fetch_conversation(id, &hash);
+        }
+        // The wait, in one line per edge: a fetch since landed or let go no longer counts.
+        let inflight = &self.attach_fetch_inflight;
+        self.attach_addr_wait.retain(|h| inflight.contains_key(h));
+        if let Some((n, unopenable)) = self.attach_addr_wait.line_owed() {
+            if unopenable == 0 {
+                crate::logf!("attach: {} attachment(s) wait: nobody has an address yet — asked again when one arrives", n);
+            } else {
+                crate::logf!("attach: {} attachment(s) wait: nobody has an address yet, {} of them for a device that can open them — asked again when an address or a key arrives", n, unopenable);
+            }
+        }
+    }
+
+    /// An ADDRESS EDGE (a device came online, a direct path proved out, a record or a sibling's address book was adopted, a pair key was read): every fetch that found nobody to ask is asked again on the next tick.
+    pub(super) fn attach_address_edge(&mut self, why: &str) {
+        let n = self.attach_addr_wait.release();
+        if n > 0 {
+            crate::logf!("attach: {} waiting attachment(s) asked again — {}", n, why);
         }
     }
 
@@ -1209,6 +1239,75 @@ mod fetch_tests {
         assert_eq!(ask(true, 4, true).fruitless_after(), 0, "a quiet ask that brought chunks starts the count again");
         assert_eq!(ask(false, 0, false).fruitless_after(), 0, "an armed fetch was never asked");
         assert_eq!(ask(true, u8::MAX, false).fruitless_after(), u8::MAX, "the count saturates");
+    }
+
+    /// The fetch loop with nobody to ask: 1024 waiting fetches say one line, stay off the retry tick until an address edge, and the edge makes every one of them due again (and owes one line for the next wait).
+    #[test]
+    fn nobody_to_ask_is_said_once_and_asked_again_on_the_address_edge() {
+        let mut w = super::AddrWait::default();
+        for i in 0..1u32 << 10 {
+            let mut h = [0u8; 32];
+            h[..4].copy_from_slice(&i.to_be_bytes());
+            w.park(h, false);
+        }
+        assert_eq!(w.line_owed(), Some((1 << 10, 0)), "the whole wait is one line");
+        assert_eq!(w.line_owed(), None, "and it is said once, however many ticks pass");
+        assert!(w.is_waiting(&[0; 32]), "a waiting fetch is not due on a tick");
+        assert_eq!(w.release(), 1 << 10, "the address edge releases every waiting fetch");
+        assert!(!w.is_waiting(&[0; 32]), "and each is due again");
+        w.park([1; 32], true);
+        assert_eq!(w.line_owed(), Some((1, 1)), "a wait after the edge is said again, once");
+    }
+}
+
+/// FETCHES THAT FOUND NOBODY TO ASK (the Pro 2026-11-18: 1,607 lines of "first ask" and "nobody to ask", one per hash per tick): no device of the conversation's members or ours has an address, or none that has one can open the blob.
+/// Each waits for an edge that can change that (a device online, a path proven, a record or address book adopted, a pair key read: attach_address_edge) instead of being asked again every tick, and the wait is said in one line per edge.
+#[derive(Default)]
+pub(super) struct AddrWait {
+    waiting: crate::linear_map::SortedSet<[u8; 32]>,
+    /// Of those, the ones a device had an address for but none could open.
+    unopenable: crate::linear_map::SortedSet<[u8; 32]>,
+    /// The line for this wait was said.
+    said: bool,
+}
+
+impl AddrWait {
+    /// Fetch `hash` found nobody to ask; `unopenable` when some device had an address but none could open it.
+    pub(super) fn park(&mut self, hash: [u8; 32], unopenable: bool) {
+        self.waiting.insert(hash);
+        if unopenable {
+            self.unopenable.insert(hash);
+        } else {
+            self.unopenable.remove(&hash);
+        }
+    }
+
+    pub(super) fn is_waiting(&self, hash: &[u8; 32]) -> bool {
+        self.waiting.contains(hash)
+    }
+
+    /// Keep only the waits `keep` still holds a fetch for.
+    pub(super) fn retain(&mut self, mut keep: impl FnMut(&[u8; 32]) -> bool) {
+        self.waiting.retain(&mut keep);
+        self.unopenable.retain(keep);
+    }
+
+    /// The one line owed for this wait, (waiting, of which unopenable): Some once, then None until the next edge.
+    pub(super) fn line_owed(&mut self) -> Option<(usize, usize)> {
+        if self.said || self.waiting.is_empty() {
+            return None;
+        }
+        self.said = true;
+        Some((self.waiting.len(), self.unopenable.len()))
+    }
+
+    /// An edge: every waiting fetch is due again. Returns how many were waiting.
+    pub(super) fn release(&mut self) -> usize {
+        let n = self.waiting.len();
+        self.waiting.clear();
+        self.unopenable.clear();
+        self.said = false;
+        n
     }
 }
 

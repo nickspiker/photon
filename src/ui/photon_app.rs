@@ -3054,6 +3054,8 @@ pub struct PhotonApp {
     space_launch_checked: bool,
     /// Fetches aimed at one device first — a pull asks the leaver, who holds the only copy (attach_fetch ranks it ahead of everyone).
     attach_fetch_prefer: crate::linear_map::SortedMap<[u8; 32], [u8; 32]>,
+    /// Fetches that found nobody to ask (attachments.rs AddrWait): held until an address arrives, said once per edge.
+    attach_addr_wait: attachments::AddrWait,
     /// wave_ids THIS device dialed this session — the license for the stray-answer loud-kill (wave_ui Answer arm): a device that never dialed must never hang up the friend. RAM-only on purpose; a few entries per session, never pruned.
     dialed_wave_ids: crate::linear_map::SortedSet<[u8; 16]>,
     /// Fleet wave-presence chip: a wave is running on ANOTHER of our devices — `(wave_id, that device's pubkey if the row named it, the friend's handle hash)`. Lit by our fleet's replicated offer/answer rows, cleared by the terminal rows (hangup/decline/busy — the tombstones). Purely informational v1; join/switch reads this state later.
@@ -3870,6 +3872,7 @@ impl PhotonApp {
             keep_again: false,
             space_launch_checked: false,
             attach_fetch_prefer: crate::linear_map::SortedMap::new(),
+            attach_addr_wait: attachments::AddrWait::default(),
             dialed_wave_ids: Default::default(),
             fleet_wave_elsewhere: None,
             signing_bundle: None,
