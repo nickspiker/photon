@@ -265,6 +265,11 @@ impl PhotonApp {
     /// THE BALL STAYS WITH WHOEVER GRABBED IT (Nick 2026-10-01: "pin that to the first device to grab the ball, rather than a low hash … for a device that may not be online very often"). Per friendship: the CLAIM on the roster entry (`ceremony_owner`, set by the adding device, synced LWW thru the roster) stands while that device is live (`device_live`); only a dead or absent claim falls back to the computed lowest-live device — and when the fallback is THIS device it TAKES OVER by writing a fresh claim and pushing the roster, so the sleepy claimant does not reclaim the ball when it wakes (it adopts the newer entry instead). Deterministic across the fleet because every device reads the same claim; the two places presence views can still disagree are arbitrated as before — the peer takes the first Init, and the loser discards on park.
     /// Called on the evidence EDGES (a sibling's presence verdict, a fold adopt, a locked-set change, a roster adopt) — never on a timer. A round this device holds for a friendship that just moved to another owner is discarded (fleet-sync.md §4.2 discard-on-park), so the friend never sees two instances from one fleet.
     pub(super) fn recompute_ceremony_owners(&mut self, why: &str) {
+        // Photon on the alias alone (ferros) runs no friend ceremony, so it never takes the ball: the claims stay as its siblings' roster carries them.
+        // Until 2026-11-18 the Pro took all fifteen at each launch (its claimants not yet heard), stamped each row's roster clock with now, pushed that claim to the siblings, and then skipped every sibling entry as older, the names they carried included.
+        if self.alias_alone() {
+            return;
+        }
         let Some(ours) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) else { return };
         let locked = self.locked_devices();
         let siblings = super::sibling_presence_snapshot(&self.contacts);
