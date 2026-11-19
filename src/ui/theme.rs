@@ -139,7 +139,7 @@ pub static CLOCK_TEXT: LazyLock<u32> = LazyLock::new(|| c(0x00_C2_7F_00));
 /// Settings back-button idle fill (held state uses fluor::theme::BUTTON_HELD).
 pub const BACK_BUTTON_IDLE_FILL: u32 = 0x80_FF_FF_FF;
 
-/// The delivery ring's waiting wedge (Nick 2026-11-19: "unsent, black"): the theme's black, opaque, so a wedge nobody holds yet is a hole in the ring; its rim (render.rs) is what shows it on the dark background.
+/// The delivery ring's waiting wedge (Nick 2026-11-19: "unsent, black"): the theme's black, opaque, so a wedge nobody holds yet is a hole in the ring; it carries no rim, so black is unmistakably not yet held.
 pub static RING_WAITING_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_00_00_00));
 /// The delivery ring's OWN wedge once our fleet holds the row: a neutral light grey, below white (g2t 0xB0 ≈ 0.71 of diffuse white's light), so it never reads as a contact's colour and stays apart from the white a grey contact's wedge brightens to.
 pub static RING_FLEET_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_B0_B0_B0));

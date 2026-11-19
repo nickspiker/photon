@@ -4770,33 +4770,26 @@ impl PhotonApp {
                             static NO_LINES: Vec<String> = Vec::new();
                             let body_lines: &Vec<String> = if msg.wave.is_some() { &NO_LINES } else { lines };
                             // THE DELIVERY RING on our own rows, in the right margin beside the last line: one equal segment per person in join order, clockwise from 12 o'clock (Nick 2026-11-19: "unsent, black, sent, whatever the bright version of their colour is").
-                            // A wedge nobody holds yet is BLACK, rimmed in its person's own colour so it still reads on the dark background; a person's wedge goes to the BRIGHT version of their colour once they hold the row (that member's ACK in a group, the friend's fleet ACK in a pair).
+                            // A wedge nobody holds yet is solid BLACK, with no rim in anyone's colour, so a waiting wedge never reads like a held one; a person's wedge goes to the BRIGHT version of their colour once they hold the row (that member's ACK in a group, the friend's fleet ACK in a pair).
                             // Our own wedge is black until our FLEET holds the row (a sibling has it, or the friend's ACK, which outranks it), then the neutral light grey; in a fleet of one it lights once the row has left this device. Rows from before the ring (delivered, but no per-member record) read as held by everyone.
                             if msg.is_outgoing && !msg.deleted && !msg.is_control() && !body_lines.is_empty() && !ring_parties.is_empty() {
                                 let r = (pad_x * 0.28).min(msg_size * 0.3).max(3.0);
                                 let stroke = (r * 0.42).max(1.5);
                                 let gap = stroke * 0.9;
-                                // The waiting wedge's rim, a share of the stroke: the black core is the stroke less a rim each side, and its gap a rim wider each side, so the rim closes round the ends too.
-                                let rim = stroke * (1. / ((1 << 2) as f32));
-                                // Each wedge as (its black core, the wedge behind it): a held wedge has no core (α 0), so only a waiting wedge shows its rim.
-                                let segs: Vec<(u32, u32)> = ring_parties
+                                let wedges: Vec<u32> = ring_parties
                                     .iter()
                                     .map(|p| {
-                                        let (lit, base, held) = if *p == ring_us {
+                                        let (lit, held) = if *p == ring_us {
                                             let left = !ring_unsent.contains(&msg.timestamp);
-                                            (*theme::RING_FLEET_COLOUR, self_colour(), msg.delivered || msg.replicated || (ring_fleet_of_one && left))
+                                            (*theme::RING_FLEET_COLOUR, msg.delivered || msg.replicated || (ring_fleet_of_one && left))
                                         } else {
                                             let d = relationship_digest(p, &our_handle_hash);
-                                            (party_colour_bright(&d), party_colour(&d), msg.delivered || msg.delivered_to.binary_search(p).is_ok())
+                                            (party_colour_bright(&d), msg.delivered || msg.delivered_to.binary_search(p).is_ok())
                                         };
-                                        if held { (0, lit) } else { (*theme::RING_WAITING_COLOUR, base) }
+                                        if held { lit } else { *theme::RING_WAITING_COLOUR }
                                     })
                                     .collect();
                                 let (cx, cy) = (buf_w as f32 - pad_x * 0.5, y - react_off);
-                                // Front to back: the black cores first, then the wedges (lit, or the rim colour) under them.
-                                let cores: Vec<u32> = segs.iter().map(|s| s.0).collect();
-                                let wedges: Vec<u32> = segs.iter().map(|s| s.1).collect();
-                                paint::draw_ring_segments(&mut canvas, cx, cy, r, stroke - 2. * rim, gap + 2. * rim, &cores, Some(list_clip));
                                 paint::draw_ring_segments(&mut canvas, cx, cy, r, stroke, gap, &wedges, Some(list_clip));
                             }
                             for (k, line) in body_lines.iter().enumerate() {
