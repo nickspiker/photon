@@ -13,7 +13,7 @@ Built 2026-11-18: fgtw d9dee2d (`fgtw::pipe` handshake), fgtw-bootstrap 1507e35 
 fgtw-bootstrap f1434ed sets `UNSIGNED_PIPE_WINDOW = true` (`MIGRATION-EXPIRES: 2027-02-01`) so a deploy never cuts released clients; deploy with the window open FAILED 2026-11-18 (/home full: wrangler ENOSPC, then its login refresh); fgtw.org still c688671a; redeploy once /home has space.
 **Why:** the owner's rule is that a replaced path dies the same day, but no released Photon answers the challenge yet; closing at once cuts every released client off the relay.
 **How to apply, before closing the window (owner's call; ferros recommends release first, then a short date):**
-1. Merge `pipe-auth` into main and ship it in a release; people update.
+1. Merge `pipe-auth` into main (DONE 2026-11-18, photon 77b96ab2) and ship it in a release; people update.
 2. The rustdesk fork's `svc=rd` pipe answers with `fgtw::pipe::open_answer`.
 3. Photon on ferros (branch `ferros-tcp`): in the ws pump callback in status.rs (~2028) ignore empty frames, send `relay::pipe_answer(&data, &keypair)` with `ws.send_binary` and return true, pass a keypair clone into the thread.
 4. Flip `UNSIGNED_PIPE_WINDOW` to false (or delete the window) and redeploy.
