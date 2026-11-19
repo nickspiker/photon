@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 - **Joining a group no longer waits on one particular device.** Whichever of the inviter's devices hears your join now lets you in, and all of their devices agree on the same new keys, so a join can no longer sit unanswered.
+- **Every one of your devices follows up your invitations.** An invitation you send from any device is now known to all of them, so whichever device sees the person come online asks them again, instead of only the device you invited from.
+- **Only people you invited can join.** Your devices let someone into a group only when one of them invited that person, or another of that person's devices is already in.
 - **Two ways to remove a device.** A device you still have can sign itself out, which removes it and wipes its keys; a lost or stolen one is locked out from another of your devices, which also re-keys every friendship and group, one friend at a time as each comes online.
 - **Taps go to what you see.** Whatever is in front on the screen now takes the tap, never something hidden behind it, and buttons answer across their whole shape.
 - **Relay connections prove who they are.** Each device now proves its own key when it opens its relay connection, so nobody else can take its messages there.
