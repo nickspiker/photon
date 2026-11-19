@@ -354,6 +354,8 @@ impl PhotonApp {
                 StatusUpdate::AvatarWanted { .. } => "AvatarWanted",
                 StatusUpdate::AvatarGiven { .. } => "AvatarGiven",
                 StatusUpdate::AddrBookReceived { .. } => "AddrBookReceived",
+                StatusUpdate::ReleaseTold { .. } => "ReleaseTold",
+                StatusUpdate::ReleaseClaimed { .. } => "ReleaseClaimed",
                 StatusUpdate::FleetChainReceived { .. } => "FleetChainReceived",
                 StatusUpdate::AddressPushed { .. } => "AddressPushed",
                 StatusUpdate::BindSelectReceived { .. } => "BindSelectReceived",
@@ -488,6 +490,9 @@ impl PhotonApp {
         let mut avatar_gives_after: Vec<([u8; 32], Vec<u8>, [u8; 32])> = Vec::new();
         // A sibling's address book (sealed, sender), opened and adopted after the loop.
         let mut addr_books_after: Vec<(Vec<u8>, [u8; 32])> = Vec::new();
+        // Release manifests handed to us and release claims off pongs (network/peer_release.rs), taken after the loop (they may send frames).
+        let mut releases_told_after: Vec<(Vec<u8>, [u8; 32])> = Vec::new();
+        let mut release_claims_after: Vec<([u8; 32], crate::network::peer_release::ReleaseClaim)> = Vec::new();
         // An address edge this drain (a device came online, a new direct path proved out): fetches that found nobody to ask are asked again after the loop.
         let mut addr_edge = false;
         // Siblings that just came online, owed our fleet state.
@@ -4543,6 +4548,12 @@ impl PhotonApp {
                         addr_books_after.push((sealed, sender_pubkey.key));
                     }
                 }
+                StatusUpdate::ReleaseTold { manifest, sender_pubkey } => {
+                    releases_told_after.push((manifest, sender_pubkey.key));
+                }
+                StatusUpdate::ReleaseClaimed { device, claim } => {
+                    release_claims_after.push((device, claim));
+                }
                 StatusUpdate::FanoutReceived { handle_proof, blob, sender_pubkey, .. } => {
                     let joining = self.session.is_none() && self.add_join_hp == Some(handle_proof);
                     let ours = self.our_handle_proof() == Some(handle_proof) && self.contacts.iter().any(|c| c.is_sibling && c.knows_device(&sender_pubkey.key));
@@ -5948,6 +5959,16 @@ impl PhotonApp {
             if self.take_addr_book(&sealed, sender) {
                 changed = true;
             }
+        }
+        // Releases peer to peer (network/peer_release.rs): a device that went offline is a fresh link when it is back, a manifest handed to us is verified off this thread, and a pong claiming less than we hold is answered with ours.
+        for dev in &wave_devices_offline {
+            self.peer_release.forget(dev);
+        }
+        for (manifest, sender) in releases_told_after {
+            self.release_told(manifest, sender);
+        }
+        for (device, claim) in release_claims_after {
+            self.release_claimed(device, claim);
         }
         if addr_edge {
             self.attach_address_edge("a device came online or a direct path proved out");

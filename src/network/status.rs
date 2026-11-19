@@ -165,6 +165,20 @@ fn own_fleet_tip() -> Option<i64> {
     (t > 0).then_some(t)
 }
 
+/// The signed stamp of the newest release manifest this device holds (network/peer_release.rs), which every sealed pong tail claims. Written by the UI thread when it holds a newer one; read by the status thread at pong-seal time. 0 = none held yet (every signed stamp is after the epoch), claimed as "holds none"; fetch_max, so the claim never goes back.
+static OWN_RELEASE_STAMP: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+pub fn set_own_release_stamp(stamp: i64) {
+    OWN_RELEASE_STAMP.fetch_max(stamp, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn own_release_claim() -> crate::network::peer_release::ReleaseClaim {
+    match OWN_RELEASE_STAMP.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => crate::network::peer_release::ReleaseClaim::HoldsNone,
+        stamp => crate::network::peer_release::ReleaseClaim::Holds(stamp),
+    }
+}
+
 /// Our fleet's SIBLING device pubkeys — the audience the per-device About is disclosed to (Nick's ruling 2026-08-31: a build fingerprint is fleet-internal; an authenticated friend is outside it). Written by the UI thread's reseed walk (the one place that reads chain-built is_sibling), read by the status thread when it decides whether a pong tail says `abt`. Empty until the first reseed = About withheld, the safe direction.
 static SIBLING_DEVICES: std::sync::Mutex<Vec<[u8; 32]>> = std::sync::Mutex::new(Vec::new());
 
@@ -586,6 +600,16 @@ pub enum StatusUpdate {
         sealed: Vec<u8>,
         sender_pubkey: DevicePubkey,
     },
+    /// A signed release manifest a peer handed us (`release_tell`, network/peer_release.rs), not yet verified: the UI checks the sender is a device it knows, then verifies the manifest off its thread.
+    ReleaseTold {
+        manifest: Vec<u8>,
+        sender_pubkey: DevicePubkey,
+    },
+    /// A device's opened pong tail said which release manifest it holds (network/peer_release.rs): a device holding less is handed ours.
+    ReleaseClaimed {
+        device: [u8; 32],
+        claim: crate::network::peer_release::ReleaseClaim,
+    },
     /// A departure frame (`depart_req` or `depart_deny`), whole, for the Depart machine (fgtw::flow) to open and check: the bytes, where they came from, and the signer the cheap parse read.
     DepartFrame {
         bytes: Vec<u8>,
@@ -841,6 +865,8 @@ impl StatusUpdate {
             StatusUpdate::FanoutReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FleetStatePushed { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FleetChainReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::ReleaseTold { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::ReleaseClaimed { device, .. } => Some(device),
             StatusUpdate::AddressPushed { record } => Some(record.device_pubkey.as_bytes()),
             StatusUpdate::BindSelectReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::LanFleetAsked { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
@@ -2386,6 +2412,9 @@ async fn run_checker(
                                     } else if let Ok((sealed, sender_pubkey)) = crate::network::fgtw::protocol::parse_addr_book_vsf(&data) {
                                         // A sibling's address book past one datagram: the UI checks the sender is a live device of ours before opening it.
                                         send_status_update(&status_tx_recv, StatusUpdate::AddrBookReceived { sealed, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) }, &event_proxy_recv);
+                                    } else if let Ok((manifest, sender_pubkey)) = crate::network::fgtw::protocol::parse_release_tell_vsf(&data) {
+                                        // A signed release manifest from a peer (network/peer_release.rs): past one datagram with every release egg, so it comes by PT; the UI checks the sender and verifies the manifest.
+                                        send_status_update(&status_tx_recv, StatusUpdate::ReleaseTold { manifest, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) }, &event_proxy_recv);
                                     } else if let Ok((handle_proof, blob, sender_pubkey)) = crate::network::fgtw::protocol::parse_fanout_resp_vsf(&data) {
                                         send_status_update(
                                             &status_tx_recv,
@@ -3421,6 +3450,13 @@ async fn run_checker(
                                 send_status_update(&status_tx_recv, StatusUpdate::AddrBookReceived { sealed, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) }, &event_proxy_recv);
                                 continue;
                             }
+                            // A signed release manifest from a peer (network/peer_release.rs), whole in one frame here when it came off the relay pipe: same mandatory packet-ack; the UI checks the sender and verifies the manifest.
+                            if let Ok((manifest, sender_pubkey)) = crate::network::fgtw::protocol::parse_release_tell_vsf(msg_bytes) {
+                                let ack_bytes = pt_recv.lock().unwrap().build_packet_ack(msg_bytes);
+                                udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                send_status_update(&status_tx_recv, StatusUpdate::ReleaseTold { manifest, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) }, &event_proxy_recv);
+                                continue;
+                            }
                             // Wi-Fi Direct credential provisioning (docs/offgrid.md) — a small signed frame with a pair-sealed blob; same mandatory packet-ack.
                             if let Ok(((conversation_token, sealed), sender_pubkey)) =
                                 crate::network::fgtw::protocol::parse_wfd_cred_vsf(msg_bytes)
@@ -3716,6 +3752,7 @@ async fn run_checker(
                                                 fleet_tip: own_fleet_tip(),
                                                 braid: Some(crate::crypto::chain::BRAID_CURRENT),
                                                 profile: profile_records(),
+                                                release: Some(own_release_claim()),
                                             },
                                             &key,
                                         ) {
@@ -3823,10 +3860,14 @@ async fn run_checker(
                                                             crate::network::fgtw::protocol::open_pong_sensitive(blob, &k).ok()
                                                         })
                                                     })
-                                                    .map(|t| (t.sync_records, t.about, t.fleet_tip, t.braid, t.display_name, t.avatar_pin, t.profile))
+                                                    .map(|t| (t.sync_records, t.about, t.fleet_tip, t.braid, t.display_name, t.avatar_pin, t.profile, t.release))
                                                     .unwrap_or_default();
                                                 // The name and avatar pin ride the salvage too (2026-11-10): an announce pong is how a profile change reaches a friend now rather than at its next ping, and the tail is sealed to this device pair and stamp-bounded above.
-                                                let (salvaged, about, fleet_tip, braid, salvaged_name, salvaged_pin, salvaged_profile) = salvaged;
+                                                let (salvaged, about, fleet_tip, braid, salvaged_name, salvaged_pin, salvaged_profile, salvaged_release) = salvaged;
+                                                // The release claim rides the announce too: a fresh build says what it holds on its first cycle, and a peer holding newer hands it over (network/peer_release.rs).
+                                                if let Some(claim) = salvaged_release {
+                                                    send_status_update(&status_tx_recv, StatusUpdate::ReleaseClaimed { device: *responder_pubkey.as_bytes(), claim }, &event_proxy_recv);
+                                                }
                                                 crate::logf!("Status: unmatched pong from {} ({}) — liveness + {} sync record(s) (late/twin/announce; no addr adoption)", crate::fp(responder_pubkey.as_bytes()), src_addr, salvaged.len());
                                                 // A sibling of ours that answers on this LAN with no address held for it (a ferros Photon behind the identity service's address, 2026-11-17): its source is a candidate the UI pings there, and only a matched pong ever validates it.
                                                 let heard = udp::canon_socketaddr(src_addr);
@@ -3890,9 +3931,12 @@ async fn run_checker(
                                                         crate::network::fgtw::protocol::open_pong_sensitive(blob, &k).ok()
                                                     })
                                                 })
-                                                .map(|t| (t.sync_records, t.about, t.fleet_tip, t.braid, t.profile))
+                                                .map(|t| (t.sync_records, t.about, t.fleet_tip, t.braid, t.profile, t.release))
                                                 .unwrap_or_default();
-                                            let (salvaged, about, fleet_tip, braid, salvaged_profile) = salvaged;
+                                            let (salvaged, about, fleet_tip, braid, salvaged_profile, salvaged_release) = salvaged;
+                                            if let Some(claim) = salvaged_release {
+                                                send_status_update(&status_tx_recv, StatusUpdate::ReleaseClaimed { device: *responder_pubkey.as_bytes(), claim }, &event_proxy_recv);
+                                            }
                                             // The responder answered for `pinged`: if no fold knows it, the UI refreshes the fold of whoever owns `pinged`.
                                             send_status_update(
                                                 &status_tx_recv,
@@ -4049,6 +4093,8 @@ async fn run_checker(
                                             }, false),
                                         };
 
+                                    // The release claim follows the presence it rides with (network/peer_release.rs): a peer holding less than we do is handed our manifest.
+                                    let release_claim = tail.release.map(|claim| (*responder_pubkey.as_bytes(), claim));
                                     // Send status update with sync_records for retransmit handling
                                     send_status_update(
                                         &status_tx_recv,
@@ -4068,6 +4114,9 @@ async fn run_checker(
                                         },
                                         &event_proxy_recv,
                                     );
+                                    if let Some((device, claim)) = release_claim {
+                                        send_status_update(&status_tx_recv, StatusUpdate::ReleaseClaimed { device, claim }, &event_proxy_recv);
+                                    }
                                 }
 
                                 // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete handlers REMOVED Full 8-primitive CLUTCH uses TCP with ClutchOfferReceived and ClutchKemResponseReceived See docs/clutch.md Section 4.2 for the slot-based ceremony protocol.
@@ -4785,6 +4834,7 @@ async fn run_checker(
                                 fleet_tip: own_fleet_tip(),
                                 braid: Some(crate::crypto::chain::BRAID_CURRENT),
                                 profile: profile_records(),
+                                release: Some(own_release_claim()),
                             },
                             &key,
                         )

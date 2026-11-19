@@ -10,6 +10,7 @@ pub mod inspect;
 pub mod message_package;
 pub mod pairing_beacon;
 pub mod pairing_nfc;
+pub mod peer_release;
 #[cfg(not(any(target_os = "android", target_os = "ferros")))]
 pub mod peer_updates;
 pub mod pt;

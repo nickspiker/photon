@@ -103,6 +103,12 @@ impl PhotonApp {
             crate::log("UPDATE: FCM release notice — manifest poll due now");
             self.next_update_check_osc = 1;
         }
+        // A peer handed us a verified release manifest that offers a newer version (network/peer_release.rs): the check runs now with the manifest in hand, under the same policy as a poll's, and the host is not asked for a copy we already verified.
+        if let Some((stamp, row)) = self.peer_release_due.take() {
+            crate::logf!("UPDATE: a peer's signed release manifest offers {} — update check due now", row.version_string());
+            self.on_auto_update_check(stamp, Some(row));
+            return;
+        }
         let now = vsf::eagle_time_oscillations();
         if self.next_update_check_osc == 0 {
             // First check a jittered minute-or-two after launch — let attest + the network settle first.
@@ -118,10 +124,11 @@ impl PhotonApp {
             now + (4 * 3600 + crate::jitter(4 * 3600)) * crate::OSC_PER_SEC;
         let tx = self.update_sender();
         std::thread::spawn(move || {
-            use crate::network::updates::{fetch_manifest_stamped_blocking, our_row, Channel};
-            match fetch_manifest_stamped_blocking(Channel::Release) {
-                Ok((stamp, rows)) => {
+            use crate::network::updates::{fetch_manifest_bytes_blocking, our_row, parse_manifest_stamped, Channel};
+            match fetch_manifest_bytes_blocking(Channel::Release).and_then(|bytes| parse_manifest_stamped(&bytes, Channel::Release).map(|(stamp, rows)| (bytes, stamp, rows))) {
+                Ok((bytes, stamp, rows)) => {
                     crate::log_err!(tx.send(UpdateEvent::AutoChecked(stamp, our_row(&rows))), "hand the auto update check to the UI");
+                    hold_polled_release(&tx, bytes, stamp, rows);
                 }
                 Err(e) => crate::logf!("UPDATE: auto check failed ({}) — next cadence retries", e),
             }
@@ -217,9 +224,14 @@ impl PhotonApp {
             *slot = ChannelCheck::Checking;
             let tx = self.update_sender();
             std::thread::spawn(move || {
-                use crate::network::updates::{fetch_manifest_blocking, fetch_release_notes_blocking, our_row};
-                let result = fetch_manifest_blocking(channel).map(|rows| our_row(&rows));
+                use crate::network::updates::{fetch_manifest_bytes_blocking, fetch_release_notes_blocking, our_row, parse_manifest_stamped};
+                let fetched = fetch_manifest_bytes_blocking(channel).and_then(|bytes| parse_manifest_stamped(&bytes, channel).map(|(stamp, rows)| (bytes, stamp, rows)));
+                let result = fetched.as_ref().map(|(_, _, rows)| our_row(rows)).map_err(|e| e.clone());
                 crate::log_err!(tx.send(UpdateEvent::Checked(channel, result)), "hand an update check to the UI");
+                // A release manifest this check verified is held and passed on to the peers too, as the automatic poll's is.
+                if let (Channel::Release, Ok((bytes, stamp, rows))) = (channel, fetched) {
+                    hold_polled_release(&tx, bytes, stamp, rows);
+                }
                 // The release check also brings the published notes, so the page can say what's new in the release it offers.
                 if channel == Channel::Release {
                     match fetch_release_notes_blocking() {
@@ -345,6 +357,8 @@ impl PhotonApp {
         let mut changed = false;
         // Auto-check verdicts defer past the loop — the policy handler needs &mut self while `rx` borrows it.
         let mut auto_checked: Option<(i64, Option<crate::network::updates::ManifestRow>)> = None;
+        // Verified release manifests likewise: taking one may send frames to peers.
+        let mut releases_checked: Vec<([u8; 32], Option<[u8; 32]>, Result<crate::network::peer_release::HeldRelease, String>)> = Vec::new();
         while let Ok(ev) = rx.try_recv() {
             changed = true;
             match ev {
@@ -399,6 +413,9 @@ impl PhotonApp {
                 UpdateEvent::AutoChecked(stamp, row) => {
                     auto_checked = Some((stamp, row));
                 }
+                UpdateEvent::ReleaseChecked { hash, from, result } => {
+                    releases_checked.push((hash, from, result));
+                }
                 UpdateEvent::Progress(done, total) => {
                     // done == total (or the stream just ended on an unknown length) flips the label to the verify/swap phase.
                     self.update_progress = Some((done, total));
@@ -430,6 +447,9 @@ impl PhotonApp {
         }
         if let Some((stamp, row)) = auto_checked {
             self.on_auto_update_check(stamp, row);
+        }
+        for (hash, from, result) in releases_checked {
+            self.take_release_checked(hash, from, result);
         }
         changed
     }
@@ -2152,5 +2172,13 @@ impl PhotonApp {
         self.settings_picker = !self.settings_picker;
         self.change_focus(None);
         self.dirty_from("the page picker");
+    }
+}
+
+/// Hand a release manifest our own poll just verified to the UI, to hold and pass on to the peers (network/peer_release.rs); one stamped ahead of now is not held.
+fn hold_polled_release(tx: &std::sync::mpsc::Sender<UpdateEvent>, bytes: Vec<u8>, stamp: i64, rows: Vec<crate::network::updates::ManifestRow>) {
+    let hash = *blake3::hash(&bytes).as_bytes();
+    if let Some(rel) = crate::network::peer_release::held_from_poll(bytes, stamp, rows, vsf::eagle_time_oscillations()) {
+        crate::log_err!(tx.send(UpdateEvent::ReleaseChecked { hash, from: None, result: Ok(rel) }), "hand a polled release manifest to the UI");
     }
 }

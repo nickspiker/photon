@@ -164,16 +164,19 @@ pub fn fetch_manifest_blocking(channel: Channel) -> Result<Vec<ManifestRow>, Str
 }
 
 /// [`fetch_manifest_blocking`] plus the SIGNED header's creation stamp (eagle-time oscillations) — the `t` of the stamp window. 0 if the header carries no timestamp (treated as maximally stale by [`stamp_window`]).
+pub fn fetch_manifest_stamped_blocking(channel: Channel) -> Result<(i64, Vec<ManifestRow>), String> {
+    fetch_manifest_bytes_blocking(channel).and_then(|bytes| parse_manifest_stamped(&bytes, channel))
+}
+
+/// The channel's manifest as the host serves it, unverified: the caller verifies before it trusts or passes on a byte (a release manifest goes to the peers as these exact bytes, network/peer_release.rs).
 /// Updates come from the update server over HTTPS; a ferros capsule comes from the vault, so there is nothing to fetch or apply here.
 #[cfg(target_os = "ferros")]
-pub fn fetch_manifest_stamped_blocking(_channel: Channel) -> Result<(i64, Vec<ManifestRow>), String> {
+pub fn fetch_manifest_bytes_blocking(_channel: Channel) -> Result<Vec<u8>, String> {
     Err("no update server from ferros".to_string())
 }
 
 #[cfg(not(target_os = "ferros"))]
-pub fn fetch_manifest_stamped_blocking(
-    channel: Channel,
-) -> Result<(i64, Vec<ManifestRow>), String> {
+pub fn fetch_manifest_bytes_blocking(channel: Channel) -> Result<Vec<u8>, String> {
     let client = reqwest::blocking::Client::builder()
         .timeout(std::time::Duration::from_secs(20))
         .build()
@@ -190,7 +193,7 @@ pub fn fetch_manifest_stamped_blocking(
         .bytes()
         .map_err(|e| format!("manifest read: {e}"))?
         .to_vec();
-    parse_manifest_stamped(&bytes, channel)
+    Ok(bytes)
 }
 
 /// The published copy of RELEASE_NOTES.md as rolled by the deploy (its top shipped section is the release the manifest offers). Plain text, unsigned: it only ever feeds the Updates page's "what's new" list, never a decision.
@@ -248,8 +251,14 @@ pub fn parse_manifest_stamped(
     channel: Channel,
 ) -> Result<(i64, Vec<ManifestRow>), String> {
     // Every release egg (2026-11-10, "no single eggs"): the manifest is signed by the release key with Ed25519, Falcon-512 and SPHINCS+, and each must verify against the pinned bundle (fgtw::release); an older Photon reading the same file checks its Ed25519 egg alone.
-    fgtw::release::verify_release(bytes).map_err(|e| format!("manifest verification: {e}"))?;
-    parse_manifest_rows(bytes, channel)
+    parse_manifest_signed_by(bytes, channel, &fgtw::release::RELEASE_ED25519, &fgtw::release::release_bundle())
+}
+
+/// [`parse_manifest_stamped`]'s rule for any pinned key: the header's key is `ed` and every egg verifies against `bundle`, then the rows are read.
+/// The release key is the only pin a client uses; the parameter is how a test signs a manifest without the release secret.
+pub fn parse_manifest_signed_by(bytes: &[u8], channel: Channel, ed: &[u8; 32], bundle: &fgtw::pq::KeyBundle) -> Result<(i64, Vec<ManifestRow>), String> {
+    fgtw::release::verify_signed_by(bytes, ed, bundle).map_err(|e| format!("manifest verification: {e}"))?;
+    parse_manifest_rows_by(bytes, channel, *ed)
 }
 
 /// A manifest signed before the release eggs, read only to MERGE its rows into a new, fully signed one (photon-manifest --merge on the dev channel): the live dev manifest is single-signed until each platform republishes, and refusing it would drop every other platform's row. Never used to install anything.
@@ -260,8 +269,13 @@ pub fn parse_legacy_manifest(bytes: &[u8], channel: Channel) -> Result<Vec<Manif
 
 /// The rows and stamp of a manifest whose Ed25519 signature by the release key verifies; the egg rule is the caller's.
 fn parse_manifest_rows(bytes: &[u8], channel: Channel) -> Result<(i64, Vec<ManifestRow>), String> {
+    parse_manifest_rows_by(bytes, channel, crate::crypto::self_verify::AUTHOR_PUBKEY)
+}
+
+/// The rows and stamp of a manifest whose Ed25519 signature by `ed` verifies.
+fn parse_manifest_rows_by(bytes: &[u8], channel: Channel, ed: [u8; 32]) -> Result<(i64, Vec<ManifestRow>), String> {
     let (header, header_end) =
-        vsf::verification::read_verified(bytes, Some(crate::crypto::self_verify::AUTHOR_PUBKEY))
+        vsf::verification::read_verified(bytes, Some(ed))
             .map_err(|e| format!("manifest verification: {e}"))?;
     let stamp_osc = match &header.creation_time {
         Some(VsfType::e(vsf::types::EtType::e6(osc))) => *osc,

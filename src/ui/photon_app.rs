@@ -83,6 +83,7 @@ pub mod lifeline;
 mod messaging;
 mod music_play;
 mod peers;
+mod peer_release;
 mod protocol;
 mod render;
 mod replay;
@@ -2952,6 +2953,14 @@ pub struct PhotonApp {
     update_active_dev: Option<bool>,
     /// Next automatic release-channel check, eagle time. 0 = not yet scheduled (the driver arms a short post-launch delay, then ~6–8h jittered). The AUTOMATIC path (docs/updates.md): any build that finds a newer RELEASE installs it thru the stamp window (Android: idle + unmetered, via the installer session); the dev channel is never polled, so a newer dev is never automatic.
     next_update_check_osc: i64,
+    /// Releases peer to peer (network/peer_release.rs): the newest verified release manifest held and what each peer device holds.
+    peer_release: crate::network::peer_release::Relay,
+    /// The release_tell frame for the manifest held, built once per manifest (stamp, frame).
+    peer_release_frame: Option<(i64, Vec<u8>)>,
+    /// Hashes of manifests a peer handed us that are being verified off this thread: the same bytes from a second peer are not verified twice.
+    peer_release_verifying: Vec<[u8; 32]>,
+    /// A peer's verified manifest offers a newer version: the update check runs with it on the next drive_auto_update, (the signed stamp, our platform's row).
+    peer_release_due: Option<(i64, crate::network::updates::ManifestRow)>,
     /// Session dedup for the "update available" toast — the version already announced, so a 6-hourly re-check doesn't re-toast the same release.
     update_toasted: Option<(usize, usize, usize)>,
     /// A newer version the check found and this build cannot apply itself (Android, dev builds): the STANDING "update available" band on the contact and attest screens, gated on updates.auto at draw. Runtime-only — a restart is a new binary.
@@ -3817,6 +3826,10 @@ impl PhotonApp {
             update_progress: None,
             update_active_dev: None,
             next_update_check_osc: 0,
+            peer_release: Default::default(),
+            peer_release_frame: None,
+            peer_release_verifying: Vec::new(),
+            peer_release_due: None,
             update_toasted: None,
             update_available: None,
             announced_devices: crate::linear_map::SortedSet::new(),
@@ -4859,6 +4872,12 @@ enum UpdateEvent {
     ApkReady(String),
     /// A download/verify/apply step failed; the running version is untouched.
     ApplyFailed(String),
+    /// A release manifest was verified off the UI thread (network/peer_release.rs): its hash, who handed it (None = our own poll), and the verified manifest or why it was refused.
+    ReleaseChecked {
+        hash: [u8; 32],
+        from: Option<[u8; 32]>,
+        result: Result<crate::network::peer_release::HeldRelease, String>,
+    },
 }
 
 /// Rubber-band wheel step: full-strength inside `[0, hi]`, asymptotically resisted past either end — the overshoot can never exceed `reach`, and `tick()` eases it back once input stops. The resistance factor `(reach/(reach+over))²` is 1 at the boundary (C¹ join with in-range scrolling — the hard clamp this replaces was a C⁰ kink, banned by the GUI-continuity rule) and falls smoothly toward 0, integrating to a `reach·over/(reach+over)` saturation. `hi = f32::INFINITY` rubber-bands only the 0 end (conversation history).

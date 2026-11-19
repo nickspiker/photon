@@ -1249,10 +1249,12 @@ pub struct PongTail {
     pub braid: Option<u8>,
     /// The sender identity's profile fields as its owner signed them (fgtw::profile, FLOWS.md "Profile"), beside the bare `name` / `apin` an older build still reads. Empty = an older build, or an owner who has set nothing yet.
     pub profile: Vec<fgtw::profile::ProfileRecord>,
+    /// The newest signed release manifest the sender holds (network/peer_release.rs), so a peer holding a newer one hands it over. None = an older build, which could not read the hand-over.
+    pub release: Option<crate::network::peer_release::ReleaseClaim>,
 }
 
 fn add_pong_sensitive_fields(section: &mut vsf::VsfSection, tail: &PongTail) {
-    let PongTail { sync_records, display_name, avatar_pin, locked, about, fleet_tip, braid, profile } = tail;
+    let PongTail { sync_records, display_name, avatar_pin, locked, about, fleet_tip, braid, profile, release } = tail;
     // One native multi-value `sync` row per conversation record — (hb token, e6 last_received). No counts, no numbered names.
     for record in sync_records {
         section.add_field_multi(
@@ -1318,6 +1320,15 @@ fn add_pong_sensitive_fields(section: &mut vsf::VsfSection, tail: &PongTail) {
     for rec in profile {
         section.add_field_multi("prof", vec![rec.to_value()]);
     }
+    // RELEASE CLAIM (2026-11-19, network/peer_release.rs): the signed stamp of the newest release manifest held, e6; the field with no value says "I take release hand-overs and hold none yet". A new field name an older parser skips.
+    // Public knowledge (the manifest is published), not this build's fingerprint, so it goes to friends as well as siblings.
+    if let Some(claim) = release {
+        let values = match claim {
+            crate::network::peer_release::ReleaseClaim::Holds(stamp) => vec![VsfType::e(vsf::types::EtType::e6(*stamp))],
+            crate::network::peer_release::ReleaseClaim::HoldsNone => Vec::new(),
+        };
+        section.add_field_multi("rel", values);
+    }
 }
 
 /// Build + AEAD-seal a pong's sensitive tail under the PAIRWISE pong key: the per-conversation sync rows (who-talks-to-whom metadata), the display name, and the 64-byte avatar pin (a bearer capability). Plaintext is an inner `pongsec` VSF section (encode_encrypted — the headerless form made for exactly this), sealed with kete ChaCha20-Poly1305 like history pages and the log seal. The key comes from the caller's PongSealKeys map, derived on the UI thread — this codec never sees an identity seed.
@@ -1373,6 +1384,11 @@ pub fn open_pong_sensitive(
             .flat_map(|f| f.values.iter())
             .filter_map(|v| fgtw::profile::ProfileRecord::from_value(v).ok())
             .collect(),
+        // Present with a stamp: what the sender holds; present with none: it holds nothing yet; absent: an older build.
+        release: section.get_field("rel").map(|_| match section.eagle("rel") {
+            Some(stamp) => crate::network::peer_release::ReleaseClaim::Holds(stamp),
+            None => crate::network::peer_release::ReleaseClaim::HoldsNone,
+        }),
     })
 }
 
@@ -3662,6 +3678,46 @@ pub fn parse_addr_book_vsf(vsf_bytes: &[u8]) -> Result<(Vec<u8>, [u8; 32]), Stri
     Ok((sealed, sender_pubkey))
 }
 
+/// Build a `release_tell` frame: a signed release manifest (network/peer_release.rs) handed to a peer that holds an older one, byte for byte as the release key signed it, as a binary blob inside a device-signed envelope.
+/// The envelope only names who handed it; the manifest's own eggs are what the receiver trusts.
+pub fn build_release_tell_vsf(manifest: &[u8], device_pubkey: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+
+    let mut section = VsfSection::new("release_tell");
+    section.add_field("manifest", VsfType::v(b'b', manifest.to_vec()));
+
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build release_tell VSF: {}", e))?;
+
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
+}
+
+/// Parse + verify a `release_tell` frame's envelope. Returns (the manifest's bytes, sender pubkey); the manifest is verified by the receiver against the release key (peer_release::verify), never here.
+pub fn parse_release_tell_vsf(vsf_bytes: &[u8]) -> Result<(Vec<u8>, [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None).map_err(|e| format!("release_tell verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "release_tell" {
+        return Err(format!("Expected 'release_tell' section, got '{}'", section_name));
+    }
+    let manifest = section
+        .fields
+        .iter()
+        .find(|f| f.name == "manifest")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::v(b'b', bytes) => Some(bytes.clone()),
+            _ => None,
+        })
+        .ok_or("release_tell missing manifest")?;
+    Ok((manifest, sender_pubkey))
+}
+
 pub fn build_chain_reset_vsf(
     conversation_token: &[u8; 32],
     sealed_nonce: Vec<u8>,
@@ -4478,6 +4534,52 @@ mod pong_seal_tests {
         let without = seal_pong_sensitive(&PongTail::default(), &key).unwrap();
         assert_eq!(open_pong_sensitive(&with, &key).unwrap().braid, Some(crate::crypto::chain::BRAID_V2));
         assert_eq!(open_pong_sensitive(&without, &key).unwrap().braid, None);
+    }
+
+    /// The release claim round-trips the sealed tail in all three forms: a held stamp, held none (the field with no value), and absent (an older build, no claim at all).
+    #[test]
+    fn pong_tail_release_claim_round_trips() {
+        use crate::network::peer_release::ReleaseClaim;
+        let key = [0x5Au8; 32];
+        let open = |release: Option<ReleaseClaim>| open_pong_sensitive(&seal_pong_sensitive(&PongTail { sync_records: sample_records(), release, ..Default::default() }, &key).unwrap(), &key).unwrap().release;
+        assert_eq!(open(Some(ReleaseClaim::Holds(2_555_000_000_000_000_000))), Some(ReleaseClaim::Holds(2_555_000_000_000_000_000)));
+        assert_eq!(open(Some(ReleaseClaim::HoldsNone)), Some(ReleaseClaim::HoldsNone));
+        assert_eq!(open(None), None);
+    }
+
+    /// The version exchange on the online edge: two devices' pongs carry their claims, the one holding the newer manifest hands it over in a release_tell that parses back to the same bytes and sender, the receiver verifies and holds it, and its next pong ends the exchange; an older build's claimless pong is never answered.
+    #[test]
+    fn the_online_edge_exchanges_release_manifests_once() {
+        use crate::network::peer_release::{tests::{manifest, verify_test, TEST_SEED}, ReleaseClaim, Relay};
+        let key = [0x5Au8; 32];
+        let now = vsf::eagle_time_oscillations();
+        let bytes = manifest(&TEST_SEED, now - 1, (0, 1 << 20, 0));
+        let (desk, mac) = (ed25519_dalek::SigningKey::from_bytes(&[3u8; 32]), ed25519_dalek::SigningKey::from_bytes(&[4u8; 32]));
+        let (desk_pk, mac_pk) = (desk.verifying_key().to_bytes(), mac.verifying_key().to_bytes());
+        // The desktop polled the host and holds the release; the MacBook holds nothing.
+        let mut at_desk = Relay::default();
+        let mut at_mac = Relay::default();
+        assert!(at_desk.take(verify_test(&bytes, now).unwrap(), None, crate::network::updates::our_version()).newer);
+        // The MacBook comes online: its pong to the desktop's ping claims nothing held.
+        let tail = seal_pong_sensitive(&PongTail { release: Some(ReleaseClaim::HoldsNone), ..Default::default() }, &key).unwrap();
+        let claim = open_pong_sensitive(&tail, &key).unwrap().release.expect("a claim rides the tail");
+        assert!(at_desk.heard(mac_pk, claim), "the desktop holds newer: it hands the manifest over");
+        let frame = build_release_tell_vsf(&at_desk.held().unwrap().bytes, &desk_pk, &desk.to_bytes()).unwrap();
+        let (got, sender) = parse_release_tell_vsf(&frame).unwrap();
+        assert_eq!((got.as_slice(), sender), (bytes.as_slice(), desk_pk), "the manifest arrives byte for byte, named by the device that handed it");
+        let taken = at_mac.take(verify_test(&got, now).unwrap(), Some(sender), crate::network::updates::our_version());
+        assert!(taken.newer && taken.check_due.is_some(), "the MacBook verifies it, holds it, and its update check is due");
+        // The MacBook's next pong claims the stamp: the desktop has nothing more to send, and the MacBook never hands it back.
+        assert!(!at_desk.heard(mac_pk, ReleaseClaim::Holds(now - 1)));
+        assert!(!at_mac.heard(desk_pk, ReleaseClaim::Holds(now - 1)));
+        // An older build's tail carries no claim.
+        let legacy = seal_pong_sensitive(&PongTail::default(), &key).unwrap();
+        assert_eq!(open_pong_sensitive(&legacy, &key).unwrap().release, None);
+        // A release_tell is a device-signed envelope: one byte changed and it does not parse.
+        let mut touched = frame.clone();
+        let at = touched.len() / 2;
+        touched[at] ^= 1;
+        assert!(parse_release_tell_vsf(&touched).is_err());
     }
 
     #[test]
