@@ -78,6 +78,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [Profile Pending](project_profile_pending.md) — P1 LANDED 9d7916f6 (signed revisioned name/pin records); P2 open (roster codec, want/hand-on, avatars on every device)
 - [Attest→contacts 18 s](project_attest_to_contacts_latency.md) — SHELVED until flows + Pending land, then MUST fix
 - [Security audit](project_security_audit.md) — batch 1 + LIB-01 + VSF-05..12 + NET-04/06/07 receiver half FIXED by 2026-11-03 (v139); PROVENANCE PIN until 2027-02-01; NET-04/05 wire half = next flag day; Mediums next
+- [Pipe auth](project_pipe_auth.md) — 2026-11-18 relay pipes prove the device key; unsigned window OPEN; 4-step checklist before closing
 - [vault seed stretch](project_vault_seed_stretch.md) — CSTV-02 vault half NOT built: kete identity = key input AND address scope; plan recorded
 - [Attach manifest stall](project_attach_manifest_stall.md) — 2026-11-03 FIXED: manifest-then-silence from a sibling still receiving the blob held a fetch forever; pongs now end a stalled stream and re-ask
 - [Group pigeon stuck fetch](project_group_pigeon_stuck_fetch.md) — FIXED · [Self atom on demand](project_self_atom_on_demand.md) — FIXED
