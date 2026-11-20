@@ -223,14 +223,7 @@ impl PhotonApp {
             }
             _ => Vec::new(),
         };
-        let ring_unsent: Vec<i64> = {
-            let mut v: Vec<i64> = self.pending_sends.iter().filter(|p| Some(p.conv) == self.active_conversation).map(|p| p.ts).collect();
-            if let Some(g) = active_gid {
-                v.extend(self.pending_molecule_posts.iter().filter(|p| p.gid == g).filter_map(|p| p.text.as_ref().map(|(_, ts, _)| *ts)));
-            }
-            v
-        };
-        // A fleet of one has no sibling to hold a row: this device IS the fleet, so our wedge lights once the row has left it.
+        // A fleet of one has no sibling to hold a row: this device IS the fleet, so our wedge is our colour at once.
         let ring_fleet_of_one = !self.has_usable_sibling();
         let compose_ready = self.compose_ready();
         // Prompt-gate snapshot (same pre-chrome discipline): bridge command in flight → the send arrow dims and submit refuses.
@@ -4771,7 +4764,8 @@ impl PhotonApp {
                             let body_lines: &Vec<String> = if msg.wave.is_some() { &NO_LINES } else { lines };
                             // THE DELIVERY RING on our own rows, in the right margin beside the last line: one equal segment per person in join order, clockwise from 12 o'clock (Nick 2026-11-19: "unsent, black, sent, whatever the bright version of their colour is").
                             // A wedge nobody holds yet is solid BLACK, with no rim in anyone's colour, so a waiting wedge never reads like a held one; a person's wedge goes to the BRIGHT version of their colour once they hold the row (that member's ACK in a group, the friend's fleet ACK in a pair).
-                            // Our own wedge is black until our FLEET holds the row (a sibling has it, or the friend's ACK, which outranks it), then the neutral light grey; in a fleet of one it lights once the row has left this device. Rows from before the ring (delivered, but no per-member record) read as held by everyone.
+                            // Our own wedge is black until our FLEET holds the row (a sibling has it, or the friend's ACK, which outranks it), then our own colour, self's grey (Nick 2026-11-20: "it turns my slice my grey colour"); in a fleet of one it is our colour at once, since this device is the whole fleet.
+                            // Rows from before the ring (delivered, but no per-member record) read as held by everyone.
                             if msg.is_outgoing && !msg.deleted && !msg.is_control() && !body_lines.is_empty() && !ring_parties.is_empty() {
                                 let r = (pad_x * 0.28).min(msg_size * 0.3).max(3.0);
                                 let stroke = (r * 0.42).max(1.5);
@@ -4780,8 +4774,7 @@ impl PhotonApp {
                                     .iter()
                                     .map(|p| {
                                         let (lit, held) = if *p == ring_us {
-                                            let left = !ring_unsent.contains(&msg.timestamp);
-                                            (*theme::RING_FLEET_COLOUR, msg.delivered || msg.replicated || (ring_fleet_of_one && left))
+                                            (self_colour(), msg.delivered || msg.replicated || ring_fleet_of_one)
                                         } else {
                                             let d = relationship_digest(p, &our_handle_hash);
                                             (party_colour_bright(&d), msg.delivered || msg.delivered_to.binary_search(p).is_ok())
