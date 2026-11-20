@@ -82,7 +82,9 @@ pub fn avatar_rgb_f32_to_u8(vsf_rgb_f32: &[f32]) -> Vec<u8> {
 pub enum AvatarFrame {
     /// The centred square, as large as the short side: a picked photo (the avatar-set path).
     Centre,
-    /// The picture's own art: the box of every pixel at least half opaque, made square about its centre, with the colour taken onto black by its opacity (the square is black past its circle). An app icon on a transparent canvas (Mahere's round map fills the middle 80 %, Lumis's has a margin and a soft shadow) then reaches the circle's edge, where the centred square would leave the margin as a ring (ferros kist icons, 2026-11-20: the one icon format, made by this process). A source with no alpha frames as `Centre`.
+    /// The picture's own art: the box of every pixel at least half opaque, made square about its centre, with the colour taken onto black by its opacity (the square is black past its circle).
+    /// An app icon on a transparent canvas (Mahere's round map fills the middle 80 %, Lumis's has a margin and a soft shadow) then reaches the circle's edge, where the centred square would leave the margin as a ring (ferros kist icons, 2026-11-20: the one icon format, made by this process).
+    /// A source with no alpha frames as `Centre`.
     Art,
 }
 
@@ -151,9 +153,11 @@ pub fn image_to_avatar_rgb_f32_framed(image_data: &[u8], frame: AvatarFrame) -> 
             if x0 >= x1 {
                 return Err("the image has no opaque art".to_string());
             }
-            // WHY the min: the conversion below reads the source square directly, so it must lie inside the image. PROOF: art wider than the image's short side (a wide logo on a wide canvas) makes a square past the short edge, and the loops would index outside the pixels; it is cut to the short side, centred on the art.
+            // WHY the min: the conversion below reads the source square directly, so it must lie inside the image.
+            // PROOF:art wider than the image's short side (a wide logo on a wide canvas) makes a square past the short edge, and the loops would index outside the pixels; it is cut to the short side, centred on the art.
             let side = (x1 - x0).max(y1 - y0).min(orig_width.min(orig_height));
-            // The square centred on the art, slid inside the image. WHY the saturating sub and the min, as above: a square about art near an edge would start before 0 or end past the far edge.
+            // The square centred on the art, slid inside the image.
+            // WHY the saturating sub and the min, as above: a square about art near an edge would start before 0 or end past the far edge.
             let place = |lo: usize, hi: usize, extent: usize| ((lo + hi) / 2).saturating_sub(side / 2).min(extent - side);
             (place(x0, x1, orig_width), place(y0, y1, orig_height), side)
         }
