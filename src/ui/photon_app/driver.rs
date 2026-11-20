@@ -6,6 +6,8 @@ impl FluorApp<Px> for PhotonApp {
     /// One-shot absolute-zoom restore: the persisted per-device `display.zoom`, set when settings load; the host applies it exactly like a user zoom.
     fn take_zoom_request(&mut self) -> Option<f32> {
         let r = self.pending_zoom_restore.take();
+        // ferros: the person's app scale is the device's one preference, which ferros_fluor's host applies and follows, so Photon's own saved zoom is not put back over it (owner, 2026-11-20: every kist follows the global app scale).
+        let r = if cfg!(target_os = "ferros") { None } else { r };
         if let Some(v) = r {
             // Seed the persistence tracker with the restored value so launch doesn't immediately re-save what's already on disk.
             self.zoom_saved_ru = v;
@@ -680,6 +682,10 @@ impl FluorApp<Px> for PhotonApp {
 
     /// A pinch that zoomed has ended (its fingers lifted; Android's onScaleEnd thru AndroidShell, ferros's host on the first finger up): the edge the zoom is kept on, the analog of the desktop's Ctrl/Cmd key-up save. No timer: the value is settled the moment the fingers lift. A viewer that owned the gesture moved its picture, not `ru`, so nothing new is saved.
     fn on_zoom_end(&mut self, ctx: &mut Context) {
+        // ferros: a pinch's scale is the person's app scale, which ferros_fluor's host writes back to the device preference at this same edge, so Photon keeps no zoom of its own there.
+        if cfg!(target_os = "ferros") {
+            return;
+        }
         if (ctx.viewport.ru - self.zoom_saved_ru).abs() > 0.001 {
             self.zoom_saved_ru = ctx.viewport.ru;
             self.save_zoom_setting(ctx.viewport.ru);
