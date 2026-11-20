@@ -77,8 +77,22 @@ pub fn avatar_rgb_f32_to_u8(vsf_rgb_f32: &[f32]) -> Vec<u8> {
         .collect()
 }
 
+/// Which square of the source the avatar is made from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AvatarFrame {
+    /// The centred square, as large as the short side: a picked photo (the avatar-set path).
+    Centre,
+    /// The picture's own art: the box of every pixel at least half opaque, made square about its centre, with the colour taken onto black by its opacity (the square is black past its circle). An app icon on a transparent canvas (Mahere's round map fills the middle 80 %, Lumis's has a margin and a soft shadow) then reaches the circle's edge, where the centred square would leave the margin as a ring (ferros kist icons, 2026-11-20: the one icon format, made by this process). A source with no alpha frames as `Centre`.
+    Art,
+}
+
 /// The FAST half of avatar-set: decode + EXIF/ICC handling + centre-crop + Lanczos resize + circular mask + γ2 — everything except the AV1 encode. Milliseconds; safe on the UI thread for the instant-display path.
 pub fn image_to_avatar_rgb_f32(image_data: &[u8]) -> Result<Vec<f32>, String> {
+    image_to_avatar_rgb_f32_framed(image_data, AvatarFrame::Centre)
+}
+
+/// [`image_to_avatar_rgb_f32`] with the square chosen by `frame`.
+pub fn image_to_avatar_rgb_f32_framed(image_data: &[u8], frame: AvatarFrame) -> Result<Vec<f32>, String> {
     use resize::Type::Lanczos3;
     use rgb::FromSlice;
     use vsf::colour::convert::delinearize_gamma2_f32 as delinearize_gamma2;
@@ -113,10 +127,37 @@ pub fn image_to_avatar_rgb_f32(image_data: &[u8]) -> Result<Vec<f32>, String> {
     let orig_width = img.width() as usize;
     let orig_height = img.height() as usize;
 
-    // Center-crop to square before color conversion
-    let crop_size = orig_width.min(orig_height);
-    let crop_x = (orig_width - crop_size) / 2;
-    let crop_y = (orig_height - crop_size) / 2;
+    // The art frame's opacity, one value a source pixel (0 to 1); None for the centred square and for a source without alpha.
+    let alpha: Option<Vec<f32>> = (frame == AvatarFrame::Art && img.color().has_alpha()).then(|| img.to_rgba16().pixels().map(|p| p[3] as f32 / 65535.).collect());
+
+    // Center-crop to square before color conversion (the art frame: the square about the opaque art)
+    let (crop_x, crop_y, crop_size) = match &alpha {
+        None => {
+            let crop_size = orig_width.min(orig_height);
+            ((orig_width - crop_size) / 2, (orig_height - crop_size) / 2, crop_size)
+        }
+        Some(a) => {
+            let (mut x0, mut y0, mut x1, mut y1) = (orig_width, orig_height, 0, 0);
+            for y in 0..orig_height {
+                for x in 0..orig_width {
+                    if a[y * orig_width + x] >= 0.5 {
+                        x0 = x0.min(x);
+                        y0 = y0.min(y);
+                        x1 = x1.max(x + 1);
+                        y1 = y1.max(y + 1);
+                    }
+                }
+            }
+            if x0 >= x1 {
+                return Err("the image has no opaque art".to_string());
+            }
+            // WHY the min: the conversion below reads the source square directly, so it must lie inside the image. PROOF: art wider than the image's short side (a wide logo on a wide canvas) makes a square past the short edge, and the loops would index outside the pixels; it is cut to the short side, centred on the art.
+            let side = (x1 - x0).max(y1 - y0).min(orig_width.min(orig_height));
+            // The square centred on the art, slid inside the image. WHY the saturating sub and the min, as above: a square about art near an edge would start before 0 or end past the far edge.
+            let place = |lo: usize, hi: usize, extent: usize| ((lo + hi) / 2).saturating_sub(side / 2).min(extent - side);
+            (place(x0, x1, orig_width), place(y0, y1, orig_height), side)
+        }
+    };
 
     // Convert cropped region to linear VSF RGB (f32) Handle both 8-bit and 16-bit source images
     let mut linear_vsf_cropped = vec![0.0f32; crop_size * crop_size * 3];
@@ -188,6 +229,19 @@ pub fn image_to_avatar_rgb_f32(image_data: &[u8]) -> Result<Vec<f32>, String> {
                     linear_vsf_cropped[dst_idx] = linear_vsf[0];
                     linear_vsf_cropped[dst_idx + 1] = linear_vsf[1];
                     linear_vsf_cropped[dst_idx + 2] = linear_vsf[2];
+                }
+            }
+        }
+    }
+
+    // The art frame: each pixel's light times its opacity, onto black in linear light (the colour a transparent pixel stores means nothing).
+    if let Some(a) = &alpha {
+        for y in 0..crop_size {
+            for x in 0..crop_size {
+                let k = a[(crop_y + y) * orig_width + crop_x + x];
+                let at = (y * crop_size + x) * 3;
+                for v in &mut linear_vsf_cropped[at..at + 3] {
+                    *v *= k;
                 }
             }
         }
