@@ -104,7 +104,8 @@ pub fn image_to_avatar_rgb_f32(image_data: &[u8]) -> Result<Vec<f32>, String> {
     image_to_avatar_rgb_f32_framed(image_data, AvatarFrame::Centre, AvatarCodes::Profile)
 }
 
-/// [`image_to_avatar_rgb_f32`] with the square chosen by `frame` and the codes read as `codes` says. With `Gamma2` or `G2t` no profile is read and nothing is converted: the codes are VSF RGB as they stand, and the values out are the gamma 2 of their light, above 1 where a `g2t` source holds light above diffuse white.
+/// [`image_to_avatar_rgb_f32`] with the square chosen by `frame` and the codes read as `codes` says.
+/// With `Gamma2` or `G2t` no profile is read and nothing is converted: the codes are VSF RGB as they stand, and the values out are the gamma 2 of their light, above 1 where a `g2t` source holds light above diffuse white.
 pub fn image_to_avatar_rgb_f32_framed(image_data: &[u8], frame: AvatarFrame, codes: AvatarCodes) -> Result<Vec<f32>, String> {
     use resize::Type::Lanczos3;
     use rgb::FromSlice;
