@@ -721,6 +721,10 @@ impl FluorApp<Px> for PhotonApp {
         }
     }
 
+    // A scale SET from outside (ferros's app scale preference, fluor's `on_zoom_set`) is no gesture, the same as the launch restore: no pane moves and the picture in the viewer keeps its own zoom.
+    // The `on_resize` that follows runs the relayout, so there is nothing to do here.
+    fn on_zoom_set(&mut self, _factor: f32, _ctx: &mut Context) {}
+
     // A clickable element was ACTIVATED — pointer went DOWN on `hit_id` and released over the SAME `hit_id`, no drag-off (press-hold-release, arbitrated by fluor's PointerArbiter). Every ACTION lives here so a mis-touch dragged off before release fires NOTHING. Press-time concerns (focus, textbox cursor, drag-select, window drag) stay in `on_event`'s Pressed arm; the raw press/release still arrive there.
     fn on_activate(
         &mut self,
