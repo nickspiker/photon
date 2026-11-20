@@ -10,8 +10,9 @@ const RATE: usize = 48_000;
 pub const SWEEP_SAMPLES: usize = RATE;
 const F0: f64 = 10.0;
 const F1: f64 = 20_000.0;
-/// Peak level: 1.5 stops under full scale — the same loudness law as the old probe (full scale at media volume is deafening).
-const PEAK: f64 = 11_585.0;
+/// Peak level: 5 stops under full scale, 2^15 >> 5 (owner: every sweep 5 stops under; 2026-11-20, it had been left at 1.5, louder than the wave it plays over).
+/// The fit is a ratio and the sweep carries ~43 dB of processing gain, so the quieter sweep still measures the path.
+const PEAK: f64 = (1 << 10) as f64;
 /// How far past the sweep's first rendered sample the mic is searched for it: 250 ms covers any built-in or wired route (Bluetooth's buffering can run longer; a reject says so rather than guessing).
 pub const MAX_LAG: usize = RATE / 4;
 /// A peak must stand this far above the correlation's median to be a real coupling; under it the route is clean (a headset).
