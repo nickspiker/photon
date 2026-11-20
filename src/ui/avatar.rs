@@ -88,27 +88,47 @@ pub enum AvatarFrame {
     Art,
 }
 
-/// The FAST half of avatar-set: decode + EXIF/ICC handling + centre-crop + Lanczos resize + circular mask + γ2 — everything except the AV1 encode. Milliseconds; safe on the UI thread for the instant-display path.
-pub fn image_to_avatar_rgb_f32(image_data: &[u8]) -> Result<Vec<f32>, String> {
-    image_to_avatar_rgb_f32_framed(image_data, AvatarFrame::Centre)
+/// What a source's codes mean.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AvatarCodes {
+    /// Its ICC profile's, or sRGB without one: a picked photo (the avatar-set path).
+    Profile,
+    /// VSF RGB, gamma 2: the code over 2ⁿ squared is the light, so the top code is diffuse white.
+    Gamma2,
+    /// VSF RGB, gamma2tanh (`g2t`): atanh of the code over 2ⁿ, squared, is the light, so the codes above 194 of 256 are light above diffuse white (ferros kist icons, owner 2026-11-20: "Assign it VSF RGB g2t instead of sRGB").
+    G2t,
 }
 
-/// [`image_to_avatar_rgb_f32`] with the square chosen by `frame`.
-pub fn image_to_avatar_rgb_f32_framed(image_data: &[u8], frame: AvatarFrame) -> Result<Vec<f32>, String> {
+/// The FAST half of avatar-set: decode + EXIF/ICC handling + centre-crop + Lanczos resize + circular mask + γ2 — everything except the AV1 encode. Milliseconds; safe on the UI thread for the instant-display path.
+pub fn image_to_avatar_rgb_f32(image_data: &[u8]) -> Result<Vec<f32>, String> {
+    image_to_avatar_rgb_f32_framed(image_data, AvatarFrame::Centre, AvatarCodes::Profile)
+}
+
+/// [`image_to_avatar_rgb_f32`] with the square chosen by `frame` and the codes read as `codes` says. With `Gamma2` or `G2t` no profile is read and nothing is converted: the codes are VSF RGB as they stand, and the values out are the gamma 2 of their light, above 1 where a `g2t` source holds light above diffuse white.
+pub fn image_to_avatar_rgb_f32_framed(image_data: &[u8], frame: AvatarFrame, codes: AvatarCodes) -> Result<Vec<f32>, String> {
     use resize::Type::Lanczos3;
     use rgb::FromSlice;
     use vsf::colour::convert::delinearize_gamma2_f32 as delinearize_gamma2;
+    use vsf::colour::convert::{linearize_gamma2_f32, linearize_gamma2tanh_f32};
 
     let size = AVATAR_SIZE;
 
-    // Detect format and extract ICC profile
-    let icc_profile_bytes = extract_icc_profile(image_data)?;
+    // Detect format and extract ICC profile (only when the codes are the profile's)
+    let icc_profile_bytes = if codes == AvatarCodes::Profile { extract_icc_profile(image_data)? } else { None };
 
     // Parse ICC profile once (if present)
     let icc_converter = if let Some(ref profile) = icc_profile_bytes {
         Some(parse_icc_converter(profile)?)
     } else {
         None
+    };
+
+    // VSF RGB codes to light, a code over 2ⁿ (bucket bottom, as vsf reads them); unused when the codes are the profile's.
+    let vsf_light = |c: f32| -> f32 {
+        match codes {
+            AvatarCodes::G2t => linearize_gamma2tanh_f32(c),
+            _ => linearize_gamma2_f32(c),
+        }
     };
 
     // Decode image to RGB Note: image crate has default memory limits (~512MB decoded). This is fine - avatars are 256x256 output, huge sources should be resized first.
@@ -180,7 +200,9 @@ pub fn image_to_avatar_rgb_f32_framed(image_data: &[u8], frame: AvatarFrame) -> 
                     let g = rgb_pixels[src_idx + 1];
                     let b = rgb_pixels[src_idx + 2];
 
-                    let linear_vsf = if let Some(ref converter) = icc_converter {
+                    let linear_vsf = if codes != AvatarCodes::Profile {
+                        [r, g, b].map(|c| vsf_light(c as f32 / 65536.))
+                    } else if let Some(ref converter) = icc_converter {
                         convert_pixel_linear_u16(r, g, b, converter)
                     } else {
                         // No ICC profile - assume sRGB (legacy but needed for compatibility)
@@ -214,7 +236,9 @@ pub fn image_to_avatar_rgb_f32_framed(image_data: &[u8], frame: AvatarFrame) -> 
                     let g = rgb_pixels[src_idx + 1];
                     let b = rgb_pixels[src_idx + 2];
 
-                    let linear_vsf = if let Some(ref converter) = icc_converter {
+                    let linear_vsf = if codes != AvatarCodes::Profile {
+                        [r, g, b].map(|c| vsf_light(c as f32 / 256.))
+                    } else if let Some(ref converter) = icc_converter {
                         convert_pixel_linear(r, g, b, converter)
                     } else {
                         // No ICC profile - assume sRGB (legacy but needed for compatibility)
