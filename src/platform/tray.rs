@@ -2,11 +2,11 @@
 //!
 //! Linux: StatusNotifierItem via ksni (pure Rust zbus — no GTK, cross-compiles clean). GNOME needs the AppIndicator extension to SHOW SNI items (KDE/XFCE show them natively); without it the icon simply doesn't appear and nothing else breaks — resident behaviour still works via the second-launch handoff.
 //! Windows (Shell_NotifyIcon) and macOS (NSStatusItem, main-thread-bound) are the next backends; until then `spawn` logs and returns, and residency works without a tray there too.
-//! A missed message rings the orb in MAGENTA, the contacts list's unread cue (Nick 2026-11-08: "so I know if I missed a message"): `set_unread` redraws the tray icon and, on macOS, the Dock tile; the taskbar button on Windows and X11 is the window's icon, swapped by the caller thru fluor.
+//! A missed message puts a MAGENTA dot on the orb, the contacts list's unread cue (Nick 2026-11-08: "so I know if I missed a message"): `set_unread` redraws the tray icon and, on macOS, the Dock tile; the taskbar button on Windows and X11 is the window's icon, swapped by the caller thru fluor.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Whether the orb wears the unread ring; every tray backend draws from it, so a tray spawned after the edge starts in the right state.
+/// Whether the orb wears the unread dot; every tray backend draws from it, so a tray spawned after the edge starts in the right state.
 static UNREAD: AtomicBool = AtomicBool::new(false);
 
 /// The tray's orb: the shipped round 64-pixel RGBA, transparent corners, the orb filling the square edge to edge.
@@ -14,8 +14,9 @@ const TRAY_ORB: &[u8] = include_bytes!("../../assets/icon-64.png");
 /// The taskbar's and the Dock's orb, the same art at 256: those draw it larger than a tray slot does.
 pub const WINDOW_ORB: &[u8] = include_bytes!("../../assets/icon-256.png");
 
-/// A shipped orb asset as straight RGBA rows; with `unread`, the orb shrinks inside a MAGENTA band a quarter of the radius wide, the contacts list's unread ring at icon size.
-/// Composited as the list draws its avatars: the orb goes in first and the magenta disc lands under it, showing only in the band outside the orb.
+/// A shipped orb asset as straight RGBA rows; with `unread`, a solid MAGENTA dot on the orb's upper left, the unread cue at icon size (owner 2026-11-20: the offset dot, not the ring, "top left and much bigger").
+/// The dot's centre is on the orb's edge at the upper-left diagonal, R(1 − 1/√2) in from the top and the left, and its radius is that same R(1 − 1/√2), the largest that fits in the square: it touches the top and left edges.
+/// Front to back: the dot goes in first and the full-size orb lands under it.
 pub fn orb_rgba(asset: &[u8], unread: bool) -> Option<(Vec<u8>, u32, u32)> {
     use fluor::canvas::{Canvas, Damage};
     let img = image::load_from_memory(asset).ok()?.to_rgba8();
@@ -25,20 +26,18 @@ pub fn orb_rgba(asset: &[u8], unread: bool) -> Option<(Vec<u8>, u32, u32)> {
     }
     // The assets are square, so one side is the diameter.
     let d = w as usize;
-    let big_r = d as f32 * 0.5;
-    let orb_r = big_r - big_r / ((1 << 2) as f32);
-    let orb_d = (orb_r * 2.) as usize;
+    let r = d as f32 * 0.5;
+    let inset = r * (1. - std::f32::consts::FRAC_1_SQRT_2);
     let rgb: Vec<u8> = img.pixels().flat_map(|p| [p.0[0], p.0[1], p.0[2]]).collect();
-    let scaled = crate::ui::avatar_render::update_avatar_scaled(&rgb, d, orb_d);
     let mut px = vec![0u32; d * d];
     let mut damage = Damage::default();
     let mut canvas = Canvas::new(&mut px, d, d, &mut damage);
-    crate::ui::avatar_render::draw_avatar(&mut canvas, big_r, big_r, orb_r, &scaled, orb_d, None);
-    fluor::paint::draw_circle(&mut canvas, big_r, big_r, big_r, *crate::ui::theme::RING_UNREAD_COLOUR, None);
+    fluor::paint::draw_circle(&mut canvas, inset, inset, inset, *crate::ui::theme::RING_UNREAD_COLOUR, None);
+    crate::ui::avatar_render::draw_avatar(&mut canvas, r, r, r, &rgb, d, None);
     let mut out = Vec::with_capacity(d * d * 4);
     for p in px {
         let a = p >> 24;
-        // WHY/PROOF: past the ring nothing was put in, so α is 0, and taking the darkness back out of its α divides by α; those pixels are empty and stay empty.
+        // WHY/PROOF: outside the orb and the dot nothing was put in, so α is 0, and taking the darkness back out of its α divides by α; those pixels are empty and stay empty.
         if a == 0 {
             out.extend_from_slice(&[0, 0, 0, 0]);
             continue;
@@ -51,7 +50,7 @@ pub fn orb_rgba(asset: &[u8], unread: bool) -> Option<(Vec<u8>, u32, u32)> {
     Some((out, w, h))
 }
 
-/// A missed message is waiting (or no longer is): the tray orb wears or drops the magenta ring, and on macOS so does the Dock tile.
+/// A missed message is waiting (or no longer is): the tray orb wears or drops the magenta dot, and on macOS so does the Dock tile.
 /// Called on the edge only, from the UI thread (the macOS status item and Dock are main-thread-bound, and the UI thread is the main thread under winit).
 pub fn set_unread(unread: bool) {
     UNREAD.store(unread, Ordering::Relaxed);
@@ -78,7 +77,7 @@ mod linux {
         };
         crate::network::http::runtime().spawn(async move {
             if handle.update(|_| {}).await.is_none() {
-                crate::log("TRAY: the SNI service is gone, so the orb cannot show the unread ring");
+                crate::log("TRAY: the SNI service is gone, so the orb cannot show the unread dot");
             }
         });
     }
@@ -193,7 +192,7 @@ mod windows_tray {
         };
         unsafe {
             let Some(icon) = orb_icon() else {
-                crate::log("TRAY: the orb did not draw, so the unread ring is not shown");
+                crate::log("TRAY: the orb did not draw, so the unread dot is not shown");
                 return;
             };
             let nid = NOTIFYICONDATAW {
@@ -366,7 +365,7 @@ mod windows_tray {
                     return;
                 };
                 if TRAY_HWND.set(hwnd.0 as usize).is_err() {
-                    crate::log("TRAY: a tray window was already kept — the unread ring follows the first");
+                    crate::log("TRAY: a tray window was already kept — the unread dot follows the first");
                 }
                 add_icon(hwnd);
                 crate::log("TRAY: orb parked next to the clock (Shell_NotifyIcon; Windows may fold new icons into the ^ overflow until the user drags them out)");
@@ -455,7 +454,7 @@ mod macos_tray {
         Some(image)
     }
 
-    /// The status-bar orb and the Dock tile wear the unread ring, or drop it; the Dock goes back to the bundle's icon (nil restores it).
+    /// The status-bar orb and the Dock tile wear the unread dot, or drop it; the Dock goes back to the bundle's icon (nil restores it).
     pub fn refresh(unread: bool) {
         let Some(mtm) = MainThreadMarker::new() else {
             crate::log("TRAY: the unread edge arrived off the main thread, so the orb keeps its ring state");

@@ -3214,9 +3214,9 @@ impl FluorApp<Px> for PhotonApp {
                 let icon = if unread { crate::platform::tray::orb_rgba(crate::platform::tray::WINDOW_ORB, true) } else { None };
                 ctx.window.set_icon(icon.as_ref().map(|(rgba, w, h)| (rgba.as_slice(), *w, *h)));
                 if unread {
-                    crate::logf!("UNREAD: the orb wears the magenta ring ({})", self.unread_rows().collect::<Vec<_>>().join(", "));
+                    crate::logf!("UNREAD: the orb wears the magenta dot ({})", self.unread_rows().collect::<Vec<_>>().join(", "));
                 } else {
-                    crate::log("UNREAD: the orb drops the magenta ring");
+                    crate::log("UNREAD: the orb drops the magenta dot");
                 }
             }
         }
