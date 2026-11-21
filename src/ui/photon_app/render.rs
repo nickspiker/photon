@@ -107,6 +107,7 @@ impl PhotonApp {
     pub(super) fn render_frame(&mut self, target: &mut [Px], ctx: &mut Context) {
         // The scene is about to be painted in full: clear the dirty flag NOW, so a flag raised DURING this render (a first-frame measurement that moved the rows) survives to claim the next frame instead of being wiped at the end of this one (field 2026-10-01: the contacts sat under the wrapped filter strip's second line until a scroll forced another frame — the correction frame was asked for and then forgotten).
         self.scene_dirty = false;
+        self.slide_dirty = false;
         // A launch-box refill waiting on the text renderer (the minting retype puts the first entry back on a mismatch or a cancel).
         if let Some(s) = self.launch_refill.take() {
             if let Some(tb) = self.textbox.as_mut() {
@@ -388,9 +389,14 @@ impl PhotonApp {
         {
             let sl = SettingsLayout::compute(&ctx.viewport);
             // Publish the extents (rubber-band bounds) — NO hard clamp: the wheel handler resists past-the-end steps and tick() eases the overshoot back, so an out-of-range value here is the rubber-band mid-stretch, rendered as-is. Labels, widgets, and bg all read this same raw value, so the whole pane stretches together.
-            self.settings_rail_extent =
+            self.settings_rail_extent = if self.settings_root() {
+                // The settings' root (ferros): its list from where it starts in the body (SettingsLayout::list_inset) to its last row's bottom, past the body's floor.
+                let total = sl.nav_row_h() * self.settings_pages().len() as Coord;
+                (sl.list_inset(sl.content.h, total) + total - sl.content.h).max(0.0) // the algorithm: a list shorter than the body does not scroll
+            } else {
                 (sl.nav_row_h() * (self.settings_pages().len() as Coord + 1.0) - sl.rail_inset().h)
-                    .max(0.0); // the algorithm: content shorter than its pane does not scroll
+                    .max(0.0) // the algorithm: content shorter than its pane does not scroll
+            };
             // The You page is a dynamic form — its row count is the field set plus the fixed chrome rows, not a constant. The Diagnostics log viewer counts fractionally: two full-height header rows plus half-height record rows (matching diag_log_row_rect exactly, or the scroll bound and the drawn rows disagree).
             let content_rows_h = if page == SettingsPage::You {
                 sl.content_line_h() * you_rows_plan(&self.you_fields).len() as Coord
@@ -2670,7 +2676,7 @@ impl PhotonApp {
                 let panel_step = hspan * 1.15;
                 // Under the title arc (ferros) the header is the pages' titles; the orb above is the conversation's face.
                 if let Some((c, (titles, at))) = arc {
-                    draw_title_arc(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, c, layout.header, layout.unit * 1.05, titles, *at, self.settings_turn, self.settings_title_hit, name_colour);
+                    draw_title_arc(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, c, layout.header, layout.unit * 1.05, titles, *at, self.settings_turn / buf_w as f32, self.settings_title_hit, name_colour);
                 }
                 for (k, line) in panel_lines.iter().enumerate().filter(|_| arc.is_none()) {
                     ctx.text.draw_text_center(&mut canvas, line, layout.content.x, layout.header.center_y() - (panel_lines.len() as f32 - 1.0) * 0.5 * panel_step + k as f32 * panel_step, &TextStyle::new(hspan, name_colour).weight(600).font("Oxanium"), None, None);
@@ -5473,7 +5479,7 @@ impl PhotonApp {
 
             // --- Header: the title LEFT-aligned beside the orb, level with its centre (Nick 2026-09-29) — the chrome title's own rule (orb right edge + a quarter button, the button being 8/9 of the orb radius), in the heading's style. Without an orb, the old place on the divider. ---
             if let Some((c, (titles, at))) = arc {
-                draw_title_arc(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, c, layout.header, layout.unit * 1.05, titles, *at, self.settings_turn, self.settings_title_hit, *theme::CONTACT_NAME_COLOUR);
+                draw_title_arc(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, c, layout.header, layout.unit * 1.05, titles, *at, self.settings_turn / buf_w as f32, self.settings_title_hit, *theme::CONTACT_NAME_COLOUR);
             } else {
                 let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
                 let (title_x, title_y, title_left) = match chrome.orb_geometry() {
@@ -5535,9 +5541,8 @@ impl PhotonApp {
                 layout.rail.right() as usize,
                 layout.rail.bottom() as usize,
             );
-            // Under the title arc the rows show only in the picker.
-            let rows_shown = arc.is_none() || picker;
-            for (i, p) in settings_pages.iter().enumerate().filter(|_| rows_shown) {
+            // Under the title arc the rail is the settings' root, drawn below in the circle's own grammar.
+            for (i, p) in settings_pages.iter().enumerate().filter(|_| arc.is_none()) {
                 let r = fluor::region::Region::new(
                     rail_inset.x,
                     pages_top - settings_rail_scroll + i as Coord * nav_h,
@@ -5597,10 +5602,31 @@ impl PhotonApp {
                 }
             }
 
-            // The picker (ferros): an opaque page over the body, in front of it and its taps, its rows above.
-            if picker {
-                claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, layout.content.x as isize, layout.content.y as isize, layout.content.right() as isize, layout.content.bottom() as isize, HIT_BLOCK);
-                paint::fill_rect(&mut canvas, layout.content.x as isize, layout.content.y as isize, layout.content.w as isize, layout.content.h as isize, *theme::VIEWER_BG_COLOUR, None, None);
+            // THE SETTINGS' ROOT (ferros, the title arc; owner 2026-11-20): every page's name, a row each, centred on the circle's axis under the "Settings" title, a tap opening that page; the rows are the rail's own hit ids, so the rail's tap handler opens them.
+            // A row is the rail's height and a name a body heading's size, fitted to three quarters of the width softly as the titles are (safe_layout::soft_cap, C∞); the list sits centred in the body while it fits and scrolls from its top once it does not (SettingsLayout::list_inset).
+            if let (Some((c, _)), true) = (arc, picker) {
+                let band = layout.content;
+                let pitch = layout.nav_row_h();
+                let size = layout.unit * 0.72;
+                let top = band.y + layout.list_inset(band.h, pitch * settings_pages.len() as Coord) - settings_rail_scroll;
+                let clip = fluor::paint::Clip::new(band.x as usize, band.y as usize, band.right() as usize, band.bottom() as usize);
+                for (i, p) in settings_pages.iter().enumerate() {
+                    let y = top + i as Coord * pitch;
+                    // A row scrolled wholly out of the body is not drawn.
+                    if y + pitch <= band.y || y >= band.bottom() {
+                        continue;
+                    }
+                    let hid = self.settings_nav_base + i as HitId;
+                    let held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == hid;
+                    let name = tr(Msg::PageName(*p));
+                    let fit = crate::ui::safe_layout::soft_cap(size, size * buf_w as f32 * (3. / 4.) / ctx.text.measure_text(&name, &TextStyle::new(size, 0).weight(600).font("Oxanium")));
+                    // WHY/PROOF (a rect, not the paint): the row's whole band takes the tap, cut to the body as its paint is, so a row scrolled under the title never takes the title's taps.
+                    claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, band.x as isize, y.max(band.y) as isize, band.right() as isize, (y + pitch).min(band.bottom()) as isize, hid);
+                    ctx.text.draw_text_center(&mut canvas, &name, c.cx, y + pitch * 0.5, &TextStyle::new(fit, *theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium"), Some(clip), None);
+                    if held {
+                        paint::fill_rect(&mut canvas, band.x as isize, y as isize, band.w as isize, pitch as isize, fluor::theme::BUTTON_HELD, Some(clip), None);
+                    }
+                }
             }
             // Hairline between rail and content (none under the title arc).
             if arc.is_none() {
@@ -5614,6 +5640,32 @@ impl PhotonApp {
             // Draw a labelled action pill; stamps `settings_btn_base + slot` and returns nothing (stub). `n` rows must match update_widget_layout's split where widgets coexist.
             let btn_base = self.settings_btn_base;
             // Immediate-mode stub pill helper — captured as a closure over the canvas/text/hit-map isn't possible (multiple &mut borrows), so pills are drawn inline per page below via `draw_stub_pill`.
+            // THE PAGES SIDE BY SIDE (ferros, the title arc; owner 2026-11-20: "the main text needs to swipe and snap in place left/right like it does in ferros"): the open page's body sits the turn left of its place and the neighbour on that side beside it, a frame's width apart, as ferros's own settings draw their strip; at rest the open page alone, and with no arc the page as it always was.
+            // The settings' root draws no page.
+            let turn = if arc.is_some() { self.settings_turn } else { 0.0 };
+            let mut strip: Vec<(SettingsPage, Coord)> = Vec::new();
+            if !picker {
+                strip.push((page, -turn));
+                if turn != 0.0 {
+                    // The page the turn brings in: the next from the right while the turn is forward, the one before from the left while it is back (the pages go round).
+                    let side = turn.signum();
+                    let n = settings_pages.len() as isize;
+                    if let Some(at) = settings_pages.iter().position(|p| *p == page) {
+                        strip.push((settings_pages[(at as isize + side as isize).rem_euclid(n) as usize], buf_w as Coord * side - turn));
+                    }
+                }
+            }
+            // While the pages move the body takes no tap: one landing mid-snap would reach a page on its way out, or the neighbour's controls under hit ids the open page's handler reads as its own.
+            if strip.len() > 1 {
+                claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, layout.content.x as isize, layout.content.y as isize, layout.content.right() as isize, layout.content.bottom() as isize, HIT_BLOCK);
+            }
+            let open_layout = layout;
+            let open_scroll = settings_content_scroll;
+            let mut open_extent = None;
+            for (k, (page, dx)) in strip.into_iter().enumerate() {
+            // Each page thru the same rows at rest and in motion: the panes moved across, and a neighbour from its top, as a page opens.
+            let layout = open_layout.shifted(dx);
+            let settings_content_scroll = if k == 0 { open_scroll } else { 0.0 };
             match page {
                 SettingsPage::You => {
                     // A dynamic profile form: standard fields grouped by taxonomy tier, each an editable box prefilled from its `profile.<id>` setting, then an add-a-custom-field row, the identity read-out, and the action pills. Handle strings live at rest NOWHERE (docs/identity-profile.md) — this page shows names + the identity FINGERPRINT, never a handle. All rows are optional: your handle IS your identity.
@@ -7799,6 +7851,13 @@ impl PhotonApp {
                     // MEASURED extent (Flow doctrine): the card's true height from the final cursor — retires the hand-counted row arithmetic next frame.
                     measured_extent = Some((y + settings_content_scroll - inset.y + line_h, inset.h));
                 }
+            }
+            // The scroll extent is the open page's: a neighbour's measure does not outlive its pass.
+            if k == 0 {
+                open_extent = measured_extent;
+            } else {
+                measured_extent = open_extent;
+            }
             }
         }
 

@@ -2053,10 +2053,10 @@ impl PhotonApp {
         }
     }
 
-    /// The tests' edges on the tick: each stops when its page is left or a wave takes the device, and the microphone test drains what it captured into its level ring (nothing else reads those frames while no wave runs).
+    /// The tests' edges on the tick: each stops when its page is left (for another page, the settings' root or another screen) or a wave takes the device, and the microphone test drains what it captured into its level ring (nothing else reads those frames while no wave runs).
     pub(super) fn settings_tests_tick(&mut self) {
         let wave = self.active_wave.is_some() || self.group_wave.is_some();
-        if self.settings_preview && (wave || self.state != AppState::Settings(SettingsPage::Beam)) {
+        if self.settings_preview && (wave || self.state != AppState::Settings(SettingsPage::Beam) || self.settings_root()) {
             self.settings_preview = false;
             // A wave placed from this page took the camera over (beam_session hands the preview to its sender); otherwise the preview closes.
             if !wave {
@@ -2064,7 +2064,7 @@ impl PhotonApp {
             }
             self.scene_dirty = true;
         }
-        if self.mic_test && (wave || self.state != AppState::Settings(SettingsPage::Wave)) {
+        if self.mic_test && (wave || self.state != AppState::Settings(SettingsPage::Wave) || self.settings_root()) {
             // A wave reuses the open session; only a page left closes it.
             if wave {
                 self.mic_test = false;
@@ -2090,15 +2090,60 @@ impl PhotonApp {
 pub(super) const MIC_LEVEL_FRAMES: usize = 1 << 8;
 
 /// THE TITLE ARC (ferros, a safe circle; the settings circle's grammar, ferros COMPOSITOR.md "Titles ride the circle"): the pages under the orb go round under a finger across the page, the open page's title centred under the orb and its neighbours riding the arc in from either side.
+/// The settings there have a ROOT (owner 2026-11-20, on the Pro: the orb "prolly the top level so they aren't dropped to a page and then confused because back brings you to contacts again, which it should not, it should bring you to the root menu"): the orb opens the list of every page, a tap on one opens it, Back from a page comes back to the list and Back from the list leaves.
 impl PhotonApp {
     /// Whether this screen's pages ride the title arc: the settings and the conversation panel, on a safe circle.
     pub(super) fn title_arc_screen(&self) -> bool {
         crate::ui::safe_circle().is_some() && matches!(self.state, AppState::Settings(_) | AppState::ConversationPanel(_))
     }
 
-    /// The pages the arc goes round on this screen, as their titles, and the open one's place among them.
+    /// Whether the settings' root is up: the list of every page, on a safe circle (ferros).
+    pub(super) fn settings_root(&self) -> bool {
+        self.settings_picker && self.title_arc_screen() && matches!(self.state, AppState::Settings(_))
+    }
+
+    /// Bring the settings' root up from a page: the list from its top, the pages at rest.
+    pub(super) fn open_settings_root(&mut self) {
+        self.settings_picker = true;
+        self.settings_rail_scroll = 0.0;
+        self.settings_turn = 0.0;
+        self.turn_axis = 0;
+        self.change_focus(None);
+        self.dirty_from("the settings' root");
+    }
+
+    /// How deep the settings under the title arc stand (ArcLevel): the root, a page, or a view a page has open inside it (Diagnostics' log, and a record inspected in it).
+    pub(super) fn arc_level(&self) -> ArcLevel {
+        if self.settings_picker {
+            ArcLevel::Root
+        } else if !matches!(self.state, AppState::Settings(SettingsPage::Diagnostics)) || !self.diag_log_view {
+            ArcLevel::Page
+        } else if self.diag_log_inspect.is_some() {
+            ArcLevel::Inner(2)
+        } else {
+            ArcLevel::Inner(1)
+        }
+    }
+
+    /// Back on the settings under the title arc (`arc_back`): one level up, and false from the root, where Back leaves for the contacts (the caller's).
+    pub(super) fn arc_step_back(&mut self) -> bool {
+        match (self.arc_level(), arc_back(self.arc_level())) {
+            (_, None) => return false,
+            (_, Some(ArcLevel::Root)) => self.open_settings_root(),
+            (ArcLevel::Inner(2), Some(_)) => {
+                self.diag_log_inspect = None;
+                self.diag_log_follow = true;
+            }
+            (_, Some(_)) => self.diag_log_close(),
+        }
+        self.dirty_from("Back on the settings");
+        true
+    }
+
+    /// The pages the arc goes round on this screen, as their titles, and the open one's place among them; the settings' root names itself alone.
     pub(super) fn title_arc_pages(&self) -> Option<(Vec<String>, usize)> {
         match self.state {
+            AppState::Settings(_) if self.settings_picker => Some((vec![tr(Msg::SettingsTitle).into_owned()], 0)),
             AppState::Settings(page) => {
                 let pages = self.settings_pages();
                 let at = pages.iter().position(|p| *p == page)?;
@@ -2114,15 +2159,21 @@ impl PhotonApp {
         }
     }
 
+    /// The settings page `step` places round from `page` (wrapping: the pages go round), the neighbour a turn brings in beside the open one.
+    pub(super) fn settings_page_round(&self, page: SettingsPage, step: isize) -> SettingsPage {
+        let pages = self.settings_pages();
+        match pages.iter().position(|p| *p == page) {
+            Some(at) => pages[(at as isize + step).rem_euclid(pages.len() as isize) as usize],
+            None => page,
+        }
+    }
+
     /// Open the page `step` places round from the open one (wrapping: the pages go round).
     fn turn_page(&mut self, step: isize) {
         match self.state {
             AppState::Settings(page) => {
-                let pages = self.settings_pages();
-                if let Some(at) = pages.iter().position(|p| *p == page) {
-                    let n = pages.len() as isize;
-                    self.open_settings_page(pages[(at as isize + step).rem_euclid(n) as usize]);
-                }
+                let p = self.settings_page_round(page, step);
+                self.open_settings_page(p);
             }
             AppState::ConversationPanel(_) => {
                 let rail = self.conversation_rail();
@@ -2135,44 +2186,102 @@ impl PhotonApp {
         }
     }
 
-    /// The finger lifted from a turn: past a quarter page it opens that page (the turn counted from it now), and the spring takes the rest home.
-    pub(super) fn settle_title_arc(&mut self) {
-        self.turn_axis = 0;
-        let step = (self.settings_turn * 4.).trunc() as isize;
-        let step = step.signum();
-        if step != 0 {
-            self.turn_page(step);
-            self.settings_turn -= step as f32;
+    /// The finger turning the pages moved the turn by `d` pixels: the body follows it 1:1, and past half a page the next page is the open one, the turn counted from it (ferros's settings, `drag_settings`).
+    pub(super) fn turn_by(&mut self, d: f32, w: f32) {
+        self.settings_turn += d;
+        self.turn_frame_acc += d;
+        while self.settings_turn > w * 0.5 {
+            self.turn_page(1);
+            self.settings_turn -= w;
         }
-        self.settings_turn_v = 0.0;
-        self.dirty_from("the title arc's settle");
+        while self.settings_turn < -w * 0.5 {
+            self.turn_page(-1);
+            self.settings_turn += w;
+        }
+        self.slide_dirty = true;
     }
 
-    /// One frame of the title arc's spring: critically damped toward 0, so from rest it never overshoots; stepped in ticks, so the motion has no clock of its own. Returns whether it moved.
-    pub(super) fn title_arc_tick(&mut self) -> bool {
-        if self.press_held && self.turn_axis == 1 || (self.settings_turn == 0.0 && self.settings_turn_v == 0.0) {
+    /// The finger lifted from a turn on a frame `w` pixels wide: the page its momentum rests nearest is the open one (`settle_step`), and the snap takes the rest of the way home.
+    pub(super) fn settle_title_arc(&mut self, w: f32) {
+        self.turn_axis = 0;
+        let step = settle_step(self.settings_turn as i32, self.turn_recent, w as i32);
+        if step != 0 {
+            self.turn_page(step as isize);
+            self.settings_turn -= (step * w as i32) as f32;
+        }
+        self.turn_recent = [0; 3];
+        self.turn_frame_acc = 0.0;
+        self.slide_dirty = true;
+    }
+
+    /// `frames` display frames of the turn's snap home (`snap_frames`), none while a finger holds it; returns whether it moved.
+    pub(super) fn title_arc_tick(&mut self, frames: u32) -> bool {
+        if self.press_held && self.turn_axis == 1 || self.settings_turn == 0.0 || frames == 0 {
             return false;
         }
-        // ω = 1/4 a frame: from a page away the spring is within a hundredth of home in about two dozen frames (a fifth of a second at 120 Hz).
-        let w = 1. / ((1 << 2) as f32);
-        self.settings_turn_v += -w * w * self.settings_turn - 2. * w * self.settings_turn_v;
-        self.settings_turn += self.settings_turn_v;
-        // Home once neither the place nor the speed is a 4096th of a page: below a pixel's share of the width.
-        let near = 1. / ((1 << 12) as f32);
-        if self.settings_turn.abs() < near && self.settings_turn_v.abs() < near {
-            self.settings_turn = 0.0;
-            self.settings_turn_v = 0.0;
-        }
-        self.dirty_from("the title arc's spring");
+        self.settings_turn = snap_frames(self.settings_turn as i32, frames) as f32;
+        self.slide_dirty = true;
         true
     }
 
-    /// The open page's title tapped: the picker of every page comes up over the body, or goes.
+    /// The open page's title tapped: on the settings it brings their root up (its own title, "Settings", does nothing); on the conversation panel the picker of every page comes up over the body, or goes.
     pub(super) fn toggle_page_picker(&mut self) {
+        if matches!(self.state, AppState::Settings(_)) {
+            if !self.settings_picker {
+                self.open_settings_root();
+            }
+            return;
+        }
         self.settings_picker = !self.settings_picker;
         self.change_focus(None);
         self.dirty_from("the page picker");
     }
+}
+
+/// How deep the settings stand under the title arc (ferros): their root (the list of every page), a page, or a view a page has open inside it, `n` deep.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ArcLevel {
+    Root,
+    Page,
+    Inner(u8),
+}
+
+/// Where the orb opens the settings: their root under the title arc (owner 2026-11-20: landing on a page "wasn't obvious"), a page elsewhere, where the rail beside it names them all.
+pub(super) fn orb_opens(arc: bool) -> ArcLevel {
+    if arc { ArcLevel::Root } else { ArcLevel::Page }
+}
+
+/// Where Back goes from `level` under the title arc: one level up, a page's inner view to the view above it and the page to the root; from the root, out (None), to the contacts (owner 2026-11-20: Back from a page "should bring you to the root menu").
+pub(super) fn arc_back(level: ArcLevel) -> Option<ArcLevel> {
+    match level {
+        ArcLevel::Root => None,
+        ArcLevel::Page => Some(ArcLevel::Root),
+        ArcLevel::Inner(1) => Some(ArcLevel::Page),
+        ArcLevel::Inner(n) => Some(ArcLevel::Inner(n - 1)),
+    }
+}
+
+/// THE SNAP (owner 2026-11-18: "we do half of the distance per frame and floor"): `frames` display frames of a turn `px` pixels from home, each frame keeping half of what is left, floored, so it lands on 0 exactly.
+/// The halving is on the magnitude with the sign put back: an arithmetic shift of a negative floors away from zero (-1 >> 1 is -1) and would never land.
+pub(super) fn snap_frames(px: i32, frames: u32) -> i32 {
+    let mut px = px;
+    for _ in 0..frames {
+        if px == 0 {
+            break;
+        }
+        px = (px.abs() >> 1) * px.signum();
+    }
+    px
+}
+
+/// Which page a turn lifted at `turn` pixels rests on, 1 the next, -1 the previous, 0 the open one, on a frame `w` wide, the finger's last three frames' movements `recent` (newest first) its speed (ferros's settings, `release_settings`, owner 2026-11-06: a quick swipe short of half a page still rolls on).
+/// Losing a pixel a frame, a speed of m pixels a frame goes m + (m − 1) + … + 1 = m(m + 1)/2 further; the page is the one nearest where that rests, and never more than one away (owner 2026-11-08: "clamp it to one page, no doubles").
+pub(super) fn settle_step(turn: i32, recent: [i32; 3], w: i32) -> i32 {
+    let m = recent.iter().map(|d| d.abs()).max().unwrap_or(0);
+    let last = recent.iter().find(|&&d| d != 0).copied().unwrap_or(0);
+    let rest = turn + last.signum() * m * (m + 1) / 2;
+    // Nearest page: past half a page each way (integer division truncates toward zero, so the half is added away from zero first); the sign alone keeps it to one page.
+    ((rest + rest.signum() * w / 2) / w).signum()
 }
 
 /// Hand a release manifest our own poll just verified to the UI, to hold and pass on to the peers (network/peer_release.rs); one stamped ahead of now is not held.
@@ -2180,5 +2289,74 @@ fn hold_polled_release(tx: &std::sync::mpsc::Sender<UpdateEvent>, bytes: Vec<u8>
     let hash = *blake3::hash(&bytes).as_bytes();
     if let Some(rel) = crate::network::peer_release::held_from_poll(bytes, stamp, rows, vsf::eagle_time_oscillations()) {
         crate::log_err!(tx.send(UpdateEvent::ReleaseChecked { hash, from: None, result: Ok(rel) }), "hand a polled release manifest to the UI");
+    }
+}
+
+#[cfg(test)]
+mod arc_tests {
+    use super::{arc_back, orb_opens, settle_step, snap_frames, ArcLevel};
+    use crate::ui::photon_app::driver::FrameClock;
+
+    /// Under the title arc the orb opens the settings' root and Back climbs one level at a time: a record in the log to the log, the log to its page, a page to the root, the root out to the contacts; elsewhere the orb opens a page, as it always did.
+    #[test]
+    fn the_orb_opens_the_root_and_back_climbs_to_the_contacts() {
+        assert_eq!(orb_opens(true), ArcLevel::Root);
+        assert_eq!(orb_opens(false), ArcLevel::Page);
+        assert_eq!(arc_back(ArcLevel::Inner(2)), Some(ArcLevel::Inner(1)));
+        assert_eq!(arc_back(ArcLevel::Inner(1)), Some(ArcLevel::Page));
+        assert_eq!(arc_back(ArcLevel::Page), Some(ArcLevel::Root));
+        assert_eq!(arc_back(ArcLevel::Root), None, "from the root Back leaves for the contacts");
+    }
+
+    /// Lifted with no speed, a turn past half a page rests on the next page (or the one before) and one short of half comes back; a quick flick short of half rolls on, as ferros's settings do, never more than one page.
+    #[test]
+    fn a_turn_past_half_a_page_goes_on_and_short_of_half_comes_back() {
+        let w = 1344;
+        assert_eq!(settle_step(w / 2 + 1, [0; 3], w), 1);
+        assert_eq!(settle_step(w / 2 - 1, [0; 3], w), 0);
+        assert_eq!(settle_step(-(w / 2 + 1), [0; 3], w), -1);
+        assert_eq!(settle_step(-(w / 2 - 1), [0; 3], w), 0);
+        assert_eq!(settle_step(0, [0; 3], w), 0);
+        // A flick at 40 pixels a frame from a fifth of a page coasts 820 more: past half, so on to the next.
+        assert_eq!(settle_step(w / 5, [40, 38, 30], w), 1);
+        // The same flick back the other way from the same place returns.
+        assert_eq!(settle_step(w / 5, [-40, -38, -30], w), 0);
+        // However hard the flick, one page.
+        assert_eq!(settle_step(w / 2, [400, 400, 400], w), 1);
+    }
+
+    /// The snap keeps half of what is left each display frame, floored, and lands on 0 exactly in whole frames, from either side; a panel ticking every other frame (60 ticks a second on a 120 Hz panel, two frames a tick) lands in the same frames, half the ticks, as one ticking every frame.
+    #[test]
+    fn the_snap_lands_in_whole_frames_at_60_and_120_hz() {
+        assert_eq!(snap_frames(100, 1), 50);
+        assert_eq!(snap_frames(-100, 1), -50);
+        assert_eq!(snap_frames(1, 1), 0, "the last pixel lands");
+        assert_eq!(snap_frames(-1, 1), 0, "from below too, not stuck at -1");
+        for px in [1344i32, 700, -537, 3] {
+            // Frames to land: the bits of the distance, each frame dropping one.
+            let bits = 32 - px.unsigned_abs().leading_zeros();
+            assert_eq!(snap_frames(px, bits), 0, "{px} home in {bits} frames");
+            assert_ne!(snap_frames(px, bits - 1), 0, "{px} not home a frame sooner");
+            for tick_hz in [60f32, 120.] {
+                let mut clock = FrameClock::default();
+                let (mut at, mut frames, mut ticks) = (px, 0u32, 0u32);
+                while at != 0 {
+                    let n = clock.advance(1. / tick_hz, 120.);
+                    // The same distance after these frames as after as many single frames.
+                    let mut one_by_one = at;
+                    for _ in 0..n {
+                        one_by_one = snap_frames(one_by_one, 1);
+                    }
+                    at = snap_frames(at, n);
+                    assert_eq!(at, one_by_one);
+                    frames += n;
+                    ticks += 1;
+                }
+                assert!(frames >= bits && frames <= bits + 1, "{px} at {tick_hz} Hz: home in {frames} frames, the snap's {bits} (a tick spanning two may pass one more)");
+                // Half the ticks at 60 Hz, each passing two frames; a tick may fall a hair short of a whole frame in floating point and pass one fewer, its fraction carried.
+                let want = if tick_hz == 120. { bits } else { (bits + 1) / 2 };
+                assert!(ticks >= want && ticks <= want + 1, "{px} at {tick_hz} Hz: {ticks} ticks, about {want}");
+            }
+        }
     }
 }

@@ -2322,8 +2322,9 @@ impl FluorApp<Px> for PhotonApp {
                     ctx.window.request_redraw();
                     return EventResponse::Handled;
                 }
-                // THE TITLE ARC (ferros, a safe circle): a finger that goes across a settings or conversation panel page turns the pages (the title riding the arc with it), one that goes down or up scrolls the page; it chooses once it has gone a 64th of the span.
-                if let (true, MouseScrollDelta::Pixels(dx, dy)) = (self.press_held && self.title_arc_screen(), delta) {
+                // THE TITLE ARC (ferros, a safe circle): a finger that goes across a settings or conversation panel page turns the pages (the page's body and the title riding the arc with it, 1:1), one that goes down or up scrolls the page; it chooses once it has gone a 64th of the span.
+                // The settings' root is one list, not a page among pages: there every drag scrolls it.
+                if let (true, MouseScrollDelta::Pixels(dx, dy)) = (self.press_held && self.title_arc_screen() && !self.settings_root(), delta) {
                     let (dx, dy) = (*dx as f32, *dy as f32);
                     if self.turn_axis == 0 {
                         self.turn_travel.0 += dx.abs();
@@ -2334,8 +2335,7 @@ impl FluorApp<Px> for PhotonApp {
                     }
                     if self.turn_axis != 2 {
                         if self.turn_axis == 1 {
-                            self.settings_turn -= dx / ctx.viewport.width_px as f32;
-                            self.dirty_from("the title arc's turn");
+                            self.turn_by(-dx, ctx.viewport.width_px as f32);
                             ctx.window.request_redraw();
                         }
                         return EventResponse::Handled;
@@ -2360,7 +2360,8 @@ impl FluorApp<Px> for PhotonApp {
                 // A new finger chooses its way afresh on the title arc (ferros), and catches the turning pages where they are.
                 self.turn_axis = 0;
                 self.turn_travel = (0.0, 0.0);
-                self.settings_turn_v = 0.0;
+                self.turn_recent = [0; 3];
+                self.turn_frame_acc = 0.0;
                 // A new finger ends any fling (the tick's fling waits on the release; a tap with no drag must not resume the old one).
                 if self.list_fling != 0 {
                     if crate::is_dev_build() {
@@ -2579,9 +2580,9 @@ impl FluorApp<Px> for PhotonApp {
             } => {
                 self.press_held = false;
                 self.file_drag_from = None;
-                // The title arc (ferros): a finger lifted past a quarter page turns to that page, and the spring takes the rest of the way home.
+                // The title arc (ferros): a finger lifted turns to the page its momentum rests nearest, and the snap takes the rest of the way home.
                 if self.turn_axis == 1 {
-                    self.settle_title_arc();
+                    self.settle_title_arc(ctx.viewport.width_px as f32);
                     ctx.window.request_redraw();
                 }
                 // THE LIFT (2026-10-06 phone log: a 187 px/frame flick sampled [187, 182, 2, 0, 0] and died at 2; 2026-10-07: the fastest flicks moved everything in one or two frames and then showed three or four still frames before Android reported UP — the finger was already off the glass). Up to FOUR trailing still frames (≈ 67 ms, the UP's latency) are dropped before the median; five or more (≈ 83 ms+) is a genuine hold and the fling is zero, as Nick asked.
@@ -2783,9 +2784,14 @@ impl FluorApp<Px> for PhotonApp {
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
-                        // The page picker (ferros's title arc) goes first, leaving the page it was over.
-                        if self.settings_picker && self.title_arc_screen() {
+                        // The conversation panel's page picker (ferros's title arc) goes first, leaving the page it was over.
+                        if self.settings_picker && self.title_arc_screen() && matches!(self.state, AppState::ConversationPanel(_)) {
                             self.settings_picker = false;
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
+                        // The settings under the title arc (ferros) step up one level: out of what a page has open inside it, then from the page to the settings' root; from the root Back leaves, below.
+                        if self.title_arc_screen() && matches!(self.state, AppState::Settings(_)) && self.arc_step_back() {
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
@@ -3483,10 +3489,6 @@ impl FluorApp<Px> for PhotonApp {
 
         // The host's keyboard watch (ferros, `on_keyboard_inset`): as Android's above, the frame never resizes for the keyboard, so a change of its rows lays the bottom-anchored widgets out again here; and so does the launch form's extra lift coming or going (the permanence warning under the button, `launch_lift_below`), which can change with the keyboard already up. The rows are never set on a host without a composited keyboard, so they stay 0 there.
         let lift_below = self.launch_lift_below(ctx.viewport.width_px as usize, ctx.viewport.height_px as usize, ctx.viewport.ru);
-        // The title arc's spring (ferros): one step a tick while the pages turn home.
-        if self.title_arc_tick() {
-            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
-        }
         // The safe circle (ferros, `on_safe_area`) moves the orb and everything laid round it; elsewhere it is never set and this never fires.
         if crate::ui::safe_circle() != self.safe_laid {
             self.place_orb(ctx);
@@ -3611,6 +3613,9 @@ impl FluorApp<Px> for PhotonApp {
         let frames = self.frame_clock.advance(delta_time, FERROS_PANEL_HZ);
         #[cfg(not(target_os = "ferros"))]
         let frames = 1u32;
+        // The title arc's snap (ferros): its halving once for each display frame passed while the pages turn home.
+        // Its frame is the pages' band alone (slide_dirty, damage_rect), so it asks for a frame without dirtying the scene.
+        let slide_redraw = self.title_arc_tick(frames);
 
         // Spectrum animation while attesting: wave phase advances at 2π rad/sec = 1 cycle/sec. Provides the visual "query in flight" cue the legacy build had — the bar slowly slides while we wait for FGTW to answer. Idle / Fresh / Error states leave the phase frozen so the screen stays calm.
         // HELD STILL FOR THE PROOF (owner 2026-11-17: a Pixel's handle proof went from 2.5 s to about 14 s while this redrew the whole screen every frame): the memory-hard proof gets the cores and the memory bandwidth, and the screen redraws once per stage change (the stage line under the wave), the stage's own edge.
@@ -3784,6 +3789,15 @@ impl FluorApp<Px> for PhotonApp {
                     // THE FLING SPEED: the largest by magnitude of the newest three nominal-frame samples, sign kept (Nick 2026-10-07, "I honestly thought max of three was a touch better" — with samples normalised per frame and the lift frames handled at release, the two faults that made max-of-three over-eager are gone). The window keeps five for the lift logic below.
                     self.list_fling = fling_pick(&self.fling_recent[..3]);
                     self.drag_frames += nominal as u32;
+                    // The title arc's turn is sampled the same way, a frame's movement a sample, for the page its lift rests on (settle_step).
+                    if self.turn_axis == 1 {
+                        let acc = std::mem::take(&mut self.turn_frame_acc) as i32;
+                        let per = acc / nominal;
+                        for i in 0..nominal {
+                            self.turn_recent.rotate_right(1);
+                            self.turn_recent[0] = if i == nominal - 1 { acc - per * (nominal - 1) } else { per };
+                        }
+                    }
                 }
             }
             dirty_checkpoint!();
@@ -4058,7 +4072,7 @@ impl FluorApp<Px> for PhotonApp {
         } else {
             false
         };
-        let redraw = needs_redraw || blink_redraw || raised || title_redraw || orb_redraw;
+        let redraw = needs_redraw || blink_redraw || raised || title_redraw || orb_redraw || slide_redraw;
         dirty_checkpoint!();
         self.dirty_blame_line = dirty_blame;
         if redraw {
@@ -4126,6 +4140,19 @@ impl FluorApp<Px> for PhotonApp {
                 );
             }
             return Some(PixelRect::new(0, 0, vw, vh));
+        }
+        // THE PAGES' BAND (ferros, the title arc): a frame whose only change is the turn (a finger across a page, or its snap) moves the titles on their arc and the page bodies beside each other, and nothing above the header or below the body's floor, so the orb, the helm's corners and the rest keep their pixels.
+        if self.slide_dirty && !self.scene_dirty && !chord && self.title_arc_screen() && !self.chrome.as_ref().is_some_and(|c| c.damage_rect().is_some()) {
+            let sl = SettingsLayout::compute(&viewport);
+            // The header's top is the orb's bottom and the body's floor is the frame's height less the circle's floor, which is never negative (safe_layout): both rows of the frame.
+            let mut dmg = PixelRect::new(0, sl.header.y as usize, vw, sl.content.bottom() as usize);
+            // Widgets with their own damage this frame (a caret blink) still repaint, unioned in.
+            self.visit_app_widgets(&mut |w| {
+                if let Some(r) = w.damage_rect(vw, vh) {
+                    dmg = dmg.union(r);
+                }
+            });
+            return Some(dmg);
         }
         if self.scene_dirty || chord {
             // The idle whole-frame hunt: name where this frame's dirty came from, a few times per stats window.

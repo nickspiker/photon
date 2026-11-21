@@ -2682,11 +2682,16 @@ pub struct PhotonApp {
     keyboard_rows_laid: u32,
     /// The compose bar's resting height (one line), as the layout pass last set it (`ComposeFit`): the render's list yields to it, so the two passes agree.
     compose_bar_h: f32,
-    /// THE TITLE ARC (ferros, a safe circle; the settings circle's grammar, ferros COMPOSITOR.md "Titles ride the circle"): how far the pages have turned, in pages, toward the next (the finger's across the page while it holds, then the spring's back to 0).
+    /// THE TITLE ARC (ferros, a safe circle; the settings circle's grammar, ferros COMPOSITOR.md "Titles ride the circle"): how far the pages have turned toward the next, in pixels of the frame's width (the finger's across the page while it holds, then the snap's back to 0).
+    /// The open page's body sits this far left of its place and the neighbour on that side comes in beside it; the titles ride the arc by the same fraction of a page.
     settings_turn: f32,
-    /// The spring's speed, pages a frame: critically damped, stepped once a tick, so the motion has no clock of its own.
-    settings_turn_v: f32,
-    /// The page picker is up: a tap on the title shows every page as a list over the body, a tap on one opens it.
+    /// The turn's movement in each of the last three display frames while a finger turns the pages, newest first: its speed at the lift decides the page as ferros's own settings do.
+    turn_recent: [i32; 3],
+    /// The turn's movement since the last frame's sample, in pixels.
+    turn_frame_acc: f32,
+    /// Only the pages' band moved since the last frame (a turn under the finger or its snap): the damage is that band, not the frame.
+    slide_dirty: bool,
+    /// On a screen with the title arc, the list of every page is up: on the settings it is their ROOT (the orb opens it, Back from a page comes to it, Back from it leaves); on the conversation panel a tap on the title brings it over the page.
     settings_picker: bool,
     /// Which way the finger on a settings page went: 0 not yet, 1 across (turning the pages), 2 down or up (scrolling the page).
     turn_axis: u8,
@@ -3710,7 +3715,9 @@ impl PhotonApp {
             keyboard_rows_laid: 0,
             compose_bar_h: 0.,
             settings_turn: 0.0,
-            settings_turn_v: 0.0,
+            turn_recent: [0; 3],
+            turn_frame_acc: 0.0,
+            slide_dirty: false,
             settings_picker: false,
             turn_axis: 0,
             turn_travel: (0.0, 0.0),

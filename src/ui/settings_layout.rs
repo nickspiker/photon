@@ -112,4 +112,38 @@ impl SettingsLayout {
             self.content_line_h() * n as Coord,
         )
     }
+
+    /// The same panes with the body (and the rail beside it) moved `dx` pixels across, the header staying: a page beside the open one while the title arc turns (ferros), drawn thru the same rows a page at rest is.
+    pub fn shifted(&self, dx: Coord) -> Self {
+        let r = self.rail;
+        let c = self.content;
+        Self { header: self.header, rail: Region::new(r.x + dx, r.y, r.w, r.h), content: Region::new(c.x + dx, c.y, c.w, c.h), portrait: self.portrait, unit: self.unit }
+    }
+
+    /// How far below the body's top a list `total` pixels tall starts in a body `h` tall: centred while it fits, at the top once it does not (where it scrolls), joined smoothly.
+    /// The centring offset s = (h − total)/2 goes thru (s + √(s² + e²))/2, which is s far above 0, 0 far below it and C∞ between, with e a quarter unit so the join is narrower than a row.
+    pub fn list_inset(&self, h: Coord, total: Coord) -> Coord {
+        let s = (h - total) * 0.5;
+        let e = self.unit * 0.25;
+        (s + (s * s + e * e).sqrt()) * 0.5
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The list's start is the centring offset while it fits and the top once it overflows, within a quarter unit, with no step between.
+    #[test]
+    fn a_list_centres_while_it_fits_and_starts_at_the_top_once_it_does_not() {
+        let l = SettingsLayout { header: Region::new(0., 0., 100., 10.), rail: Region::new(0., 10., 0., 100.), content: Region::new(0., 10., 100., 100.), portrait: true, unit: 8. };
+        assert!((l.list_inset(1000., 200.) - 400.).abs() < 1.);
+        assert!(l.list_inset(200., 1000.) < 1.);
+        let mut prev = l.list_inset(400., 0.);
+        for k in 1..=800 {
+            let v = l.list_inset(400., k as f32);
+            assert!(v <= prev && prev - v <= 0.5 + 1e-3, "the start falls no faster than the list grows, by half: {prev} -> {v}");
+            prev = v;
+        }
+    }
 }

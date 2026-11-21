@@ -568,9 +568,13 @@ impl PhotonApp {
                 self.change_focus(None);
                 // Reload the profile field boxes from settings on open.
                 self.you_fields_loaded = false;
-                self.settings_picker = false;
                 // The rail's first page: You here, the messenger's first page on ferros, where You lives in `ahau`, the OS capsule.
                 self.state = AppState::Settings(self.settings_pages()[0]);
+                // Under the title arc (ferros) the orb opens the settings' root, the list of every page, not the first page (owner 2026-11-20: landed on Conversations, he did not know he was in the settings).
+                self.settings_picker = false;
+                if super::settings::orb_opens(self.title_arc_screen()) == super::settings::ArcLevel::Root {
+                    self.open_settings_root();
+                }
                 true
             }
             // Pre-attest: the orb ALSO opens the panel, but `settings_pages` narrows it to About + Updates. Land on About. (Editing the handle already cancels the permanence interstitial, so opening settings from Launch is safe.)
