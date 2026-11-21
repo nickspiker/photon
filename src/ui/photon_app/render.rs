@@ -760,14 +760,16 @@ impl PhotonApp {
 
 
         // Content-scroll → background offset (hoisted before the chrome borrow, which takes `&mut self`). The background noise translates WITH the foreground content so the whole scene is one rigid vertical shift on scroll — the bg tracks whatever you're reading, and (once the host learns to scroll-copy) a scroll becomes a memcopy of the prior frame plus a repaint of just the newly-exposed slice instead of a full redraw. Sign matches the foreground pixel motion: Contacts moves rows UP as `contacts_scroll` grows (`row_top = … − contacts_scroll`) → texture shifts by `−contacts_scroll`; Conversation moves messages DOWN as `scroll_offset` grows (`y = … + scroll`) → texture shifts by `+scroll_offset`. Settings/ContactPanel keep the split-pane path below. `scroll_offset` is clamped elsewhere (tick clamps the stored conversation offset; contacts_scroll is clamped in the render block), so reading it raw here matches what the foreground draws.
+        // A zoom's change to the scroll is held out of the roll (`noise_pin`), so a pinch leaves the noise still under the fingers.
         let content_bg_scroll: isize = if self.wave_screen() { 0 } else { match self.state {
-            AppState::Ready => -self.contacts_scroll,
+            AppState::Ready => (self.noise_pin.0 - self.contacts_scroll as f32).round() as isize,
             AppState::Conversation => self
                 .active_conversation
                 .and_then(|id| self.conversations.iter().find(|v| v.id() == id))
-                .map_or(0, |v| v.scroll_offset.round() as isize),
+                .map_or(0, |v| (v.scroll_offset + self.noise_pin.0).round() as isize),
             _ => 0,
         } };
+        let noise_pin = self.noise_pin;
         // Security page's fleet-of-one gate — hoisted here for the same reason as the scroll above: the pills draw inside the chrome borrow, and asking `self` a question there is a second borrow. Cheap (a filtered pass over sibling rows), and ONE definition shared with the action that would otherwise refuse the tap.
         let has_sibling_device = self.has_usable_sibling();
         // The standing bands are computed BEFORE the chrome borrow (they read plain state), then painted by a free fn on the two screens that show them.
@@ -795,8 +797,8 @@ impl PhotonApp {
             (
                 Some(sl.content.x as usize),
                 // Negated to cancel the foreground gesture flip (see the `step` sign in on_event): the panes and the texture use opposite offset signs, so feeding the texture the negated offset keeps its (already-correct) direction while the foreground gets its inversion fixed.
-                Some(-(settings_rail_scroll as isize)),
-                -(settings_content_scroll as isize),
+                Some((noise_pin.1 - settings_rail_scroll).round() as isize),
+                (noise_pin.0 - settings_content_scroll).round() as isize,
             )
         } else {
             (None, None, scroll_offset)

@@ -710,18 +710,28 @@ impl FluorApp<Px> for PhotonApp {
         let ay = anchor_y as f32;
         let top_hung = |s: f32| ((s + ay) * factor - ay).max(0.0); // the algorithm: a hung margin is room, and a squeezed pane has none rather than negative room
         let bottom_hung = |s: f32| ((s + h - ay) * factor - (h - ay)).max(0.0); // (no negative room — see above)
+        // The background noise rolls with each pane's scroll, but a zoom's change to a scroll is no scroll: it is carried into the noise's bias so the noise stays still under the fingers (owner 2026-11-20).
         match self.state {
             AppState::Ready => {
+                let old = self.contacts_scroll;
                 self.contacts_scroll = top_hung(self.contacts_scroll as f32).round() as isize;
+                self.noise_pin.0 += (self.contacts_scroll - old) as f32;
             }
             AppState::Settings(_) | AppState::ConversationPanel(_) => {
+                let (old_rail, old_content) = (self.settings_rail_scroll, self.settings_content_scroll);
                 self.settings_rail_scroll = top_hung(self.settings_rail_scroll);
                 self.settings_content_scroll = top_hung(self.settings_content_scroll);
+                self.noise_pin.1 += self.settings_rail_scroll - old_rail;
+                self.noise_pin.0 += self.settings_content_scroll - old_content;
             }
             AppState::Conversation => {
+                let mut moved = 0.0;
                 if let Some(conv) = self.active_conv_mut() {
+                    let old = conv.scroll_offset;
                     conv.scroll_offset = bottom_hung(conv.scroll_offset);
+                    moved = conv.scroll_offset - old;
                 }
+                self.noise_pin.0 -= moved;
             }
             _ => {}
         }

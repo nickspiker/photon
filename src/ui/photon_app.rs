@@ -1753,6 +1753,9 @@ pub struct PhotonApp {
     event_proxy: Option<Arc<dyn WakeSender<PhotonEvent>>>,
     /// Every wheel and drag step summed — turns the chromatic wave's phase (until 2026-11-08 it also drove the noise's shimmer, which the rolled field dropped). MouseWheel events in `on_event` mutate this; everything else reads it.
     bg_scroll: isize,
+    /// What zooms have moved the panes' scrolls by, (the main pane, the Settings rail), kept out of the noise's roll so the background stays still under a pinch (owner 2026-11-20).
+    /// The noise rolls by a pane's scroll less this, so a real scroll still carries it and a zoom never does.
+    noise_pin: (f32, f32),
     /// The background noise, generated once per frame size and base colour and rolled by each screen's scroll (fluor `NoiseField`; owner 2026-11-08). render_frame lays it under everything at the end of the frame.
     noise: fluor::paint::NoiseField,
     /// The chrome's bg layer was left unpainted on a screen that had nothing in it (render_frame's `bg_layer_used`): the next screen that uses it paints it whole first.
@@ -3219,6 +3222,7 @@ impl PhotonApp {
             seed_identity_count: 0,
             pb_resolve_rx: None,
             bg_scroll: 0,
+            noise_pin: (0.0, 0.0),
             noise: fluor::paint::NoiseField::new(),
             bg_layer_stale: true,
             zoom_hint: false,
