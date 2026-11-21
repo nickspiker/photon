@@ -2590,6 +2590,9 @@ pub struct PhotonApp {
     avatar_hovered: bool,
     /// Hit id currently under the cursor, tracked across `CursorMoved` so hover only re-walks the widgets (and repaints) when it actually changes. Also the source of truth for [`Self::cursor_for`]'s I-beam decision.
     hover_hit: HitId,
+    /// A scroll is under way (wheel, drag or fling), so nothing under the pointer lights up (owner 2026-11-20: once a scroll starts it stops highlighting whatever is under the cursor).
+    /// Set on the scroll's first step; cleared by the next pointer move with no button down and no fling running.
+    hover_quiet: bool,
     /// The pointer is over the window (set on every `CursorMoved`, cleared on `CursorLeft`): the post-render hover re-resolve runs only then.
     cursor_in_window: bool,
     /// Whether `hover_hit` is a text-entry widget (drives the I-beam). Set by the hover walk via `Widget::is_text_input`, so it covers every textbox on every screen with no hand-list.
@@ -3678,6 +3681,7 @@ impl PhotonApp {
             hints_dismissed: false,
             avatar_hovered: false,
             hover_hit: HIT_NONE,
+            hover_quiet: false,
             cursor_in_window: false,
             hover_is_textbox: false,
             pointer_down: false,

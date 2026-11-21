@@ -2125,11 +2125,19 @@ impl FluorApp<Px> for PhotonApp {
                     }
                 }
                 // Hit-test the shared map (chrome stamps its buttons, widgets stamp their pill silhouettes — all into chrome's map). `hit_at` returns the id under the cursor regardless of owner.
-                let new_hit = self
+                let mut new_hit = self
                     .chrome
                     .as_ref()
                     .map(|c| c.hit_at(ctx.cursor_x, ctx.cursor_y))
                     .unwrap_or(HIT_NONE);
+                // While a scroll runs nothing lights up; a move with no button down and no fling running ends the quiet and hovers again.
+                if self.hover_quiet {
+                    if self.pointer_down || self.list_fling != 0 || self.compose_fling != 0 {
+                        new_hit = HIT_NONE;
+                    } else {
+                        self.hover_quiet = false;
+                    }
+                }
                 let mut changed = false;
                 // Chrome tracks its OWN hover (title-bar controls); the app widgets are flipped in ONE walk below.
                 if let Some(chrome) = self.chrome.as_mut() {
@@ -4505,11 +4513,25 @@ impl PhotonApp {
     fn pane_scroll(&mut self, ctx: &mut Context, dy: isize, is_pixel_delta: bool, from_fling: bool) -> EventResponse {
             // SCROLL AS A MEMMOVE: set when this scroll moved a pane RIGIDLY inside its bounds — the frame then rides `scroll_shift` (band repaint over a memmove) instead of dirtying the scene and the bg/chrome layers.
             let mut rigid = false;
+            // What is under the pointer, read from the hit map here: hover is quiet during a scroll, so `hover_hit` no longer says it.
+            let under = self.chrome.as_ref().map(|c| c.hit_at(ctx.cursor_x, ctx.cursor_y)).unwrap_or(HIT_NONE);
+            // A scroll's first step puts out every hover (glow, tint, bold): nothing under the pointer lights up until the scroll is over (owner 2026-11-20).
+            // One full frame drops a content-painted hover (a row's bold); the scroll's own frames ride the memmove after it.
+            if !self.hover_quiet {
+                self.hover_quiet = true;
+                if self.hover_hit != HIT_NONE {
+                    if let Some(chrome) = self.chrome.as_mut() {
+                        chrome.set_hover(HIT_NONE);
+                    }
+                    self.apply_hover(HIT_NONE, true);
+                    self.dirty_from("a scroll put the hover out");
+                }
+            }
             // COMPOSE BOX SCROLL (Nick 2026-09-09): a wheel or finger over the multi-line box moves its TEXT when there is more than fits; the pane behind stays put. Wheel down (negative dy) reveals the lines below → the band offset grows. A finger drag (a live press on the box, Android's synthesized pixel deltas) also carries a fling velocity for the release.
             if matches!(self.state, AppState::Conversation) {
                 let compose_id = self.message_textbox.as_ref().map(|t| t.hit_id()).unwrap_or(HIT_NONE);
                 let over_compose = compose_id != HIT_NONE
-                    && (self.hover_hit == compose_id || (self.pointer_down && self.drag_select_hit == compose_id))
+                    && (under == compose_id || (self.pointer_down && self.drag_select_hit == compose_id))
                     && self.message_textbox.as_ref().is_some_and(|t| t.max_scroll() > 0.0);
                 if over_compose {
                     let px = -(dy as f32) * if is_pixel_delta { 1.0 } else { 8.0 };
