@@ -265,6 +265,22 @@ impl PhotonApp {
         }
     }
 
+    /// Conversations that joined after the load started (the resume query's, a contact only it knew): the load restarts over every conversation still pending, the open one first, carrying what waits.
+    /// A worker already running is let go; the next landing it posts finds its channel closed and it stops.
+    pub(super) fn load_rows_too(&mut self, ids: Vec<ConversationId>) {
+        if ids.is_empty() {
+            return;
+        }
+        let open = self.active_conversation;
+        let mut pending: Vec<ConversationId> = self.conversations.iter().filter(|v| v.rows_pending).map(|v| v.id()).collect();
+        pending.sort_by_key(|id| Some(*id) != open);
+        crate::logf!("ROWS: {} conversation(s) joined the row load ({} pending in all)", ids.len(), pending.len());
+        self.start_rows_load(pending);
+        if let Some(id) = open {
+            self.want_rows_now(id);
+        }
+    }
+
     /// True until the last conversation's rows land.
     pub(super) fn rows_loading(&self) -> bool {
         self.rows_load.is_some()

@@ -292,12 +292,18 @@ impl PhotonApp {
                 self.reclutch_chainless_contacts("attest load");
                 // Conversations the load worker read from disk: adopt any we don't hold. Never clobber — an in-session conversation (rows landed while the worker ran) is fresher than its disk copy.
                 let mut merged_convs = 0usize;
+                // A resume's load read no rows (handle_query.rs): a conversation it adds comes rows_pending, for the rows worker.
+                let mut rows_owed: Vec<crate::types::ConversationId> = Vec::new();
                 for conv in data.conversations {
                     if !self.conversations.iter().any(|v| v.id() == conv.id()) {
+                        if conv.rows_pending {
+                            rows_owed.push(conv.id());
+                        }
                         self.conversations.push(conv);
                         merged_convs += 1;
                     }
                 }
+                self.load_rows_too(rows_owed);
                 if merged_convs > 0 {
                     crate::logf!(
                         "UI: merged {} conversation(s) from disk (total: {})",

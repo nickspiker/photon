@@ -924,6 +924,8 @@ impl HandleQuery {
                         // Conversations, one per contact row: messages plus the durable bits (unread, history cursor), keyed by the participant set so every device derives the same table.
                         let our_pid = crate::crypto::clutch::identity_party_id(&identity_seed);
                         let mut conversations: Vec<crate::types::Conversation> = Vec::new();
+                        // A RESUME reads no rows here: the UI already went to Ready on its own summaries and its rows worker is reading every stored row (rows_load.rs), so a second full read would only double the vault work and be discarded. A conversation only this load knows (a contact the cloud merge added) comes over with its durable state and rows_pending, and the UI hands it to the rows worker. A first attest, whose screen waits on this load, reads the rows here as before.
+                        let rows_now = persist_session;
                         for contact in &contacts {
                             let mut conv = contact.conversation(&our_pid);
                             if conversations.iter().any(|v| v.id() == conv.id()) {
@@ -934,7 +936,9 @@ impl HandleQuery {
                                 &contact.handle_hash,
                                 &storage,
                             );
-                            if let Err(e) =
+                            if !rows_now {
+                                conv.rows_pending = true;
+                            } else if let Err(e) =
                                 crate::storage::contacts::load_messages(&mut conv, &storage)
                             {
                                 crate::logf!(
@@ -947,7 +951,9 @@ impl HandleQuery {
                             // The bond's hidden conversation: its control rows, for re-ACK durability.
                             if let Some(b) = contact.bond_id(&our_pid) {
                                 let mut bc = crate::types::Conversation::new_bond(b, [our_pid, contact.handle_hash]);
-                                if let Err(e) = crate::storage::contacts::load_messages(&mut bc, &storage) {
+                                if !rows_now {
+                                    bc.rows_pending = true;
+                                } else if let Err(e) = crate::storage::contacts::load_messages(&mut bc, &storage) {
                                     crate::logf!("Network: failed to load bond rows for {}: {}", crate::fp(&contact.handle_proof).as_str(), e);
                                 }
                                 conversations.push(bc);
@@ -955,7 +961,7 @@ impl HandleQuery {
                         }
                         // GROUPS (docs/molecules.md §5): enumerate thru the index — chains and conversations ride the same vectors the UI already adopts, rosters ride beside.
                         let mut groups: Vec<(crate::types::molecule::MoleculeId, crate::types::molecule::Roster, crate::storage::molecule::MoleculeLocal)> = Vec::new();
-                        for (gid, roster, chains, conv) in crate::storage::molecule::load_all_molecules(&storage, true) {
+                        for (gid, roster, chains, conv) in crate::storage::molecule::load_all_molecules(&storage, rows_now) {
                             if let Some(c) = chains {
                                 friendships.push((*c.id(), c));
                             }
@@ -967,7 +973,8 @@ impl HandleQuery {
                         }
                         // OLD-SELF IMPORT — MIGRATION-EXPIRES: 2027-02-01 (Nick 2026-10-27: "that import of old will be english only and version out in 12 versions, no reason to keep old non atoms around in the code"); grep the tag to find every piece.
                         // The old self conversation, when it holds a photon and is no atom yet: the UI founds it in place as one (found_self_atom).
-                        {
+                        // A resume's UI already read it (adopt_old_self_conversation in finish_resume_load).
+                        if rows_now {
                             let mut legacy = crate::types::Conversation::new([our_pid]);
                             if !groups.iter().any(|(g, _, _)| g.0 == *legacy.id().as_bytes()) && !conversations.iter().any(|v| v.id() == legacy.id()) {
                                 crate::storage::contacts::load_conversation_state(&mut legacy, &our_pid, &storage);
