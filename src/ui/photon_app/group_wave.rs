@@ -206,7 +206,7 @@ impl PhotonApp {
             return;
         }
         crate::logf!("WAVE: group wave {} offered in {}", hex::encode(&wave_id[..4]), hex::encode(&gid.0[..4]));
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// One signal on the group's lane, kept as our own hidden row (the fleet's ring/stop fan-out reads it from the sibling push).
@@ -459,7 +459,7 @@ impl PhotonApp {
             self.group_link_up(dev);
         }
         crate::logf!("WAVE: joined group wave {} — {} link(s) up", hex::encode(&wave_id[..4]), self.group_wave.as_ref().map_or(0, |w| w.links.len()));
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// An offer seen in a group, rung here or not: the group's running wave is this one, unless a newer offer already stands.
@@ -628,7 +628,7 @@ impl PhotonApp {
                         }
                         self.change_focus(None);
                         crate::logf!("WAVE: RING — group wave {} from {} in {}", hex::encode(&wave_id[..4]), crate::fp(&party), hex::encode(&gid.0[..4]));
-                        self.scene_dirty = true;
+                        self.mark_dirty();
                     }
                 }
             }
@@ -676,7 +676,7 @@ impl PhotonApp {
                         self.send_group_express(gid, &WaveSignal::Answer { wave_id, nonce, device: Some(dev) }, vsf::eagle_time_oscillations(), None, Some(device));
                     }
                 }
-                self.scene_dirty = true;
+                self.mark_dirty();
             }
             WaveSignal::Hangup { wave_id } => {
                 self.note_live_leave(gid, wave_id, device);
@@ -697,7 +697,7 @@ impl PhotonApp {
                         GroupPhase::Joined => {}
                     }
                 }
-                self.scene_dirty = true;
+                self.mark_dirty();
             }
             // Decline, Busy, Taken, Anchor: a member's own business in a group — the wave goes on with whoever joins.
             _ => {}
@@ -712,7 +712,7 @@ impl PhotonApp {
                 self.ended_waves.insert(wave_id);
                 self.group_wave = None;
                 Self::stop_group_ring_platform();
-                self.scene_dirty = true;
+                self.mark_dirty();
                 return;
             }
             self.hand_off_group_wave(wave_id, device, row_ts);
@@ -742,7 +742,7 @@ impl PhotonApp {
             self.ended_waves.insert(wave_id);
             self.group_wave = None;
             Self::stop_group_ring_platform();
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
     }
 
@@ -878,7 +878,7 @@ impl PhotonApp {
             w.links.push(GroupLinkUp { device, slot, lead, engine, _beam_rx: beam_rx, reconnecting: false, probe: 0, last_probe_osc: 0, spool: ticket });
             w.ever_linked = true;
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// Take one link down; the lead passes to the next link if it was this one.
@@ -983,7 +983,7 @@ impl PhotonApp {
             conv.insert_message_sorted(row.clone());
         }
         self.persist_and_push_rows(id, std::slice::from_ref(&row));
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// THE GROUP DROUGHT (docs/group-waves.md), the 1:1 wave's reconnect carried to each link: two seconds without an authenticated packet on a link marks it reconnecting and pushes our address to that device; a link that has never heard its peer walks the device's candidate addresses, one every two seconds; a link that has carried media keeps its path (a working path is never abandoned — the peer stopped, we are not aimed wrong). No give-up: a link waits until its peer leaves or we do.
@@ -1046,7 +1046,7 @@ impl PhotonApp {
             }
         }
         if changed {
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
     }
 
@@ -1132,6 +1132,7 @@ impl PhotonApp {
         };
         w.beam_opening = None;
         self.scene_dirty = true;
+        super::RedrawAsk::here().note(&mut self.redraw_why, &mut self.frame_why);
         match got {
             Ok(tx) if w.phase == GroupPhase::Joined && w.beam_tx.is_none() => w.beam_tx = Some(tx),
             Ok(tx) => crate::wave::beam_session::retire(tx),
@@ -1296,7 +1297,7 @@ impl PhotonApp {
         crate::logf!("WAVE: group recording kept — {} bytes as blob {}…, {} s", kept.size, hex::encode(&kept.hash[..4]), kept.secs);
         self.space_check("a group recording kept");
         self.keep_trim("a group recording kept");
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     fn stop_group_ring_platform() {

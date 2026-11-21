@@ -383,7 +383,7 @@ impl PhotonApp {
                             load.first_page = Some(load.since.elapsed());
                         }
                     }
-                    self.scene_dirty = true;
+                    self.mark_dirty();
                 }
                 Landed::Full { id, rows, timing } => self.rows_landed(id, rows, timing),
             }
@@ -439,7 +439,7 @@ impl PhotonApp {
         if let Some(ci) = self.pair_contact_of(id) {
             self.reserve_fleet_forward_for(ci);
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
         if let Some(load) = self.rows_load.as_mut() {
             load.install += t.elapsed();
         }

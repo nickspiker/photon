@@ -103,7 +103,7 @@ impl PhotonApp {
             Some(h) => crate::logf!("GROUP AVATAR: {} now wears picture {}…", hex::encode(&gid.0[..4]), hex::encode(&h[..4])),
             None => crate::logf!("GROUP AVATAR: {}'s picture taken away", hex::encode(&gid.0[..4])),
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
         true
     }
 
@@ -128,7 +128,7 @@ impl PhotonApp {
                             self.group_faces_unreadable.push(image);
                         }
                     }
-                    self.scene_dirty = true;
+                    self.mark_dirty();
                 }
             }
         }

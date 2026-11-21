@@ -119,7 +119,7 @@ impl PhotonApp {
         }
         self.selected_msg = None;
         self.msg_wrap = None; // the row set changed
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 }
 

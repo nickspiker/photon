@@ -569,7 +569,7 @@ impl PhotonApp {
                 conv.insert_message_sorted(msg);
             }
             self.bridge_int = None;
-            self.scene_dirty = true;
+            self.mark_dirty();
             crate::log("BRIDGE: third Stop press — prompt released locally");
         }
     }
@@ -607,7 +607,7 @@ impl PhotonApp {
             if self.bridge_int.map_or(false, |(t0, _)| t0 == t) {
                 self.bridge_int = None;
             }
-            self.scene_dirty = true;
+            self.mark_dirty();
             crate::logf!("BRIDGE: host went offline with a command in flight (target {}) — stream marked lost", t);
         }
     }
@@ -1088,7 +1088,7 @@ impl PhotonApp {
                 if pp.name.is_empty() {
                     pp.name = self.pigeon_rx.name(&hash).unwrap_or_default().to_string();
                 }
-                self.scene_dirty = true;
+                self.mark_dirty();
             }
             if pigeon_ack_due(prev, got, of) {
                 self.send_pigeon_ack(&hash, got, of, signer);
@@ -1206,7 +1206,7 @@ impl PhotonApp {
                     crate::logf!("PIGEON: {} — host {} holds every one of {} chunk(s); landing next", pp.name, crate::fp(&from), pp.of);
                 }
                 super::bridge::bridge_wake(&self.event_proxy);
-                self.scene_dirty = true;
+                self.mark_dirty();
                 if whole {
                     // The bar is full; the host's "landed at …" row is the next thing the operator sees.
                     self.pigeon_progress.remove(&content_hash);

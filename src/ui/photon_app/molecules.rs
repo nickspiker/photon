@@ -332,7 +332,7 @@ impl PhotonApp {
             self.alert_invitation(ci, gid, row_osc, &title);
             self.share_offer_with_fleet(ci, &blob, row_osc);
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// Hand an invitation to our own devices as a page row carrying its snapshot (`gpl`), under the bond's token: whichever of our devices the sponsor reached, every one of them parks it.
@@ -1212,7 +1212,7 @@ impl PhotonApp {
         if let Some(bfid) = self.bond_fid_of(ci) {
             self.persist_conversation_async(bfid);
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// SPONSOR, on the invitee's Decline: the undo — forget the invite, tombstone our offer row, and delete it for everyone (the marker clears the card from each of the invitee's devices).
@@ -1245,7 +1245,7 @@ impl PhotonApp {
         }
         let deleted = self.send_bond_row(ci, crate::types::RowControl::Delete { target: row_ts }, None, crate::network::time_base::stamp_osc());
         crate::logf!("MOLECULE: invite of {} into {} {} — undone{}", crate::fp(&self.contacts[ci].handle_proof), hex::encode(&gid.0[..4]), why, if deleted { ", offer deleted for everyone" } else { " here (no chain for the delete marker)" });
-        self.scene_dirty = true;
+        self.mark_dirty();
         true
     }
 
@@ -1481,7 +1481,7 @@ impl PhotonApp {
             l.offered = local.offered;
             l.withdrawn = local.withdrawn;
         });
-        self.scene_dirty = true;
+        self.mark_dirty();
         crate::logf!("MOLECULE: our fleet's invite of {} into {} {}", fp, hex::encode(&gid.0[..4]), if ended { "ended — no longer offered here" } else { "taken here" });
         if !ended && new_here && online && !self.molecule_is_left(&gid) {
             crate::logf!("MOLECULE: {} is online now — offering {} from this device", fp, hex::encode(&gid.0[..4]));
@@ -1719,7 +1719,7 @@ impl PhotonApp {
         if done.is_empty() {
             if changed {
                 self.persist_conversation_async(fid);
-                self.scene_dirty = true;
+                self.mark_dirty();
             }
             return changed;
         }
@@ -2040,7 +2040,7 @@ impl PhotonApp {
                 self.clear_group_invites(gid);
                 self.pending_molecule_posts.retain(|p| p.gid != gid);
                 self.reseed_molecule_pubkeys();
-                self.scene_dirty = true;
+                self.mark_dirty();
                 crate::logf!("MOLECULE: our fleet left {} on another device — left here too", hex::encode(&gid.0[..4]));
             }
             return;
@@ -2064,7 +2064,7 @@ impl PhotonApp {
             if let Some(storage) = self.storage.as_ref() {
                 crate::log_err!(crate::storage::molecule::save_bond_offer(o, storage), "save an accepted bond offer");
             }
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
     }
 

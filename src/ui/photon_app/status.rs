@@ -83,7 +83,7 @@ impl PhotonApp {
                 self.own_avatar_row = None;
                 self.device_avatar_scaled = None;
                 self.device_avatar_scaled_diameter = 0;
-                self.scene_dirty = true;
+                self.mark_dirty();
                 self.avatar_set_rx = None;
                 crate::log("avatar picker: display pixels installed");
             }
@@ -212,7 +212,13 @@ impl PhotonApp {
             None => return false,
         };
 
-        let mut changed = false;
+        // Where this drain changed what the screen draws, each change by its own line (`RedrawAsk`): empty = nothing to draw.
+        let mut changed: Vec<super::RedrawAsk> = Vec::new();
+        macro_rules! changed {
+            () => {
+                changed.push(super::RedrawAsk::here())
+            };
+        }
         let mut ceremony_completions: Vec<usize> = Vec::new(); // Contact indices to complete after loop
                                                                // Deferred KEM decapsulation spawns (spawn_clutch_kem_decap needs &self; the loop holds contact borrows) — same deferral discipline as ceremony_completions.
         let mut decap_spawns: Vec<(
@@ -522,6 +528,8 @@ impl PhotonApp {
         let mut consent_roster_push = false;
         // Complete-without-chains probe (field 2026-08-26, Emma's post-wipe Frankenstein): tokens whose inbound frames found NO friendship chains — checked post-drain against the contact's claimed ceremony state.
         let mut rekey_probe: Vec<[u8; 32]> = Vec::new();
+        // Whether the screen shows presence by the contacts list's rings alone: then a presence flip is the ring diff's to draw (`ring_damage`, its row's box), and asks no whole frame here.
+        let ring_carries_presence = self.ring_carries_presence();
         loop {
             // TIME BUDGET — the UI thread's stall is bounded whatever the storm size: past 250ms the rest of the backlog waits for the next tick (the channel holds it; un-replayed synthetic frames go back on chat_replay_queue below, order preserved). Unbounded, a churny catch-up pass measured 1.8s on the desktop — taps landed but nothing painted until the drain yielded (2026-08-11).
             if pass_start.elapsed().as_millis() > 250 {
@@ -863,7 +871,7 @@ impl PhotonApp {
                                         .collect::<crate::linear_map::SortedSet<_>>();
                                     if !reporters.is_empty() {
                                         contact.refused_devices.push(*reported);
-                                        changed = true;
+                                        changed!();
                                         crate::logf!("FRIEND-REFUSE: {} device {} refused — reported stolen by {} fleet device(s)", crate::fp(&contact.handle_proof), crate::fp(reported), reporters.len());
                                         refusals_moved = true;
                                     }
@@ -892,7 +900,7 @@ impl PhotonApp {
                                         .filter(|d| !keep.contains(d))
                                         .collect();
                                     contact.refused_devices = keep;
-                                    changed = true;
+                                    changed!();
                                     for dev in &dropped {
                                         crate::logf!("FRIEND-UNREFUSE: {} device {} restored — no standing reporter and {}'s current locked set doesn't name it (unlock propagated)", crate::fp(&contact.handle_proof), crate::fp(dev), crate::fp(&peer_pubkey.key));
                                     }
@@ -991,7 +999,7 @@ impl PhotonApp {
                             if let Some(a) = about.as_ref().filter(|_| contact.is_sibling) {
                                 if contact.device_about.as_deref() != Some(a.as_str()) {
                                     contact.device_about = Some(a.clone());
-                                    changed = true;
+                                    changed!();
                                 }
                             }
                             // PROFILE RECORDS first (FLOWS.md "Profile" P1): each is checked against this contact's identity and fold, and only one newer than the copy held moves the shown name or pin; an older or replayed copy changes nothing.
@@ -1001,7 +1009,7 @@ impl PhotonApp {
                                     let (field, rev) = (rec.field, rec.rev);
                                     if contact.offer_profile_record(rec) {
                                         crate::logf!("CONTACT: {} profile {} record adopted (revision {}, via device {})", crate::fp(&contact.handle_proof), field.label(), rev, crate::fp(&peer_pubkey.key));
-                                        changed = true;
+                                        changed!();
                                     }
                                 }
                             }
@@ -1019,7 +1027,7 @@ impl PhotonApp {
                                     contact.published_name_dirty = true;
                                     // Roster LWW clock: the published name is a synced identity field as of PRST4 — same rule as the pin adoption below.
                                     contact.roster_updated = vsf::eagle_time_oscillations();
-                                    changed = true;
+                                    changed!();
                                 }
                             }
                             // Always-granted AVATAR slot off the pong: adopt the friend's avatar pin (random key ‖ lookup). This is the ONLY way a friend learns the pin — it's never handle-derivable — so it arrives here, gated by the pong only answering authenticated contacts. A new/changed pin marks the contact for a fresh avatar fetch.
@@ -1033,7 +1041,7 @@ impl PhotonApp {
                                     contact.avatar_pin_dirty = true;
                                     // Roster LWW clock: the pin is a synced identity field, so this adoption must win the merge on every sibling (the post-drain sweep pushes the roster).
                                     contact.roster_updated = vsf::eagle_time_oscillations();
-                                    changed = true;
+                                    changed!();
                                 }
                             }
                             // BRAID CAPABILITY (2026-09-27): this device's sealed tail said which braid it weaves — recorded per device for the ceremony's claim (Contact::braid_claimable).
@@ -1061,7 +1069,9 @@ impl PhotonApp {
                             let came_online = identity_online && !contact.is_online;
                             if contact.is_online != identity_online {
                                 contact.is_online = identity_online;
-                                changed = true;
+                                if !ring_carries_presence {
+                                    changed!();
+                                }
                                 crate::logf!(
                                     "Status: {} is now {} (device {} {})",
                                     crate::fp(&contact.handle_proof),
@@ -1143,7 +1153,7 @@ impl PhotonApp {
                                             contact.local_port = Some(addr.port());
                                         }
                                     }
-                                    changed = true;
+                                    changed!();
                                 }
                             }
 
@@ -1253,7 +1263,7 @@ impl PhotonApp {
                                                     relay_to: contact.relay_device_list(),
                                                 });
                                                 contact.clutch_offer_sent = true;
-                                                changed = true;
+                                                changed!();
                                             }
                                             Err(e) => {
                                                 crate::logf!(
@@ -1956,7 +1966,7 @@ impl PhotonApp {
                                     crate::types::merge_delivered_to(&mut msg.delivered_to, &[from_handle_hash]);
                                     delivered_rows.push(msg.clone());
                                     found_msg = true;
-                                    changed = true;
+                                    changed!();
                                 }
                             }
 
@@ -2197,7 +2207,7 @@ impl PhotonApp {
                             // Authenticated CLUTCH traffic from them ⇒ reachable right now ⇒ show online immediately, don't wait for the next pong.
                             if !contact.is_online {
                                 contact.is_online = true;
-                                changed = true;
+                                changed!();
                                 crate::logf!(
                                     "Status: {} is now ONLINE (CLUTCH)",
                                     crate::fp(&contact.handle_proof)
@@ -2587,7 +2597,7 @@ impl PhotonApp {
                                             "CLUTCH: Will spawn KEM encapsulation for {}",
                                             crate::fp(&contact.handle_proof)
                                         );
-                                        changed = true;
+                                        changed!();
                                     } else {
                                         crate::logf!("CLUTCH: Deferring KEM response to {} - waiting for ceremony_id", crate::fp(&contact.handle_proof));
                                     }
@@ -2598,7 +2608,7 @@ impl PhotonApp {
                                     match contact.ceremony_completion_hold() {
                                         None => {
                                             ceremony_completions.push(idx);
-                                            changed = true;
+                                            changed!();
                                         }
                                         Some(why) => crate::logf!("CLUTCH: slots complete for {} on a re-sent offer but {} — not completing the round again", crate::fp(&contact.handle_proof), why),
                                     }
@@ -2828,7 +2838,7 @@ impl PhotonApp {
                             // Authenticated CLUTCH traffic from them ⇒ reachable right now ⇒ show online immediately, don't wait for the next pong.
                             if !contact.is_online {
                                 contact.is_online = true;
-                                changed = true;
+                                changed!();
                                 crate::logf!(
                                     "Status: {} is now ONLINE (CLUTCH)",
                                     crate::fp(&contact.handle_proof)
@@ -2919,7 +2929,7 @@ impl PhotonApp {
                                         their_kem.clone(),
                                         local_keys.clone(),
                                     ));
-                                    changed = true;
+                                    changed!();
                                 }
                             } else {
                                 crate::logf!(
@@ -3021,7 +3031,7 @@ impl PhotonApp {
                             // Authenticated CLUTCH traffic from them ⇒ reachable right now ⇒ show online immediately, don't wait for the next pong.
                             if !contact.is_online {
                                 contact.is_online = true;
-                                changed = true;
+                                changed!();
                                 crate::logf!(
                                     "Status: {} is now ONLINE (CLUTCH)",
                                     crate::fp(&contact.handle_proof)
@@ -3030,7 +3040,7 @@ impl PhotonApp {
                             // We just received + VSF-verified an authenticated message from them — they're reachable NOW, so reflect online immediately instead of waiting for the next pong (fixes "CLUTCH completed but still shows offline").
                             if !contact.is_online {
                                 contact.is_online = true;
-                                changed = true;
+                                changed!();
                                 crate::logf!(
                                     "Status: {} is now ONLINE (CLUTCH complete)",
                                     crate::fp(&contact.handle_proof)
@@ -3081,7 +3091,7 @@ impl PhotonApp {
                                             }
                                             // Keep our proof + resend budget: we just verified theirs, but ours may still be in flight or dropped. ping_contacts drains the budget over the next few cycles, then clears it — so neither side strands.
                                             contact.clutch_their_eggs_proof = None;
-                                            changed = true;
+                                            changed!();
 
                                             // NOTE: Don't clear PT sends here - our ClutchComplete proof might still be in flight to them. Let it finish.
 
@@ -3122,7 +3132,7 @@ impl PhotonApp {
                                                             super::CLUTCH_ROUND_TTL_OSC,
                                                         ));
                                             }
-                                            changed = true;
+                                            changed!();
                                         }
                                     } else {
                                         // Race condition: proof arrived before check_clutch_ceremonies processed our ceremony result. Store theirs for when we're ready.
@@ -3130,7 +3140,7 @@ impl PhotonApp {
                                         contact.clutch_their_eggs_proof = Some(payload.eggs_proof);
                                         contact.clutch_their_proof_ceremony =
                                             Some(received_ceremony_id);
-                                        changed = true;
+                                        changed!();
                                     }
                                 }
                                 ClutchState::Pending => {
@@ -3139,7 +3149,7 @@ impl PhotonApp {
                                     contact.clutch_their_eggs_proof = Some(payload.eggs_proof);
                                     contact.clutch_their_proof_ceremony =
                                         Some(received_ceremony_id);
-                                    changed = true;
+                                    changed!();
                                 }
                                 ClutchState::Complete => {
                                     // We're Complete but the peer is STILL sending its proof — that means our ClutchComplete never reached them (a dropped proof strands them in AwaitingProof forever, since we'd otherwise ignore the duplicate). Treat the duplicate as an implicit re-request: re-arm our proof-resend budget so the next ping cycle re-sends our ClutchComplete. This is the recovery half of the asymmetric-completion bug (the other half is the AwaitingProof side re-sending its proof while the peer is online).
@@ -3164,12 +3174,12 @@ impl PhotonApp {
                                         {
                                             contact.clutch_proof_gave_up = true;
                                             contact.clutch_our_eggs_proof = None;
-                                            changed = true;
+                                            changed!();
                                             crate::logf!("CLUTCH: giving up proof re-arm to {} — duplicate storm past the lifetime cap (peer can't place our proof); remove & re-add", crate::fp(&contact.handle_proof));
                                         } else {
                                             contact.clutch_proof_resends_left = 5;
                                             contact.clutch_proof_retry_lifetime += 1;
-                                            changed = true;
+                                            changed!();
                                             crate::logf!("CLUTCH: Re-arming proof resend to {} — they re-sent their proof (our ClutchComplete was likely lost)", crate::fp(&contact.handle_proof));
                                         }
                                     } else {
@@ -3204,7 +3214,7 @@ impl PhotonApp {
                             if !lan_ping_indices.contains(&idx) {
                                 lan_ping_indices.push(idx);
                             }
-                            changed = true;
+                            changed!();
                             crate::logf!("SIBLING: {} heard at {} on this LAN — pinging it there", crate::fp(&device), addr);
                         }
                     }
@@ -3320,7 +3330,7 @@ impl PhotonApp {
                                 crate::network::wfd::stop_open_house(true);
                                 lan_ping_indices.push(self.contacts.len() - 1);
                                 wfd_beacon_reply = Some(addr);
-                                changed = true;
+                                changed!();
                                 continue;
                             }
                         }
@@ -3339,16 +3349,21 @@ impl PhotonApp {
                     if let Some(dk) = device_pubkey.filter(|_| Some(handle_proof) == self.our_handle_proof()) {
                         if let Some(idx) = self.contacts.iter().position(|c| c.is_sibling && c.device_key() == Some(dk)) {
                             let c = &mut self.contacts[idx];
+                            // A beacon repeats the address it gave last time; only a move is a change the screen (the Fleet page's addresses) has to show.
+                            let before = (c.p2p_addr, c.local_ip, c.local_port);
                             if crate::network::traverse::gather::is_wfd_subnet(local_ip) {
                                 c.p2p_addr = Some(std::net::SocketAddr::new(std::net::IpAddr::V4(local_ip), port));
                             } else {
                                 c.local_ip = Some(local_ip);
                                 c.local_port = Some(port);
                             }
+                            let moved = (c.p2p_addr, c.local_ip, c.local_port) != before;
                             if !lan_ping_indices.contains(&idx) {
                                 lan_ping_indices.push(idx);
                             }
-                            changed = true;
+                            if moved {
+                                changed!();
+                            }
                         }
                     }
                     // Find contact by handle_proof and store their LAN IP + port. Siblings AND the self-contact are skipped — an own-hp broadcast carries only (hp, port) with no device disambiguation, so it can't say WHICH of our devices it came from; sibling addresses flow via FGTW peer rows + pong source addresses instead.
@@ -3372,7 +3387,7 @@ impl PhotonApp {
                                     );
                                     contact.p2p_addr = Some(addr);
                                     lan_ping_indices.push(idx);
-                                    changed = true;
+                                    changed!();
                                     // Answer-back: our reply beacon teaches THEM our group address. Gated on the learn edge (a repeat beacon changes nothing), which quenches the beacon ping-pong after one round trip each way.
                                     wfd_beacon_reply = Some(addr);
                                 }
@@ -3395,7 +3410,7 @@ impl PhotonApp {
                                 );
                                 // Ping immediately so we don't wait for next scheduled cycle
                                 lan_ping_indices.push(idx);
-                                changed = true;
+                                changed!();
                             }
                             break;
                         }
@@ -3931,8 +3946,7 @@ impl PhotonApp {
                 StatusUpdate::AttachProgress(snap) => {
                     self.attach_progress = snap;
                     if matches!(self.state, AppState::Conversation) {
-                        self.scene_dirty = true;
-                        changed = true;
+                        changed!();
                     }
                 }
                 // A bridge host's word on a pigeon we dropped — moves the row's bar.
@@ -3952,8 +3966,7 @@ impl PhotonApp {
                         self.attach_confirmed.insert(content_hash);
                         self.attach_send_total.remove(&content_hash);
                         self.msg_wrap = None;
-                        self.scene_dirty = true;
-                        changed = true;
+                        changed!();
                     }
                 }
                 StatusUpdate::AttachNoneReceived { content_hash, sender_pubkey } => {
@@ -5919,10 +5932,10 @@ impl PhotonApp {
             if kind != crate::network::fgtw::protocol::HoldingsKind::Missing {
                 self.holdings_serve(kind, nonce, sealed, sender, addr);
             } else if self.space_answer(nonce, &sealed, sender) {
-                changed = true;
+                changed!();
             } else if self.holdings_answer(nonce, sealed, sender) {
-                self.scene_dirty = true;
-                changed = true;
+                self.mark_dirty();
+                changed!();
             }
         }
 
@@ -5932,19 +5945,26 @@ impl PhotonApp {
         }
         for (hp, chain, sender) in fleet_chains_after {
             if self.adopt_peer_chain(hp, &chain, sender) {
-                changed = true;
+                changed!();
             }
         }
         for record in addresses_after {
             self.pass_address_on(record);
         }
+        // The Add machine lives the whole session and every own-handle beacon is a step: the screen moves only when what its page draws (`add_view`) moved.
         for (bytes, from) in bind_reqs_after {
+            let before = self.add_view.clone();
             self.add_step(fgtw::flow::Event::Frame { bytes: &bytes, from: Some(from) });
-            changed = true;
+            if self.add_view != before {
+                changed!();
+            }
         }
         for device in lan_heard_after {
+            let before = self.add_view.clone();
             self.add_step(fgtw::flow::Event::LanHeard { device });
-            changed = true;
+            if self.add_view != before {
+                changed!();
+            }
         }
         for dev in fstate_to_siblings_after {
             self.fleet_state_push(Some(dev));
@@ -5969,7 +5989,7 @@ impl PhotonApp {
         }
         for (sealed, sender) in addr_books_after {
             if self.take_addr_book(&sealed, sender) {
-                changed = true;
+                changed!();
             }
         }
         // Releases peer to peer (network/peer_release.rs): a device that went offline is a fresh link when it is back, a manifest handed to us is verified off this thread, and a pong claiming less than we hold is answered with ours.
@@ -5997,7 +6017,7 @@ impl PhotonApp {
                 Ok(state) => {
                     crate::logf!("FLEET: state from sibling {} — {} roster entr(ies), {} global setting(s)", crate::fp(&sender), state.roster.len(), state.global_settings.len());
                     if self.adopt_fleet_state(state, Some(sender)) {
-                        changed = true;
+                        changed!();
                     }
                 }
                 Err(e) => crate::logf!("FLEET: state from sibling {} did not open under our key ({}) — a key rotation in flight; its next push carries it", crate::fp(&sender), e),
@@ -6005,7 +6025,7 @@ impl PhotonApp {
         }
         for (hp, blob, sender) in fanouts_after {
             if self.on_fanout(hp, &blob, sender) {
-                changed = true;
+                changed!();
             }
         }
 
@@ -6017,7 +6037,7 @@ impl PhotonApp {
             for (bytes, from) in depart_frames_after {
                 self.depart_step(fgtw::flow::Event::Frame { bytes: &bytes, from: Some(from) });
             }
-            changed = true;
+            changed!();
         }
 
         // Wi-Fi Direct beacon answer-back (the group-up pt_disc exchange's second leg).
@@ -6118,7 +6138,7 @@ impl PhotonApp {
         // Process deferred ceremony completions (after releasing checker borrow)
         for idx in ceremony_completions {
             self.complete_clutch_ceremony_by_idx(idx);
-            changed = true;
+            changed!();
         }
 
         // Deferred probe-before-generate verdict (a blind_srv miss landed while S was None).
@@ -6150,7 +6170,7 @@ impl PhotonApp {
         }
         for (gid, device, ts) in molecule_acks {
             if self.on_molecule_ack(gid, device, ts) {
-                changed = true;
+                changed!();
             }
         }
         catching_up.sort_unstable_by_key(|g| g.0);
@@ -6179,7 +6199,9 @@ impl PhotonApp {
         }
         touched.sort_unstable_by_key(|g| g.0);
         touched.dedup();
-        changed |= self.settle_catching_up(&touched);
+        if self.settle_catching_up(&touched) {
+            changed!();
+        }
         for gid in catching_up {
             // Our own devices may already hold the era we cannot open: ask them first, once per held era — only while a frame still waits on it.
             if self.molecule_locals.iter().any(|(g, l)| *g == gid && l.phase == crate::storage::molecule::MoleculePhase::CatchingUp) {
@@ -6189,7 +6211,7 @@ impl PhotonApp {
         // Sibling fork repair (deferred past the checker borrow): apply inbound resets first (each echoes once so the initiator converges), then fire any detector-initiated resets (mint nonce + apply + send).
         for (idx, nonce, echo) in chain_reset_apply {
             self.apply_sibling_chain_reset(idx, nonce, echo);
-            changed = true;
+            changed!();
         }
         if fleet_sweep_due {
             self.kick_fleet_history_sweep("sibling online");
@@ -6398,7 +6420,10 @@ impl PhotonApp {
         }
 
         // Content marks the scene dirty HERE, not via the caller's return: the Android foreground SERVICE also runs this drain headless (nativeServiceTick → advance_protocol) and drops the returned bool — so a presence flip or name/pin adoption that landed while backgrounded painted nothing on resume (the field "online ring is stale until you click thru", 2026-08-08). scene_dirty is app state, so marking it at the mutation site survives the headless window and the first visible frame repaints.
-        self.scene_dirty |= changed;
+        for at in &changed {
+            self.note_ask(*at);
+        }
+        self.scene_dirty |= !changed.is_empty();
         {
             let el = deferred_t.elapsed();
             let ms = el.as_millis();
@@ -6408,6 +6433,6 @@ impl PhotonApp {
             self.tick_prof_add("status: deferred", el.as_secs_f32() * 1000.0);
             self.tick_prof_add("status: pre-loop", preloop_ms_f);
         }
-        changed
+        !changed.is_empty()
     }
 }

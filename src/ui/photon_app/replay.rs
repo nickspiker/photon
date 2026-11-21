@@ -140,7 +140,7 @@ impl PhotonApp {
         let n = voices.len();
         self.wave_replay = Some(WaveReplay { hash, title, voices, muted: vec![false; n], paused_at: None, total, faces: Vec::new(), face_diam: 0, bar: (0.0, 0.0), video, base_osc });
         crate::logf!("WAVE: replaying {}… — {} voice(s)", hex::encode(&hash[..4]), n);
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// Back: the screen goes and the recording stops with it (Nick 2026-11-06: navigating away stops it, not plays on in the background).
@@ -149,7 +149,7 @@ impl PhotonApp {
         if was {
             self.wave_playback = None; // drop = stop
             self.wave_playback_hash = None;
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
         was
     }
@@ -225,7 +225,7 @@ impl PhotonApp {
             }
             _ => {}
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
         true
     }
 

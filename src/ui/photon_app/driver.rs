@@ -95,7 +95,7 @@ impl FluorApp<Px> for PhotonApp {
         } else if let Some(tb) = self.textbox_by_hit_mut(focus) {
             tb.replace_char_range(start, end, s, text);
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     fn wants_input_reset(&mut self) -> bool {
@@ -783,7 +783,7 @@ impl FluorApp<Px> for PhotonApp {
                     self.unattended_verify = Some((rx, target_on));
                     self.unattended_confirm_failed = false;
                 }
-                self.scene_dirty = true;
+                self.mark_dirty();
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
@@ -793,7 +793,7 @@ impl FluorApp<Px> for PhotonApp {
                 self.unattended_confirm = None;
                 self.unattended_confirm_failed = false;
                 self.change_focus(None);
-                self.scene_dirty = true;
+                self.mark_dirty();
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
@@ -1274,7 +1274,7 @@ impl FluorApp<Px> for PhotonApp {
                         }
                         _ => {}
                     }
-                    self.scene_dirty = true;
+                    self.mark_dirty();
                     ctx.window.request_redraw();
                 } else if page == SettingsPage::Vault {
                     if slot == 0 {
@@ -1290,7 +1290,7 @@ impl FluorApp<Px> for PhotonApp {
                     } else if slot == 8 || slot == 9 {
                         // What this device keeps: its own limits, or the fleet's (keep.rs).
                         self.set_keep_follow(slot == 9);
-                        self.scene_dirty = true;
+                        self.mark_dirty();
                         ctx.window.request_redraw();
                     }
                 } else if page == SettingsPage::Octopus {
@@ -1319,7 +1319,7 @@ impl FluorApp<Px> for PhotonApp {
                             }
                         }
                     }
-                    self.scene_dirty = true;
+                    self.mark_dirty();
                 } else if page == SettingsPage::Ideas {
                     if slot == super::render::IDEAS_PILL_IDEA {
                         self.submit_gripe("idea");
@@ -1333,7 +1333,7 @@ impl FluorApp<Px> for PhotonApp {
                         if let Some(ch) = key.chars().next() {
                             self.handle_chord_action(ch, ctx);
                         }
-                        self.scene_dirty = true;
+                        self.mark_dirty();
                     } else if slot == 3 {
                         // "View"/"Back" → in the record inspector, back to the list; else toggle the whole viewer.
                         if self.diag_log_inspect.is_some() {
@@ -1344,7 +1344,7 @@ impl FluorApp<Px> for PhotonApp {
                         } else {
                             self.diag_log_open();
                         }
-                        self.scene_dirty = true;
+                        self.mark_dirty();
                     } else if self.diag_log_view {
                         // The viewer replaces the Clear/Snapshot/Submit pills — their hit stamps can outlive a frame, and a stale tap must not clear or submit invisibly.
                     } else if slot == 0 {
@@ -1449,7 +1449,7 @@ impl FluorApp<Px> for PhotonApp {
                     self.decline_offer(gid);
                 }
             }
-            self.scene_dirty = true;
+            self.mark_dirty();
             ctx.window.request_redraw();
             return EventResponse::Handled;
         }
@@ -1479,7 +1479,7 @@ impl FluorApp<Px> for PhotonApp {
                 }
             }
             self.contacts_scroll = 0;
-            self.scene_dirty = true;
+            self.mark_dirty();
             ctx.window.request_redraw();
             return EventResponse::Handled;
         }
@@ -1516,7 +1516,7 @@ impl FluorApp<Px> for PhotonApp {
                         }
                         None => self.atom_picks.push(party),
                     }
-                    self.scene_dirty = true;
+                    self.mark_dirty();
                     ctx.window.request_redraw();
                     return EventResponse::Handled;
                 }
@@ -1556,7 +1556,7 @@ impl FluorApp<Px> for PhotonApp {
                             crate::log("msg-details: message text copied");
                             // Pill flips green + "copied" — event-cleared when the selection moves/closes.
                             self.selected_msg_copied = true;
-                            self.scene_dirty = true;
+                            self.mark_dirty();
                         }
                     }
                 }
@@ -1581,7 +1581,7 @@ impl FluorApp<Px> for PhotonApp {
                             self.change_focus(Some(id));
                         }
                         self.selected_msg = None;
-                        self.scene_dirty = true;
+                        self.mark_dirty();
                     } else if let Some(glyph) = self.react_strip_glyphs.get(slot).cloned() {
                         let ours: Option<String> =
                             self.conv_by_id(sci).and_then(|v| v.current_reaction(ts, true));
@@ -1596,7 +1596,7 @@ impl FluorApp<Px> for PhotonApp {
                             self.stamp_react_used(&glyph);
                         }
                         self.selected_msg = None;
-                        self.scene_dirty = true;
+                        self.mark_dirty();
                     }
                     ctx.window.request_redraw();
                     return EventResponse::Handled;
@@ -1629,7 +1629,7 @@ impl FluorApp<Px> for PhotonApp {
                                 queue_job(&self.attach_job_tx, move || names.iter().for_each(crate::storage::blob_delete));
                                 crate::log("msg-details: pigeon lofted — local bytes dropped, the row and re-fetch stay");
                             }
-                            self.scene_dirty = true;
+                            self.mark_dirty();
                         }
                         // PLAY/STOP for a music pigeon (slot 9) — the action-row twin of the wave card's glyph.
                         // PLAY / STOP the wave's recording (slot 11): the only way a wave starts playing.
@@ -1647,7 +1647,7 @@ impl FluorApp<Px> for PhotonApp {
                                     self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
                                 }
                             }
-                            self.scene_dirty = true;
+                            self.mark_dirty();
                         }
                         9 => {
                             if let Some(hash) = self.conv_by_id(sci).and_then(|c| c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out)).and_then(|m| m.file_parts()).map(|(h, _, _)| h) {
@@ -1659,7 +1659,7 @@ impl FluorApp<Px> for PhotonApp {
                                         self.music_play = bytes.and_then(|b| super::music_play::MusicPlay::start(hash, b, dur));
                                     }
                                 }
-                                self.scene_dirty = true;
+                                self.mark_dirty();
                             }
                         }
                         // ★ toggle (slot 10): stamp the toggle with now — larger |osc| wins the merge, so the latest choice propagates fleet-wide.
@@ -1673,7 +1673,7 @@ impl FluorApp<Px> for PhotonApp {
                                     self.persist_and_push_rows(sci, std::slice::from_ref(&row));
                                 }
                             }
-                            self.scene_dirty = true;
+                            self.mark_dirty();
                         }
                         // REPLY = a REFERENCE, never a quote: arm the target eagle_time; the compose strip shows the referenced message at half alpha, and the sent row carries only the reference — the renderer resolves it live, so a later edit of the target updates every reply pointing at it.
                         0 => {
@@ -1685,7 +1685,7 @@ impl FluorApp<Px> for PhotonApp {
                                 self.change_focus(Some(id));
                             }
                             self.selected_msg = None;
-                            self.scene_dirty = true;
+                            self.mark_dirty();
                         }
                         // EDIT = supersede-by-reference: prefill the box with the target's CURRENT body (respecting prior edits), arm the target, and the send button becomes a check mark. The original row never mutates — its content is braid key material (strands resolve stored content by eagle_time), so the correction rides as its own referencing row.
                         1 => {
@@ -1705,7 +1705,7 @@ impl FluorApp<Px> for PhotonApp {
                                 self.compose_edit_of = Some(ts);
                                 self.compose_reply_to = None;
                                 self.selected_msg = None;
-                                self.scene_dirty = true;
+                                self.mark_dirty();
                             }
                         }
                         // RESEND: manually re-fire an undelivered outgoing at its ORIGINAL timestamp (identity preserved — every member dedups + re-ACKs, so this is always safe), in any conversation; a device that cannot reach anyone re-pushes thru the fleet instead.
@@ -1782,7 +1782,7 @@ impl FluorApp<Px> for PhotonApp {
                         6 => {
                             self.selected_msg = None;
                             if let Some(ci) = self.pair_contact_of(sci) { self.request_wave(super::wave_ui::GrantIntent::Place { ci, beam: false }); }
-                            self.scene_dirty = true;
+                            self.mark_dirty();
                         }
                         // The wave card's recording options: SAVE (blob held → Downloads) or FETCH (missing → ask the fleet), and REPLICATE (a fleet-internal fetch hint so every sibling holds the blob now, not on demand).
                         7 | 8 => {
@@ -1816,11 +1816,11 @@ impl FluorApp<Px> for PhotonApp {
                                     crate::logf!("WAVE: replicate hint pushed for recording {}…", hex::encode(&hash[..4]));
                                 }
                             }
-                            self.scene_dirty = true;
+                            self.mark_dirty();
                         }
                         _ => {}
                     }
-                    self.scene_dirty = true;
+                    self.mark_dirty();
                     ctx.window.request_redraw();
                 }
                 return EventResponse::Handled;
@@ -1891,14 +1891,14 @@ impl FluorApp<Px> for PhotonApp {
                 if let Some(tb) = self.message_textbox.as_mut() {
                     tb.insert_str(&glyph, ctx.text);
                 }
-                self.scene_dirty = true;
+                self.mark_dirty();
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
             if hit_id != HIT_NONE && hit_id == self.conv_filter_hit {
                 self.conv_filter = self.conv_filter.next();
                 self.selected_msg = None;
-                self.scene_dirty = true;
+                self.mark_dirty();
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
@@ -1929,7 +1929,7 @@ impl FluorApp<Px> for PhotonApp {
                                         self.strip_dismissed = key;
                                     }
                                 }
-                                self.scene_dirty = true;
+                                self.mark_dirty();
                                 ctx.window.request_redraw();
                                 return EventResponse::Handled;
                             }
@@ -1969,7 +1969,7 @@ impl FluorApp<Px> for PhotonApp {
                             if let Some(m) = self.music_play.as_ref().filter(|m| m.hash == v.hash && m.playing()) {
                                 let f = (((ctx.cursor_x as f32) - v.x0) / (v.x1 - v.x0).max(1.0)).clamp(0.0, 1.0); // WHY/PROOF: a drag leaves the bar; the seek holds to its ends
                                 m.seek_frac(f);
-                                self.scene_dirty = true;
+                                self.mark_dirty();
                                 ctx.window.request_redraw();
                                 return EventResponse::Handled;
                             }
@@ -1996,7 +1996,7 @@ impl FluorApp<Px> for PhotonApp {
                     }
                     // A fresh selection (or a close) resets the copy pill to its ready state.
                     self.selected_msg_copied = false;
-                    self.scene_dirty = true;
+                    self.mark_dirty();
                     ctx.window.request_redraw();
                 }
                 return EventResponse::Handled;
@@ -2038,7 +2038,7 @@ impl FluorApp<Px> for PhotonApp {
                 _ => false,
             };
         if typing && self.clear_other_selections(self.focused) {
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
         // Live shift mirror for `on_close_requested` (which has no Context): a shift-held close — the chrome ✕, Alt-F4, anything — means the REAL exit, not the resident hide. Refreshed on every event so the click that lands on the close button has already stamped it.
         self.shift_held = ctx.modifiers.shift_key();
@@ -2087,7 +2087,7 @@ impl FluorApp<Px> for PhotonApp {
                     _ => "another event",
                 };
             }
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
         // THE IMAGE VIEWER IS OPSIN'S VIEW: while it is open, pointer, wheel and key events go to it first with the hit id under the cursor. Photon keeps what is photon's — its own Back/Save pills (their ids are not the view's, and a press on them must not start a pan under them), the arrow keys (they step between the conversation's images), Shift+Escape (the real exit). `Close` is the view's Escape asking to leave; an export request from its Save pill is photon's save.
         if let Some(view) = self.viewer.as_mut().and_then(|v| v.view.as_mut()) {
@@ -2111,7 +2111,7 @@ impl FluorApp<Px> for PhotonApp {
                             if export {
                                 self.viewer_save();
                             }
-                            self.scene_dirty = true;
+                            self.mark_dirty();
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
@@ -2336,7 +2336,7 @@ impl FluorApp<Px> for PhotonApp {
                         r.scroll = (r.scroll - dy * step).max(0.0); // the algorithm: scrolling past the top stops at the top
                         r.hscroll = (r.hscroll - dx * step).max(0.0); // the algorithm: scrolling past the left edge stops there
                     }
-                    self.scene_dirty = true;
+                    self.mark_dirty();
                     ctx.window.request_redraw();
                     return EventResponse::Handled;
                 }
@@ -2385,7 +2385,7 @@ impl FluorApp<Px> for PhotonApp {
                     if crate::is_dev_build() {
                         crate::logf!("SCROLL: fling cut by a press at {} px/frame — renders since the last press: {} memmove, {} full", self.list_fling, self.scroll_frames_hinted, self.scroll_frames_full);
                     }
-                    self.scene_dirty = true; // the settle frame the cut fling never reached
+                    self.mark_dirty(); // the settle frame the cut fling never reached
                 }
                 self.list_fling = 0;
                 self.fling_recent = [0; 5];
@@ -2450,7 +2450,7 @@ impl FluorApp<Px> for PhotonApp {
                         // A press on a SELECTED, held wave's band picks the playhead up whether or not it is playing yet (the release seeks, and play_recording_from starts playback from there if it wasn't) — the old playing-only gate made seeking impossible on a selected wave that hadn't started (Nick 2026-09-14).
                         if band.held && band.selected && band.contains(px, py) && px >= band.glyph_x1 {
                             self.wave_scrub = Some(WaveScrub { band, frac: band.frac_at(px) });
-                            self.scene_dirty = true;
+                            self.mark_dirty();
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
@@ -2550,7 +2550,7 @@ impl FluorApp<Px> for PhotonApp {
                                 self.diag_log_inspect = Some((idx, lines));
                                 self.diag_log_follow = false;
                                 self.settings_content_scroll = 0.0; // inspector opens at the TOP of the record
-                                self.scene_dirty = true;
+                                self.mark_dirty();
                                 ctx.window.request_redraw();
                                 return EventResponse::Handled;
                             }
@@ -2582,7 +2582,7 @@ impl FluorApp<Px> for PhotonApp {
                 if let Some(i) = self.keep_sliders.iter().position(|sl| sl.hit_id() == hit_id) {
                     self.keep_drag = Some(i);
                     self.keep_sliders[i].set_value_from_x(ctx.cursor_x as f32);
-                    self.scene_dirty = true;
+                    self.mark_dirty();
                     ctx.window.request_redraw();
                     return EventResponse::Handled;
                 }
@@ -2619,13 +2619,13 @@ impl FluorApp<Px> for PhotonApp {
                 }
                 // A drag that ends with no fling to follow settles now (see the fling's end): one full repaint after memmove frames.
                 if self.drag_px > 0 && self.list_fling == 0 {
-                    self.scene_dirty = true;
+                    self.mark_dirty();
                 }
                 // A keep limit's release is its write edge (keep.rs): the limit lands in the settings and the trim runs once.
                 if let Some(i) = self.keep_drag.take() {
                     self.keep_sliders[i].set_value_from_x(ctx.cursor_x as f32);
                     self.commit_keep_slider(i);
-                    self.scene_dirty = true;
+                    self.mark_dirty();
                     ctx.window.request_redraw();
                 }
                 // Waveform scrub release = THE seek edge: play from the carried fraction (a release anywhere lands where the playhead was carried to — no timer, no debounce).
@@ -2832,7 +2832,7 @@ impl FluorApp<Px> for PhotonApp {
                                 }
                                 self.compose_reply_to = None;
                                 self.compose_react_to = None;
-                                self.scene_dirty = true;
+                                self.mark_dirty();
                                 ctx.window.request_redraw();
                                 return EventResponse::Handled;
                             }
@@ -3134,7 +3134,7 @@ impl FluorApp<Px> for PhotonApp {
                         Ok(bytes) => {
                             self.set_avatar_from_file(bytes);
                             // Force a FULL repaint, not just a redraw request: on macOS the drop arrives during the drag-session teardown and the incremental present can get swallowed — the avatar then only appeared after the next click. Invalidate everything so the post-drop frame rebuilds + re-presents the whole window.
-                            self.scene_dirty = true;
+                            self.mark_dirty();
                             if let Some(chrome) = self.chrome.as_mut() {
                                 chrome.invalidate_bg();
                                 chrome.invalidate_chrome();
@@ -3216,25 +3216,25 @@ impl FluorApp<Px> for PhotonApp {
         let now = Instant::now();
         let mut needs_redraw = false;
         if self.poll_resume_vault() {
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(); }
         }
         // The rows landing after Ready, a conversation at a time (rows_load.rs).
         if self.drain_rows_landed() {
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(); }
         }
         // Marks a draw asked for go to their worker, and each one that lands repaints (a placeholder until then, never a render on this thread).
         if super::marks_tick(self.event_proxy.clone()) {
-            self.scene_dirty = true;
-            needs_redraw = true;
+            self.mark_dirty();
+            { needs_redraw = true; self.note_redraw(); }
         }
         if self.presence_probe_tick(now) {
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(); }
         }
         if self.drafts_tick(now, ctx.text) {
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(); }
         }
         if self.drain_voice_measure() {
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(); }
         }
         // A missed message rings the taskbar and tray orb in magenta, as the contacts list rings the avatar (Nick 2026-11-08): exactly when a row the list shows wears the ring (unread_rows).
         // An edge of the state the list draws from, pushed once per change; ctx.window reaches the taskbar on Windows and X11, and the tray backends cover the rest.
@@ -3256,13 +3256,16 @@ impl FluorApp<Px> for PhotonApp {
         // The glass radius lands from the insets listener after the first layout — apply it the frame it arrives (no-op once installed).
         #[cfg(target_os = "android")]
         if let Some(chrome) = self.chrome.as_mut() {
-            if chrome.set_glass_radius(crate::platform::jni_android::glass_radius_px()) {
-                needs_redraw = true;
-            }
+            // Both asked after the chrome is let go (the asks take the app).
+            let glass = chrome.set_glass_radius(crate::platform::jni_android::glass_radius_px());
             // The status-bar inset lands from the same listener; the orb and every top-anchored layout follow it (ui::safe_top_px reads the static live, so the layouts are right on the next frame).
-            if chrome.set_orb_insets(crate::platform::jni_android::top_inset_px() as f32, crate::platform::jni_android::left_inset_px() as f32) {
-                self.scene_dirty = true;
-                needs_redraw = true;
+            let insets = chrome.set_orb_insets(crate::platform::jni_android::top_inset_px() as f32, crate::platform::jni_android::left_inset_px() as f32);
+            if glass {
+                { needs_redraw = true; self.note_redraw(); }
+            }
+            if insets {
+                self.mark_dirty();
+                { needs_redraw = true; self.note_redraw(); }
             }
         }
         // Frame fence for the deferred send drain: entries queued during THIS tick's input pass wait until the next one, guaranteeing the pending bubble a rendered frame before the wire half runs.
@@ -3272,22 +3275,22 @@ impl FluorApp<Px> for PhotonApp {
         if crate::storage::vault_sick() && !self.vault_degraded {
             self.vault_degraded = true;
             self.vault_degraded_latched = true;
-            self.scene_dirty = true;
-            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            self.mark_dirty();
+            { needs_redraw = true; self.note_redraw(); }
         }
         // The recovery edge, mirrored back: a writer cleared the latch (a persist succeeded after a failure). Only a LATCH-raised amber clears — a mirror healed at open or a dead open is not undone by a later write. Interaction-free and timer-free: the write itself is the edge.
         if self.vault_degraded_latched && !crate::storage::vault_sick() {
             self.vault_degraded = false;
             self.vault_degraded_latched = false;
             self.ready_toast = Some(tr(Msg::StorageRecovered).into_owned());
-            self.scene_dirty = true;
-            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            self.mark_dirty();
+            { needs_redraw = true; self.note_redraw(); }
         }
         // The lost latch rides the same mirror, one severity up: pruned values or a dead vault open → the RED banner.
         if crate::storage::vault_data_lost() && !self.vault_data_lost {
             self.vault_data_lost = true;
-            self.scene_dirty = true;
-            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            self.mark_dirty();
+            { needs_redraw = true; self.note_redraw(); }
         }
 
         // Android foreground edges, latched by nativeSetForeground on the Activity main thread and drained here where &mut self lives (2026-08-18). Pause retracts the clearer claim (siblings may ding again — the drop-sweep at their end covers anything that crossed in flight); resume is the same human-is-here edge as a desktop focus gain. When both latched since the last tick (fast pause→resume), apply them in the order that ends at the CURRENT truth.
@@ -3310,7 +3313,7 @@ impl FluorApp<Px> for PhotonApp {
                 let id = crate::types::ConversationId::from_bytes(id);
                 if self.enter_conversation_id(id) {
                     crate::logf!("NOTIFY: tap opened conversation {}", hex::encode(&id.as_bytes()[..4]));
-                    needs_redraw = true;
+                    { needs_redraw = true; self.note_redraw(); }
                 } else {
                     crate::logf!("NOTIFY: tap named conversation {}, which this device does not hold", hex::encode(&id.as_bytes()[..4]));
                 }
@@ -3330,7 +3333,7 @@ impl FluorApp<Px> for PhotonApp {
                 } else {
                     "NOTIFY: tap opened the Fleet page; the departure request was settled meanwhile"
                 });
-                needs_redraw = true;
+                { needs_redraw = true; self.note_redraw(); }
             }
         }
 
@@ -3424,8 +3427,8 @@ impl FluorApp<Px> for PhotonApp {
             self.selected_msg = None;
             self.selected_msg_copied = false;
             self.msg_wrap = None; // row set changed — drop the wrap cache outright
-            self.scene_dirty = true;
-            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            self.mark_dirty();
+            { needs_redraw = true; self.note_redraw(); }
         }
 
         // Fleet chain replication push: any friendship chain that mutated since its last push ships to the siblings. Constant-time no-op when nothing changed.
@@ -3509,8 +3512,8 @@ impl FluorApp<Px> for PhotonApp {
             if ime != self.last_ime_inset {
                 self.last_ime_inset = ime;
                 self.update_widget_layout(ctx);
-                self.scene_dirty = true;
-                { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+                self.mark_dirty();
+                { needs_redraw = true; self.note_redraw(); }
             }
         }
 
@@ -3525,8 +3528,8 @@ impl FluorApp<Px> for PhotonApp {
             self.lift_below_laid = lift_below;
             self.safe_laid = crate::ui::safe_circle();
             self.update_widget_layout(ctx);
-            self.scene_dirty = true;
-            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            self.mark_dirty();
+            { needs_redraw = true; self.note_redraw(); }
         }
 
         // Android sticky-session freshness: while signed in, on a fresh resume/attest (deadline None) and every jittered 30–60 min after, fire the "ensure" signal — Kotlin reads the sticky and only re-posts if the OS evicted it. Keeps the reinstall-survival capsule alive against Samsung's sticky eviction, cheaply (the read-then-skip means no churn when it's already there). Only overrides an idle signal so a fresh attest's force-post (1) or a nuke (-1) is never clobbered.
@@ -3546,7 +3549,7 @@ impl FluorApp<Px> for PhotonApp {
                 None => self.ready_toast_screen = Some(self.state.clone()),
                 Some(s) if *s != self.state => {
                     self.clear_toast();
-                    { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+                    { needs_redraw = true; self.note_redraw(); }
                 }
                 _ => {}
             }
@@ -3570,7 +3573,7 @@ impl FluorApp<Px> for PhotonApp {
                     // The dirty bg layer makes the frame a whole one, so the render clears the previous screen's hits everywhere (`clear_hits`), and the chrome claims its own (the orb's) at its flatten every frame (until 2026-11-17 the chrome was invalidated here too, only so its re-raster would wipe the map).
                     chrome.invalidate_bg();
                 }
-                { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+                { needs_redraw = true; self.note_redraw(); }
             }
             self.last_screen = self.state.clone();
         }
@@ -3580,7 +3583,7 @@ impl FluorApp<Px> for PhotonApp {
 
         // The Add machine's edges Photon learns by looking: the AddDevice screen shown or gone by any path (back, orb, an add starting), the fleet key's RAM copy, the BLE beacons heard since the last tick, and its deadline.
         if self.add_tick() {
-            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            { needs_redraw = true; self.note_redraw(); }
         }
         // Pairing v2 beacon scan (docs/pairing-v2.md): scan exactly while the Add machine asks for it (its Radios), diffed per tick so the radio follows its state without scattered call sites.
         // The scanner is identity-agnostic — it collects photon-magic service UUIDs and the machine resolves each to a candidate by keyed tag.
@@ -3617,7 +3620,7 @@ impl FluorApp<Px> for PhotonApp {
                 crate::logf!("NFC: tap read departure request {}: approving", hex::encode(&s[..4]));
                 tapped = None;
                 self.depart_step(fgtw::flow::Event::NfcRead { secret: s });
-                { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+                { needs_redraw = true; self.note_redraw(); }
             }
         }
         // NFC instant add: a tapped secret matching a candidate's published commitment IS the proximity and intent proof, so the machine adds with no words typed and no press (a secret matching no candidate changes nothing).
@@ -3625,7 +3628,7 @@ impl FluorApp<Px> for PhotonApp {
             if let Some(s) = tapped {
                 crate::logf!("NFC: tap read secret {}: handed to the add flow", hex::encode(&s[..4]));
                 self.add_step(fgtw::flow::Event::NfcRead { secret: s });
-                { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+                { needs_redraw = true; self.note_redraw(); }
             }
         }
 
@@ -3650,7 +3653,7 @@ impl FluorApp<Px> for PhotonApp {
         let stage = crate::network::handle_query::ATTEST_STAGE.load(std::sync::atomic::Ordering::Relaxed);
         if matches!(self.state, AppState::Launch(LaunchState::Attesting)) && stage != self.attest_stage_drawn {
             self.attest_stage_drawn = stage;
-            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            { needs_redraw = true; self.note_redraw(); }
         }
         if !proving && (matches!(self.state, AppState::Launch(LaunchState::Attesting))
             || matches!(self.state, AppState::Searching))
@@ -3660,7 +3663,7 @@ impl FluorApp<Px> for PhotonApp {
             if let Some(chrome) = self.chrome.as_mut() {
                 chrome.invalidate_bg();
             }
-            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            { needs_redraw = true; self.note_redraw(); }
         }
 
         // Add-friend hourglass: stochastic wobble (≈ −12..+13°/tick) while a search is in flight, so the icon "shakes" like sand. xorshift keeps it dependency-free; the icon lives in the foreground (not the bg layer), so a plain redraw repaints it.
@@ -3670,7 +3673,7 @@ impl FluorApp<Px> for PhotonApp {
             self.hourglass_rng ^= self.hourglass_rng << 17;
             let wobble = (self.hourglass_rng % 26) as f32 - 12.0; // −12..+13
             self.hourglass_angle = (self.hourglass_angle + wobble).rem_euclid(360.0);
-            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            { needs_redraw = true; self.note_redraw(); }
         }
 
         // Answer/Decline pressed on the Android wave notification (backgrounded ring): the action intent latched a flag on the service thread; drain it here on the UI thread that owns the wave state.
@@ -3682,7 +3685,7 @@ impl FluorApp<Px> for PhotonApp {
             } else {
                 self.decline_wave();
             }
-            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            { needs_redraw = true; self.note_redraw(); }
         }
 
         // LIVE DIGITS (Nick 2026-10-01, "doesn't update live"): the wake landed at a digit edge; repaint iff a live reading's text actually changed since the last tick, so the edge lands one frame and a cursor blink in a conversation lands none.
@@ -3690,7 +3693,7 @@ impl FluorApp<Px> for PhotonApp {
             let live = self.live_readings();
             if live != self.live_last {
                 self.live_last = live;
-                { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+                { needs_redraw = true; self.note_redraw(); }
             }
         }
         // Full-screen ring panel: the pulse rings are a pure function of now, so a ringing wave just needs the frame to repaint fully (the panel covers the whole surface; partial damage would leave stale pulse arcs).
@@ -3699,22 +3702,22 @@ impl FluorApp<Px> for PhotonApp {
             .as_ref()
             .map_or(false, |c| c.phase == crate::wave::WavePhase::Ringing)
         {
-            self.scene_dirty = true;
-            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            self.mark_dirty();
+            { needs_redraw = true; self.note_redraw(); }
         }
         // THE WAVE FIELD repaints every tick while an Active wave owns the screen (field 2026-09-28, "like 1fps": the wakeups flowed at 32/s but only the once-a-second timer below marked the scene, so the ripples moved once a second). The audio is the edge; the tick rate is how often it is shown.
         // Frozen while nobody is looking (unfocused, hidden, or the display off — the proximity blank at the ear included): the once-a-second timer below still keeps the panel honest.
         // Ringing OUT too: our mic ripples from our avatar before they answer (Nick 2026-09-29).
         if !self.wave_minimized && self.wave_field_watched() && self.active_wave.as_ref().map_or(false, |c| matches!(c.phase, crate::wave::WavePhase::Active | crate::wave::WavePhase::Outgoing)) {
-            self.scene_dirty = true;
-            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            self.mark_dirty();
+            { needs_redraw = true; self.note_redraw(); }
         }
         // An ACTIVE wave repaints once a second (field 2026-09-12: the wakeups flowed at 2 Hz but nothing marked the scene, so the timer, the live stats and the path ring froze on their first frame).
         if self.active_wave.as_ref().map_or(false, |c| matches!(c.phase, crate::wave::WavePhase::Active | crate::wave::WavePhase::Outgoing)) {
             if self.last_wave_redraw.map_or(true, |t| now.duration_since(t) >= std::time::Duration::from_secs(1)) {
                 self.last_wave_redraw = Some(now);
-                self.scene_dirty = true;
-                { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+                self.mark_dirty();
+                { needs_redraw = true; self.note_redraw(); }
             }
         } else {
             self.last_wave_redraw = None;
@@ -3774,8 +3777,8 @@ impl FluorApp<Px> for PhotonApp {
                 }
             }
             if spring {
-                self.scene_dirty = true;
-                { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+                self.mark_dirty();
+                { needs_redraw = true; self.note_redraw(); }
                 if let Some(chrome) = self.chrome.as_mut() {
                     chrome.invalidate_bg();
                     chrome.invalidate_chrome();
@@ -3793,8 +3796,8 @@ impl FluorApp<Px> for PhotonApp {
                         break;
                     }
                 }
-                self.scene_dirty = true;
-                { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+                self.mark_dirty();
+                { needs_redraw = true; self.note_redraw(); }
             }
             // THE LIST FLING'S SAMPLER: one sample per FRAME while the finger is down — this frame's accumulated drag delta, zero when it did not move — and the fling is the median of the last five. Frames keep coming at vsync for as long as the touch is down, so a still finger pushes zeros and a lift after a pause carries no fling.
             if self.press_held || self.pointer_down {
@@ -3851,7 +3854,7 @@ impl FluorApp<Px> for PhotonApp {
                 self.list_fling = if !moved || !in_bounds { 0 } else { after };
                 if self.list_fling == 0 {
                     // THE SETTLE FRAME: memmove frames paint only the band, so a row's link tap targets and the like are last-known from its last full paint — one ordinary repaint at rest puts every row's bookkeeping back to truth.
-                    self.scene_dirty = true;
+                    self.mark_dirty();
                     if crate::is_dev_build() {
                         crate::logf!(
                             "SCROLL: fling ended ({}) — renders since the press: {} memmove, {} full",
@@ -3861,7 +3864,7 @@ impl FluorApp<Px> for PhotonApp {
                 }
                 // `pane_scroll` decided how the frame repaints (a rigid shift, or a dirty scene at a bound) — so the next frame is asked for DIRECTLY, never thru `needs_redraw`: the tick's last line folds that into `scene_dirty`, which is exactly what made every fling frame a full repaint while the drag's frames (asked for by the touch events) rode the memmove (2026-10-06 phone log, checkpoint 3878).
                 ctx.window.request_redraw();
-                self.note_redraw(line!() + 100_000);
+                self.note_redraw();
             }
             dirty_checkpoint!();
             // Textbox TEXT-pan spring: any box carried past its scroll bounds closes half the way home each frame, as the panes do (fluor's spring takes the factor; its offset is not whole pixels, so its sub-third-pixel snap ends it). Skip the box still under the finger (the drag owns it until release). Narrow damage — the box's own text_cache_dirty → damage_rect covers the repaint, so no scene_dirty needed.
@@ -3877,7 +3880,7 @@ impl FluorApp<Px> for PhotonApp {
                 }
             }
             if tb_spring {
-                { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+                { needs_redraw = true; self.note_redraw(); }
             }
         }
 
@@ -3899,16 +3902,16 @@ impl FluorApp<Px> for PhotonApp {
         // Diagnostics log viewer: drain the off-thread decode / tail-follow the live file (no-op unless the viewer is open on its page). Rows are CONTENT — a change needs the full scene frame, not just a widget-overlay pass.
         dirty_checkpoint!();
         if self.drive_diag_log() {
-            self.scene_dirty = true;
-            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            self.mark_dirty();
+            { needs_redraw = true; self.note_redraw(); }
         }
 
         // Self-update: drain check/apply results, then re-exec if a verified swap landed. The exec MUST happen here on the main thread, outside every borrow — the process image is replaced in place (unix) or handed off (windows), so nothing after it runs.
         // Update events (progress bar, channel states, status lines) are all page CONTENT — without scene_dirty the redraw runs but the dirty-gated content pass skips the page, so the bar painted its empty track once and froze (observed).
         dirty_checkpoint!();
         if self.drain_update_events() {
-            self.scene_dirty = true;
-            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            self.mark_dirty();
+            { needs_redraw = true; self.note_redraw(); }
         }
         // Keep-transcode results: a finished N-channel recording mints its `wave.audio` row here (off-thread transcode posted back over the channel).
         self.drain_wave_env_wants();
@@ -3916,9 +3919,9 @@ impl FluorApp<Px> for PhotonApp {
         if let Some(m) = self.music_play.as_ref() {
             if m.done() {
                 self.music_play = None;
-                self.scene_dirty = true;
+                self.mark_dirty();
             } else if m.playing() {
-                self.scene_dirty = true;
+                self.mark_dirty();
             }
         }
         dirty_checkpoint!();
@@ -3926,7 +3929,7 @@ impl FluorApp<Px> for PhotonApp {
             ctx.window.request_redraw();
         }
         if self.drain_holdings() {
-            self.scene_dirty = true;
+            self.mark_dirty();
             ctx.window.request_redraw();
         }
         #[cfg(target_os = "ferros")]
@@ -3935,12 +3938,12 @@ impl FluorApp<Px> for PhotonApp {
             self.alias_retry_edge("a peer answered");
         }
         if self.drain_alias() {
-            self.scene_dirty = true;
+            self.mark_dirty();
             ctx.window.request_redraw();
         }
         self.drain_alias_pairs();
         if self.drain_alias_removal() {
-            self.scene_dirty = true;
+            self.mark_dirty();
             ctx.window.request_redraw();
         }
         // The fleet key moved (a mint, a sync, a recovery): settle again while the key it replaced is kept, so the person key is sealed under the new one (network/fgtw/alias.rs). Taken only when a settle can start, so an edge during one waits for it.
@@ -3954,14 +3957,14 @@ impl FluorApp<Px> for PhotonApp {
         // Every friend holds a bond beside its conversation (docs/conversations.md §7): split the missing ones on the edge the registry moved.
         self.ensure_bonds();
         if self.drain_wave_env() {
-            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            { needs_redraw = true; self.note_redraw(); }
         }
         if self.drain_wave_keep() {
-            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            { needs_redraw = true; self.note_redraw(); }
         }
         self.drain_route_reports();
         if self.drain_wave_export() {
-            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            { needs_redraw = true; self.note_redraw(); }
         }
         // Auto-attest arm/disarm: apply the off-thread handle-proof verdict (spawned on the confirm click). Done here on the main thread so set_unattended's vault write, the checkbox, and focus stay UI-thread. Compute the verdict first so `self` isn't borrowed while we mutate it.
         let unattended_verdict = self
@@ -3986,8 +3989,8 @@ impl FluorApp<Px> for PhotonApp {
             } else {
                 self.unattended_confirm_failed = true;
             }
-            self.scene_dirty = true;
-            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            self.mark_dirty();
+            { needs_redraw = true; self.note_redraw(); }
         }
         // The swap waits out a live wave, group wave or ceremony (update_swap_blocked, Nick 2026-11-04): the new binary is on disk and verified, so the wave's end is the edge that lets it go.
         if let Some(blocker) = self.update_reexec.as_ref().filter(|_| !self.update_pressed).and_then(|_| self.update_swap_blocker()) {
@@ -4044,8 +4047,8 @@ impl FluorApp<Px> for PhotonApp {
         dirty_checkpoint!();
         if compose_lines != self.painted_compose_lines {
             self.painted_compose_lines = compose_lines;
-            self.scene_dirty = true;
-            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            self.mark_dirty();
+            { needs_redraw = true; self.note_redraw(); }
         }
 
         {
@@ -4055,7 +4058,7 @@ impl FluorApp<Px> for PhotonApp {
             self.tick_prof_add("tick (whole)", now.elapsed().as_secs_f32() * 1000.0);
         }
 
-        // REDRAW-STORM REPORT (2026-09-10, Nick's phone at 100% CPU on Ready with nothing on screen moving): once per five seconds, only when more than thirty dirty ticks a second went by, name the lines that asked for them (protocol.rs as-is, driver.rs + 100000).
+        // REDRAW-STORM REPORT (2026-09-10, Nick's phone at 100% CPU on Ready with nothing on screen moving): once per five seconds, only when more than thirty dirty ticks a second went by, name the lines that asked for them (`RedrawAsk`: each a file and line).
         {
             self.tick_stat_n += 1;
             if needs_redraw {
@@ -4092,6 +4095,11 @@ impl FluorApp<Px> for PhotonApp {
         // A change the service tick made between frames counts too (see `scene_owed`): it was already dirty when this tick began, so the raised-this-tick test alone misses it.
         let raised = (self.scene_dirty && !self.dirty_before_tick) || std::mem::take(&mut self.scene_owed);
         self.scene_dirty |= needs_redraw;
+        // Every source names itself (`mark_dirty`, `note_redraw`, `dirty_from`); one that did not is named here, at the tick's end, so the idle whole-frame log never reads an empty list and the gap is plain in the log.
+        if self.scene_dirty && !self.dirty_before_tick && self.frame_why.is_empty() && self.dirty_event.is_empty() {
+            crate::log("RENDER: the scene was marked dirty this tick by a source that named no line (named as the tick's end)");
+            self.note_redraw();
+        }
         // The contacts screen's title (people online) set here, before the frame's damage: a changed count dirties the chrome alone, and its band is the frame (render.rs ready_title).
         let title_redraw = if matches!(self.state, AppState::Ready) && !self.wave_screen() {
             let t = self.ready_title();
@@ -4099,7 +4107,8 @@ impl FluorApp<Px> for PhotonApp {
         } else {
             false
         };
-        let redraw = needs_redraw || blink_redraw || raised || title_redraw || orb_redraw || slide_redraw;
+        // A presence ring that changed alone owes its own box a frame (`ring_damage`), not the scene.
+        let redraw = needs_redraw || blink_redraw || raised || title_redraw || orb_redraw || slide_redraw || !self.ring_damage.is_empty();
         dirty_checkpoint!();
         self.dirty_blame_line = dirty_blame;
         if redraw {
@@ -4124,7 +4133,8 @@ impl FluorApp<Px> for PhotonApp {
                 AppState::Ready => 2,
                 _ => 0,
             };
-            let quiet = !self.scene_dirty && !chord && !chrome_dirty && want != 0 && self.viewer.is_none() && self.reader.is_none() && !self.wave_screen();
+            // A ring owed a frame is at the place the last frame drew it, which a move has just carried away: the moved frame is drawn whole.
+            let quiet = !self.scene_dirty && !chord && !chrome_dirty && self.ring_damage.is_empty() && want != 0 && self.viewer.is_none() && self.reader.is_none() && !self.wave_screen();
             // The contacts' filters' slat (a safe circle) is carried by the move while it moves with the list; otherwise it is drawn again where it sat and where the move took it, and a move longer than the slat leaves a gap between the two that its new place may fall in, so that frame is drawn whole.
             let slat = match (want == 2 && crate::ui::safe_circle().is_some(), self.ready_slat_rect) {
                 (true, Some(r)) => {
@@ -4236,6 +4246,17 @@ impl FluorApp<Px> for PhotonApp {
                 named.push((w.id(), r));
             }
         });
+        // Presence rings that changed alone (`ring_damage`), each its own box; named as id 0 too, after the chrome.
+        for r in &self.ring_damage {
+            // WHY/PROOF: a row at the frame's right or bottom edge has a ring box past it (the box is the ring's reach, not the frame's), and the host clears and converts the scratch up to a rect's far edges, so an overhang would index past the buffer; the cut keeps every rect inside it, as the scroll path's rects are cut above.
+            let r = PixelRect::new(r.x0.min(vw), r.y0.min(vh), r.x1.min(vw), r.y1.min(vh));
+            combined = Some(combined.map_or(r, |c| c.union(r)));
+            named.push((0, r));
+        }
+        // Rings far apart are their own rects (`damage_rects`), not one box down the list between them.
+        if !self.ring_damage.is_empty() {
+            self.damage_parts = super::disjoint_rects(named.iter().map(|(_, r)| *r).collect(), fluor::canvas::DAMAGE_RECTS);
+        }
         // The idle whole-frame hunt: a frame the widgets and the chrome made whole, with each one's rect (ferros Pro 2026-11-17: whole frames at rest with no scene_dirty).
         if combined.is_some_and(|c| c.width() * c.height() >= vw * vh / 2) && self.whole_frames_logged < 4 && crate::is_dev_build() {
             self.whole_frames_logged += 1;
@@ -4549,7 +4570,7 @@ impl PhotonApp {
                         tb.scroll_by(px);
                     }
                     self.compose_fling = if self.pointer_down && self.drag_select_hit == compose_id { px.round() as i32 } else { 0 };
-                    self.scene_dirty = true;
+                    self.mark_dirty();
                     ctx.window.request_redraw();
                     return EventResponse::Handled;
                 }
@@ -4674,7 +4695,7 @@ impl PhotonApp {
                             self.conv_topbar_off = off;
                             // The blind's slats move with the header, not with the list: a frame where they moved is an ordinary repaint; a frame where only the list moved rides the memmove.
                             if !rigid {
-                                self.scene_dirty = true;
+                                self.mark_dirty();
                             }
                         }
                     }
@@ -5024,7 +5045,7 @@ impl PhotonApp {
     pub(super) fn show_opening(&mut self) {
         if matches!(self.state, AppState::Launch(_)) {
             self.state = AppState::Launch(LaunchState::Opening);
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
     }
 
@@ -5403,7 +5424,7 @@ impl PhotonApp {
         }) else { return };
         if self.wave_playback.is_some() && self.wave_playback_hash == Some(hash) {
             self.wave_playback = None;
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
     }
 }

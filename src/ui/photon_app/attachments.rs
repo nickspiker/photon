@@ -96,7 +96,7 @@ impl PhotonApp {
             self.ready_toast = Some(tr(Msg::AttachDropHint).into_owned());
             self.ready_toast_screen = None;
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// Send a dropped/picked file as an attachment (path entry — desktop drop). Reads and forwards to [`Self::send_attachment_from_bytes`].
@@ -270,7 +270,7 @@ impl PhotonApp {
             }
         }
         self.msg_wrap = None;
-        self.scene_dirty = true;
+        self.mark_dirty();
         crate::logf!(
             "attach: sent {} ({} bytes)",
             crate::deglyph_for_log(&name),
@@ -1086,7 +1086,7 @@ impl PhotonApp {
             if let Some((held, total)) = r.manifest {
                 self.attach_chunk_progress.insert(r.content_hash, (held, total));
                 self.msg_wrap = None;
-                self.scene_dirty = true;
+                self.mark_dirty();
                 continue;
             }
             // A chunk: count it toward the bar; only the LAST one is an install (attach_have + re-sniff below).
@@ -1102,7 +1102,7 @@ impl PhotonApp {
                 } else if idx % 16 == 0 {
                     crate::logf!("ATTACH: chunk {} of {} stored", idx + 1, total);
                 }
-                self.scene_dirty = true;
+                self.mark_dirty();
             } else {
                 crate::logf!("ATTACH: blob received + stored ({} bytes)", r.len);
             }
@@ -1162,7 +1162,7 @@ impl PhotonApp {
                 }
             }
             self.msg_wrap = None;
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
     }
 }

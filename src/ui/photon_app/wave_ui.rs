@@ -135,7 +135,7 @@ impl PhotonApp {
                     grants::request(need);
                     self.pending_grant = Some((intent, grants::answered()));
                     crate::logf!("GRANTS: {} held until the {} prompt is answered", format!("{:?}", intent), grants::name(need));
-                    self.scene_dirty = true;
+                    self.mark_dirty();
                     return;
                 }
                 MicAccess::Denied => {
@@ -206,7 +206,7 @@ impl PhotonApp {
                 self.ready_toast_screen = None;
             }
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// The answer's edge, read on the tick: a held wave re-runs the gate once any prompt has been answered since it was held.
@@ -388,7 +388,7 @@ impl PhotonApp {
         self.wave_minimized = true;
         if let Some(gi) = self.group_wave.as_ref().and_then(|w| self.molecule_rosters.iter().position(|(g, _)| *g == w.gid)) {
             self.open_molecule_conversation(gi);
-            self.scene_dirty = true;
+            self.mark_dirty();
             return;
         }
         let peer = self.active_wave.as_ref().map(|c| c.peer_handle_hash);
@@ -397,7 +397,7 @@ impl PhotonApp {
                 self.open_conversation_with(ci);
             }
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// A recording finished playing on its own → drop the handle + the which-row marker so the bubble flips back to ▶ (edge poll on the worker's done flag, no timer).
@@ -405,16 +405,16 @@ impl PhotonApp {
         if self.wave_playback.as_ref().is_some_and(|p| p.is_finished()) {
             self.wave_playback = None;
             self.wave_playback_hash = None;
-            self.scene_dirty = true;
+            self.mark_dirty();
         } else if self.wave_playback.is_some() && !matches!(self.state, AppState::Conversation) {
             // A recording plays only while its conversation shows (Nick 2026-11-06: "navigating away from a wave or beam replay it stops"): the contacts list, a settings page or the conversation's own panel all end it, the replay screen and its beam decode with it.
             self.wave_playback = None;
             self.wave_playback_hash = None;
             self.wave_replay = None;
-            self.scene_dirty = true;
+            self.mark_dirty();
         } else if self.wave_playback.is_some() {
             // Still playing → repaint so the bubble's ■ progress % advances (a bounded, user-initiated activity; the per-tick cost is one repaint while a recording plays).
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
     }
 
@@ -423,7 +423,7 @@ impl PhotonApp {
         if self.wave_playback.is_some() && self.wave_playback_hash == Some(blob) {
             self.wave_playback = None; // drop = stop
             self.wave_playback_hash = None;
-            self.scene_dirty = true;
+            self.mark_dirty();
             return;
         }
         self.play_recording_from(blob, 0);
@@ -435,7 +435,7 @@ impl PhotonApp {
         if self.wave_playback_hash == Some(blob) {
             if let Some(h) = self.wave_playback.as_ref() {
                 h.seek(slot);
-                self.scene_dirty = true;
+                self.mark_dirty();
                 return;
             }
         }
@@ -448,7 +448,7 @@ impl PhotonApp {
         if self.wave_playback.is_none() {
             self.ready_toast = Some(tr(Msg::CantPlayNow).into_owned());
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// Place a wave to the open (or named) contact. One live wave at a time — v1 is singular by design.
@@ -552,7 +552,7 @@ impl PhotonApp {
         }
         let Some(ringback_digest) = ringback_digest else {
             crate::log("WAVE: no party id for the answering side — dialing without ringback");
-            self.scene_dirty = true;
+            self.mark_dirty();
             return;
         };
         // Ringback: the ANSWERER's ring in OUR ear (their identity cadence, so we hear who we're waving), padded to the same headset level as the wave that follows. It also probes the room's coupling (the chirp anchor) so the echo filter has a fit when media lands.
@@ -568,7 +568,7 @@ impl PhotonApp {
         } else {
             crate::logf!("WAVE: dialing {} (id {}) — NO validated direct path; media waits on a punch or the peer's first packet (relay media does not exist yet)", crate::fp(&peer), hex::encode(&wave_id[..4]));
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// Answer the ringing wave — the take-the-ball edge.
@@ -606,7 +606,7 @@ impl PhotonApp {
             let name = self.contacts.get(ci).map(|c| c.display_name()).unwrap_or_default();
             crate::log("WAVE: answer send failed — the friendship can't carry a frame right now (ceremony in progress?)");
             self.ready_toast = Some(tr(Msg::AnswerFailedReconnecting(&name)).into_owned());
-            self.scene_dirty = true;
+            self.mark_dirty();
             return;
         }
         // Answering owns the audio session — stop any recording preview, and clear stale minimize state.
@@ -637,7 +637,7 @@ impl PhotonApp {
         crate::platform::jni_android::wave_service_void("waveWentActive");
         crate::logf!("WAVE: answered (id {})", hex::encode(&wave_id[..4]));
         Self::stop_ring_alert_platform();
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// Ring-stop edge, platform half: tear down the Android wave-class notification (it's ongoing — never auto-cancels). Desktop's chirp loop stops via the RingGuard on ActiveWave teardown.
@@ -697,7 +697,7 @@ impl PhotonApp {
             self.active_wave = None;
             Self::stop_ring_alert_platform();
             self.wave_minimized = false;
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
     }
 
@@ -796,7 +796,7 @@ impl PhotonApp {
                     );
                     self.active_wave = None;
                     Self::stop_ring_alert_platform();
-                    self.scene_dirty = true;
+                    self.mark_dirty();
                 }
             }
             _ => {}
@@ -990,7 +990,7 @@ impl PhotonApp {
                 if let Some(dev) = self.active_wave.as_ref().and_then(|c| c.peer_device) {
                     self.wave_needs_addresses.set(Some(dev));
                 }
-                self.scene_dirty = true;
+                self.mark_dirty();
             }
             if now - last_anchor >= anchor_every {
                 if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
@@ -1040,7 +1040,7 @@ impl PhotonApp {
                 c.reconnecting = false;
                 c.reconnect_probe = 0;
             }
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
     }
 
@@ -1063,7 +1063,7 @@ impl PhotonApp {
             if let Some((chip_id, _, _)) = self.fleet_wave_elsewhere {
                 if chip_id == *sig.wave_id() {
                     self.fleet_wave_elsewhere = None;
-                    self.scene_dirty = true;
+                    self.mark_dirty();
                 }
             }
         }
@@ -1134,7 +1134,7 @@ impl PhotonApp {
                             });
                             // Both users already pressed Wave — consent is mutual, connect NOW (a fold that merely rings would ask one of them to press the button twice). If the answer guard refuses (uncalibrated route), the wave stays Ringing and the panel says why — still strictly better than BUSY.
                             self.answer_wave();
-                            self.scene_dirty = true;
+                            self.mark_dirty();
                         } else {
                             // Ours wins: ignore their offer — their side folds by the same rule and Answers ours.
                             crate::logf!(
@@ -1218,7 +1218,7 @@ impl PhotonApp {
                             crate::fp(&peer),
                             hex::encode(&wave_id[..4])
                         );
-                        self.scene_dirty = true;
+                        self.mark_dirty();
                     }
                 }
             }
@@ -1228,7 +1228,7 @@ impl PhotonApp {
                     && self.active_wave.as_ref().is_none_or(|c| c.wave_id != wave_id)
                 {
                     self.fleet_wave_elsewhere = Some((wave_id, device, peer));
-                    self.scene_dirty = true;
+                    self.mark_dirty();
                 }
             }
             WaveSignal::Answer { wave_id, nonce, device } => {
@@ -1239,7 +1239,7 @@ impl PhotonApp {
                     if row_is_outgoing {
                         self.remember_ended_wave(wave_id);
                         self.fleet_wave_elsewhere = Some((wave_id, device, peer));
-                        self.scene_dirty = true;
+                        self.mark_dirty();
                         return;
                     }
                     // An answer with no active wave. Loud-kill ONLY if THIS device dialed that wave this session (the origin dismissed/lost it and the answer strayed in late — without the hangup the friend sits Active on a dead wave). Any other device is a fleet SIBLING hearing the friend's answer fan-out, and it must stay SILENT: the express key is per-friendship so its hangup authenticates as the whole identity, and on 2026-09-08 the non-waving sibling's "kill it loudly" tore down Brittany's engine 107ms after answer — 17s of nobody hearing anybody. Siblings observe, never destroy (fleetwide wave presence — join/switch mid-wave — rides on exactly that). Trade accepted: an origin that CRASHED (RAM set gone) no longer kills its own stray answer; the friend hangs up a one-way wave by hand, which beats every multi-device wave dying at answer.
@@ -1268,7 +1268,7 @@ impl PhotonApp {
                         self.active_wave = None;
                         self.fleet_wave_elsewhere = Some((wave_id, device, peer));
                         Self::stop_ring_alert_platform();
-                        self.scene_dirty = true;
+                        self.mark_dirty();
                     }
                     return;
                 }
@@ -1317,7 +1317,7 @@ impl PhotonApp {
                         // wave_service_void logs its own failure.
                         crate::platform::jni_android::wave_service_void("waveWentActive");
                         crate::logf!("WAVE: answered by {} — active", crate::fp(&peer));
-                        self.scene_dirty = true;
+                        self.mark_dirty();
                     }
                     WavePhase::Active => {
                         // A second device answered late — first won.
@@ -1342,7 +1342,7 @@ impl PhotonApp {
                     if wave.phase == WavePhase::Ringing {
                         self.active_wave = None;
                         Self::stop_ring_alert_platform();
-                        self.scene_dirty = true;
+                        self.mark_dirty();
                     }
                     return;
                 }
@@ -1396,7 +1396,7 @@ impl PhotonApp {
                     self.active_wave = None;
                     // The wave continues on the winning sibling — chip it (device unknown from Taken; the answer row's merge fills the name when it lands).
                     self.fleet_wave_elsewhere = Some((wave_id, None, peer));
-                    self.scene_dirty = true;
+                    self.mark_dirty();
                 }
             }
             // Anchor is transport plumbing: the re-point happens in drain_express_signals where the frame's SOURCE address is in hand; the row path never carries one.
@@ -1856,7 +1856,7 @@ impl PhotonApp {
         if let Some(b) = beam {
             crate::wave::spool::beam_discard(b);
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// Transcode a kept spool to the durable N-channel blob OFF the UI thread (decode+re-encode is O(wave length)); the worker posts (hash,size) back to `drain_wave_keep`, which mints the fleet-internal wave.audio row. A failed transcode drops the ticket → the spool key zeroizes → safe degrade to nothing kept.
@@ -2013,7 +2013,7 @@ impl PhotonApp {
             self.wave_env_pending.remove(&hash);
             // A miss caches None so the render's contains_key gate goes quiet instead of respawning the loader every frame.
             self.wave_env.insert(hash, envs.map(|v| v.into_iter().map(std::sync::Arc::new).collect()));
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
         any
     }
@@ -2127,7 +2127,7 @@ impl PhotonApp {
                 }
             }
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
         true
     }
 
@@ -2146,7 +2146,7 @@ impl PhotonApp {
             }
         }
         crate::logf!("WAVE: microphone {}", if m { "muted" } else { "back on" });
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     pub(super) fn toggle_beam(&mut self) {
@@ -2217,6 +2217,7 @@ impl PhotonApp {
         };
         wave.beam_opening = None;
         self.scene_dirty = true;
+        super::RedrawAsk::here().note(&mut self.redraw_why, &mut self.frame_why);
         match got {
             Ok(tx) => {
                 if wave.phase == WavePhase::Active && wave.beam_tx.is_none() {

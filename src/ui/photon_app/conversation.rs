@@ -224,7 +224,7 @@ impl PhotonApp {
             if let Some(chrome) = self.chrome.as_mut() {
                 chrome.invalidate_bg();
             }
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
         // Restart blink so the cursor lands solid on the newly-focused textbox instead of mid-cycle dark. `start` resets the phase to the start of the visible half whether the timer was already running or not.
         self.blink_timer.start(Instant::now());
@@ -559,7 +559,7 @@ impl PhotonApp {
         if let [ci] = people[..] {
             self.presence_probe = Some((self.contacts[ci].id, std::time::Instant::now()));
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
         true
     }
 
@@ -1237,7 +1237,7 @@ impl PhotonApp {
         if let Some(v) = self.conv_by_id_mut(id) {
             v.scroll_offset = scroll;
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// Zero this contact's unread counter — called at every site where their conversation becomes the active view (contact tap, panel back/Esc re-entry). Persists only on an actual change (off-thread, coalesced), so the common already-read path costs nothing. Interaction-cleared by doctrine: this is the ONLY way the counter ever goes down.
@@ -2242,7 +2242,7 @@ impl PhotonApp {
                     } else {
                         crate::logf!("CHAT: friend delete marker for ts {} — no matching live row (already tombstoned or never held)", target_ts);
                     }
-                    self.scene_dirty = true;
+                    self.mark_dirty();
                 }
                 recv_seal_idx = contact_idx;
             } else if wire_control.is_none() && crate::types::row_control::is_legacy_prefixed(&message_text) {
@@ -2503,6 +2503,7 @@ impl PhotonApp {
                     self.msg_wrap = None;
                 }
                 self.scene_dirty = true;
+                super::RedrawAsk::here().note(&mut self.redraw_why, &mut self.frame_why);
                 // Promote a captured bridge command to an actual run ONLY on first receipt — a re-serve/duplicate/history-backfill must never re-execute (Nick 2026-08-22). A reset likewise fires once; a Stop press signals inline (bridge_interrupt_host bypasses the executor queue by design).
                 if is_new_row && contact_is_sibling {
                     if let (Some((crate::types::RefKind::BridgePigeon, _)), Some(p)) = (wire_reference, bridge_wire.as_ref().and_then(|b| b.pigeon.clone())) {
@@ -2959,7 +2960,7 @@ impl PhotonApp {
             } else {
                 crate::log("CHAIN-SYNC: adopted chain state for a conversation with no matching contact yet (roster lag) — chain parked under its fid");
             }
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
     }
 
@@ -3024,6 +3025,8 @@ impl PhotonApp {
                         // The catch-up summary, any size: a sibling batch nobody flagged alerts once, a finished walk flushes its batch.
                         let flagged = group.is_some() && self.catch_up_alert(conv_pos, &fresh, from_sibling);
                         self.clear_unread_on_reply(conv_pos, &fresh);
+                        // The panel's history line moves from syncing to complete, once (a frame for it, as for new rows).
+                        let mut completed = false;
                         // Cursor + completion, the pair walk's rule (molecules walk since docs/conversations.md Phase 2).
                         if rid_matches {
                             let conv = &mut self.conversations[conv_pos];
@@ -3039,6 +3042,7 @@ impl PhotonApp {
                                     rec.oldest_recovered_osc = page.oldest_osc;
                                 }
                                 if !page.more || (rec.was_complete_before && fresh.is_empty()) {
+                                    completed = !rec.complete;
                                     rec.complete = true;
                                 }
                             }
@@ -3049,6 +3053,10 @@ impl PhotonApp {
                         if !fresh.is_empty() {
                             self.persist_conversation_async(fid);
                             self.push_conversation_rows_to_siblings(fid, &fresh, Some(sender_pubkey.key));
+                        }
+                        // A frame for new rows and the completion edge; a page that held nothing new asks for none.
+                        if !fresh.is_empty() || completed {
+                            self.mark_dirty();
                         }
                     }
                     continue;
@@ -3148,186 +3156,14 @@ impl PhotonApp {
                     }
                 }
             };
-            let mut fresh: Vec<crate::types::ChatMessage> = Vec::new();
-            // A sibling re-served these as undelivered while we hold them delivered: answered back, or the origin re-serves them every backstop forever.
-            let mut answer_back: Vec<crate::types::ChatMessage> = Vec::new();
-            // A sibling re-served these and we hold them undelivered too: drain candidates beyond the fresh rows.
-            let mut known_undelivered: Vec<crate::types::ChatMessage> = Vec::new();
+            let merged = merge_pair_page_rows(&mut self.conversations[conv_pos], &page.rows, from_sibling);
+            for names in merged.shred {
+                // Off-thread like the local delete (2026-09-12): a chunked blob's shred is many vault commits the UI thread doesn't owe; every name a copy can rest under goes (`AttachRef::stored_names`).
+                queue_job(&self.attach_job_tx, move || names.iter().for_each(crate::storage::blob_delete));
+            }
+            let PairPageMerge { fresh, answer_back, known_undelivered, mut drawn, .. } = merged;
             {
                 let conv = &mut self.conversations[conv_pos];
-                // Merge to OUR perspective: friend pages flip direction (their outgoing = our incoming); sibling pages ride verbatim (same identity, their flags ARE ours). Friend-recovered outgoing is delivered by definition (the friend has it); dedup on (timestamp, content) against what we already hold.
-                // Index existing rows ONCE by (timestamp, identity-hash) — each row is an O(1) lookup; inserts are deferred so the indices stay valid thru the upgrade pass.
-                let row_hash = |ident: &[u8]| -> u64 {
-                    u64::from_le_bytes(
-                        blake3::hash(ident).as_bytes()[..8]
-                            .try_into()
-                            .unwrap(),
-                    )
-                };
-                let mut existing_idx: crate::linear_map::SortedMap<(i64, u64), usize> =
-                    crate::linear_map::SortedMap::with_capacity(conv.messages.len());
-                for (i, m) in conv.messages.iter().enumerate() {
-                    existing_idx
-                        .entry((m.timestamp, row_hash(&m.ident_bytes())))
-                        .or_insert(i);
-                }
-                let mut to_insert: Vec<crate::types::ChatMessage> = Vec::new();
-                let mut tombstoned_in_merge = false;
-                for row in &page.rows {
-                    // Control rows cross ONLY between our own devices, and only the kinds that are fleet business (a wave signal stops our other devices' rings); a friend's page never carries one.
-                    if row.control.as_ref().is_some_and(|c| !from_sibling || c.wave().is_none()) || crate::types::row_control::is_legacy_prefixed(&row.content) {
-                        continue;
-                    }
-                    let row_ident = crate::types::row_control::ident_typed(&row.content, row.control.as_ref(), row.file.as_ref());
-                    let (is_outgoing, delivered, recovered) = if from_sibling {
-                        (row.sender_outgoing, row.delivered, false)
-                    } else {
-                        (!row.sender_outgoing, !row.sender_outgoing, true)
-                    };
-                    // O(1) existence check; the exact content compare confirms the hit (guards the astronomically-rare 8-byte-hash + exact-timestamp collision).
-                    let hit = existing_idx
-                        .get(&(row.timestamp, row_hash(&row_ident)))
-                        .copied()
-                        .filter(|&i| conv.messages[i].ident_bytes() == row_ident);
-                    if let Some(i) = hit {
-                        // Delivered AND deleted are monotonic (true wins): a copy that saw the ACK — or the tombstone — upgrades ours. Upgraded rows ride `fresh` (persist + gossip) but are NOT re-inserted.
-                        let existing = &mut conv.messages[i];
-                        let mut upgraded = false;
-                        if delivered && !existing.delivered && existing.is_outgoing == is_outgoing {
-                            existing.delivered = true;
-                            upgraded = true;
-                        }
-                        // REPLICATED edge: a fold-trusted sibling page carrying our own outgoing row back is proof the sibling holds it durably. Runtime state — no gossip/persist churn (delivered outranks it).
-                        if from_sibling && existing.is_outgoing && is_outgoing {
-                            existing.replicated = true;
-                        }
-                        if from_sibling && existing.is_outgoing && is_outgoing && !delivered {
-                            if existing.delivered {
-                                answer_back.push(existing.clone());
-                            } else {
-                                known_undelivered.push(existing.clone());
-                            }
-                        }
-                        if row.deleted && !existing.deleted {
-                            existing.deleted = true;
-                            tombstoned_in_merge = true; // drops a row from the syncable set (inserts self-invalidate; this upgrade path doesn't)
-                            if let Some(names) = existing.file.as_ref().map(|f| f.stored_names()) {
-                                // Off-thread like the local delete (2026-09-12): a chunked blob's shred is many vault commits the UI thread doesn't owe; every name a copy can rest under goes (`AttachRef::stored_names`).
-                                queue_job(&self.attach_job_tx, move || names.iter().for_each(crate::storage::blob_delete));
-                            }
-                            upgraded = true;
-                        }
-                        // Reference is origin-written row identity — a copy that arrived thru a pre-feature route regains it here (monotonic, never un-set).
-                        if existing.reference.is_none() {
-                            if let Some(r) = row.reference.and_then(|(k, t)| {
-                                crate::types::RefKind::from_wire(k).map(|k| (k, t))
-                            }) {
-                                existing.reference = Some(r);
-                                upgraded = true;
-                            }
-                        }
-                        // Marks upgrade: a page carrying link marks enriches a plain copy of the same row (content is the identity, so validation against ours is validation against theirs).
-                        if existing.marks.is_empty() && !row.marks.is_empty() {
-                            let v = crate::types::valid_marks(&existing.content, &row.marks);
-                            if !v.is_empty() {
-                                existing.marks = v;
-                                upgraded = true;
-                            }
-                        }
-                        // Wave fields fold by rank / max / adopt-once — the same rule the live insert path applies.
-                        {
-                            let before = (existing.wave, existing.envelope.len());
-                            crate::types::merge_wave_fields(
-                                existing,
-                                row.wave.and_then(|(o, s)| crate::types::WaveOutcome::from_wire(o).map(|outcome| crate::types::WaveInfo { outcome, secs: s })),
-                                &row.envelope,
-                            );
-                            if (existing.wave, existing.envelope.len()) != before {
-                                upgraded = true;
-                            }
-                        }
-                        // Attachment fields adopt-once: a page carrying the typed kind / preview enriches a copy that lacks them (content is the identity).
-                        if existing.attach.is_none() {
-                            if let Some((k, w, h, ph)) = row.attach {
-                                if let Some(kind) = crate::types::AttachKind::from_wire(k) {
-                                    existing.attach = Some(crate::types::AttachMeta { kind, dims: (w > 0 && h > 0).then_some((w, h)), preview_hash: ph });
-                                    upgraded = true;
-                                }
-                            }
-                        } else if let (Some(a), Some((_, _, _, Some(ph)))) = (existing.attach.as_mut(), row.attach) {
-                            if a.preview_hash.is_none() {
-                                a.preview_hash = Some(ph);
-                                upgraded = true;
-                            }
-                        }
-                        if existing.preview.is_empty() && !row.preview.is_empty() && row.preview.len() <= crate::types::MICRO_PREVIEW_MAX_BYTES {
-                            existing.preview = row.preview.clone();
-                            upgraded = true;
-                        }
-                        if row.star_osc.unsigned_abs() > existing.star_osc.unsigned_abs() {
-                            existing.star_osc = row.star_osc;
-                            upgraded = true;
-                        }
-                        // Who holds our row is OUR fleet's knowledge: only a sibling's page carries it (a friend's page describes their copy).
-                        if from_sibling && crate::types::merge_delivered_to(&mut existing.delivered_to, &row.delivered_to) {
-                            upgraded = true;
-                        }
-                        if existing.author.is_none() && row.author.is_some() {
-                            existing.author = row.author;
-                            upgraded = true;
-                        }
-                        if upgraded {
-                            fresh.push(existing.clone());
-                        }
-                        continue;
-                    }
-                    to_insert.push(crate::types::ChatMessage {
-                        star_osc: row.star_osc,
-                        author: row.author,
-                        content: row.content.clone(),
-                        timestamp: row.timestamp,
-                        is_outgoing,
-                        delivered,
-                        ack_hash: None,
-                        recovered,
-                        // Sibling pages carry OUR fleet's discharged-alert flag; a FRIEND page's flag is THEIR fleet's state — recovered history is always silent here (the catch-up summary in the sibling drain is the one place an unnotified batch may ding once).
-                        notified: if from_sibling { row.notified } else { true },
-                        deleted: row.deleted,
-                        
-                        reference: row
-                            .reference
-                            .and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t))),
-                        replicated: from_sibling && row.sender_outgoing,
-                        marks: crate::types::valid_marks(&row.content, &row.marks),
-                        wave: row.wave.and_then(|(o, s)| crate::types::WaveOutcome::from_wire(o).map(|outcome| crate::types::WaveInfo { outcome, secs: s })),
-                        envelope: row.envelope.clone(),
-                        attach: row.attach.and_then(|(k, w, h, ph)| crate::types::AttachKind::from_wire(k).map(|kind| crate::types::AttachMeta { kind, dims: (w > 0 && h > 0).then_some((w, h)), preview_hash: ph })),
-                        preview: if row.preview.len() <= crate::types::MICRO_PREVIEW_MAX_BYTES { row.preview.clone() } else { Vec::new() },
-                        bridge_seq: 0,
-                        bridge_exit: None,
-                        control: row.control.clone(),
-                        file: row.file.clone(),
-                        head_name: String::new(),
-                        delivered_to: if from_sibling { row.delivered_to.clone() } else { Vec::new() },
-                    });
-                }
-                // Deferred inserts (they'd shift indices the map holds); insert_message_sorted dedups again defensively, so a page carrying two identical rows still lands one.
-                for msg in to_insert {
-                    // A BLANK TWIN of a file row we hold folds away inside the insert — it is not a new row, so it neither counts nor rides a push (Nick's MacBook 2026-10-20: a sibling's page re-served one every sweep, 268 "1 new" merges each pushed straight back).
-                    let folds = msg.is_bare()
-                        && conv
-                            .messages
-                            .iter()
-                            .any(|m| m.timestamp == msg.timestamp && m.is_outgoing == msg.is_outgoing && m.file.is_some());
-                    conv.insert_message_sorted(msg.clone());
-                    if !folds {
-                        fresh.push(msg);
-                    }
-                }
-                // A tombstone flip on an existing row doesn't pass thru insert_message_sorted, so invalidate the digest for that case (inserts already self-invalidated).
-                if tombstoned_in_merge {
-                    conv.invalidate_digest();
-                }
 
                 // Cursor + completion — only for a page we ASKED for; a live push must not fast-forward a walk that never ran. Early-stop: if history was already complete before this (re-)kickoff and the page brought nothing new, we're still complete — a routine re-key on an intact pair stops after one page instead of re-walking years.
                 if rid_matches {
@@ -3345,6 +3181,8 @@ impl PhotonApp {
                             rec.oldest_recovered_osc = page.oldest_osc;
                         }
                         if !page.more || (rec.was_complete_before && fresh.is_empty()) {
+                            // The conversation panel's history line moves from syncing to complete, once.
+                            drawn |= !rec.complete;
                             rec.complete = true;
                         }
                     }
@@ -3450,10 +3288,15 @@ impl PhotonApp {
                     let bw = self.bridge_wire_for_row(idx, ts);
                     if self.chain_transmit(idx, &text, ts, re_ref, bw.as_ref()) {
                         crate::log("CHAT: fleet-forwarded row transmitted on the local chain");
+                        // A row sent from here shows its sending state.
+                        drawn = true;
                     }
                 }
             }
-            self.scene_dirty = true;
+            // A frame only for a page that changed what is drawn (`PairPageMerge::drawn`); the wave and alert paths above ask for their own.
+            if drawn {
+                self.mark_dirty();
+            }
         }
     }
 
@@ -3570,7 +3413,7 @@ impl PhotonApp {
                             crate::logf!("Avatar: preferred name recovered from the wall blob (\"{}\") — restoring into fstate", name);
                             self.settings_set("profile.name", vsf::VsfType::x(name));
                             self.publish_profile_name();
-                            self.scene_dirty = true;
+                            self.mark_dirty();
                         }
                     }
                     Some(owner_hp) => {
@@ -3583,7 +3426,7 @@ impl PhotonApp {
                             if self.contacts[pos].published_name != name && !self.contacts[pos].holds_record(fgtw::profile::Field::Name) {
                                 self.contacts[pos].published_name = name;
                                 self.contacts[pos].published_name_dirty = true;
-                                self.scene_dirty = true;
+                                self.mark_dirty();
                             }
                         }
                     }
@@ -3610,7 +3453,7 @@ impl PhotonApp {
                 self.device_avatar_scaled = None;
                 self.device_avatar_scaled_diameter = 0;
                 // The picture is drawn on the Ready screen (and on ferros the orb, which update_orb rebuilds from it): a frame is owed.
-                self.scene_dirty = true;
+                self.mark_dirty();
                 crate::log("Avatar: own avatar installed (async vault load / recovery)");
                 continue;
             };
@@ -3624,6 +3467,7 @@ impl PhotonApp {
                 contact.avatar_scaled_diameter = 0;
                 // The row draws it: a frame is owed.
                 self.scene_dirty = true;
+                super::RedrawAsk::here().note(&mut self.redraw_why, &mut self.frame_why);
                 // An install changes what the vault holds — drop the sweep's remembered probes (one re-probe each, rare edge).
                 self.avatar_probe_cache.clear();
                 crate::logf!(
@@ -3925,6 +3769,209 @@ impl OwnAvatarAsk {
     }
 }
 
+/// What one history page did to a pair conversation's rows (`merge_pair_page_rows`).
+pub(super) struct PairPageMerge {
+    /// Rows the page brought that were new here, and rows it upgraded (persisted and gossiped by the caller).
+    pub(super) fresh: Vec<crate::types::ChatMessage>,
+    /// A sibling re-served these as undelivered while we hold them delivered: answered back, or the origin re-serves them every backstop forever.
+    pub(super) answer_back: Vec<crate::types::ChatMessage>,
+    /// A sibling re-served these and we hold them undelivered too: drain candidates beyond the fresh rows.
+    pub(super) known_undelivered: Vec<crate::types::ChatMessage>,
+    /// The stored names of each file row the page tombstoned, for the caller to shred off the UI thread.
+    pub(super) shred: Vec<Vec<[u8; 32]>>,
+    /// Whether the conversation draws differently now: a row new or upgraded, or our own row newly held by a sibling (its delivery ladder).
+    /// A page that held nothing new (the history walk's every page from a sibling that already gave us all of it) changes nothing drawn and asks for no frame (the Pro 2026-11-21: one whole frame per such page).
+    pub(super) drawn: bool,
+}
+
+/// Merge a history page's rows into a pair conversation, to OUR perspective.
+pub(super) fn merge_pair_page_rows(conv: &mut crate::types::Conversation, rows: &[crate::network::history_pages::HistoryRow], from_sibling: bool) -> PairPageMerge {
+    let mut fresh: Vec<crate::types::ChatMessage> = Vec::new();
+    let mut answer_back: Vec<crate::types::ChatMessage> = Vec::new();
+    let mut known_undelivered: Vec<crate::types::ChatMessage> = Vec::new();
+    let mut shred: Vec<Vec<[u8; 32]>> = Vec::new();
+    let mut replicated_now = false;
+    // Merge to OUR perspective: friend pages flip direction (their outgoing = our incoming); sibling pages ride verbatim (same identity, their flags ARE ours). Friend-recovered outgoing is delivered by definition (the friend has it); dedup on (timestamp, content) against what we already hold.
+    // Index existing rows ONCE by (timestamp, identity-hash) — each row is an O(1) lookup; inserts are deferred so the indices stay valid thru the upgrade pass.
+    let row_hash = |ident: &[u8]| -> u64 {
+        u64::from_le_bytes(
+            blake3::hash(ident).as_bytes()[..8]
+                .try_into()
+                .unwrap(),
+        )
+    };
+    let mut existing_idx: crate::linear_map::SortedMap<(i64, u64), usize> =
+        crate::linear_map::SortedMap::with_capacity(conv.messages.len());
+    for (i, m) in conv.messages.iter().enumerate() {
+        existing_idx
+            .entry((m.timestamp, row_hash(&m.ident_bytes())))
+            .or_insert(i);
+    }
+    let mut to_insert: Vec<crate::types::ChatMessage> = Vec::new();
+    let mut tombstoned_in_merge = false;
+    for row in rows {
+        // Control rows cross ONLY between our own devices, and only the kinds that are fleet business (a wave signal stops our other devices' rings); a friend's page never carries one.
+        if row.control.as_ref().is_some_and(|c| !from_sibling || c.wave().is_none()) || crate::types::row_control::is_legacy_prefixed(&row.content) {
+            continue;
+        }
+        let row_ident = crate::types::row_control::ident_typed(&row.content, row.control.as_ref(), row.file.as_ref());
+        let (is_outgoing, delivered, recovered) = if from_sibling {
+            (row.sender_outgoing, row.delivered, false)
+        } else {
+            (!row.sender_outgoing, !row.sender_outgoing, true)
+        };
+        // O(1) existence check; the exact content compare confirms the hit (guards the astronomically-rare 8-byte-hash + exact-timestamp collision).
+        let hit = existing_idx
+            .get(&(row.timestamp, row_hash(&row_ident)))
+            .copied()
+            .filter(|&i| conv.messages[i].ident_bytes() == row_ident);
+        if let Some(i) = hit {
+            // Delivered AND deleted are monotonic (true wins): a copy that saw the ACK — or the tombstone — upgrades ours. Upgraded rows ride `fresh` (persist + gossip) but are NOT re-inserted.
+            let existing = &mut conv.messages[i];
+            let mut upgraded = false;
+            if delivered && !existing.delivered && existing.is_outgoing == is_outgoing {
+                existing.delivered = true;
+                upgraded = true;
+            }
+            // REPLICATED edge: a fold-trusted sibling page carrying our own outgoing row back is proof the sibling holds it durably. Runtime state — no gossip/persist churn (delivered outranks it).
+            if from_sibling && existing.is_outgoing && is_outgoing {
+                // Drawn: the row's delivery ladder moves from sending to replicated, once.
+                if !existing.replicated {
+                    existing.replicated = true;
+                    replicated_now = true;
+                }
+            }
+            if from_sibling && existing.is_outgoing && is_outgoing && !delivered {
+                if existing.delivered {
+                    answer_back.push(existing.clone());
+                } else {
+                    known_undelivered.push(existing.clone());
+                }
+            }
+            if row.deleted && !existing.deleted {
+                existing.deleted = true;
+                tombstoned_in_merge = true; // drops a row from the syncable set (inserts self-invalidate; this upgrade path doesn't)
+                if let Some(names) = existing.file.as_ref().map(|f| f.stored_names()) {
+                    // Off-thread like the local delete (2026-09-12), by the caller: a chunked blob's shred is many vault commits the UI thread doesn't owe; every name a copy can rest under goes (`AttachRef::stored_names`).
+                    shred.push(names);
+                }
+                upgraded = true;
+            }
+            // Reference is origin-written row identity — a copy that arrived thru a pre-feature route regains it here (monotonic, never un-set).
+            if existing.reference.is_none() {
+                if let Some(r) = row.reference.and_then(|(k, t)| {
+                    crate::types::RefKind::from_wire(k).map(|k| (k, t))
+                }) {
+                    existing.reference = Some(r);
+                    upgraded = true;
+                }
+            }
+            // Marks upgrade: a page carrying link marks enriches a plain copy of the same row (content is the identity, so validation against ours is validation against theirs).
+            if existing.marks.is_empty() && !row.marks.is_empty() {
+                let v = crate::types::valid_marks(&existing.content, &row.marks);
+                if !v.is_empty() {
+                    existing.marks = v;
+                    upgraded = true;
+                }
+            }
+            // Wave fields fold by rank / max / adopt-once — the same rule the live insert path applies.
+            {
+                let before = (existing.wave, existing.envelope.len());
+                crate::types::merge_wave_fields(
+                    existing,
+                    row.wave.and_then(|(o, s)| crate::types::WaveOutcome::from_wire(o).map(|outcome| crate::types::WaveInfo { outcome, secs: s })),
+                    &row.envelope,
+                );
+                if (existing.wave, existing.envelope.len()) != before {
+                    upgraded = true;
+                }
+            }
+            // Attachment fields adopt-once: a page carrying the typed kind / preview enriches a copy that lacks them (content is the identity).
+            if existing.attach.is_none() {
+                if let Some((k, w, h, ph)) = row.attach {
+                    if let Some(kind) = crate::types::AttachKind::from_wire(k) {
+                        existing.attach = Some(crate::types::AttachMeta { kind, dims: (w > 0 && h > 0).then_some((w, h)), preview_hash: ph });
+                        upgraded = true;
+                    }
+                }
+            } else if let (Some(a), Some((_, _, _, Some(ph)))) = (existing.attach.as_mut(), row.attach) {
+                if a.preview_hash.is_none() {
+                    a.preview_hash = Some(ph);
+                    upgraded = true;
+                }
+            }
+            if existing.preview.is_empty() && !row.preview.is_empty() && row.preview.len() <= crate::types::MICRO_PREVIEW_MAX_BYTES {
+                existing.preview = row.preview.clone();
+                upgraded = true;
+            }
+            if row.star_osc.unsigned_abs() > existing.star_osc.unsigned_abs() {
+                existing.star_osc = row.star_osc;
+                upgraded = true;
+            }
+            // Who holds our row is OUR fleet's knowledge: only a sibling's page carries it (a friend's page describes their copy).
+            if from_sibling && crate::types::merge_delivered_to(&mut existing.delivered_to, &row.delivered_to) {
+                upgraded = true;
+            }
+            if existing.author.is_none() && row.author.is_some() {
+                existing.author = row.author;
+                upgraded = true;
+            }
+            if upgraded {
+                fresh.push(existing.clone());
+            }
+            continue;
+        }
+        to_insert.push(crate::types::ChatMessage {
+            star_osc: row.star_osc,
+            author: row.author,
+            content: row.content.clone(),
+            timestamp: row.timestamp,
+            is_outgoing,
+            delivered,
+            ack_hash: None,
+            recovered,
+            // Sibling pages carry OUR fleet's discharged-alert flag; a FRIEND page's flag is THEIR fleet's state — recovered history is always silent here (the catch-up summary in the sibling drain is the one place an unnotified batch may ding once).
+            notified: if from_sibling { row.notified } else { true },
+            deleted: row.deleted,
+            
+            reference: row
+                .reference
+                .and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t))),
+            replicated: from_sibling && row.sender_outgoing,
+            marks: crate::types::valid_marks(&row.content, &row.marks),
+            wave: row.wave.and_then(|(o, s)| crate::types::WaveOutcome::from_wire(o).map(|outcome| crate::types::WaveInfo { outcome, secs: s })),
+            envelope: row.envelope.clone(),
+            attach: row.attach.and_then(|(k, w, h, ph)| crate::types::AttachKind::from_wire(k).map(|kind| crate::types::AttachMeta { kind, dims: (w > 0 && h > 0).then_some((w, h)), preview_hash: ph })),
+            preview: if row.preview.len() <= crate::types::MICRO_PREVIEW_MAX_BYTES { row.preview.clone() } else { Vec::new() },
+            bridge_seq: 0,
+            bridge_exit: None,
+            control: row.control.clone(),
+            file: row.file.clone(),
+            head_name: String::new(),
+            delivered_to: if from_sibling { row.delivered_to.clone() } else { Vec::new() },
+        });
+    }
+    // Deferred inserts (they'd shift indices the map holds); insert_message_sorted dedups again defensively, so a page carrying two identical rows still lands one.
+    for msg in to_insert {
+        // A BLANK TWIN of a file row we hold folds away inside the insert — it is not a new row, so it neither counts nor rides a push (Nick's MacBook 2026-10-20: a sibling's page re-served one every sweep, 268 "1 new" merges each pushed straight back).
+        let folds = msg.is_bare()
+            && conv
+                .messages
+                .iter()
+                .any(|m| m.timestamp == msg.timestamp && m.is_outgoing == msg.is_outgoing && m.file.is_some());
+        conv.insert_message_sorted(msg.clone());
+        if !folds {
+            fresh.push(msg);
+        }
+    }
+    // A tombstone flip on an existing row doesn't pass thru insert_message_sorted, so invalidate the digest for that case (inserts already self-invalidated).
+    if tombstoned_in_merge {
+        conv.invalidate_digest();
+    }
+    let drawn = !fresh.is_empty() || replicated_now;
+    PairPageMerge { fresh, answer_back, known_undelivered, shred, drawn }
+}
+
 #[cfg(test)]
 mod own_avatar_ask_tests {
     use super::OwnAvatarAsk;
@@ -3957,5 +4004,69 @@ mod own_avatar_ask_tests {
         assert_eq!(ask.targets(Some(9), true, &[a, b]), vec![a, b], "the stamp moved: everyone online");
         ask.asked(Some(9), &[a, b]);
         assert!(ask.targets(Some(9), true, &[a, b]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod pair_page_merge_tests {
+    use super::*;
+    use crate::network::history_pages::HistoryRow;
+    use crate::types::{ChatMessage, Conversation};
+
+    /// A pair conversation holding one row of ours (delivered, and held by a sibling) and one of theirs.
+    fn held() -> Conversation {
+        let mut conv = Conversation::new([[1u8; 32], [2u8; 32]]);
+        let mut ours = ChatMessage::new_with_timestamp("ours".to_string(), true, 1 << 20);
+        ours.delivered = true;
+        ours.replicated = true;
+        conv.insert_message_sorted(ours);
+        conv.insert_message_sorted(ChatMessage::new_with_timestamp("theirs".to_string(), false, (1 << 20) + 1));
+        conv
+    }
+
+    fn page_of(conv: &Conversation) -> Vec<HistoryRow> {
+        conv.messages.iter().map(HistoryRow::from_message).collect()
+    }
+
+    /// A sibling's page of rows this device holds just as it holds them changes nothing drawn: the history walk's every such page asks for no frame (the Pro 2026-11-21, a whole frame for each "0 new of 50 rows").
+    #[test]
+    fn a_page_of_held_rows_draws_nothing() {
+        let mut conv = held();
+        let rows = page_of(&conv);
+        for _ in 0..2 {
+            let m = merge_pair_page_rows(&mut conv, &rows, true);
+            assert!(m.fresh.is_empty());
+            assert!(!m.drawn, "nothing on the screen moved");
+        }
+        assert_eq!(conv.messages.len(), 2);
+    }
+
+    /// A page with a row this device lacks draws once; the same page again draws nothing.
+    #[test]
+    fn a_new_row_draws_once() {
+        let mut conv = held();
+        let mut rows = page_of(&conv);
+        rows.push(HistoryRow::from_message(&ChatMessage::new_with_timestamp("new".to_string(), false, (1 << 20) + 2)));
+        let m = merge_pair_page_rows(&mut conv, &rows, true);
+        assert!(m.drawn);
+        assert_eq!(m.fresh.len(), 1);
+        let m = merge_pair_page_rows(&mut conv, &rows, true);
+        assert!(!m.drawn, "the row is held now");
+        assert!(m.fresh.is_empty());
+        assert_eq!(conv.messages.len(), 3);
+    }
+
+    /// Our own row coming back on a sibling's page moves its delivery ladder to replicated once (drawn); the next page carrying it changes nothing.
+    #[test]
+    fn our_row_held_by_a_sibling_draws_once() {
+        let mut conv = Conversation::new([[1u8; 32], [2u8; 32]]);
+        conv.insert_message_sorted(ChatMessage::new_with_timestamp("sending".to_string(), true, 1 << 20));
+        let rows = page_of(&conv);
+        let m = merge_pair_page_rows(&mut conv, &rows, true);
+        assert!(m.drawn, "sending became replicated");
+        assert!(m.fresh.is_empty(), "replicated is runtime state, never gossiped");
+        assert_eq!(m.known_undelivered.len(), 1);
+        let m = merge_pair_page_rows(&mut conv, &rows, true);
+        assert!(!m.drawn);
     }
 }

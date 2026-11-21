@@ -2037,6 +2037,10 @@ pub struct PhotonApp {
     orb_wave: Option<u32>,
     /// The contact-list ring colours as last PAINTED, diffed each tick — the same doctrine as the orb's per-tick diff, because ring state is DERIVED (validated_path appearing, reached_via_relay flipping, TTL expiry) and half its inputs mutate without any repaint-marked event: the ring held its old colour until a page change forced a re-raster (field, 2026-08-05). Empty until the first tick.
     painted_ring_tiers: Vec<u32>,
+    /// Each Ready row's presence ring as the last frame drew it (whose, the colour, the box), rebuilt by every render: a ring that changed alone is drawn again in its box, never the whole frame (`render::ring_rects`).
+    ready_rings: Vec<render::DrawnRing>,
+    /// The rings' boxes owed a frame, taken by the next `damage_rect` and cleared by the render.
+    ring_damage: Vec<PixelRect>,
     /// Whether the orb's current contact had an avatar when the orb was last built — part of the diff key so a mid-conversation avatar download upgrades the orb from the gradient placeholder.
     orb_had_avatar: bool,
     /// Contacts-page handle search/add textbox (Ready state). Distinct from `textbox` so content doesn't bleed between Launch (handle being attested) and Ready (handle being added as a contact).
@@ -2086,10 +2090,10 @@ pub struct PhotonApp {
     scene_owed: bool,
     /// Dev instrument: the first tick checkpoint (a driver.rs line) that found `scene_dirty` newly set this tick; 0 = the tick left it alone.
     dirty_blame_line: u32,
-    /// Dev instrument (the idle whole-frame hunt, ferros Pro 2026-11-17: Ready repainted whole about once a second at rest): the event that raised `scene_dirty` from clear, whether the previous render left it set, the redraw asks since the last frame (the `redraw_why` line coding), and the whole frames logged this stats window.
+    /// Dev instrument (the idle whole-frame hunt, ferros Pro 2026-11-17: Ready repainted whole about once a second at rest): the event that raised `scene_dirty` from clear, whether the previous render left it set, the redraw asks since the last frame (each a source file and line, `RedrawAsk`), and the whole frames logged this stats window.
     dirty_event: &'static str,
     dirty_after_render: bool,
-    frame_why: Vec<u32>,
+    frame_why: Vec<RedrawAsk>,
     whole_frames_logged: u32,
     /// SCROLL AS A MEMMOVE (Nick 2026-10-06, "how do we make it so it's just a mem move like we do with moving the window"): the scrollable pane's rigid shift this frame in viewport pixels (+ = content moved DOWN), accumulated by `pane_scroll` while the offset stays inside its bounds and read by `damage_rect`, which arms the hint below; zero when nothing scrolled rigidly. Cleared at the end of every render.
     scroll_shift: i32,
@@ -2105,8 +2109,8 @@ pub struct PhotonApp {
     compose_link_btn: Option<Button>,
     /// The PAPERCLIP: always beside send in the compose bar — Android opens the any-file picker, desktop points at drag-and-drop (typed attachments 2026-09-10; the old staged paperclip left with the resample card and nothing replaced it).
     compose_attach_btn: Option<Button>,
-    /// REDRAW-STORM forensics (2026-09-10, Nick's phone at 100% CPU on Ready with nothing moving): the source lines that asked for a redraw since the last report (protocol.rs lines as-is, driver.rs lines + 100000), and the tick/dirty counters behind the once-per-five-seconds report in `tick`.
-    redraw_why: Vec<u32>,
+    /// REDRAW-STORM forensics (2026-09-10, Nick's phone at 100% CPU on Ready with nothing moving): the source lines that asked for a redraw since the last report (`RedrawAsk`: file and line), and the tick/dirty counters behind the once-per-five-seconds report in `tick`.
+    redraw_why: Vec<RedrawAsk>,
     tick_stat_at: Option<std::time::Instant>,
     tick_stat_n: u32,
     tick_stat_dirty: u32,
@@ -3435,6 +3439,8 @@ impl PhotonApp {
             orb_self: None,
             orb_wave: None,
             painted_ring_tiers: Vec::new(),
+            ready_rings: Vec::new(),
+            ring_damage: Vec::new(),
             orb_had_avatar: false,
             contacts_textbox: None,
             message_textbox: None,
@@ -4027,7 +4033,6 @@ impl PhotonApp {
         }
     }
 
-    /// Remember which line asked for this tick's redraw (deduplicated, capped) — read by the storm report in `tick`.
     /// Mark the scene dirty from outside the tick, naming who did for the idle whole-frame log (`damage_rect`): the first to raise it from clear is the one named.
     pub(crate) fn dirty_from(&mut self, who: &'static str) {
         if !self.scene_dirty {
@@ -4036,13 +4041,24 @@ impl PhotonApp {
         self.scene_dirty = true;
     }
 
-    pub(crate) fn note_redraw(&mut self, line: u32) {
-        if self.redraw_why.len() < 32 && !self.redraw_why.contains(&line) {
-            self.redraw_why.push(line);
-        }
-        if self.frame_why.len() < 16 && !self.frame_why.contains(&line) {
-            self.frame_why.push(line);
-        }
+    /// Remember where this tick's redraw was asked for (the caller's file and line, deduplicated, capped): read by the storm report in `tick` and by the idle whole-frame log in `damage_rect`.
+    /// `#[track_caller]`, so every ask names its own source without a hand-written line code.
+    #[track_caller]
+    pub(crate) fn note_redraw(&mut self) {
+        self.note_ask(RedrawAsk::here());
+    }
+
+    /// Remember an ask taken where `self` was borrowed (the status drain collects its own and hands them over after).
+    pub(crate) fn note_ask(&mut self, at: RedrawAsk) {
+        at.note(&mut self.redraw_why, &mut self.frame_why);
+    }
+
+    /// Raise `scene_dirty` (the next frame drawn whole), naming the caller's line among the frame's redraw asks.
+    /// Every content change marks the scene this way, so "redraw asks since the last frame" in the idle whole-frame log is never empty for a frame the app's own code dirtied.
+    #[track_caller]
+    pub(crate) fn mark_dirty(&mut self) {
+        self.note_redraw();
+        self.scene_dirty = true;
     }
 
     pub fn take_keep_hold(&mut self) -> i8 {
@@ -4276,6 +4292,39 @@ const AVATAR_CACHE: usize = 1 << 6;
 
 /// Each mark's 256 square as visible γ2 RGB (a photo's display pixels), by seed: black past the disc.
 static MARK_RGB_STORE: std::sync::Mutex<Vec<(u64, std::sync::Arc<Vec<u8>>)>> = std::sync::Mutex::new(Vec::new());
+
+/// Where a redraw was asked for: the source file's name and the line, taken from the caller (`note_redraw`, `mark_dirty`).
+/// Logged as `driver.rs:4048`, so the idle whole-frame log names the code that asked, in any file, with no hand-kept line coding.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RedrawAsk {
+    file: &'static str,
+    line: u32,
+}
+
+impl RedrawAsk {
+    #[track_caller]
+    fn here() -> Self {
+        let at = std::panic::Location::caller();
+        let file = at.file();
+        Self { file: file.rsplit(['/', '\\']).next().unwrap_or(file), line: at.line() }
+    }
+
+    /// Into the storm report's asks and the frame's (deduplicated, capped), by the fields alone: for a site where another field of the app is borrowed.
+    fn note(self, redraw_why: &mut Vec<RedrawAsk>, frame_why: &mut Vec<RedrawAsk>) {
+        if redraw_why.len() < 32 && !redraw_why.contains(&self) {
+            redraw_why.push(self);
+        }
+        if frame_why.len() < 16 && !frame_why.contains(&self) {
+            frame_why.push(self);
+        }
+    }
+}
+
+impl std::fmt::Debug for RedrawAsk {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}:{}", self.file, self.line)
+    }
+}
 
 /// Seeds handed to a mark worker (or asked for by a draw), so a draw that misses again before the worker lands asks no second time.
 static MARKS_ASKED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
@@ -4812,6 +4861,36 @@ pub(crate) fn disjoint_rects(mut v: Vec<PixelRect>, max: usize) -> Vec<PixelRect
         let Some((i, j)) = pair else { return v };
         v[i] = v[i].union(v[j]);
         v.swap_remove(j);
+    }
+}
+
+#[cfg(test)]
+mod redraw_ask_tests {
+    use super::*;
+
+    /// An ask names the line it was made on: directly, thru a `#[track_caller]` wrapper (as `mark_dirty` passes it on), and thru a macro (the status drain's `changed!()`), so the idle whole-frame log names the code, never an empty list.
+    #[test]
+    fn an_ask_names_its_own_line() {
+        let (direct, at) = (RedrawAsk::here(), line!());
+        assert_eq!((direct.file, direct.line), ("photon_app.rs", at));
+        #[track_caller]
+        fn wrapper() -> RedrawAsk {
+            RedrawAsk::here()
+        }
+        let (wrapped, at) = (wrapper(), line!());
+        assert_eq!(wrapped.line, at);
+        macro_rules! ask {
+            () => {
+                RedrawAsk::here()
+            };
+        }
+        let (via, at) = (ask!(), line!());
+        assert_eq!(via.line, at);
+        assert_eq!(format!("{via:?}"), format!("photon_app.rs:{at}"));
+        let (mut why, mut frame) = (Vec::new(), Vec::new());
+        via.note(&mut why, &mut frame);
+        via.note(&mut why, &mut frame);
+        assert_eq!((why.len(), frame.len()), (1, 1), "one line, one ask");
     }
 }
 

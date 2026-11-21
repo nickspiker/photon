@@ -175,7 +175,7 @@ impl PhotonApp {
             crate::log_err!(tx.send(GripeEvent::Put(id, r)), "the gripe put result to the UI thread");
         });
         self.ready_toast = Some(tr(Msg::IdeasSending).into_owned());
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// Ask the worker for every sent id's status, off-thread; the tick folds the answers in.
@@ -311,7 +311,7 @@ impl PhotonApp {
                 }
             }
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
         true
     }
 }

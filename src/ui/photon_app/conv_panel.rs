@@ -139,17 +139,17 @@ impl PhotonApp {
         // Any press other than the armed pill disarms it.
         if self.contact_boot_armed && hit_id != base + SLOT_BOOT {
             self.contact_boot_armed = false;
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
         if let Some(all) = self.contact_clear_armed {
             if hit_id != base + if all { SLOT_CLEAR_ALL } else { SLOT_CLEAR_WAVES } {
                 self.contact_clear_armed = None;
-                self.scene_dirty = true;
+                self.mark_dirty();
             }
         }
         if self.molecule_leave_armed && hit_id != base + SLOT_LEAVE {
             self.molecule_leave_armed = false;
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
         let rail = self.conversation_rail();
         if self.conv_nav_base != HIT_NONE && hit_id >= self.conv_nav_base && hit_id < self.conv_nav_base + rail.len() as HitId {
@@ -293,7 +293,7 @@ impl PhotonApp {
             }
             _ => {}
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
         true
     }
 }

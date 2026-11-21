@@ -117,7 +117,7 @@ impl PhotonApp {
         self.viewer = Some(Viewer { conv, hash, preview_hash: meta.preview_hash, name, kind: meta.kind, view: None, decoding: false, failed: false, decode_frac: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)), decode_frac_seen: 0 });
         self.reader = None;
         self.selected_msg = None;
-        self.scene_dirty = true;
+        self.mark_dirty();
         crate::log("attach: viewer opened");
         self.request_view_decode();
     }
@@ -191,7 +191,7 @@ impl PhotonApp {
             }
             crate::log_err!(tx.send((hash, out)), "hand a viewer decode to the UI");
         });
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// A decode landed: build opsin's view around it (widget ids from the reserved block, the export pill reading Save — photon hands the original over, no JPEG is written). A blob that arrived after the viewer opened (an auto-fetch) starts its decode here too.
@@ -213,7 +213,7 @@ impl PhotonApp {
                 }
                 Err(_) => v.failed = true,
             }
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
         if self.viewer.as_ref().is_some_and(|v| v.view.is_none() && !v.decoding && !v.failed && crate::storage::blob_present(&v.hash)) {
             self.request_view_decode();
@@ -223,7 +223,7 @@ impl PhotonApp {
             let now = v.decode_frac.load(std::sync::atomic::Ordering::Relaxed);
             if v.decoding && now != v.decode_frac_seen {
                 v.decode_frac_seen = now;
-                self.scene_dirty = true;
+                self.mark_dirty();
             }
         }
     }
@@ -286,7 +286,7 @@ impl PhotonApp {
         self.reader = Some(Reader { hash, name, lines, scroll: 0.0, hscroll: 0.0 });
         self.viewer = None;
         self.selected_msg = None;
-        self.scene_dirty = true;
+        self.mark_dirty();
         crate::log("attach: reader opened");
     }
 
@@ -298,7 +298,7 @@ impl PhotonApp {
         self.reader = None;
         self.close_replay();
         if was {
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
         was
     }
@@ -311,7 +311,7 @@ impl PhotonApp {
         }
         if landed {
             self.msg_wrap = None;
-            self.scene_dirty = true;
+            self.mark_dirty();
             // New presence answers can name files this device lacks: the replication sweep looks again.
             self.replicate_dirty = true;
             // … and a group picture whose presence was pending may be held now.
@@ -401,7 +401,7 @@ impl PhotonApp {
             }
         }
         self.msg_wrap = None;
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// Decoded previews the worker finished: into the cache (a failure is remembered as None so the walk stops asking), the wrap re-measures (the band grows to the preview size).
@@ -410,7 +410,7 @@ impl PhotonApp {
             self.img_pending.remove(&hash);
             self.img_cache.insert(hash, px);
             self.msg_wrap = None;
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
     }
 

@@ -108,6 +108,10 @@ impl PhotonApp {
         // The scene is about to be painted in full: clear the dirty flag NOW, so a flag raised DURING this render (a first-frame measurement that moved the rows) survives to claim the next frame instead of being wiped at the end of this one (field 2026-10-01: the contacts sat under the wrapped filter strip's second line until a scroll forced another frame — the correction frame was asked for and then forgotten).
         self.scene_dirty = false;
         self.slide_dirty = false;
+        // The rings this frame shows are kept afresh (a row off the screen is not among them: its ring is drawn as it is when a scroll brings it in).
+        self.ready_rings.clear();
+        // The rings owed a frame are drawn by this one (`damage_rect` took their boxes before it, or the frame is whole).
+        self.ring_damage.clear();
         // A launch-box refill waiting on the text renderer (the minting retype puts the first entry back on a mismatch or a cancel).
         if let Some(s) = self.launch_refill.take() {
             if let Some(tb) = self.textbox.as_mut() {
@@ -2382,6 +2386,7 @@ impl PhotonApp {
                     self.ready_strip_h = measured.max(row_h as f32);
                     // The extent and the scroll clamp above read LAST frame's height; ask for the frame that reads this one.
                     self.scene_dirty = true;
+                    super::RedrawAsk::here().note(&mut self.redraw_why, &mut self.frame_why);
                     ctx.window.request_redraw();
                 }
                 measured.max(row_h as f32).ceil() as isize
@@ -2419,6 +2424,18 @@ impl PhotonApp {
                 let row_top = row_top_at_zero - scroll as isize;
                 if row_top + rh <= 0 || row_top >= buf_h as isize {
                     continue; // fully outside the visible content area (rows now scroll up to the top, not just `rows.y0`)
+                }
+                // Kept for the next presence change (`ring_rects`), for every row on the screen, a memmove's carried rows too: a ring that changed alone is drawn again in this box.
+                // The box reaches the stroke's outer edge, the hover's wider stroke, and a ring thickness more for the antialiasing; a float cast stops at 0 (a row partly above the frame), and `damage_rect` cuts the far edges at the frame.
+                let ring_key = match *row {
+                    ReadyRow::Contact(ci) => Some(RingKey::Contact(self.contacts[ci].id)),
+                    ReadyRow::Group(gi) => Some(RingKey::Group(self.molecule_rosters[gi].0)),
+                    ReadyRow::Me | ReadyRow::Offer(_) => None,
+                };
+                if let Some(key) = ring_key {
+                    let (cy, reach) = ((row_top + rh / 2) as f32, avatar_r + ring_thickness * 2. + 1.);
+                    let rect = fluor::canvas::PixelRect::new((avatar_cx - reach).floor() as usize, (cy - reach).floor() as usize, (avatar_cx + reach).ceil() as usize, (cy + reach).ceil() as usize);
+                    self.ready_rings.push(DrawnRing { key, ring: view.ring, rect });
                 }
                 // A MEMMOVE frame repaints only the exposed band and the overlays: a row a whole row's height clear of them (room for its glow) was moved with the pane, hit stamps and all, and is not built at all (ferros Pro 2026-11-17: the row walk was 12-16 ms of a frame that drew a 20-row band).
                 if scroll_hint.is_some() && frame_rects.iter().all(|d| row_top + 2 * rh <= rows_clip.y_start.max(d.y0) as isize || row_top - rh >= rows_clip.y_end.min(d.y1) as isize) {
@@ -8083,6 +8100,70 @@ enum ReadyRow {
     Offer(usize),
 }
 
+/// Whose presence ring a Ready row wears: a contact's or a group's (our own row and an invitation wear none that presence moves).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RingKey {
+    Contact(crate::types::ContactId),
+    Group(crate::types::molecule::MoleculeId),
+}
+
+/// A Ready row's presence ring as a frame drew it: whose, its colour, and the box its ring and avatar fill (the stroke's extent, the hover's wider stroke and the antialiasing round it).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct DrawnRing {
+    pub(super) key: RingKey,
+    pub(super) ring: u32,
+    pub(super) rect: fluor::canvas::PixelRect,
+}
+
+/// The boxes a change of presence asks the Ready list to draw again: each drawn row whose ring is not the colour it was drawn in.
+/// None when a drawn row no longer resolves (it left the list), which a whole frame redraws; an empty list when every drawn ring is as drawn (a change off the screen, or none of a drawn row's).
+pub(super) fn ring_rects(drawn: &[DrawnRing], now: impl Fn(&RingKey) -> Option<u32>) -> Option<Vec<fluor::canvas::PixelRect>> {
+    let mut rects = Vec::new();
+    for d in drawn {
+        if now(&d.key)? != d.ring {
+            rects.push(d.rect);
+        }
+    }
+    Some(rects)
+}
+
+impl PhotonApp {
+    /// Whether the rows' rings are all the screen draws of presence: the contacts list, nothing over it (the title's count is the chrome's own damage).
+    pub(super) fn ring_carries_presence(&self) -> bool {
+        matches!(self.state, AppState::Ready) && !self.wave_screen() && self.viewer.is_none() && self.reader.is_none()
+    }
+
+    /// A Ready row's ring as the row loop would draw it now (`RowView`), or None when the row is gone.
+    fn ready_row_ring(&self, key: &RingKey) -> Option<u32> {
+        let rctx = ReadyCtx {
+            contacts: &self.contacts,
+            conversations: &self.conversations,
+            contact_row_lines: &self.contact_row_lines,
+            molecule_rosters: &self.molecule_rosters,
+            molecule_locals: &self.molecule_locals,
+            molecule_row_lines: &self.molecule_row_lines,
+            bond_offers: &self.bond_offers,
+            offer_row_lines: &self.offer_row_lines,
+            contact_hit_base: self.contact_hit_base,
+            molecule_hit_base: self.molecule_hit_base,
+        };
+        // The same party id the row loop colours by (`own_pid`, zero before a session).
+        let us = self.own_party_id().unwrap_or([0u8; 32]);
+        Some(match key {
+            RingKey::Contact(id) => RowView::of_contact(&rctx, self.ci_of(id)?, &us).ring,
+            RingKey::Group(gid) => RowView::of_group(&rctx, self.molecule_rosters.iter().position(|(g, _)| g == gid)?, &us).ring,
+        })
+    }
+
+    /// The boxes a change of the rows' rings needs while the list shows them (`ring_rects` over the last frame's rings); None anywhere else, or for a row that left, where the caller draws whole.
+    pub(super) fn ready_ring_damage(&self) -> Option<Vec<fluor::canvas::PixelRect>> {
+        if !self.ring_carries_presence() {
+            return None;
+        }
+        ring_rects(&self.ready_rings, |k| self.ready_row_ring(k))
+    }
+}
+
 /// What the Ready row loop needs to paint a row, resolved once per row from either source so the geometry below is source-blind.
 struct RowView {
     name_lines: Vec<String>,
@@ -8544,3 +8625,27 @@ const WAVE_MARK: &str = "\u{223F}";
 const BEAM_MARK: &str = "\u{1F4F9}\u{FE0E}";
 /// A bead's mark size as a fraction of its radius: the font's em, about one and a quarter radii (`1 + 1/4`), so the glyph's ink sits well inside the circle.
 const BEAD_MARK: f32 = 1. + 1. / 4.;
+
+#[cfg(test)]
+mod ring_rects_tests {
+    use super::*;
+    use fluor::canvas::PixelRect;
+
+    fn key(b: u8) -> RingKey {
+        RingKey::Group(crate::types::molecule::MoleculeId([b; 32]))
+    }
+
+    /// Presence chatter that leaves every drawn ring as drawn asks for no frame; one ring that changed asks for exactly its own box; a drawn row that left the list asks for the whole frame (None).
+    #[test]
+    fn only_a_changed_ring_draws_and_only_its_box() {
+        let (on, off) = (0xFF00_FF00u32, 0xFF00_00FFu32);
+        let a = DrawnRing { key: key(1), ring: on, rect: PixelRect::new(1 << 3, 1 << 3, 1 << 5, 1 << 5) };
+        let b = DrawnRing { key: key(2), ring: off, rect: PixelRect::new(1 << 3, 1 << 6, 1 << 5, 1 << 7) };
+        let drawn = [a, b];
+        let as_drawn = |k: &RingKey| drawn.iter().find(|d| d.key == *k).map(|d| d.ring);
+        assert_eq!(ring_rects(&drawn, as_drawn), Some(Vec::new()), "nothing visible changed");
+        assert_eq!(ring_rects(&drawn, |k| Some(if *k == key(2) { on } else { as_drawn(k).unwrap() })), Some(vec![b.rect]), "b came online");
+        assert_eq!(ring_rects(&drawn, |k| (*k != key(1)).then_some(off)), None, "a left the list");
+        assert_eq!(ring_rects(&[], |_| None), Some(Vec::new()), "no row drawn, nothing owed");
+    }
+}

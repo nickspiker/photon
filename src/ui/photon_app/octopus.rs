@@ -30,7 +30,7 @@ impl PhotonApp {
             self.octopus_open = true;
             crate::log("OCTOPUS: the page is open for this run of Photon");
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
         true
     }
 
@@ -48,7 +48,7 @@ impl PhotonApp {
     /// Copy this device's phonebook and ask fgtw.org for its buckets and log, filtered to the identity the page shows; one request at a time.
     pub(super) fn octopus_refresh(&mut self) {
         self.octopus_peers = self.peer_store.as_ref().map(|s| s.lock().unwrap().get_all_peers()).unwrap_or_default();
-        self.scene_dirty = true;
+        self.mark_dirty();
         if self.octopus_rx.is_some() {
             return;
         }
@@ -77,7 +77,7 @@ impl PhotonApp {
         }
         let Some((kp, hp)) = self.octopus_signer() else { return };
         self.octopus_status = Some("Finding that identity…".to_string());
-        self.scene_dirty = true;
+        self.mark_dirty();
         let (tx, rx) = std::sync::mpsc::channel();
         self.octopus_rx = Some(rx);
         std::thread::spawn(move || {
@@ -99,7 +99,7 @@ impl PhotonApp {
         }
         crate::logf!("OCTOPUS: clearing {}", label);
         self.octopus_status = Some(format!("Clearing {label}…"));
-        self.scene_dirty = true;
+        self.mark_dirty();
         let (tx, rx) = std::sync::mpsc::channel();
         self.octopus_rx = Some(rx);
         std::thread::spawn(move || {
@@ -115,7 +115,7 @@ impl PhotonApp {
             Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
                 self.octopus_rx = None;
                 self.octopus_status = Some("The request ended without an answer".to_string());
-                self.scene_dirty = true;
+                self.mark_dirty();
                 return true;
             }
             _ => return false,
@@ -137,7 +137,7 @@ impl PhotonApp {
             }
             OctopusEvent::Cleared(label, Err(e)) => self.octopus_status = Some(format!("Clearing {label} failed: {e}")),
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
         true
     }
 }

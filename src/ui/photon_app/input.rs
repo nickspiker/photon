@@ -253,7 +253,7 @@ impl PhotonApp {
                 self.conv_blind_h = [0.0; 3];
                 self.conv_blind_edge = f32::MAX;
             }
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
     }
 
@@ -453,7 +453,7 @@ impl PhotonApp {
             }
             if edited {
                 self.blink_timer.start(Instant::now());
-                self.scene_dirty = true;
+                self.mark_dirty();
             }
             return EventResponse::Handled;
         }

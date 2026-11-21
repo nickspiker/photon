@@ -39,7 +39,7 @@ impl PhotonApp {
         }
         tb.relabel_span(start, end, &label, url.clone(), *theme::LINK_PURPLE, text);
         crate::logf!("COMPOSE: link button — {} shown as {}", url, label);
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// The compose box's tagged links as wire marks (byte offsets over the box's text), taken at submit before the box clears.
@@ -106,7 +106,7 @@ impl PhotonApp {
                     if has_out_row { "present" } else { "none" },
                     exit_s
                 );
-                self.scene_dirty = true;
+                self.mark_dirty();
                 return;
             }
         }
@@ -116,7 +116,7 @@ impl PhotonApp {
                 | self.compose_edit_of.take().is_some()
                 | self.compose_react_to.take().is_some()
             {
-                self.scene_dirty = true;
+                self.mark_dirty();
                 return;
             }
             // Empty send = liveness probe of everyone in it we hold a contact for: optimistically mark each offline and ping them; a returning pong flips is_online back true (check_status_updates), so an empty send confirms who is actually reachable right now instead of doing nothing.
@@ -138,7 +138,7 @@ impl PhotonApp {
                 tb.clear();
             }
             self.pending_input_reset = true;
-            self.scene_dirty = true;
+            self.mark_dirty();
             return;
         }
         // An armed edit/reply rides as the TYPED reference; the text goes as-is — the row then takes every path (chain, ACK, fleet sync, pages, digest) as an ordinary message and the reference resolves at render.
@@ -455,7 +455,7 @@ impl PhotonApp {
                 crate::logf!("STORAGE CRITICAL: durable write refused for {} self row(s) — staying faint, sibling push withheld: {}", verdict.rows.len(), err);
                 self.ready_toast = Some(tr(Msg::MessageNotSaved).into_owned());
                 self.ready_toast_screen = None;
-                self.scene_dirty = true;
+                self.mark_dirty();
                 continue;
             }
             let Some(conv) = self
@@ -477,7 +477,7 @@ impl PhotonApp {
             if bright.is_empty() {
                 continue;
             }
-            self.scene_dirty = true;
+            self.mark_dirty();
             // The sibling push releases HERE, after durability — a copy this device never durably owned must never replicate out (the fleet-amplification half of the erasure). By conversation id: our notes atom has no contact behind it.
             self.push_conversation_rows_to_siblings(verdict.conv_id, &bright, None);
             // Record the bright state — un-signalled: nothing waits on the flag write, and a lost one re-converges at the next ACK-shaped persist.

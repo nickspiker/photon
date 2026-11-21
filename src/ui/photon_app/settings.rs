@@ -1002,7 +1002,7 @@ impl PhotonApp {
                 if let Some(v) = view {
                     self.vault_stats = Some(v);
                 }
-                self.scene_dirty = true;
+                self.mark_dirty();
                 true
             }
             None => false,
@@ -1247,7 +1247,7 @@ impl PhotonApp {
                 self.wave_measure_rx = None;
                 self.drain_audio_cal();
                 self.wave_profiles = self.voice_profiles();
-                self.scene_dirty = true;
+                self.mark_dirty();
                 true
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -1509,7 +1509,7 @@ impl PhotonApp {
             }
             _ => {}
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// Build the You-page field boxes ONCE (HitId is a scarce u16 — never rebuild): the standard taxonomy, then any custom fields registered as `profile._custom.<id>` per-key entries (value = the verbatim label). Idempotent; values are loaded separately by [`Self::load_you_fields`]; expandable-field instances (addr2, email3, …) are appended by [`Self::sync_expandable_fields`].
@@ -1961,7 +1961,7 @@ impl PhotonApp {
             self.settings_preview = false;
             crate::wave::beam_session::preview_stop();
             crate::log("SETTINGS: camera preview stopped");
-            self.scene_dirty = true;
+            self.mark_dirty();
             return;
         }
         if self.active_wave.is_some() || self.group_wave.is_some() {
@@ -1973,7 +1973,7 @@ impl PhotonApp {
         self.settings_preview = true;
         crate::wave::beam_session::preview_start();
         crate::log("SETTINGS: camera preview started");
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// Settings → Beam's Next camera pill: the next lens or device, the preview reopening on it.
@@ -1996,7 +1996,7 @@ impl PhotonApp {
                 crate::wave::beam_session::preview_start();
             }
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// Settings → Wave's Test pill: the microphone opened and metered on the page (nothing is sent anywhere), or closed again.
@@ -2018,7 +2018,7 @@ impl PhotonApp {
         } else {
             crate::log("SETTINGS: microphone test — no audio device opened");
         }
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     fn stop_mic_test(&mut self) {
@@ -2026,7 +2026,7 @@ impl PhotonApp {
             self.mic_test = false;
             crate::platform::audio::stop();
             crate::log("SETTINGS: microphone test stopped");
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
     }
 
@@ -2062,7 +2062,7 @@ impl PhotonApp {
             if !wave {
                 crate::wave::beam_session::preview_stop();
             }
-            self.scene_dirty = true;
+            self.mark_dirty();
         }
         if self.mic_test && (wave || self.state != AppState::Settings(SettingsPage::Wave) || self.settings_root()) {
             // A wave reuses the open session; only a page left closes it.

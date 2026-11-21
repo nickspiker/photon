@@ -149,7 +149,7 @@ impl PhotonApp {
             "PRESENCE: {} — no answer one second after opening the conversation, showing offline (the next pong flips it back)",
             crate::fp(&contact.handle_proof)
         );
-        self.scene_dirty = true;
+        self.mark_dirty();
         true
     }
 
@@ -1015,7 +1015,7 @@ impl PhotonApp {
                 msg.bridge_exit = Some(-1);
                 msg.bridge_seq = u64::MAX;
                 conv.insert_message_sorted(msg);
-                self.scene_dirty = true;
+                self.mark_dirty();
                 crate::logf!("BRIDGE: command at eagle_time {} given up — prompt released", t);
             }
             if self.bridge_int.map_or(false, |(t0, _)| t0 == t) {

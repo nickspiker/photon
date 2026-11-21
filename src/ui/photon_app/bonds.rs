@@ -160,7 +160,7 @@ impl PhotonApp {
             });
         }
         self.update_sync_records();
-        self.scene_dirty = true;
+        self.mark_dirty();
     }
 
     /// An ERA DELIVERED over the bond with contact `ci` (docs/conversations.md §0, §7). The founding of our two-member conversation (era 0, whole) installs it; a fresh era for a conversation we hold is derived from the era we have and installed as pending, cutting over on the first frame tagged with it — exactly a mint's wrap, carried by the bond instead of a KEM bundle.
