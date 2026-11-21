@@ -4951,6 +4951,7 @@ impl PhotonApp {
                 if spawned {
                     self.resume_vault_rx = Some((rx, Some(remembered), t_boot));
                     crate::log("RESUME: vault opening off the UI thread");
+                    self.show_opening();
                 } else {
                     // No thread: open inline, the old way, rather than never becoming Ready.
                     let opened = crate::storage::open_session_vault(identity_seed, vault_seed, device_secret);
@@ -4973,6 +4974,16 @@ impl PhotonApp {
 }
 
 impl PhotonApp {
+    /// The edge the identity is known and the vault starts opening: the launch screen stops saying it waits for the identity and says what it does now.
+    /// No timer: the line shows for exactly as long as the open and the contact load take, so a fast one is never seen.
+    /// A person already elsewhere (Settings, while ferros's keys arrived) stays there.
+    pub(super) fn show_opening(&mut self) {
+        if matches!(self.state, AppState::Launch(_)) {
+            self.state = AppState::Launch(LaunchState::Opening);
+            self.scene_dirty = true;
+        }
+    }
+
     /// The resume's back half, once the vault handle lands (or inline when no worker thread could be spawned): every load that used to sit on the UI thread behind the open — contacts, messages, chains, keypairs, settings — then Ready, the announce and the first pings.
     pub(super) fn finish_resume_load(&mut self, remembered: Option<tohu::SessionIdentity>, opened: Result<std::sync::Arc<crate::storage::FlatStorage>, crate::storage::StorageError>, t_boot: std::time::Instant) {
         // The person this resume opens for: the session's on the desktop and Android, PhotonKeys' on ferros, where there is no session (PHOTON.md step 4).

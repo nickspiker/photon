@@ -128,6 +128,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         },
         Msg::RevokedByFleet => "twoja flota UNIEWAŻNIŁA to urządzenie\nnie może już działać w twoim imieniu. Przywróć je z innego swojego urządzenia, by znów z niego korzystać.".into(),
         Msg::WaitingForIdentity => "czekam na twoją tożsamość".into(),
+        Msg::OpeningConversations => "otwieramy twoje rozmowy".into(),
         Msg::IdentityCarriedHint => "to urządzenie nosi już tożsamość".into(),
         Msg::PermanenceWarning => "To powołuje trwałą tożsamość.\nBez hasła. Bez resetu. Bez odzyskiwania.\nPierwszy człowiek, który ją poświadczy, jest jej właścicielem.\nUrządzenia można wymienić. Tożsamości nie.\nWpisz nazwę jeszcze raz, potem naciśnij, jeśli mówisz serio.".into(),
         Msg::KnownHandleWarning => "Ktoś już odpowiada na tę nazwę.".into(),

@@ -128,6 +128,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         },
         Msg::RevokedByFleet => "kundi lako LIMEBATILISHA kifaa hiki\nhakiwezi tena kutenda kwa niaba yako. Kirejeshe kutoka kifaa kingine chako ili kukitumia tena.".into(),
         Msg::WaitingForIdentity => "inasubiri utambulisho wako".into(),
+        Msg::OpeningConversations => "inafungua mazungumzo yako".into(),
         Msg::IdentityCarriedHint => "kifaa hiki tayari kina utambulisho".into(),
         Msg::PermanenceWarning => "Hii huzalisha utambulisho wa kudumu.\nHakuna nywila. Hakuna kuanza upya. Hakuna urejeshaji.\nMtu wa kwanza kuthibitisha ndiye mwenyewe.\nVifaa vinaweza kubadilishwa. Utambulisho hauwezi.\nAndika jina tena, kisha bonyeza kama unamaanisha.".into(),
         Msg::KnownHandleWarning => "Tayari kuna mtu anayeitikia jina hili.".into(),

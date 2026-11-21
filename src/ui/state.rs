@@ -218,12 +218,15 @@ pub enum LaunchState {
 
     /// ferros: Photon has not been handed its keys (PhotonKeys, be you) and has no handle screen there, so it shows one line and waits; std/photon calls set_photon_keys once the identity service answers, and the vault opens then.
     WaitingForIdentity,
+
+    /// The identity is known (ferros: PhotonKeys in hand; elsewhere the remembered session) and the vault is opening: one honest line, no handle field, until the contacts are drawn.
+    Opening,
 }
 
 impl LaunchState {
     /// Check if we're in a state where the user can type in the handle textbox
     pub fn can_edit_handle(&self) -> bool {
-        !matches!(self, LaunchState::Attesting | LaunchState::Locked | LaunchState::WaitingForIdentity)
+        !matches!(self, LaunchState::Attesting | LaunchState::Locked | LaunchState::WaitingForIdentity | LaunchState::Opening)
     }
 
     /// Check if we're waiting for a network response

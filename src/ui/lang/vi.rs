@@ -127,6 +127,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         },
         Msg::RevokedByFleet => "đội của bạn đã THU HỒI thiết bị này\nnó không còn hành động thay bạn được nữa. Hãy khôi phục nó từ một thiết bị khác của bạn để dùng lại.".into(),
         Msg::WaitingForIdentity => "đang chờ danh tính của bạn".into(),
+        Msg::OpeningConversations => "đang mở các cuộc trò chuyện của bạn".into(),
         Msg::IdentityCarriedHint => "thiết bị này đã mang sẵn một danh tính".into(),
         Msg::PermanenceWarning => "Việc này đúc ra một danh tính vĩnh viễn.\nKhông mật khẩu. Không đặt lại. Không khôi phục.\nNgười đầu tiên chứng thực là chủ của nó.\nThiết bị thì thay được. Danh tính thì không.\nGõ lại cái tên, rồi nhấn nếu bạn thật sự muốn.".into(),
         Msg::KnownHandleWarning => "Đã có người nhận cái tên này.".into(),

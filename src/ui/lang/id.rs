@@ -126,6 +126,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         },
         Msg::RevokedByFleet => "armadamu telah MENCABUT perangkat ini\nia tidak bisa lagi bertindak sebagai kamu. Pulihkan dari perangkatmu yang lain untuk memakainya kembali.".into(),
         Msg::WaitingForIdentity => "menunggu identitasmu".into(),
+        Msg::OpeningConversations => "membuka percakapanmu".into(),
         Msg::IdentityCarriedHint => "perangkat ini sudah membawa sebuah identitas".into(),
         Msg::PermanenceWarning => "Ini mencetak identitas yang permanen.\nTanpa kata sandi. Tanpa reset. Tanpa pemulihan.\nManusia pertama yang mengesahkannya adalah pemiliknya.\nPerangkat bisa diganti. Identitas tidak.\nKetik namanya sekali lagi, lalu tekan kalau kamu sungguh-sungguh.".into(),
         Msg::KnownHandleWarning => "Sudah ada yang menyahut nama ini.".into(),

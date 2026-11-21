@@ -492,6 +492,7 @@ impl PhotonApp {
         if spawned {
             self.resume_vault_rx = Some((rx, None, t_boot));
             crate::log("RESUME: PhotonKeys in hand; the vault opens under the messenger root");
+            self.show_opening();
         } else {
             let opened = crate::storage::open_session_vault(root, root, device_secret);
             self.finish_resume_load(None, opened, t_boot);

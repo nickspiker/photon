@@ -190,6 +190,8 @@ pub enum Msg<'a> {
     RevokedByFleet,
     /// ferros: Photon was not handed its keys (be you) yet, so there is no screen to show but this one; never a handle screen there.
     WaitingForIdentity,
+    /// The identity is known and the vault is opening: the launch line from that edge until the contacts are drawn, on every platform.
+    OpeningConversations,
     IdentityCarriedHint,
     // '\n'-joined passage; the call site iterates .lines() and gives the FIRST line the headline (error) colour.
     PermanenceWarning,

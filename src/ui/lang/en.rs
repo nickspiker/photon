@@ -111,6 +111,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         },
         Msg::RevokedByFleet => "your fleet has REVOKED this device\nit can no longer act as you. Reinstate it from another of your devices to use it again.".into(),
         Msg::WaitingForIdentity => "waiting for your identity".into(),
+        Msg::OpeningConversations => "opening your conversations".into(),
         Msg::IdentityCarriedHint => "this device already carries an identity".into(),
         Msg::PermanenceWarning => "This mints a permanent identity.\nNo password. No reset. No recovery.\nThe first human to attest owns it.\nDevices can be replaced. The identity can't.\nType the name again, then press if you mean it.".into(),
         Msg::KnownHandleWarning => "Someone already answers to this name.".into(),

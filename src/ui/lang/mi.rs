@@ -126,6 +126,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         },
         Msg::RevokedByFleet => "kua TANGOHIA e tō kāhui te mana o tēnei pūrere\nkāore e taea e ia te mahi hei a koe. Whakahokia mai i tētahi atu o ō pūrere kia whakamahia anō.".into(),
         Msg::WaitingForIdentity => "e tatari ana ki tō tuakiri".into(),
+        Msg::OpeningConversations => "e huaki ana i ō kōrero".into(),
         Msg::IdentityCarriedHint => "kei tēnei pūrere kē tētahi tuakiri".into(),
         Msg::PermanenceWarning => "Ka whānau mai i konei he tuakiri pūmau.\nKāore he kupuhipa. Kāore he tautuhi anō. Kāore he whakaoranga.\nMā te tangata tuatahi ka whakaū, ka riro.\nKa taea ngā pūrere te whakakapi. Kāore te tuakiri.\nPatohia anō te ingoa, kātahi ka pāwhiri mehemea e tino hiahia ana koe.".into(),
         Msg::KnownHandleWarning => "Kei te whakautu kē tētahi ki tēnei ingoa.".into(),
