@@ -64,6 +64,14 @@ fn flow_checkbox(flow: &mut Flow, canvas: &mut Canvas, text: &mut fluor::text::T
 }
 
 /// SCROLL AS A MEMMOVE: a pane's draw clip narrowed to the frame's damage when the shift path is on — rows outside it arrived by memmove and are already in the buffer (painting them again would only cost); untouched otherwise.
+/// The frame less a scrolling pane, as four rects (some empty): the rows above and below it at the frame's width, and the columns beside it at its height.
+/// On a memmove frame these stand still while the noise under them moves with the pane, so damage_rect draws them again whole (the one noise field, owner 2026-11-21).
+/// `pane` lies inside the `vw × vh` frame, which damage_rect checks before it asks.
+pub(super) fn around_pane(pane: fluor::canvas::PixelRect, vw: usize, vh: usize) -> [fluor::canvas::PixelRect; 4] {
+    use fluor::canvas::PixelRect;
+    [PixelRect::new(0, 0, vw, pane.y0), PixelRect::new(0, pane.y1, vw, vh), PixelRect::new(0, pane.y0, pane.x0, pane.y1), PixelRect::new(pane.x1, pane.y0, vw, pane.y1)]
+}
+
 fn clip_to_damage(clip: fluor::paint::Clip, hinted: bool, damage: fluor::canvas::PixelRect) -> fluor::paint::Clip {
     if !hinted {
         return clip;
@@ -763,17 +771,25 @@ impl PhotonApp {
         };
 
 
-        // Content-scroll → background offset (hoisted before the chrome borrow, which takes `&mut self`). The background noise translates WITH the foreground content so the whole scene is one rigid vertical shift on scroll — the bg tracks whatever you're reading, and (once the host learns to scroll-copy) a scroll becomes a memcopy of the prior frame plus a repaint of just the newly-exposed slice instead of a full redraw. Sign matches the foreground pixel motion: Contacts moves rows UP as `contacts_scroll` grows (`row_top = … − contacts_scroll`) → texture shifts by `−contacts_scroll`; Conversation moves messages DOWN as `scroll_offset` grows (`y = … + scroll`) → texture shifts by `+scroll_offset`. Settings/ContactPanel keep the split-pane path below. `scroll_offset` is clamped elsewhere (tick clamps the stored conversation offset; contacts_scroll is clamped in the render block), so reading it raw here matches what the foreground draws.
+        // Content-scroll → background offset (hoisted before the chrome borrow, which takes `&mut self`). The background noise translates WITH the foreground content so the whole scene is one rigid vertical shift on scroll — the bg tracks whatever you're reading, and (once the host learns to scroll-copy) a scroll becomes a memcopy of the prior frame plus a repaint of just the newly-exposed slice instead of a full redraw. Sign matches the foreground pixel motion: Contacts moves rows UP as `contacts_scroll` grows (`row_top = … − contacts_scroll`) → texture shifts by `−contacts_scroll`; Conversation moves messages DOWN as `scroll_offset` grows (`y = … + scroll`) → texture shifts by `+scroll_offset`. Settings and the conversation panel roll it with their content pane, not their rail. `scroll_offset` is clamped elsewhere (tick clamps the stored conversation offset; contacts_scroll is clamped in the render block), so reading it raw here matches what the foreground draws.
         // A zoom's change to the scroll is held out of the roll (`noise_pin`), so a pinch leaves the noise still under the fingers.
-        let content_bg_scroll: isize = if self.wave_screen() { 0 } else { match self.state {
-            AppState::Ready => (self.noise_pin.0 - self.contacts_scroll as f32).round() as isize,
-            AppState::Conversation => self
-                .active_conversation
-                .and_then(|id| self.conversations.iter().find(|v| v.id() == id))
-                .map_or(0, |v| (v.scroll_offset + self.noise_pin.0).round() as isize),
-            _ => 0,
-        } };
-        let noise_pin = self.noise_pin;
+        // ONE CLEAN FIELD (owner 2026-11-21: "that galois should be clean for the whole screen"): one offset for the whole screen, the main pane's (`noise_scroll`), with no split at a pinned box or between Settings' rail and content.
+        // A frame that draws only part of the screen lays the noise where the rest of the screen already shows it (`noise_drawn`), moved by the frame's memmove when it rides one; damage_rect makes a frame whole when the offset moved any other way, and should one still arrive here, the noise keeps the offset on screen and the next frame is drawn whole.
+        let noise_want = (self.noise_scroll(), self.noise_base());
+        let whole_frame = ctx.damage_clip == fluor::canvas::PixelRect::new(0, 0, buf_w, buf_h);
+        let noise_on_screen = match self.scroll_hint_armed.filter(|_| !whole_frame) {
+            Some((_, dy, _)) => (self.noise_drawn.0 + dy as isize, self.noise_drawn.1),
+            None => self.noise_drawn,
+        };
+        let (noise_scroll, noise_base) = if whole_frame || noise_want == noise_on_screen {
+            noise_want
+        } else {
+            self.scene_dirty = true;
+            super::RedrawAsk::here().note(&mut self.redraw_why, &mut self.frame_why);
+            ctx.window.request_redraw();
+            noise_on_screen
+        };
+        self.noise_drawn = (noise_scroll, noise_base);
         // Security page's fleet-of-one gate — hoisted here for the same reason as the scroll above: the pills draw inside the chrome borrow, and asking `self` a question there is a second borrow. Cheap (a filtered pass over sibling rows), and ONE definition shared with the action that would otherwise refuse the tap.
         let has_sibling_device = self.has_usable_sibling();
         // The standing bands are computed BEFORE the chrome borrow (they read plain state), then painted by a free fn on the two screens that show them.
@@ -789,24 +805,8 @@ impl PhotonApp {
         };
         chrome.set_title(title_text);
 
-        // Bg noise: one field generated once per size and rolled (`self.noise`, fluor's `NoiseField`; owner 2026-11-08: "keep a background buffer that you generate once for Photon and just rotate it vertically"). `scroll_offset` is per-screen: Launch/Attest gets `0` (the attest screen's noise stands still); Ready and Conversation translate it with their content. The shimmer (a colour bias `bg_scroll` cycled into every row) went with the regeneration it needed: the field moves, it does not change. `bg_scroll` still turns the wave's phase.
+        // Bg noise: generated where it is drawn, at the end of the frame, under everything (fluor `noise_under`), mirrored about the screen's centre and rolled by the one offset above (0 on Launch, where the attest screen's noise stands still). `bg_scroll` turns the wave's phase.
         let bg_scroll = self.bg_scroll;
-        let scroll_offset = content_bg_scroll; // 0 on Launch/Searching; Contacts/Conversation translate the texture with their content (see the hoist above).
-                               // Background texture origin + per-half scroll. On Settings the noise mirror-axis sits ON the rail|content divider (1/3 width), and each half scrolls with ITS pane — rail-scroll drives the left half, content-scroll the right — so the background tracks the scroll of whatever you're reading. Every other screen keeps the centred origin with both halves locked together (unified scroll).
-        let (bg_split_x, bg_left_scroll, bg_right_scroll) = if matches!(
-            self.state,
-            AppState::Settings(_) | AppState::ConversationPanel(_)
-        ) {
-            let sl = SettingsLayout::compute(&ctx.viewport);
-            (
-                Some(sl.content.x as usize),
-                // Negated to cancel the foreground gesture flip (see the `step` sign in on_event): the panes and the texture use opposite offset signs, so feeding the texture the negated offset keeps its (already-correct) direction while the foreground gets its inversion fixed.
-                Some((noise_pin.1 - settings_rail_scroll).round() as isize),
-                (noise_pin.0 - settings_content_scroll).round() as isize,
-            )
-        } else {
-            (None, None, scroll_offset)
-        };
         // Launch layout: faithful proportional slicing port from legacy `Layout::new` — spectrum near the top, logo wordmark overlapping its bottom, attest block (textbox + hint + button) below. Compute every frame; cheap and lets resize flow thru without a separate cache.
         let layout = LaunchLayout::compute(buf_w, buf_h, ctx.viewport.ru).lifted(launch_lift, buf_h);
         // Chromatic wave phase has two summands: * Scroll-driven base (`bg_scroll * 1/128 rad/scroll-unit`) — one wheel-notch ≈ 8 units → ~1/16 rad shift; user-tunable by changing the shift exponent.
@@ -871,18 +871,10 @@ impl PhotonApp {
         let about_wave_phase = self.bg_scroll as f32 / ((1 << 7) as f32);
         // Faint dozenal version watermark shows on the ATTEST screen ONLY (Launch) — a quiet bottom-left mark while you sign in. Ready / Conversation stay clean; the About page carries the version in full (normal-white dozenal glyphs, tap to spell out). Never arabic anywhere.
         let show_version = on_launch;
-        // Swap the noise base colour to (*theme::BG_BASE_WARNING) when the dual-ring vault flagged degraded this session — the noise pass already runs every frame so this changes a colour, not the pass count. None on the happy path keeps fluor's default green-dark BG_BASE.
-        let bg_base = if self.vault_data_lost || self.vault_degraded {
-            Some(*theme::BG_BASE_WARNING)
-        } else {
-            None
-        };
         // The 1-px noise inset exists ONLY to clear the window perimeter hairline / shadow band — so gate it on whether that perimeter is actually drawn, which is exactly `!chrome.full_edge`. A windowed desktop draws the perimeter → inset. A maximized/fullscreen desktop goes full_edge (no perimeter) and Android forces full_edge too → paint to the screen edge, else a 1-px unpainted border shows. (Earlier this was hardcoded per-OS, so desktop-maximized still inset for a perimeter that wasn't there.) `|| cfg!(android)` keeps the Android always-fullscreen guarantee even on a transient pre-resize frame where full_edge hasn't synced yet.
         let bg_fullscreen = chrome.full_edge || cfg!(target_os = "android");
         // MEASURED settings scroll extent (the Flow pages): a converted page arm records (content_height, pane_height) here as it draws; applied to self.settings_content_extent after the borrows release — one frame stale, which the rubber-band tolerates, and it retires the hand-counted row estimates page by page.
         let mut measured_extent: Option<(f32, f32)> = None;
-        // The contacts screen's pinned top on a safe circle (ferros): the rows above the search box's bottom, which stand still while the list scrolls under them, so their noise does too.
-        let mut ready_pin_top: Option<usize> = None;
         // Stage marks for the >1s breakdown at the end of the frame — the flat "render took Nms" line named the SCREEN but not the STAGE, which stalled the 2026-08-21 hang hunt (5.8-8.8s Conversation renders, no idea where inside).
         let mark_pre = std::time::Instant::now();
         // SCROLL AS A MEMMOVE (Nick 2026-10-06): when `damage_rect` armed a rigid shift for this frame (and the host did not override it with a full repaint — then the clip IS the viewport and no memmove happened anywhere), the bg layer shifts by the same dy and only the exposed band re-rasters; the hit map shifts after the chrome pass; the lists clip their rows to the damage; the final bg flatten covers only the damage.
@@ -940,7 +932,7 @@ impl PhotonApp {
             if let Some((sx0, sx1, wave_top, wave_h, _, _, clip_y0, clip_y1)) = about_slab_bands {
                 chromatic_wave_clipped(canvas, sx0, sx1, wave_top, wave_h, clip_y0, clip_y1, about_wave_phase, 1.0);
             }
-            // The noise goes in behind all of this at the end of the frame, from the rolled field (`self.noise`), not into this layer.
+            // The noise goes in behind all of this at the end of the frame, generated where it is drawn (fluor `noise_under`), not into this layer.
         };
         // The bg layer holds only the attest screen's logo, wave and version, the About slab and the zoom hint. On a screen with none of them it is neither kept nor flattened (a full-frame clear and blit of an empty layer, and a memmove of it on every scroll): settled, and marked stale so the first screen that uses it again paints it whole.
         let bg_layer_used = on_launch || about_slab_bands.is_some() || show_zoom;
@@ -2194,9 +2186,6 @@ impl PhotonApp {
             // THE FILTERS' SLAT (ferros, a safe circle; owner 2026-11-20): the list's top is the search box's bottom, and the gap under the box with the filter strip is a slat the list carries up under the box as it goes toward its end and drops again as it comes back, the conversation's blind for its Wave and Beam (conv_blind_step).
             // Moved here by whatever moved the list since the last frame; at the list's top (and in its rubber band) it rides the list itself, wholly shown.
             let list_top = ready_layout.textbox.y1 as f32;
-            if safe {
-                ready_pin_top = Some(list_top as usize);
-            }
             let slat_h = rows.y0 as f32 - list_top + if self.ready_strip_h > 0.0 { self.ready_strip_h.ceil() } else { row_h as f32 };
             // How far the slat sits above its rest (ready_slat_at): the hidden part, or the list's own pull past its top.
             let blind = if safe {
@@ -7989,17 +7978,11 @@ impl PhotonApp {
         if bg_layer_used {
             chrome.flatten_bg_into(target, buf_w, buf_h, Some(damage));
         }
-        // THE NOISE, last and under everything: the field generated once for this size and base (a resize or the storage-warning tint generates it again), laid at this screen's scroll.
-        let noise_origin = bg_split_x.unwrap_or(buf_w / 2);
-        self.noise.ensure(buf_w, buf_h, noise_origin, bg_base);
-        if let Some(t) = ready_pin_top {
-            // The damage's rows above the box's bottom take the noise at rest and the rest take it with the list: two row ranges cut from the damage's, either of which may be empty (under_into then draws nothing).
-            let above = fluor::paint::Clip::new(damage.x_start, damage.y_start, damage.x_end, damage.y_end.min(t));
-            let below = fluor::paint::Clip::new(damage.x_start, damage.y_start.max(t), damage.x_end, damage.y_end);
-            self.noise.under_into(&mut Canvas::new(target, buf_w, buf_h, ctx.damage), noise_origin, 0, 0, bg_fullscreen, Some(above));
-            self.noise.under_into(&mut Canvas::new(target, buf_w, buf_h, ctx.damage), noise_origin, bg_left_scroll.unwrap_or(bg_right_scroll), bg_right_scroll, bg_fullscreen, Some(below));
-        } else {
-            self.noise.under_into(&mut Canvas::new(target, buf_w, buf_h, ctx.damage), noise_origin, bg_left_scroll.unwrap_or(bg_right_scroll), bg_right_scroll, bg_fullscreen, Some(damage));
+        // THE NOISE, last and under everything: generated where it is drawn, one field for the whole screen at the one offset taken above, mirrored about the screen's centre.
+        // Laid over each of the frame's rects alone (a memmove frame names several): the rows between them are last frame's and opaque, and generating under them would draw nothing at the cost of the walk.
+        // Ready for the pane-composite model (panes drawn past the viewport and scrolled by their offset): there the noise is this same plain under, at whatever offset the field then takes.
+        for r in &frame_rects {
+            fluor::paint::noise_under(&mut Canvas::new(target, buf_w, buf_h, ctx.damage), buf_w / 2, noise_scroll, bg_fullscreen, Some(fluor::paint::Clip::new(r.x0, r.y0, r.x1, r.y1)), noise_base);
         }
         self.scroll_shift = 0;
         self.scroll_hint_armed = None;
@@ -8531,6 +8514,28 @@ fn blob_send_frac(progress: &[crate::network::pt::TransferProgress], chunks: Opt
             Some((frac_of(finished as u64, total as u64) + partial / total.max(1) as f32).min(1.0)) // total.max(1): an empty file's manifest has zero chunks; `.min(1.0)`: the duplicate's partial can lift the sum past whole
         }
         None => mine.first().map(|p| frac_of(p.done as u64, p.total as u64)),
+    }
+}
+
+#[cfg(test)]
+mod noise_tests {
+    use super::around_pane;
+    use fluor::canvas::PixelRect;
+
+    /// A memmove frame draws again everything outside the pane (the noise under it moved with the pane): with the pane, those rects cover every pixel of the frame exactly once, so no row the move did not carry keeps last frame's noise.
+    #[test]
+    fn the_frame_less_the_pane_is_drawn_again() {
+        let (vw, vh) = (40, 30);
+        for pane in [PixelRect::new(0, 0, vw, vh), PixelRect::new(0, 7, vw, vh), PixelRect::new(0, 7, vw, 22), PixelRect::new(0, 0, vw, 22), PixelRect::new(5, 7, 33, 22)] {
+            let around = around_pane(pane, vw, vh);
+            for y in 0..vh {
+                for x in 0..vw {
+                    let inside = |r: &PixelRect| (r.x0..r.x1).contains(&x) && (r.y0..r.y1).contains(&y);
+                    let n = inside(&pane) as usize + around.iter().filter(|r| inside(r)).count();
+                    assert_eq!(n, 1, "pane {pane:?} at {x},{y}");
+                }
+            }
+        }
     }
 }
 

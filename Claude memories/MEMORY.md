@@ -74,7 +74,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [One identity, every app](project_one_identity.md) — DESIGN 2026-11-08: shared attest, Unbound screen, About/Attached/Discover; plate + papers (reset → only the owner re-adds), green is proof, contention forces BLE/NFC; FIDO2 tag
 - [Photon alias migration](project_photon_alias_migration.md) — 2026-11-13 Photon onto its own per-kist alias everywhere (PHOTON.md M0-M7); split with ferros; my part: DeviceList (pushed), readers, plumbing, speakers, M6 logs (BUILT), M5 slot; seams set_photon_keys/set_people + accessors (own_party_id, messenger_root) on main 47f8b360; fgtw main 47ed633 has binding, people, alias_devices; NEXT readers (rotation intake) then group 0 (CLUTCH on the alias)
 - [ferros UI round the circle](project_ferros_ui_circle.md) — BUILT 2026-11-18 in a desktop render; orb = face under the camera, beads, title arc; glass look pending
-- [Background noise redesign](project_background_noise.md) — 2026-11-21: one clean field, panes composited onto it, true 16-bit g2t walk; Pro measurement pending
+- [Background noise redesign](project_background_noise.md) — 2026-11-21: one clean field + true 16-bit g2t walk generated where drawn BUILT; pane-composite model next
 - [ferros phones](project_8a_identity.md) — 8a = Brittany's identity, Pro = Nick's; each ferros Photon fills only from its own person's devices
 - [Handle rename](project_handle_rename.md) — in the spec, scoped 2026-11-03: succession + slot move, four seams, two constraints to respect before any successor record ships
 - [Octopus page](project_octopus_page.md) — 2026-11-10 admin dashboard = Photon page via "Octopus" in the Diagnostics note; worker answers 3 signed VSF ops; NO tokens/cookies/login (passless)

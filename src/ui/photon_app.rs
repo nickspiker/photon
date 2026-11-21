@@ -1753,11 +1753,12 @@ pub struct PhotonApp {
     event_proxy: Option<Arc<dyn WakeSender<PhotonEvent>>>,
     /// Every wheel and drag step summed — turns the chromatic wave's phase (until 2026-11-08 it also drove the noise's shimmer, which the rolled field dropped). MouseWheel events in `on_event` mutate this; everything else reads it.
     bg_scroll: isize,
-    /// What zooms have moved the panes' scrolls by, (the main pane, the Settings rail), kept out of the noise's roll so the background stays still under a pinch (owner 2026-11-20).
-    /// The noise rolls by a pane's scroll less this, so a real scroll still carries it and a zoom never does.
-    noise_pin: (f32, f32),
-    /// The background noise, generated once per frame size and base colour and rolled by each screen's scroll (fluor `NoiseField`; owner 2026-11-08). render_frame lays it under everything at the end of the frame.
-    noise: fluor::paint::NoiseField,
+    /// What zooms have moved the main pane's scroll by, in whole pixels, kept out of the noise's roll so the background stays still under a pinch (owner 2026-11-20).
+    /// The noise rolls by the main pane's scroll (rounded as the pane draws it) less this, so a real scroll still carries it and a zoom never does.
+    noise_pin: isize,
+    /// The background noise as the frame on screen holds it: its vertical offset and base colour (`noise_scroll`, `noise_base`).
+    /// The noise is one field under the whole screen (owner 2026-11-21: "that galois should be clean for the whole screen"), generated where it is drawn (fluor `noise_under`), so a frame that redraws only part of the screen must lay it at the offset the rest of the screen already shows: this one, or this one moved by the frame's memmove.
+    noise_drawn: (isize, Option<u32>),
     /// The chrome's bg layer was left unpainted on a screen that had nothing in it (render_frame's `bg_layer_used`): the next screen that uses it paints it whole first.
     bg_layer_stale: bool,
     /// Whether to paint the top-centre zoom-percentage watermark. The host swallows the zoom events (Ctrl/Cmd + scroll / ± / 0) and updates `ctx.viewport.ru` directly, so we can't observe a zoom event — instead `render` arms this when `ru` changes WHILE a zoom modifier is held, and the `ModifiersChanged` handler clears it the instant the modifier is released. Not time-based: it persists exactly as long as Ctrl/Cmd stays down after a zoom began. (Android pinch — show from two-fingers-down to release — waits on fluor's multi-touch `Touch` event, which doesn't exist yet.)
@@ -3226,8 +3227,8 @@ impl PhotonApp {
             seed_identity_count: 0,
             pb_resolve_rx: None,
             bg_scroll: 0,
-            noise_pin: (0.0, 0.0),
-            noise: fluor::paint::NoiseField::new(),
+            noise_pin: 0,
+            noise_drawn: (0, None),
             bg_layer_stale: true,
             zoom_hint: false,
             last_ru: 1.0,
@@ -4031,6 +4032,26 @@ impl PhotonApp {
             Some((_, t)) => *t += ms,
             None => self.tick_prof.push((label, ms)),
         }
+    }
+
+    /// THE BACKGROUND'S ONE VERTICAL OFFSET (owner 2026-11-21): the main pane's scroll, rounded as the pane draws it, less what zooms moved it by (`noise_pin`), for the whole screen.
+    /// The contacts list, the open conversation's history, or the Settings and conversation panel's content (their rail moves nothing behind it); 0 on every other screen and on the wave screen.
+    /// The sign follows the content: the contacts move up as their scroll grows, a conversation's rows move down as its offset grows, the Settings rows move up.
+    pub(super) fn noise_scroll(&self) -> isize {
+        if self.wave_screen() {
+            return 0;
+        }
+        match self.state {
+            AppState::Ready => self.noise_pin - self.contacts_scroll,
+            AppState::Conversation => self.noise_pin + self.active_conversation.and_then(|id| self.conversations.iter().find(|v| v.id() == id)).map_or(0, |v| v.scroll_offset.round() as isize),
+            AppState::Settings(_) | AppState::ConversationPanel(_) => self.noise_pin - self.settings_content_scroll.round() as isize,
+            _ => 0,
+        }
+    }
+
+    /// The noise's base colour: the storage warning's tint while the vault is degraded or lost data this session, else fluor's own (`None`).
+    pub(super) fn noise_base(&self) -> Option<u32> {
+        (self.vault_data_lost || self.vault_degraded).then(|| *theme::BG_BASE_WARNING)
     }
 
     /// Mark the scene dirty from outside the tick, naming who did for the idle whole-frame log (`damage_rect`): the first to raise it from clear is the one named.

@@ -106,7 +106,7 @@ pub static WAVE_ACCEPT_HOVER: LazyLock<u32> = LazyLock::new(|| c(0x00_24_55_2C))
 pub static WAVE_DANGER_FILL: LazyLock<u32> = LazyLock::new(|| c(0x00_4B_1A_1A));
 pub static WAVE_DANGER_HOVER: LazyLock<u32> = LazyLock::new(|| c(0x00_55_24_24));
 /// Noise-background base tint when the dual-ring vault flagged this session degraded — warning orange.
-/// This is a NOISE-MATH colour (visible-RGB space, like fluor's `BG_BASE`), so `fmt` not `dark`; passed to `background_noise` in place of its default base.
+/// This is a NOISE-MATH colour (visible-RGB space, like fluor's `BG_BASE`), so `fmt` not `dark`; passed to `noise_under` in place of its default base (`noise_base`).
 pub static BG_BASE_WARNING: LazyLock<u32> =
     LazyLock::new(|| fluor::theme::fmt(fluor::theme::vsf(0x00_2F_10_00)));
 /// Thin white rule between conversation messages.

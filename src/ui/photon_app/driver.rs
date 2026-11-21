@@ -710,31 +710,25 @@ impl FluorApp<Px> for PhotonApp {
         let ay = anchor_y as f32;
         let top_hung = |s: f32| ((s + ay) * factor - ay).max(0.0); // the algorithm: a hung margin is room, and a squeezed pane has none rather than negative room
         let bottom_hung = |s: f32| ((s + h - ay) * factor - (h - ay)).max(0.0); // (no negative room — see above)
-        // The background noise rolls with each pane's scroll, but a zoom's change to a scroll is no scroll: it is carried into the noise's bias so the noise stays still under the fingers (owner 2026-11-20).
+        // The background noise rolls with the main pane's scroll, but a zoom's change to a scroll is no scroll: it is carried into the noise's bias so the noise stays still under the fingers (owner 2026-11-20).
+        // The bias moves by the change in the scroll as the pane draws it (rounded), so the noise's offset (`noise_scroll`) comes out of a zoom exactly where it went in.
+        let noise_before = self.noise_scroll();
         match self.state {
             AppState::Ready => {
-                let old = self.contacts_scroll;
                 self.contacts_scroll = top_hung(self.contacts_scroll as f32).round() as isize;
-                self.noise_pin.0 += (self.contacts_scroll - old) as f32;
             }
             AppState::Settings(_) | AppState::ConversationPanel(_) => {
-                let (old_rail, old_content) = (self.settings_rail_scroll, self.settings_content_scroll);
                 self.settings_rail_scroll = top_hung(self.settings_rail_scroll);
                 self.settings_content_scroll = top_hung(self.settings_content_scroll);
-                self.noise_pin.1 += self.settings_rail_scroll - old_rail;
-                self.noise_pin.0 += self.settings_content_scroll - old_content;
             }
             AppState::Conversation => {
-                let mut moved = 0.0;
                 if let Some(conv) = self.active_conv_mut() {
-                    let old = conv.scroll_offset;
                     conv.scroll_offset = bottom_hung(conv.scroll_offset);
-                    moved = conv.scroll_offset - old;
                 }
-                self.noise_pin.0 -= moved;
             }
             _ => {}
         }
+        self.noise_pin += noise_before - self.noise_scroll();
     }
 
     // A scale SET from outside (ferros's app scale preference, fluor's `on_zoom_set`) is no gesture, the same as the launch restore: no pane moves and the picture in the viewer keeps its own zoom.
@@ -4125,6 +4119,9 @@ impl FluorApp<Px> for PhotonApp {
         // SCROLL AS A MEMMOVE (Nick 2026-10-06): a frame whose ONLY change is a rigid pane shift repaints just the exposed band plus the fixed overlays (where they sit and where their smeared copy landed); the host memmoves scratch + screen, the render memmoves the bg layer + hit map. Idempotent — the host may ask more than once a frame; the render clears the shift.
         self.scroll_hint_armed = None;
         self.damage_parts.clear();
+        // THE ONE NOISE FIELD (owner 2026-11-21): the background under the whole screen sits at one offset (`noise_scroll`), and a frame that draws only part of the screen lays it at the offset the rest already shows (`noise_drawn`).
+        // So a frame where it moved is drawn whole, unless a memmove carries the move: then the pane's rows bring their noise with them, and every row the move does not carry is drawn again below.
+        let noise_want = (self.noise_scroll(), self.noise_base());
         if self.scroll_shift != 0 {
             let shift = self.scroll_shift;
             let chrome_dirty = self.chrome.as_ref().is_some_and(|c| c.damage_rect().is_some());
@@ -4145,6 +4142,8 @@ impl FluorApp<Px> for PhotonApp {
                 _ => None,
             };
             let quiet = quiet && !(slat.is_some() && shift.unsigned_abs() as f32 >= self.ready_slat_h);
+            // The noise moved exactly as the pane did (a zoom or a base colour in the same frame did not move it too).
+            let quiet = quiet && noise_want == (self.noise_drawn.0 + shift as isize, self.noise_drawn.1);
             if let (true, Some((tag, rect, overlays))) = (quiet, self.last_pane.as_ref()) {
                 let n = shift.unsigned_abs() as usize;
                 let h = rect.y1 - rect.y0; // both pane writers in render.rs build y0 ≤ y1 (a top floored to the bottom, a bottom floored to the top)
@@ -4153,6 +4152,14 @@ impl FluorApp<Px> for PhotonApp {
                     let mut dmg = band;
                     // The same pieces apart, for a host that takes damage as several rects (`damage_rects`).
                     let mut parts = vec![band];
+                    // Everything outside the pane stands still while the noise under it moves with the pane: drawn again whole, so the noise there meets the pane's with no seam (a ferros contact list's pinned box and orb, a conversation's header and compose bar, the desktop's title strip).
+                    // The pane lies inside the frame (checked above), so none of them reaches past it.
+                    for r in super::render::around_pane(*rect, vw, vh) {
+                        if !r.is_empty() {
+                            dmg = dmg.union(r);
+                            parts.push(r);
+                        }
+                    }
                     for r in overlays.iter().chain(slat.iter()) {
                         dmg = dmg.union(*r);
                         parts.push(*r);
@@ -4188,8 +4195,10 @@ impl FluorApp<Px> for PhotonApp {
             }
             return Some(PixelRect::new(0, 0, vw, vh));
         }
+        // The noise moved with no memmove to carry it (a move the hint refused was made whole above): the whole frame, so it moves everywhere at once.
+        let noise_moved = noise_want != self.noise_drawn;
         // THE PAGES' BAND (ferros, the title arc): a frame whose only change is the turn (a finger across a page, or its snap) moves the titles on their arc and the page bodies beside each other, and nothing above the header or below the body's floor, so the orb, the helm's corners and the rest keep their pixels.
-        if self.slide_dirty && !self.scene_dirty && !chord && self.title_arc_screen() && !self.chrome.as_ref().is_some_and(|c| c.damage_rect().is_some()) {
+        if self.slide_dirty && !self.scene_dirty && !chord && !noise_moved && self.title_arc_screen() && !self.chrome.as_ref().is_some_and(|c| c.damage_rect().is_some()) {
             let sl = SettingsLayout::compute(&viewport);
             // The header's top is the orb's bottom and the body's floor is the frame's height less the circle's floor, which is never negative (safe_layout): both rows of the frame.
             let mut dmg = PixelRect::new(0, sl.header.y as usize, vw, sl.content.bottom() as usize);
@@ -4201,7 +4210,7 @@ impl FluorApp<Px> for PhotonApp {
             });
             return Some(dmg);
         }
-        if self.scene_dirty || chord {
+        if self.scene_dirty || chord || noise_moved {
             // The idle whole-frame hunt: name where this frame's dirty came from, a few times per stats window.
             if self.scene_dirty && self.whole_frames_logged < 4 && crate::is_dev_build() {
                 self.whole_frames_logged += 1;
@@ -4220,9 +4229,13 @@ impl FluorApp<Px> for PhotonApp {
                     screen, from, self.dirty_blame_line, asks
                 );
             }
-            if !self.scene_dirty && self.whole_frames_logged < 4 && crate::is_dev_build() {
+            if !self.scene_dirty && chord && self.whole_frames_logged < 4 && crate::is_dev_build() {
                 self.whole_frames_logged += 1;
                 crate::log("RENDER: whole frame for the chord hint (held or just released)");
+            }
+            if !self.scene_dirty && !chord && self.whole_frames_logged < 4 && crate::is_dev_build() {
+                self.whole_frames_logged += 1;
+                crate::logf!("RENDER: whole frame on {} — the background moved from {} to {} with no memmove to carry it", format!("{:?}", self.state), format!("{:?}", self.noise_drawn), format!("{:?}", noise_want));
             }
             let mut combined = PixelRect::new(0, 0, vw, vh);
             if chord {
