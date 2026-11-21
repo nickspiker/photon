@@ -3204,6 +3204,11 @@ impl FluorApp<Px> for PhotonApp {
         if self.drain_rows_landed() {
             needs_redraw = true;
         }
+        // Marks a draw asked for go to their worker, and each one that lands repaints (a placeholder until then, never a render on this thread).
+        if super::marks_tick(self.event_proxy.clone()) {
+            self.scene_dirty = true;
+            needs_redraw = true;
+        }
         if self.presence_probe_tick(now) {
             needs_redraw = true;
         }
@@ -5034,7 +5039,7 @@ impl PhotonApp {
                         let t_phase = std::time::Instant::now();
                         self.contacts = loaded_contacts;
                         // Every contact's mark, and ours, rendered once at 256 off this thread (the owner 2026-11-17: rendered at the mint, locally, never again).
-                        super::prewarm_marks(self.contacts.iter().map(|c| super::proof_gradient_seed(&c.handle_proof)).chain(self.our_handle_proof().map(|hp| super::proof_gradient_seed(&hp))).collect());
+                        super::prewarm_marks(self.contacts.iter().map(|c| super::proof_gradient_seed(&c.handle_proof)).chain(self.our_handle_proof().map(|hp| super::proof_gradient_seed(&hp))).collect(), self.event_proxy.clone());
                         self.apply_locked_set();
                         for c in self.contacts.iter_mut() {
                             if let Some((

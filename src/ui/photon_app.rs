@@ -4269,6 +4269,15 @@ const AVATAR_CACHE: usize = 1 << 6;
 /// Each mark's 256 square as visible γ2 RGB (a photo's display pixels), by seed: black past the disc.
 static MARK_RGB_STORE: std::sync::Mutex<Vec<(u64, std::sync::Arc<Vec<u8>>)>> = std::sync::Mutex::new(Vec::new());
 
+/// Seeds handed to a mark worker (or asked for by a draw), so a draw that misses again before the worker lands asks no second time.
+static MARKS_ASKED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
+/// Marks a draw asked for that no worker has yet: the tick hands them to `prewarm_marks`.
+static MARKS_WANTED: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
+/// Raised by the mark worker as each mark lands: the tick repaints, so each placeholder becomes its mark the moment that mark is ready, not all at once at the end.
+static MARKS_LANDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Keep `v` under `key` in a newest-last store of at most `AVATAR_CACHE` entries.
 fn keep_newest<K: PartialEq, V: Clone>(store: &std::sync::Mutex<Vec<(K, V)>>, key: K, v: V) -> V {
     let mut cache = store.lock().unwrap();
@@ -4339,10 +4348,20 @@ fn mark_to_vault(seed: u64, rgb: &[u8]) {
 }
 
 /// Every mark of `seeds` made ready off the UI thread, one after another: the vault's copy where it holds one, else rendered once at 256 and kept there (the mint), so no later launch renders it again.
-pub(crate) fn prewarm_marks(seeds: Vec<u64>) {
+pub(crate) fn prewarm_marks(seeds: Vec<u64>, wake: Option<Arc<dyn WakeSender<PhotonEvent>>>) {
+    {
+        let mut asked = MARKS_ASKED.lock().unwrap();
+        for s in &seeds {
+            if !asked.contains(s) {
+                asked.push(*s);
+            }
+        }
+    }
     crate::log_err!(std::thread::Builder::new().name("marks".into()).spawn(move || {
         for s in seeds {
+            // Once held, a seed is no longer asked for: a later draw that misses (the store dropped its oldest) asks again.
             if MARK_RGB_STORE.lock().unwrap().iter().any(|(k, _)| *k == s) {
+                MARKS_ASKED.lock().unwrap().retain(|a| *a != s);
                 continue;
             }
             let rgb = match mark_from_vault(s) {
@@ -4354,6 +4373,11 @@ pub(crate) fn prewarm_marks(seeds: Vec<u64>) {
                 }
             };
             keep_newest(&MARK_RGB_STORE, s, std::sync::Arc::new(rgb));
+            MARKS_ASKED.lock().unwrap().retain(|a| *a != s);
+            MARKS_LANDED.store(true, std::sync::atomic::Ordering::Release);
+            if let Some(w) = wake.as_ref() {
+                wake_ui(w);
+            }
         }
     }), "spawn the mark worker");
 }
@@ -4367,10 +4391,44 @@ fn gradient_avatar_rgb(seed: u64, diam: usize) -> Vec<u8> {
     keep_newest(&AVATAR_CACHE_STORE, (seed, diam), std::sync::Arc::new(out)).to_vec()
 }
 
+/// A mark's 256 square if this process holds it; a miss asks the mark worker for it, and the drawing thread never renders one (a first Ready frame used to render every missing mark inline).
+fn mark_rgb_ready(seed: u64) -> Option<std::sync::Arc<Vec<u8>>> {
+    if let Some((_, rgb)) = MARK_RGB_STORE.lock().unwrap().iter().find(|(k, _)| *k == seed) {
+        return Some(rgb.clone());
+    }
+    let mut asked = MARKS_ASKED.lock().unwrap();
+    if !asked.contains(&seed) {
+        asked.push(seed);
+        MARKS_WANTED.lock().unwrap().push(seed);
+    }
+    None
+}
+
+/// `gradient_avatar_rgb` for the drawing thread: None while the mark is still on its worker.
+fn gradient_avatar_rgb_ready(seed: u64, diam: usize) -> Option<Vec<u8>> {
+    if let Some((_, rgb)) = AVATAR_CACHE_STORE.lock().unwrap().iter().find(|(k, _)| *k == (seed, diam)) {
+        return Some(rgb.to_vec());
+    }
+    let out = crate::ui::avatar_render::update_avatar_scaled(&mark_rgb_ready(seed)?, MARK_SIDE, diam);
+    Some(keep_newest(&AVATAR_CACHE_STORE, (seed, diam), std::sync::Arc::new(out)).to_vec())
+}
+
 /// Draw the default UNSET avatar for `seed` at (`cx`, `cy`), radius `r`: its 256 square resampled to the diameter and cut to the circle there (`draw_avatar`), as a photo is.
+/// Until its mark lands from the worker the disc stays empty inside its ring, the placeholder, and the landing repaints it (MARKS_LANDED).
 fn draw_gradient_avatar(canvas: &mut Canvas, cx: f32, cy: f32, r: f32, seed: u64, clip: Option<fluor::paint::Clip>) {
     let gd = render::disk_px(r * 2.0);
-    crate::ui::avatar_render::draw_avatar(canvas, cx, cy, r, &gradient_avatar_rgb(seed, gd), gd, clip);
+    if let Some(rgb) = gradient_avatar_rgb_ready(seed, gd) {
+        crate::ui::avatar_render::draw_avatar(canvas, cx, cy, r, &rgb, gd, clip);
+    }
+}
+
+/// The marks the draws asked for, handed to a worker; and whether one landed since the last look (a repaint is owed).
+pub(super) fn marks_tick(wake: Option<Arc<dyn WakeSender<PhotonEvent>>>) -> bool {
+    let wanted = std::mem::take(&mut *MARKS_WANTED.lock().unwrap());
+    if !wanted.is_empty() {
+        prewarm_marks(wanted, wake);
+    }
+    MARKS_LANDED.swap(false, std::sync::atomic::Ordering::AcqRel)
 }
 
 /// Seed a gradient from a 32-byte public proof (`handle_proof`) — deterministic per identity.
