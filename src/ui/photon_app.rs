@@ -2548,6 +2548,15 @@ pub struct PhotonApp {
     own_avatar_row: Option<(usize, Vec<u8>)>,
     /// The filter strip's measured height in pixels (it WRAPS on a narrow screen — Nick 2026-09-15: "when the buttons wrap, it needs to push down the top contact"); fed back from the render's flow, one frame late, settles like sel_meta_h. Zero until first drawn = one row.
     ready_strip_h: f32,
+    /// THE FILTERS' SLAT (ferros, a safe circle; owner 2026-11-20: the filter buttons "should slide in/out like the beam/wave buttons do"): how far the filter strip and the gap above it are hidden up under the pinned search box, in pixels; the list going toward its end raises it with the text, going back drops it with the text (`ready_blind_step`).
+    ready_blind: f32,
+    /// The list's scroll the slat last moved for: the next frame moves it by the difference, whatever moved the list (a finger, its fling, the rubber band).
+    ready_blind_scroll: f32,
+    /// The slat's height as last drawn (the gap under the box and the strip): a scroll frame moving the list further than this is drawn whole, since the slat's old and moved places no longer cover where it lands.
+    ready_slat_h: f32,
+    /// How far the slat sat above its rest when last drawn, and its visible band then: a scroll frame that does not carry it with the list draws it again there and where the move took it.
+    ready_slat_off: f32,
+    ready_slat_rect: Option<fluor::canvas::PixelRect>,
     /// Hit ID for the "← Contacts" back button on the Conversation screen.
     back_btn_hit_id: HitId,
     /// Hit ID for the "Start fresh (wipe this device)" line on the JOIN words screen — a removed device's only self-clean path (it can't attest → can't reach Security).
@@ -3641,6 +3650,11 @@ impl PhotonApp {
             me_row_lines: Vec::new(),
             own_avatar_row: None,
             ready_strip_h: 0.0,
+            ready_blind: 0.0,
+            ready_blind_scroll: 0.0,
+            ready_slat_h: 0.0,
+            ready_slat_off: 0.0,
+            ready_slat_rect: None,
             back_btn_hit_id: HIT_NONE,
             join_startfresh_hit_id: HIT_NONE,
             join_copywords_hit_id: HIT_NONE,

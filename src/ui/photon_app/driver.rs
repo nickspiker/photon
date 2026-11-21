@@ -4098,6 +4098,16 @@ impl FluorApp<Px> for PhotonApp {
                 _ => 0,
             };
             let quiet = !self.scene_dirty && !chord && !chrome_dirty && want != 0 && self.viewer.is_none() && self.reader.is_none() && !self.wave_screen();
+            // The contacts' filters' slat (a safe circle) is carried by the move while it moves with the list; otherwise it is drawn again where it sat and where the move took it, and a move longer than the slat leaves a gap between the two that its new place may fall in, so that frame is drawn whole.
+            let slat = match (want == 2 && crate::ui::safe_circle().is_some(), self.ready_slat_rect) {
+                (true, Some(r)) => {
+                    let (_, off) = super::render::ready_slat_at(self.ready_blind, self.ready_blind_scroll, self.contacts_scroll as f32, self.contacts_scroll_extent as f32, self.ready_slat_h);
+                    // Carried: it rose as far as the list did (the shift is the list's move down).
+                    if off - self.ready_slat_off == -(shift as f32) { None } else { Some(r) }
+                }
+                _ => None,
+            };
+            let quiet = quiet && !(slat.is_some() && shift.unsigned_abs() as f32 >= self.ready_slat_h);
             if let (true, Some((tag, rect, overlays))) = (quiet, self.last_pane.as_ref()) {
                 let n = shift.unsigned_abs() as usize;
                 let h = rect.y1 - rect.y0; // both pane writers in render.rs build y0 ≤ y1 (a top floored to the bottom, a bottom floored to the top)
@@ -4106,7 +4116,7 @@ impl FluorApp<Px> for PhotonApp {
                     let mut dmg = band;
                     // The same pieces apart, for a host that takes damage as several rects (`damage_rects`).
                     let mut parts = vec![band];
-                    for r in overlays {
+                    for r in overlays.iter().chain(slat.iter()) {
                         dmg = dmg.union(*r);
                         parts.push(*r);
                         // WHY/PROOF: an overlay moved by the shift can land partly or wholly off the viewport — the clip keeps its damage band inside the buffer, and an empty one is skipped just below.

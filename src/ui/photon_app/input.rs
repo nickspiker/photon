@@ -59,7 +59,9 @@ impl PhotonApp {
         let slot_h = (slot.y1 - slot.y0) as f32;
         // The search box + overlaid plus button scroll with the user section, so subtract the SAME `contacts_scroll` the render pass uses. Both passes read it from `self`, so the rendered content (drawn at this rect) and the hit-stamp (which follows the rect) move together; offsetting the rect moves visual + hit area as one.
         let tb_cx = slot_x0 + slot_w * 0.5;
-        let tb_cy = slot_y0 + slot_h * 0.5 - self.contacts_scroll as f32;
+        // On a safe circle (ferros) the box stays put under the orb and the list scrolls beneath it (owner 2026-11-20: "search | add textbox should stay up top").
+        let block_scroll = if crate::ui::safe_circle().is_some() { 0.0 } else { self.contacts_scroll as f32 };
+        let tb_cy = slot_y0 + slot_h * 0.5 - block_scroll;
         let plus_size = slot_h * 7.0 / 8.0;
         let plus_inset = slot_h / 16.0;
         let plus_cx = slot_x0 + slot_w - plus_inset - plus_size * 0.5;

@@ -875,6 +875,8 @@ impl PhotonApp {
         let bg_fullscreen = chrome.full_edge || cfg!(target_os = "android");
         // MEASURED settings scroll extent (the Flow pages): a converted page arm records (content_height, pane_height) here as it draws; applied to self.settings_content_extent after the borrows release — one frame stale, which the rubber-band tolerates, and it retires the hand-counted row estimates page by page.
         let mut measured_extent: Option<(f32, f32)> = None;
+        // The contacts screen's pinned top on a safe circle (ferros): the rows above the search box's bottom, which stand still while the list scrolls under them, so their noise does too.
+        let mut ready_pin_top: Option<usize> = None;
         // Stage marks for the >1s breakdown at the end of the frame — the flat "render took Nms" line named the SCREEN but not the STAGE, which stalled the 2026-08-21 hang hunt (5.8-8.8s Conversation renders, no idea where inside).
         let mark_pre = std::time::Instant::now();
         // SCROLL AS A MEMMOVE (Nick 2026-10-06): when `damage_rect` armed a rigid shift for this frame (and the host did not override it with a full repaint — then the clip IS the viewport and no memmove happened anywhere), the bg layer shifts by the same dy and only the exposed band re-rasters; the hit map shifts after the chrome pass; the lists clip their rows to the damage; the final bg flatten covers only the damage.
@@ -1994,11 +1996,13 @@ impl PhotonApp {
             // NAMING A NEW ATOM (Nick 2026-10-27): our avatar gives way to the create pill — "Create atom" alone, "Create molecule" once a friend is picked — live once the box holds a name. It claims the avatar's hit id, so a tap founds instead of picking a picture.
             // A safe circle's orb (ferros) is our face already and sits in front of this block: the create pill takes the hint line under it instead, and no second face is drawn.
             let safe = crate::ui::safe_circle().is_some();
+            // The search box and the hint line over it stay put under the orb on a safe circle (owner 2026-11-20), the list scrolling beneath them; elsewhere the whole block scrolls as one.
+            let pin_scroll = if safe { 0.0 } else { scroll };
             if self.atom_naming {
                 let named = self.contacts_textbox.as_ref().is_some_and(|t| !t.chars.is_empty());
                 let label = if self.atom_picks.is_empty() { tr(Msg::CreateAtom) } else { tr(Msg::CreateMolecule) };
                 let hint = ready_layout.hint;
-                let (pcx, pcy, ph) = if safe { ((hint.x0 + hint.x1) as f32 * 0.5, (hint.y0 + hint.y1) as f32 * 0.5 - scroll, (hint.y1 - hint.y0) as f32) } else { (cx, cy, radius * 0.9) };
+                let (pcx, pcy, ph) = if safe { ((hint.x0 + hint.x1) as f32 * 0.5, (hint.y0 + hint.y1) as f32 * 0.5 - pin_scroll, (hint.y1 - hint.y0) as f32) } else { (cx, cy, radius * 0.9) };
                 let pw = (ph * 4.).min(buf_w as f32 * 0.8);
                 let pill = fluor::region::Region::new(pcx - pw * 0.5, pcy - ph * 0.5, pw, ph);
                 draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill, &label, self.avatar_hit_id, ctx.pressed_hit, named, named.then_some(*theme::PILL_GREEN), "Oxanium");
@@ -2144,7 +2148,7 @@ impl PhotonApp {
                 if !hint.is_empty() {
                     let region_h = (hint.y1 - hint.y0) as f32;
                     let scx = (hint.x0 + hint.x1) as f32 * 0.5;
-                    let scy = (hint.y0 + hint.y1) as f32 * 0.5 - scroll;
+                    let scy = (hint.y0 + hint.y1) as f32 * 0.5 - pin_scroll;
                     ctx.text.draw_text_center(
                         &mut canvas,
                         text,
@@ -2170,7 +2174,7 @@ impl PhotonApp {
                     } else {
                         0.0
                     };
-                    let tcy = ((hint.y0 + hint.y1) as f32 * 0.5 - scroll - lift).min(toast_floor(buf_h, region_h * 0.6));
+                    let tcy = ((hint.y0 + hint.y1) as f32 * 0.5 - pin_scroll - lift).min(toast_floor(buf_h, region_h * 0.6));
                     let ts = region_h * 0.6;
                     let style = TextStyle::new(ts, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium");
                     draw_toast(&mut canvas, ctx.text, msg, tcx, (hint.x1 - hint.x0) as f32, tcy, ts, &style);
@@ -2178,34 +2182,69 @@ impl PhotonApp {
             }
 
             // ───────── Separator + scrollable contact list ───────── 1-pixel hairline centred in the separator slot (height 0 = hairline; the slot itself is just reserved breathing room around the line).
+            let rows = ready_layout.rows;
+            let row_h = ready_layout.row_height.max(1) as isize; // WHY/PROOF: as above — a 0-height row would make the walk stand still
+            // THE FILTERS' SLAT (ferros, a safe circle; owner 2026-11-20): the list's top is the search box's bottom, and the gap under the box with the filter strip is a slat the list carries up under the box as it goes toward its end and drops again as it comes back, the conversation's blind for its Wave and Beam (conv_blind_step).
+            // Moved here by whatever moved the list since the last frame; at the list's top (and in its rubber band) it rides the list itself, wholly shown.
+            let list_top = ready_layout.textbox.y1 as f32;
+            if safe {
+                ready_pin_top = Some(list_top as usize);
+            }
+            let slat_h = rows.y0 as f32 - list_top + if self.ready_strip_h > 0.0 { self.ready_strip_h.ceil() } else { row_h as f32 };
+            // How far the slat sits above its rest (ready_slat_at): the hidden part, or the list's own pull past its top.
+            let blind = if safe {
+                let extent = self.contacts_scroll_extent as f32;
+                let (hide, off) = ready_slat_at(self.ready_blind, self.ready_blind_scroll, scroll, extent, slat_h);
+                self.ready_blind = hide;
+                self.ready_blind_scroll = scroll.min(extent);
+                self.ready_slat_h = slat_h;
+                self.ready_slat_off = off;
+                off
+            } else {
+                scroll
+            };
+            // Where the list shows from: the slat's bottom on a safe circle, the frame's top elsewhere (the whole block scrolls there).
+            let list_from = if safe { list_top + slat_h - blind } else { 0.0 };
             let sep = ready_layout.separator;
+            let sep_y = ((sep.y0 + sep.y1) / 2) as f32 - blind;
+            // Under the box (a safe circle) the line shows only below the box's bottom, as the slat it rides does.
+            if !safe || sep_y >= list_top {
             paint::fill_rect(
                 &mut canvas,
                 sep.x0 as isize,
-                ((sep.y0 + sep.y1) / 2) as isize - self.contacts_scroll,
+                sep_y as isize,
                 (sep.x1 - sep.x0) as isize,
                 0,
                 theme::SEPARATOR_COLOUR,
                 None,
                 None,
             );
-
-            let rows = ready_layout.rows;
-            let row_h = ready_layout.row_height.max(1) as isize; // WHY/PROOF: as above — a 0-height row would make the walk stand still
+            }
             let diam = ready_layout.contact_avatar_diameter;
             let avatar_r = diam as f32 * 0.5;
             // Rows now scroll up into (and past) where the user section sat, so the clip can no longer stop at `rows.y0`. Clip top = the top of the content area (0); the chrome title bar stays on top because its layer is flattened into `target` BEFORE any content (`flatten_chrome_into`), exactly as it does for the unclipped avatar that already draws high. Keep the x extent at the rows' columns.
-            let rows_clip = fluor::paint::Clip::new(rows.x0, 0, rows.x1, buf_h);
+            // On a safe circle the clip's top is where the list shows from, the slat's bottom (never above the box's bottom: the slat is hidden at most its own height).
+            let rows_clip = fluor::paint::Clip::new(rows.x0, list_from as usize, rows.x1, buf_h);
             // SCROLL AS A MEMMOVE: the contacts block is the pane — everything below the chrome strip (the whole surface on a phone) translates with `contacts_scroll`; the standing bands at the bottom and the orb are the fixed overlays. Recorded for the NEXT frame's `damage_rect`; this frame's rows clip to the damage when it rides a shift.
             {
-                let pane_top = if cfg!(target_os = "android") { 0 } else { fluor::host::chrome::strip_height(ctx.viewport) as usize };
+                // On a safe circle the pane is the list under the pinned box: the box, the hint line and the orb above it stay put and are never moved.
+                let pane_top = if safe { list_top as usize } else if cfg!(target_os = "android") { 0 } else { fluor::host::chrome::strip_height(ctx.viewport) as usize };
                 let mut pane_overlays: Vec<fluor::canvas::PixelRect> = Vec::new();
                 let bands_h = standing_bands.len() as f32 * ready_layout.unit_height * 1.5 * 2.0;
                 if bands_h > 0.0 {
                     pane_overlays.push(fluor::canvas::PixelRect::new(0, (buf_h as f32 - bands_h) as usize, buf_w, buf_h));
                 }
-                if let Some(orb) = orb_bbox {
+                if let (false, Some(orb)) = (safe, orb_bbox) {
                     pane_overlays.push(orb);
+                }
+                // The slat moves with the list, except while it rests wholly shown with the list moving under it, or meets an end of its travel: its place is kept for the next frame's damage, which draws it again where it sat and where the move took it on such a move only (damage_rect).
+                // The box's focus glow reaching into the pane under it is a fixed overlay while the box has the focus.
+                if safe {
+                    self.ready_slat_rect = Some(fluor::canvas::PixelRect::new(0, list_top as usize, buf_w, list_from as usize));
+                    if self.contacts_textbox.as_ref().is_some_and(|t| Some(t.hit_id()) == self.focused) {
+                        let glow = ((ready_layout.textbox.y1 - ready_layout.textbox.y0) / 2) as f32;
+                        pane_overlays.push(fluor::canvas::PixelRect::new(0, list_top as usize, buf_w, (list_top + glow) as usize));
+                    }
                 }
                 self.last_pane = Some((2, fluor::canvas::PixelRect::new(0, pane_top.min(buf_h), buf_w, buf_h), pane_overlays));
             }
@@ -2296,7 +2335,7 @@ impl PhotonApp {
             // Handle names render in each contact's relationship colour (spaghettify per visible row is microseconds; revisit with a cache if contact lists ever get huge). `our_handle_hash` is bound above the sort — one derivation for the ordering and the rows.
             // THE FILTER STRIP (docs/conversations.md D2, D8): the one filter pill and New atom — a pseudo-row at the top of the block that scrolls with it.
             let strip_now: isize = {
-                let strip_top = rows.y0 as f32 - scroll as f32;
+                let strip_top = rows.y0 as f32 - blind;
                 let strip = fluor::region::Region::new(rows.x0 as f32, strip_top + row_h as f32 * 0.1, (rows.x1 - rows.x0) as f32, row_h as f32 * 0.8);
                 // Each pill carries its hit slot: 0 the filter, 1 New atom.
                 let open_invites = self.bond_offers.iter().filter(|o| !o.accepted).count();
@@ -2316,8 +2355,23 @@ impl PhotonApp {
                     _ => None,
                 };
                 let pills: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = labels.iter().map(|(l, slot)| (l.as_ref(), (self.ready_filter_base + *slot), true, chosen(*slot))).collect();
-                let mut flow = Flow::new(fluor::region::Region::new(strip.x, strip.y + scroll as f32, strip.w, strip.h * 4.0), scroll as f32);
-                flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, text_size * 0.8, &pills, "Oxanium");
+                // On a safe circle the strip flows in a band from the box's bottom down (below), so it is laid out in that band's rows.
+                let t = if safe { list_top as usize } else { 0 };
+                let mut flow = Flow::new(fluor::region::Region::new(strip.x, strip.y - t as f32, strip.w, strip.h * 4.0), 0.0);
+                if safe {
+                    // Cut at the box's bottom, paint and taps alike: the part of the strip gone up under the box neither shows nor takes a tap (draw_stub_pill_banded's band).
+                    let mut band_damage = fluor::canvas::Damage::new();
+                    {
+                        let mut band = Canvas::new(&mut canvas.pixels[t * buf_w..], buf_w, buf_h - t, &mut band_damage);
+                        flow_pills(&mut flow, &mut band, ctx.text, &mut chrome.hit_test_map[t * buf_w..buf_h * buf_w], buf_w, buf_h - t, ctx.pressed_hit, text_size * 0.8, &pills, "Oxanium");
+                    }
+                    if !band_damage.is_empty() {
+                        let r = band_damage.bbox();
+                        canvas.damage.add(fluor::canvas::PixelRect::new(r.x0, r.y0 + t, r.x1, r.y1 + t));
+                    }
+                } else {
+                    flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, text_size * 0.8, &pills, "Oxanium");
+                }
                 // Measure: the wrapped strip's real height (plus the row's top/bottom margin) drives the next frame's row offset and extent.
                 let measured = flow.used() + row_h as f32 * 0.2;
                 // Compared as stored (at least one row): a strip measuring under a row compared raw never matched the stored row height, so every Ready frame asked for another full one and the scroll memmove never armed (ferros Pro 2026-11-17: "already set before the tick: true", blame line 0).
@@ -2376,8 +2430,9 @@ impl PhotonApp {
                 // The avatar centres on the WHOLE row block, so a wrapped name sits balanced beside it (Nick 2026-09-09).
                 let cy = (row_top + rh / 2) as f32;
                 // WHY/PROOF (a rect, not the paint): the row's whole rect takes the tap (the gaps round its name and avatar too), claimed BEFORE the row paints and only where nothing opaque already sits: a row scrolled up under the title strip or the orb leaves those pixels to the chrome, exactly as its pixels do (field 2026-10-01: a blind after-paint stamp took the orb until the next chrome-dirty frame).
+                // Cut at where the list shows from (the slat's bottom on a safe circle, the frame's top elsewhere), as its paint is.
                 if view.hit != HIT_NONE {
-                    claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, rows.x0 as isize, row_top, rows.x1 as isize, row_top + rh, view.hit);
+                    claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, rows.x0 as isize, row_top.max(list_from as isize), rows.x1 as isize, row_top + rh, view.hit);
                 }
 
                 // Build/refresh a contact's scaled-avatar cache at the row diameter (a group's pie is computed per frame — a few thousand pixels, no cache).
@@ -2508,7 +2563,7 @@ impl PhotonApp {
                     let band_y = line_cy(last);
                     let ph = line_step * 0.85;
                     let pw = text_size * 4.2;
-                    let inside = band_y - ph * 0.5 >= rows.y0 as f32 && band_y + ph * 0.5 <= rows.y1 as f32;
+                    let inside = band_y - ph * 0.5 >= rows.y0 as f32 && band_y - ph * 0.5 >= list_from && band_y + ph * 0.5 <= rows.y1 as f32;
                     if inside && oi < 16 {
                         let bind = fluor::region::Region::new(text_x, band_y - ph * 0.5, pw, ph);
                         let decline = fluor::region::Region::new(text_x + pw * 1.15, band_y - ph * 0.5, pw, ph);
@@ -2518,7 +2573,7 @@ impl PhotonApp {
                 }
                 if row_pressed {
                     // Press = the wordmark's halo, scoped to this row — composited AFTER the name (under() = topmost paints first, so program-order-later lands BENEATH the glyphs; the logo calls its glow last for the same reason — glow-first blew the text out to white). Full-width band like the wordmark, so the shared blur math holds.
-                    let band_top = row_top.max(0) as usize; // WHY/PROOF: a row scrolled above the buffer has a negative top — the usize cast would wrap it
+                    let band_top = row_top.max(list_from as isize) as usize; // WHY/PROOF: a row scrolled above the buffer has a negative top — the usize cast would wrap it; on a safe circle the glow stops where the list shows from, as the row does
                     // WHY: a scrolled row can lie wholly BELOW the buffer, so its clipped bottom is above its top.
                     // PROOF: that row has no band — zero height, skipped by the `>= 2` gate — where a plain subtraction would wrap to a band taller than the screen.
                     let band_h =
@@ -7917,7 +7972,15 @@ impl PhotonApp {
         // THE NOISE, last and under everything: the field generated once for this size and base (a resize or the storage-warning tint generates it again), laid at this screen's scroll.
         let noise_origin = bg_split_x.unwrap_or(buf_w / 2);
         self.noise.ensure(buf_w, buf_h, noise_origin, bg_base);
-        self.noise.under_into(&mut Canvas::new(target, buf_w, buf_h, ctx.damage), noise_origin, bg_left_scroll.unwrap_or(bg_right_scroll), bg_right_scroll, bg_fullscreen, Some(damage));
+        if let Some(t) = ready_pin_top {
+            // The damage's rows above the box's bottom take the noise at rest and the rest take it with the list: two row ranges cut from the damage's, either of which may be empty (under_into then draws nothing).
+            let above = fluor::paint::Clip::new(damage.x_start, damage.y_start, damage.x_end, damage.y_end.min(t));
+            let below = fluor::paint::Clip::new(damage.x_start, damage.y_start.max(t), damage.x_end, damage.y_end);
+            self.noise.under_into(&mut Canvas::new(target, buf_w, buf_h, ctx.damage), noise_origin, 0, 0, bg_fullscreen, Some(above));
+            self.noise.under_into(&mut Canvas::new(target, buf_w, buf_h, ctx.damage), noise_origin, bg_left_scroll.unwrap_or(bg_right_scroll), bg_right_scroll, bg_fullscreen, Some(below));
+        } else {
+            self.noise.under_into(&mut Canvas::new(target, buf_w, buf_h, ctx.damage), noise_origin, bg_left_scroll.unwrap_or(bg_right_scroll), bg_right_scroll, bg_fullscreen, Some(damage));
+        }
         self.scroll_shift = 0;
         self.scroll_hint_armed = None;
         // The idle whole-frame hunt (damage_rect's log): a flag this render raised for the next frame, and the asks this frame answered.
@@ -8264,6 +8327,20 @@ pub(super) fn conv_blind_rests(buf_h: usize, unit: f32, strip_floor: f32, orb_re
     [orb_rest_b.unwrap_or(0.0).max(0.0), row - unit, row + unit * 0.5]
 }
 
+/// One move of the filters' slat on the contacts screen (ferros, a safe circle) for the list moving `step` pixels toward its end (negative: back toward its top), the slat `slat_h` tall and the list now at `scroll`: hidden by as much more as the list rose, shown again by as much as it fell, as the conversation's blind moves its slats (conv_blind_step).
+/// WHY/PROOF (the bounds are the slat's travel, not a guard): it cannot hide more than its own height nor show more than all of itself, and it is hidden no more than the list has moved from its top, so at the top it is wholly shown.
+pub(super) fn ready_blind_step(hide: f32, step: f32, slat_h: f32, scroll: f32) -> f32 {
+    (hide + step).min(slat_h.min(scroll)).max(0.0)
+}
+
+/// The filters' slat for the list now at `scroll` (its end at `extent`), from its hidden part `hide` when the list was at `seen`: the new hidden part, and how far the slat sits above its rest, the hidden part or, in the rubber band past the list's top, the list's own pull (it rides the list there, wholly shown).
+/// WHY/PROOF (the min): past the list's end the rubber band stretches the list beyond its travel; the slat follows the list's travel only, so a stretch the band takes back moves it neither way.
+pub(super) fn ready_slat_at(hide: f32, seen: f32, scroll: f32, extent: f32, slat_h: f32) -> (f32, f32) {
+    let travel = scroll.min(extent);
+    let hide = ready_blind_step(hide, travel - seen, slat_h, travel);
+    (hide, if scroll < 0.0 { scroll } else { hide })
+}
+
 /// One scroll step of `step` pixels (positive = toward the newest = raising) on the blind's state.
 pub(super) fn conv_blind_step(h: &mut [f32; 3], edge: &mut f32, rests: [f32; 3], extent: f32, step: f32) {
     if step > 0.0 {
@@ -8390,6 +8467,33 @@ mod blind_tests {
         assert_eq!(h, [0.0, 50.0, 150.0], "the orb has landed; Beam and the row ride the edge at 150");
         conv_blind_step(&mut h, &mut edge, rests, 300.0, -150.0);
         assert_eq!(h, [0.0; 3], "the row lands last");
+    }
+
+    /// The contacts' filters' slat (ferros): the list going toward its end carries it up under the search box with the text, pixel for pixel, until it is hidden; coming back drops it with the text from wherever the list is; at the top it is wholly shown, riding the list in the rubber band past the top, and a stretch past the end moves it neither way.
+    #[test]
+    fn the_filters_ride_up_with_the_list_and_drop_back_with_it() {
+        use super::ready_slat_at;
+        let (slat, extent) = (100.0, 1000.0);
+        // (hidden, the list's travel it last moved for)
+        let mut s = (0.0f32, 0.0f32);
+        let at = |s: &mut (f32, f32), scroll: f32| -> f32 {
+            let (hide, off) = ready_slat_at(s.0, s.1, scroll, extent, slat);
+            *s = (hide, scroll.min(extent));
+            off
+        };
+        assert_eq!(at(&mut s, 40.0), 40.0, "up 40 with the list");
+        assert_eq!(at(&mut s, 90.0), 90.0, "still with the list");
+        assert_eq!(at(&mut s, 400.0), slat, "hidden, and no further");
+        assert_eq!(at(&mut s, 370.0), 70.0, "back 30: 30 of it shows, mid-list");
+        assert_eq!(at(&mut s, 300.0), 0.0, "back 70 more: wholly shown");
+        assert_eq!(at(&mut s, 250.0), 0.0, "resting, the list moving under it");
+        assert_eq!(at(&mut s, 0.0), 0.0, "at the top, wholly shown");
+        assert_eq!(at(&mut s, -30.0), -30.0, "past the top it rides the list down");
+        assert_eq!(at(&mut s, 0.0), 0.0);
+        assert_eq!(at(&mut s, 1000.0), slat);
+        assert_eq!(at(&mut s, 1060.0), slat, "a stretch past the end moves it neither way");
+        assert_eq!(at(&mut s, 1000.0), slat, "nor does the band taking it back");
+        assert_eq!(at(&mut s, 980.0), 80.0, "then back 20 shows 20");
     }
 }
 
