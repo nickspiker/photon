@@ -4353,7 +4353,8 @@ fn proof_gradient_seed(proof: &[u8; 32]) -> u64 {
     u64::from_le_bytes(proof[..8].try_into().unwrap())
 }
 
-/// Map a connectivity bool to the chrome orb tint. Offline = red disk, online = green disk. Visible RGB chosen for high contrast in either light or dark chrome themes; brighten=true on the online state for the eventual icon-overlay case (no-icon today just renders as a solid coloured circle).
+/// Map a connectivity bool to the chrome orb tint. Offline = red disk, online = green disk. Visible RGB chosen for high contrast in either light or dark chrome themes.
+/// Being online never brightens the orb's image (owner 2026-11-20); the ring carries it.
 fn orb_tint_for(online: bool) -> fluor::host::chrome::OrbTint {
     // Visible RGB(64, 224, 64) green: darkness = (0xBF, 0x1F, 0xBF); packed α=0xFF. Visible RGB(224, 64, 64) red:   darkness = (0x1F, 0xBF, 0xBF); packed α=0xFF.
     // These are hand-authored in darkness-space (pre-inverted, so no `dark()`), but they STILL need `fmt()` — the platform channel-order pass (identity on desktop, R↔B swap on Android). Every other photon colour rides `fmt`; the orb ring skipping it was the Android "red-blue swapped ring". `fmt` only reorders RGB and preserves the α byte, so it's correct on the already-darkened constants.
@@ -4363,7 +4364,7 @@ fn orb_tint_for(online: bool) -> fluor::host::chrome::OrbTint {
         } else {
             crate::ui::theme::ORB_OFFLINE
         })),
-        brighten: online,
+        brighten: false,
     }
 }
 

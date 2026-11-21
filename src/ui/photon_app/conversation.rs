@@ -73,7 +73,7 @@ impl PhotonApp {
                 self.orb_wave = Some(colour);
                 if let Some(chrome) = self.chrome.as_mut() {
                     chrome.app_icon = None;
-                    chrome.set_orb_tint(fluor::host::chrome::OrbTint::Custom { ring: colour, brighten: true });
+                    chrome.set_orb_tint(fluor::host::chrome::OrbTint::Custom { ring: colour, brighten: false });
                     chrome.invalidate_chrome();
                     return true;
                 }
@@ -99,6 +99,8 @@ impl PhotonApp {
         let has_avatar = target.map_or(false, |ci| self.contacts[ci].avatar_pixels.is_some());
         // Computed before the chrome borrow pins `self`. A zero-remote conversation is on this machine: LAN ring, always bright.
         let orb_has_remote = target.is_some_and(|ci| self.has_remote(&self.contacts[ci]));
+        // The orb brightens only while the pointer is on someone else's face (owner 2026-11-20: never for being online, which the ring already shows).
+        let orb_hovered = self.chrome.as_ref().is_some_and(|c| c.app_icon_btn.hovered);
         let orb_key = target.map(|ci| {
             let c = &self.contacts[ci];
             (
@@ -106,7 +108,7 @@ impl PhotonApp {
                 has_avatar,
                 c.avatar_pin,
                 self.row_ring_tier(c),
-                c.is_online || !orb_has_remote,
+                orb_hovered,
             )
         });
         // On a safe circle (ferros) the orb outside a conversation is our own face once we are someone (before, the brand orb), the one under the camera that the Ready screen used to draw large: keyed on our picture (a sample of its bytes, so a new pick shows) or our gradient's seed.
@@ -145,11 +147,10 @@ impl PhotonApp {
                     }
                 };
                 let ring = super::row_ring_tier_in(&self.contacts, c, orb_has_remote);
-                let online = c.is_online || !orb_has_remote;
                 chrome.app_icon = Some(orb_icon_of(&src, diam));
                 chrome.set_orb_tint(fluor::host::chrome::OrbTint::Custom {
                     ring,
-                    brighten: online,
+                    brighten: orb_hovered,
                 });
             }
             None => {
