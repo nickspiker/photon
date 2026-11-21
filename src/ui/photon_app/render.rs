@@ -444,10 +444,10 @@ impl PhotonApp {
         let ime_lift = self.ime_lift();
         // The conversation's compose bar lifts by the keyboard and, on a safe circle (ferros), by the circle's floor at its corners (`bottom_lift`, the layout pass's same term).
         let conv_lift = self.bottom_lift(buf_w, buf_h, ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height);
-        // The orb's unread dot (a safe circle's orb, ferros): any conversation but the one open waits unread.
+        // The orb's unread dot (every platform, owner 2026-11-20): any conversation but the one open waits unread.
         // The title arc (ferros): the pages this screen goes round and the open one, read before the chrome borrow.
         let title_arc = if self.title_arc_screen() { self.title_arc_pages() } else { None };
-        let orb_dot = crate::ui::safe_circle().is_some() && self.conversations.iter().any(|v| v.unread_count > 0 && Some(v.id()) != self.active_conversation);
+        let orb_dot = self.conversations.iter().any(|v| v.unread_count > 0 && Some(v.id()) != self.active_conversation);
         // The launch form's lift: the keyboard, plus the permanence warning under the button while it shows (input.rs `launch_lift_below`).
         let launch_lift = ime_lift + self.launch_lift_below(buf_w, buf_h, ctx.viewport.ru);
         // Same hoist for the Fleet page's locked set (treat-as-stolen rows): the row loop can't re-borrow self.
@@ -980,7 +980,7 @@ impl PhotonApp {
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             paint::draw_chord_hint(&mut canvas, ctx.text, CHORD_HINTS, span);
         }
-        // THE UNREAD DOT (ferros, owner 2026-11-18: "so dot instead of magenta ring. I like. I think it looks slick."): on a safe circle's orb, a dot in the unread colour on its upper right while a conversation other than the one open waits unread, in front of the orb and its own to tap.
+        // THE UNREAD DOT (owner 2026-11-18 on ferros: "so dot instead of magenta ring. I like. I think it looks slick."; every platform since 2026-11-20): on the orb, a dot in the unread colour on its upper right while a conversation other than the one open waits unread, in front of the orb and its own to tap.
         // It sits wholly inside the orb's square (its centre seven eighths of the radius out on the diagonal, its radius a quarter), so the orb's overlay rect carries it thru a scroll's memmove.
         if let (true, Some((ox, oy, or))) = (orb_dot, chrome.orb_geometry()) {
             let (ox, oy, or) = (ox as f32, oy as f32, or as f32);
@@ -2402,8 +2402,8 @@ impl PhotonApp {
                         self.own_avatar_row = Some((diam, crate::ui::avatar_render::update_avatar_scaled(base, crate::ui::avatar::AVATAR_SIZE, diam)));
                     }
                 }
-                // ferros (a safe circle): the unread cue is a dot on the avatar's upper right, in front of it, as on the orb, not the magenta ring round it.
-                let unread_dot = view.unread && crate::ui::safe_circle().is_some();
+                // The unread cue is a dot on the avatar's upper right, in front of it, as on the orb (ferros first, every platform since owner 2026-11-20).
+                let unread_dot = view.unread;
                 if unread_dot {
                     let along = avatar_r * (7. / 8.) * std::f32::consts::FRAC_1_SQRT_2;
                     paint::draw_circle(&mut canvas, avatar_cx + along, cy - along, avatar_r / 4., *theme::RING_UNREAD_COLOUR, Some(rows_clip));
@@ -2441,9 +2441,8 @@ impl PhotonApp {
                 }
                 // The row's colour — a contact's relationship colour (ears and eyes and the unread cue all agree on it), a group's own. A zero-remote row gets the neutral anchor.
                 let row_colour = view.colour;
-                // Presence ring at the rim (connectivity tier), then — if unread — a MAGENTA ring OUTSIDE it (the new-message cue never overlaps or recolours the connectivity ring). Under-composite paints topmost-first, so the presence disc is drawn before the larger magenta disc and the magenta only shows in its outer annulus. Event-shown, cleared on conversation-open.
+                // Presence ring at the rim (connectivity tier); the unread cue is the dot above, never a ring, so it never overlaps or recolours the connectivity ring.
                 let unread = view.unread;
-                let unread_band = ring_thickness * 2.0;
                 let ring = view.ring;
                 paint::draw_circle(
                     &mut canvas,
@@ -2453,16 +2452,6 @@ impl PhotonApp {
                     ring,
                     Some(rows_clip),
                 );
-                if unread && !unread_dot {
-                    paint::draw_circle(
-                        &mut canvas,
-                        avatar_cx,
-                        cy,
-                        avatar_r + ring_thickness + unread_band,
-                        *theme::RING_UNREAD_COLOUR,
-                        Some(rows_clip),
-                    );
-                }
 
                 // Handle name, vertically centred in the row, clipped to the list region — in this contact's relationship colour (computed above).
                 // "Pending…" reads in SHEAR (the honest oblique — tan 12°): a name-shaped placeholder must not look like a name. Hover reads as WEIGHT (500 → 700), not a fill — and an unread row holds that same 700 weight until opened.
