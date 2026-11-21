@@ -52,7 +52,7 @@ pub static RING_ONLINE_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_00_C2_00)
 pub static RING_OFFLINE_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_00_00_00));
 /// 0xFFB000 amber — the long-standing 0xB0FF00 lime was this value with its bytes swapped, never a deliberate lime.
 pub static RING_RELAY_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_C2_99_00));
-/// Unread cue: a solid magenta dot on the avatar's (and the orb's) upper right, in front of it (owner 2026-11-18 on ferros, every platform since 2026-11-20), so it never competes with the connectivity ring.
+/// Unread cue: a solid magenta dot on the avatar's (and the orb's and the taskbar icon's) upper left, centred on its edge, in front of it (owner 2026-11-18 on ferros, every platform since 2026-11-20), so it never competes with the connectivity ring.
 /// Event-shown, cleared on conversation-open.
 pub static RING_UNREAD_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_C2_00_C2));
 /// The message-details copy pill, ready state — cyan ("tap me"); flips to SEARCH_FOUND green + the label "copied" once the text lands on the clipboard. Event-cleared: reverts when the selection moves/closes, never on a timer.

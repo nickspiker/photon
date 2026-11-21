@@ -980,12 +980,12 @@ impl PhotonApp {
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             paint::draw_chord_hint(&mut canvas, ctx.text, CHORD_HINTS, span);
         }
-        // THE UNREAD DOT (owner 2026-11-18 on ferros: "so dot instead of magenta ring. I like. I think it looks slick."; every platform since 2026-11-20): on the orb, a dot in the unread colour on its upper right while a conversation other than the one open waits unread, in front of the orb and its own to tap.
-        // It sits wholly inside the orb's square (its centre seven eighths of the radius out on the diagonal, its radius a quarter), so the orb's overlay rect carries it thru a scroll's memmove.
+        // THE UNREAD DOT (owner 2026-11-18 on ferros: "so dot instead of magenta ring. I like. I think it looks slick."; every platform since 2026-11-20): on the orb, a dot in the unread colour on its upper left while a conversation other than the one open waits unread, in front of the orb and its own to tap.
+        // Its centre is on the orb's edge at the upper-left diagonal and its radius R(1 − 1/√2), the largest that fits the orb's square (owner 2026-11-20: "top left and much bigger"), so the orb's overlay rect still carries it thru a scroll's memmove.
         if let (true, Some((ox, oy, or))) = (orb_dot, chrome.orb_geometry()) {
             let (ox, oy, or) = (ox as f32, oy as f32, or as f32);
-            let along = or * (7. / 8.) * std::f32::consts::FRAC_1_SQRT_2;
-            let (dx, dy, dr) = (ox + along, oy - along, or / 4.);
+            let along = or * std::f32::consts::FRAC_1_SQRT_2;
+            let (dx, dy, dr) = (ox - along, oy - along, or - along);
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             claim_hit_circle_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, dx, dy, dr, chrome.app_icon_btn.id());
             paint::draw_circle(&mut canvas, dx, dy, dr, *theme::RING_UNREAD_COLOUR, Some(fluor::paint::Clip::new(ctx.damage_clip.x0, ctx.damage_clip.y0, ctx.damage_clip.x1, ctx.damage_clip.y1)));
@@ -2402,11 +2402,11 @@ impl PhotonApp {
                         self.own_avatar_row = Some((diam, crate::ui::avatar_render::update_avatar_scaled(base, crate::ui::avatar::AVATAR_SIZE, diam)));
                     }
                 }
-                // The unread cue is a dot on the avatar's upper right, in front of it, as on the orb (ferros first, every platform since owner 2026-11-20).
+                // The unread cue is a dot on the avatar's upper left, in front of it, as on the orb and the taskbar icon (every platform, owner 2026-11-20): its centre on the avatar's edge at the diagonal, its radius R(1 − 1/√2), the largest that fits the avatar's square.
                 let unread_dot = view.unread;
                 if unread_dot {
-                    let along = avatar_r * (7. / 8.) * std::f32::consts::FRAC_1_SQRT_2;
-                    paint::draw_circle(&mut canvas, avatar_cx + along, cy - along, avatar_r / 4., *theme::RING_UNREAD_COLOUR, Some(rows_clip));
+                    let along = avatar_r * std::f32::consts::FRAC_1_SQRT_2;
+                    paint::draw_circle(&mut canvas, avatar_cx - along, cy - along, avatar_r - along, *theme::RING_UNREAD_COLOUR, Some(rows_clip));
                 }
                 // Avatar (or placeholder) is topmost; the presence ring paints UNDER it so only the rim shows.
                 match (*row, view.pie.as_ref()) {

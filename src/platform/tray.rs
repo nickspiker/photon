@@ -537,25 +537,28 @@ pub fn spawn(_proxy: std::sync::Arc<dyn fluor::host::WakeSender<crate::ui::Photo
 
 #[cfg(test)]
 mod tests {
-    /// The ringed orb keeps its corners empty, wears the unread magenta in the band outside the shrunken orb, and keeps the orb opaque at its centre.
+    /// The unread orb keeps its corners empty, wears the magenta dot at its upper left (centred on the orb's edge), and keeps the orb opaque at its centre.
     #[test]
-    fn the_unread_orb_wears_a_magenta_band() {
+    fn the_unread_orb_wears_a_magenta_dot() {
         let (plain, w, h) = super::orb_rgba(super::TRAY_ORB, false).unwrap();
-        let (ringed, rw, rh) = super::orb_rgba(super::TRAY_ORB, true).unwrap();
-        assert_eq!((rw, rh, plain.len()), (w, h, ringed.len()));
+        let (dotted, rw, rh) = super::orb_rgba(super::TRAY_ORB, true).unwrap();
+        assert_eq!((rw, rh, plain.len()), (w, h, dotted.len()));
         let at = |buf: &[u8], x: u32, y: u32| {
             let i = ((y * w + x) * 4) as usize;
             [buf[i], buf[i + 1], buf[i + 2], buf[i + 3]]
         };
-        assert_eq!(at(&ringed, 0, 0)[3], 0);
-        // The band runs from the orb's radius (three quarters of the icon's) out to the rim, the outer eighth of the width; a sixteenth in sits mid-band.
-        let band = at(&ringed, w >> 4, h >> 1);
+        // The corners lie outside both the orb and the dot (the dot touches the top and left edges, not the corner).
+        assert_eq!(at(&dotted, 0, 0)[3], 0);
+        assert_eq!(at(&dotted, w - 1, h - 1)[3], 0);
+        // The dot's centre: R(1 − 1/√2) in from the top and the left.
+        let c = ((w as f32 * 0.5) * (1. - std::f32::consts::FRAC_1_SQRT_2)) as u32;
+        let dot = at(&dotted, c, c);
         let m = fluor::theme::to_sdr_visible(*crate::ui::theme::RING_UNREAD_COLOUR);
         // Within a few steps of the theme's magenta: fluor's 8-bit kernels divide by 256 where 255 is meant, the dark bias avatar_render's depth test pins too.
-        assert_eq!(band[3], 255);
-        for (got, want) in band.into_iter().zip([(m >> 16) as u8, (m >> 8) as u8, m as u8]) {
-            assert!((got as i32 - want as i32).abs() <= 3, "band {band:?} against magenta {m:06x}");
+        assert_eq!(dot[3], 255);
+        for (got, want) in dot.into_iter().zip([(m >> 16) as u8, (m >> 8) as u8, m as u8]) {
+            assert!((got as i32 - want as i32).abs() <= 3, "dot {dot:?} against magenta {m:06x}");
         }
-        assert_eq!(at(&ringed, w >> 1, h >> 1)[3], 255);
+        assert_eq!(at(&dotted, w >> 1, h >> 1)[3], 255);
     }
 }
