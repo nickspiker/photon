@@ -3,6 +3,7 @@ Hooks are reminders; read the topic file before acting on one.
 
 ## Hard rules / feedback
 - [bootstrap is the last resort](feedback_bootstrap_last_resort.md) — HARD: everything from peers; fgtw.org only when no LAN broadcast AND no WAN peer answers, or a first attest
+- [no branches](feedback_no_branches.md) — HARD: every repo one straight line; land or bundle+delete, no lingering worktrees
 - [sweeps 5 stops under](feedback_sweeps_5_stops.md) — HARD: every wave sweep peaks 5 stops under full scale (overlay skips the output pad)
 - [answer, don't act](feedback_answer_dont_act.md) — a question gets an answer and a stop, never an action
 - [build via dev.sh](feedback_build_dev_script.md) — never bare cargo build; android = scripts/android/dev-adb.sh
