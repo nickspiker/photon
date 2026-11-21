@@ -217,6 +217,10 @@ impl PhotonApp {
         if !self.keep_limits.any() || self.session.is_none() {
             return;
         }
+        // The trim weighs every held row of a kind together, oldest first; while the rows still load after Ready (rows_load.rs) it would let go of the oldest rows it can SEE, which are not the oldest held. The last conversation landing runs it.
+        if self.rows_loading() {
+            return;
+        }
         if self.keep_rx.is_some() {
             self.keep_again = true;
             return;

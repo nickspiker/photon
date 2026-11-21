@@ -287,6 +287,10 @@ impl PhotonApp {
             }
             return;
         }
+        // ROWS STILL LOADING after Ready (rows_load.rs): the write waits for the load edge, where RAM holds every stored row again; written now it would trip the hydration gate below and refuse the signalled rows.
+        if self.rows_loading() && self.conversations.iter().any(|v| v.id() == conv_id && v.rows_pending) {
+            return self.hold_persist_for_rows(conv_id, signal_rows);
+        }
         // LATE HYDRATION RESCUE: an un-hydrated conversation (the boot loader hit a load error, or the vault opened after materialize) re-attempts the load here and merges the disk rows UNDER the RAM rows via the (timestamp, content) collapse — a transient vault error costs one retry, not a whole session of refused persists whose RAM rows would then die at relaunch.
         if self.conversations.iter().any(|v| v.id() == conv_id && !v.hydrated) {
             if let Some(storage) = self.storage.as_ref().cloned() {
@@ -811,6 +815,10 @@ impl PhotonApp {
     /// THE HELD-ROW FLUSH, any size (docs/conversations.md Phase 2): every outgoing row the conversation still holds as undelivered — held because no chain existed yet (a re-key in flight), or because a cutover cleared its pendings — goes back thru the one send queue at its ORIGINAL stamp, so the row identity is unchanged and every member dedups what it already has. A row already pending on the lane or already queued is left alone; one that still cannot go simply stays held for the next edge.
     /// Never re-served bare: an era-ratchet row (its KEM material lived only in the original package) and a group control row (offer / join / wrap — its roster blob or sealed secret rode the original package only; the sponsor re-offers on the next roster edge, a joiner taps Join again).
     pub(super) fn resend_held_rows(&mut self, id: crate::types::ConversationId) {
+        // The undelivered rows are in the stored rows, which may still be loading after Ready (rows_load.rs): the flush is owed until they land.
+        if self.rows_loading() && self.conversations.iter().any(|v| v.id() == id && v.rows_pending) {
+            return self.owe_resend_for_rows(id);
+        }
         let Some(conv) = self.conv_by_id(id) else {
             return;
         };

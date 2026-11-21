@@ -476,6 +476,8 @@ impl PhotonApp {
         let hp = self.photon_keys.as_ref().map(|k| k.handle_proof).unwrap_or_default();
         let t_boot = std::time::Instant::now();
         let (tx, rx) = std::sync::mpsc::channel();
+        // The worker reads the contacts and their conversations' summaries too, so the first Ready frame waits on no vault call here (rows_load.rs).
+        let pids = self.resume_pids();
         let spawned = std::thread::Builder::new()
             .name("vault-open".into())
             .spawn(move || {
@@ -486,7 +488,7 @@ impl PhotonApp {
                     crate::log_err!(tx.send(Err(crate::storage::StorageError::Vault("this device signed out of this person".to_string()))), "the sign out mark to the UI thread");
                     return;
                 }
-                crate::log_err!(tx.send(crate::storage::open_session_vault(root, root, device_secret)), "the opened vault to the UI thread");
+                crate::log_err!(tx.send(super::rows_load::open_and_load_contacts(crate::storage::open_session_vault(root, root, device_secret), &pids, t_boot)), "the opened vault to the UI thread");
             })
             .is_ok();
         if spawned {
@@ -494,7 +496,7 @@ impl PhotonApp {
             crate::log("RESUME: PhotonKeys in hand; the vault opens under the messenger root");
             self.show_opening();
         } else {
-            let opened = crate::storage::open_session_vault(root, root, device_secret);
+            let opened = super::rows_load::open_and_load_contacts(crate::storage::open_session_vault(root, root, device_secret), &pids, t_boot);
             self.finish_resume_load(None, opened, t_boot);
         }
     }

@@ -266,6 +266,9 @@ impl PhotonApp {
         let mut molecule_stragglers: Vec<(crate::types::FriendshipId, [u8; 32])> = Vec::new();
         // GROUP frames from a signer our roster does not name yet (a member whose join records are still on their way): held after the loop and replayed when that roster advances, never dropped.
         let mut molecule_held: Vec<(crate::types::molecule::MoleculeId, StatusUpdate)> = Vec::new();
+        // Frames and ACKs for a conversation whose stored rows are still loading after Ready (rows_load.rs): held after the loop and replayed thru their arm on that conversation's load edge.
+        // The arms read the rows as the whole (the duplicate gate, the braid's strand resolution, the delivered flip, is_new_row's ring), so a partial set would ring old rows, miss strands or lose a delivered tick.
+        let mut rows_held: Vec<(crate::types::ConversationId, StatusUpdate)> = Vec::new();
         // Devices the presence plane just declared offline (the 3-strike verdict): a group ring whose every waving device went away ends (docs/group-waves.md — the lease a group ring has, an edge, never a timer).
         let mut wave_devices_offline: Vec<[u8; 32]> = Vec::new();
         // GROUP frames on a lane we hold, kept for relaying to members who miss them; and members' advertised lane heads per group, the relay's trigger — both applied after the loop.
@@ -667,8 +670,9 @@ impl PhotonApp {
                                 // Field-precise conversation lookup — `chains` above holds a borrow of `friendship_chains`, so no &mut self method fits here.
                                 if let Some(ci) = ci {
                                     let cid = self.contacts[ci].conversation(&our_handle_hash).id();
+                                    // A conversation whose rows are still loading after Ready (rows_load.rs) holds only its head: counted as ours, it would read every friend as ahead and arm a full walk, or read us as ahead and re-serve rows they hold. The next pong after its rows land compares.
                                     if let Some(conv) =
-                                        self.conversations.iter_mut().find(|v| v.id() == cid)
+                                        self.conversations.iter_mut().find(|v| v.id() == cid && !v.rows_pending)
                                     {
                                         // SAME digest the producer publishes — the cached, order-dependent rolling hash (Conversation::anti_entropy_digest). Both sides MUST compute it identically or every comparison false-mismatches.
                                         let (n_rows, digest) = conv.anti_entropy_digest();
@@ -1319,6 +1323,10 @@ impl PhotonApp {
                     raw,
                     relayed_by,
                 } => {
+                    if let Some(id) = self.rows_pending_for_token(&conversation_token) {
+                        rows_held.push((id, StatusUpdate::ChatMessage { conversation_token, lane, prev_msg_hp, ciphertext, timestamp, sender_addr, sender_pubkey, era, raw, relayed_by }));
+                        continue;
+                    }
                     // Get our handle_hash for chain lookups
                     let our_handle_hash = match self.own_party_id()
                     {
@@ -1723,6 +1731,10 @@ impl PhotonApp {
                     sender_pubkey,
                     sender_addr,
                 } => {
+                    if let Some(id) = self.rows_pending_for_token(&conversation_token) {
+                        rows_held.push((id, StatusUpdate::MessageAck { conversation_token, acked_eagle_time, plaintext_hash, sender_pubkey, sender_addr }));
+                        continue;
+                    }
                     // GROUP ACK (docs/molecules.md step 4): a group's token routes to the per-member ledger and never touches the friendship path below.
                     if let Some(gid) = self.friendship_chains.iter().find(|(_, c)| c.molecule && c.conversation_token == conversation_token).map(|(id, _)| crate::types::molecule::MoleculeId(*id.as_bytes())) {
                         molecule_acks.push((gid, sender_pubkey, acked_eagle_time));
@@ -6146,6 +6158,7 @@ impl PhotonApp {
         for (gid, update) in molecule_held {
             self.hold_molecule_frame(gid, update);
         }
+        self.hold_frames_for_rows(rows_held);
         for dev in wave_devices_offline {
             self.on_group_wave_device_offline(dev);
         }

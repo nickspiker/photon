@@ -52,6 +52,9 @@ pub struct Conversation {
     /// Sticky evidence of divergence: it disables the head-page early-stop so a sweep walks to the real end, and it clears only when a walk reaches a page the peer says is last.
     /// Runtime-only — the next pong re-establishes it.
     pub peer_ahead: bool,
+    /// TRUE from the resume until the background row loader lands this conversation's stored rows (rows_load.rs): what RAM holds meanwhile is the head the contact list sorts by, plus whatever an opened page brought.
+    /// Runtime-only. Every consumer that would read a partial row set as the whole (the sync digest, the history walk, the receive arm, a persist) waits for the conversation's load edge while it is set.
+    pub rows_pending: bool,
 }
 
 impl Conversation {
@@ -73,6 +76,7 @@ impl Conversation {
             digest_cache: None,
             hydrated: false,
             peer_ahead: false,
+            rows_pending: false,
         }
     }
 
@@ -93,6 +97,7 @@ impl Conversation {
             digest_cache: None,
             hydrated: false,
             peer_ahead: false,
+            rows_pending: false,
         }
     }
 
@@ -215,14 +220,42 @@ impl Conversation {
 
     /// Drop every blank twin of a file row (see `insert_message_sorted`) — the stored ones from before the fix, which a plain load brings back. Returns how many went.
     pub fn collapse_bare_twins(&mut self) -> usize {
-        let files: crate::linear_map::SortedSet<(i64, bool)> = self.messages.iter().filter(|m| m.file.is_some()).map(|m| (m.timestamp, m.is_outgoing)).collect();
-        let before = self.messages.len();
-        self.messages.retain(|m| !(m.is_bare() && files.contains(&(m.timestamp, m.is_outgoing))));
-        let gone = before - self.messages.len();
+        let gone = collapse_bare_twins_in(&mut self.messages);
         if gone > 0 {
             self.digest_cache = None;
         }
         gone
+    }
+
+    /// The background row loader's landing (rows_load.rs): every stored row, oldest first, becomes the base, and each row RAM gathered while the load ran (the head the list sorted by, an opened page, our own sends) goes back on top.
+    /// A RAM row that is also on disk started as the disk copy and may have moved since (a star, a delete, a delivered tick), so it wins, and the disk copy's monotone fields merge into it as `insert_message_sorted` merges any second copy; whoever holds the richer marks, attachment, preview and delivery ring keeps them.
+    pub fn adopt_loaded_rows(&mut self, disk: Vec<ChatMessage>) {
+        let ram = std::mem::replace(&mut self.messages, disk);
+        self.digest_cache = None;
+        for r in ram {
+            let same = |m: &ChatMessage| m.timestamp == r.timestamp && m.content == r.content && m.control == r.control && same_file(&m.file, &r.file);
+            let Some(i) = self.messages.iter().position(same) else {
+                self.insert_message_sorted(r);
+                continue;
+            };
+            let (ts, content, control, file) = (r.timestamp, r.content.clone(), r.control.clone(), r.file.clone());
+            let d = std::mem::replace(&mut self.messages[i], r);
+            let (marks, attach, preview, delivered_to) = (d.marks.clone(), d.attach, d.preview.clone(), d.delivered_to.clone());
+            self.insert_message_sorted(d);
+            if let Some(m) = self.messages.iter_mut().find(|m| m.timestamp == ts && m.content == content && m.control == control && same_file(&m.file, &file)) {
+                if m.marks.is_empty() {
+                    m.marks = marks;
+                }
+                if m.attach.is_none() {
+                    m.attach = attach;
+                }
+                if m.preview.is_empty() {
+                    m.preview = preview;
+                }
+                crate::types::merge_delivered_to(&mut m.delivered_to, &delivered_to);
+            }
+        }
+        collapse_bare_twins_in(&mut self.messages);
     }
 
     /// Insert preserving timestamp order, upgrading a friend-recovered copy in place when the same row arrives over the wire. Mirrors `Contact::insert_message_sorted`, which this replaces.
@@ -623,6 +656,14 @@ mod tests {
         assert_eq!(c.messages.len(), 1, "one row, not a twin");
         assert_eq!(c.messages[0].file.as_ref().and_then(|f| f.head), Some([9u8; 32]), "the head is adopted");
     }
+}
+
+/// Drop every blank twin of a file row from a row set (see `insert_message_sorted`); how many went. The conversation's own fold and the background loader share it.
+pub fn collapse_bare_twins_in(rows: &mut Vec<ChatMessage>) -> usize {
+    let files: crate::linear_map::SortedSet<(i64, bool)> = rows.iter().filter(|m| m.file.is_some()).map(|m| (m.timestamp, m.is_outgoing)).collect();
+    let before = rows.len();
+    rows.retain(|m| !(m.is_bare() && files.contains(&(m.timestamp, m.is_outgoing))));
+    before - rows.len()
 }
 
 /// Two rows' file identities match — the head aside (see `AttachRef::ident_bytes`).

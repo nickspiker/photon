@@ -1224,20 +1224,39 @@ pub fn save_messages(
     Ok((delta_written, delta_skipped))
 }
 
-/// Load a conversation's messages from its table, in counter order (which is chronological).
-pub fn load_messages(
-    conv: &mut crate::types::Conversation,
-    storage: &FlatStorage,
-) -> Result<(), StorageError> {
-    let table = *conv.id().as_bytes();
+/// What a row load spent, by kind: the resume's PERF line names the eater instead of one "messages" sum.
+/// `vault` is the kete read (the vault fetch and the per-value decrypt, which kete does in one call); `decode` is rārangi's record decode; `build` is the row made from the record.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RowLoadTiming {
+    pub catalog: std::time::Duration,
+    pub vault: std::time::Duration,
+    pub decode: std::time::Duration,
+    pub build: std::time::Duration,
+    pub rows: usize,
+}
 
+impl RowLoadTiming {
+    /// Fold another load's spend into this one.
+    pub fn add(&mut self, o: &RowLoadTiming) {
+        self.catalog += o.catalog;
+        self.vault += o.vault;
+        self.decode += o.decode;
+        self.build += o.build;
+        self.rows += o.rows;
+    }
+}
+
+/// A row's key in its table, with the (eagle time, hash tie) it sorts by.
+pub type RowKey = (u64, [u8; 8], Pk<'static>);
+
+/// A conversation table's row keys in canonical (time, hash) order: the catalog read every row load starts from.
+/// The catalog yields INSERTION order, which matched chronological order only while rows were appended live.
+/// Both key forms load: the 16-byte composite (BE eagle_time ‖ blake3(content)[..8], whose byte order is the canonical (time, hash) order, so same-tick rows coexist) and the legacy bare-Int eagle_time key (pre-composite vaults; save_messages re-puts and sweeps them, so that arm self-terminates).
+pub fn message_keys(table: &[u8; 32], storage: &FlatStorage, timing: &mut RowLoadTiming) -> Result<Vec<RowKey>, StorageError> {
+    let t = std::time::Instant::now();
     let db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
-    let pks = db
-        .list_in(&table)
-        .map_err(|e| StorageError::Vault(e.to_string()))?;
-
-    // Sort keys canonically — the catalog yields INSERTION order, which matched chronological order only while rows were appended live. Both key forms load: the 16-byte composite (BE eagle_time ‖ blake3(content)[..8] — byte order == the canonical (time, hash) order, same-tick rows coexist) and the legacy bare-Int eagle_time key (pre-composite vaults; save_messages re-puts + sweeps them, so that arm self-terminates).
-    let mut keys: Vec<(u64, [u8; 8], Pk)> = pks
+    let pks = db.list_in(table).map_err(|e| StorageError::Vault(e.to_string()))?;
+    let mut keys: Vec<RowKey> = pks
         .into_iter()
         .filter_map(|pk| match &pk {
             Pk::Int(t) => Some((*t, [0u8; 8], pk)),
@@ -1250,45 +1269,105 @@ pub fn load_messages(
         })
         .collect();
     keys.sort_unstable_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
+    timing.catalog += t.elapsed();
+    Ok(keys)
+}
 
-    conv.messages.clear();
-    let mut legacy: Vec<Pk> = Vec::new();
+/// Read the rows under `keys`, in their order. A pre-typed row (its kind smuggled thru its content) never loads: its key goes to `legacy` for [`purge_legacy_rows`].
+/// Every outgoing row re-teaches the stamp floor: LAST_ISSUED is runtime-only, and a post-restart nunc correction must never stamp behind a row already written (time_base::raise_floor; outgoing only, since inbound stamps are the sender's clock).
+pub fn read_message_rows(table: &[u8; 32], keys: &[RowKey], storage: &FlatStorage, legacy: &mut Vec<Pk<'static>>, timing: &mut RowLoadTiming) -> Result<Vec<ChatMessage>, StorageError> {
+    let t = std::time::Instant::now();
+    let db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
+    timing.catalog += t.elapsed();
+    let mut out = Vec::with_capacity(keys.len());
     for (ts, _, pk) in keys {
-        let Some(rec) = db
-            .get_row_in(&table, pk.clone())
-            .map_err(|e| StorageError::Vault(e.to_string()))?
-        else {
+        let t = std::time::Instant::now();
+        let bytes = db
+            .get_addr(&rarangi::keys::row_addr(table, &pk.addr_bytes()))
+            .map_err(|e| StorageError::Vault(e.to_string()))?;
+        timing.vault += t.elapsed();
+        let Some(bytes) = bytes else {
             continue;
         };
+        let t = std::time::Instant::now();
+        let rec = rarangi::record::decode(&bytes).map_err(|e| StorageError::Vault(e.to_string()))?;
+        timing.decode += t.elapsed();
         if rec.text("content").is_some_and(is_legacy_prefixed) {
-            legacy.push(pk);
+            legacy.push(pk.clone());
             continue;
         }
-        let Some(msg) = record_message(&rec, ts as i64) else {
+        let t = std::time::Instant::now();
+        let msg = record_message(&rec, *ts as i64);
+        timing.build += t.elapsed();
+        let Some(msg) = msg else {
             continue;
         };
-        // Stamp floor: LAST_ISSUED is runtime-only, so every load re-teaches it our newest stored stamp — a post-restart nunc correction must never stamp behind a row already written (time_base::raise_floor; outgoing only — inbound stamps are the sender's clock).
         if msg.is_outgoing {
             crate::network::time_base::raise_floor(msg.timestamp);
         }
-        conv.messages.push(msg);
+        out.push(msg);
+        timing.rows += 1;
     }
+    Ok(out)
+}
 
-    // FLAG DAY PURGE (2026-09-24, Nick: no backwards compatibility): pre-typed rows carried their kind in a content prefix. They never load; delete them in one transaction so they never sync, serve or count again. Self-terminating — a table with none left does nothing.
-    if !legacy.is_empty() {
-        drop(db);
-        let mut wdb = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
-        wdb.delete_rows_in(&table, &legacy).map_err(|e| StorageError::Vault(e.to_string()))?;
-        crate::logf!("STORAGE: flag day — dropped {} pre-typed prefixed row(s) from conversation {}", legacy.len(), hex::encode(&table[..4]));
+/// FLAG DAY PURGE (2026-09-24, Nick: no backwards compatibility): pre-typed rows carried their kind in a content prefix. They never load; delete them in one transaction so they never sync, serve or count again. Self-terminating: a table with none left does nothing.
+pub fn purge_legacy_rows(table: &[u8; 32], legacy: &[Pk<'static>], storage: &FlatStorage) -> Result<(), StorageError> {
+    if legacy.is_empty() {
+        return Ok(());
     }
+    let mut wdb = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
+    wdb.delete_rows_in(table, legacy).map_err(|e| StorageError::Vault(e.to_string()))?;
+    crate::logf!("STORAGE: flag day — dropped {} pre-typed prefixed row(s) from conversation {}", legacy.len(), hex::encode(&table[..4]));
+    Ok(())
+}
 
-    // RAM now reflects disk (an empty table included) — this is what licenses a later persist. Every failure path above returned Err, so a load that couldn't read leaves the conversation un-hydrated and the persist gate refuses it.
-    conv.hydrated = true;
+/// Every row of a conversation table, oldest first, with the flag-day purge done and the blank twins folded away: the whole of a load but the conversation it lands in.
+pub fn load_rows_of(table: &[u8; 32], storage: &FlatStorage, timing: &mut RowLoadTiming) -> Result<Vec<ChatMessage>, StorageError> {
+    let keys = message_keys(table, storage, timing)?;
+    let mut legacy = Vec::new();
+    let mut rows = read_message_rows(table, &keys, storage, &mut legacy, timing)?;
+    purge_legacy_rows(table, &legacy, storage)?;
     // Blank twins stored before 2026-10-07 (the send queue's lossy sibling push) fold away on every load.
-    let twins = conv.collapse_bare_twins();
+    let twins = crate::types::conversation::collapse_bare_twins_in(&mut rows);
     if twins > 0 {
-        crate::logf!("STORAGE: {} blank twin row(s) of file photons folded away for conversation {}", twins, hex::encode(&conv.id().as_bytes()[..4]));
+        crate::logf!("STORAGE: {} blank twin row(s) of file photons folded away for conversation {}", twins, hex::encode(&table[..4]));
     }
+    Ok(rows)
+}
+
+/// The newest rows of a conversation table, oldest first, down to and including its newest VISIBLE row (neither a control row nor deleted): what the contact list sorts by, read with the contacts so the list stands in its order before the rest of the rows load (rows_load.rs).
+/// Usually one row; a run of control rows at the head (wave signals) is read thru to the row under it.
+pub fn load_head_rows(table: &[u8; 32], storage: &FlatStorage) -> Result<Vec<ChatMessage>, StorageError> {
+    let mut timing = RowLoadTiming::default();
+    let keys = message_keys(table, storage, &mut timing)?;
+    let mut legacy = Vec::new();
+    let mut head = Vec::new();
+    for k in keys.iter().rev() {
+        let Some(m) = read_message_rows(table, std::slice::from_ref(k), storage, &mut legacy, &mut timing)?.pop() else {
+            continue;
+        };
+        let visible = !m.is_control() && !m.deleted;
+        head.push(m);
+        if visible {
+            break;
+        }
+    }
+    head.reverse();
+    Ok(head)
+}
+
+/// Load a conversation's messages from its table, in canonical (time, hash) order, which is chronological.
+pub fn load_messages(
+    conv: &mut crate::types::Conversation,
+    storage: &FlatStorage,
+) -> Result<(), StorageError> {
+    let table = *conv.id().as_bytes();
+    let mut timing = RowLoadTiming::default();
+    conv.messages = load_rows_of(&table, storage, &mut timing)?;
+    conv.invalidate_digest();
+    // RAM now reflects disk (an empty table included): this is what licenses a later persist. Every failure path above returned Err, so a load that couldn't read leaves the conversation un-hydrated and the persist gate refuses it.
+    conv.hydrated = true;
 
     #[cfg(feature = "development")]
     crate::logf!(

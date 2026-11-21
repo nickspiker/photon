@@ -955,7 +955,7 @@ impl HandleQuery {
                         }
                         // GROUPS (docs/molecules.md §5): enumerate thru the index — chains and conversations ride the same vectors the UI already adopts, rosters ride beside.
                         let mut groups: Vec<(crate::types::molecule::MoleculeId, crate::types::molecule::Roster, crate::storage::molecule::MoleculeLocal)> = Vec::new();
-                        for (gid, roster, chains, conv) in crate::storage::molecule::load_all_molecules(&storage) {
+                        for (gid, roster, chains, conv) in crate::storage::molecule::load_all_molecules(&storage, true) {
                             if let Some(c) = chains {
                                 friendships.push((*c.id(), c));
                             }

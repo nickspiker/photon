@@ -279,7 +279,7 @@ pub fn load_roster(molecule_id: &MoleculeId, storage: &FlatStorage) -> Result<Op
 }
 
 /// Load every group this device belongs to — index → (roster, chains, materialized conversation). The one boot enumeration for groups, shared by the attest worker and the resume loader (the friendship analogue is contacts → load_all_friendships). A group whose roster is missing is skipped loudly; a chains-blob failure still yields the conversation (rows render, sending waits for the root to re-arrive via a refreshed invite).
-pub fn load_all_molecules(storage: &FlatStorage) -> Vec<(MoleculeId, Roster, Option<crate::types::FriendshipChains>, crate::types::Conversation)> {
+pub fn load_all_molecules(storage: &FlatStorage, with_rows: bool) -> Vec<(MoleculeId, Roster, Option<crate::types::FriendshipChains>, crate::types::Conversation)> {
     let ids = match load_molecule_list(storage) {
         Ok(v) => v,
         Err(e) => {
@@ -310,7 +310,10 @@ pub fn load_all_molecules(storage: &FlatStorage) -> Vec<(MoleculeId, Roster, Opt
         };
         let mut conv = crate::types::Conversation::new_molecule(id, roster.standing());
         crate::storage::contacts::load_conversation_state(&mut conv, &id.0, storage);
-        if let Err(e) = crate::storage::contacts::load_messages(&mut conv, storage) {
+        // The resume reads the rows after Ready (rows_load.rs), so it asks for none here; the attest worker, which the screen already waits on, reads them now.
+        if !with_rows {
+            conv.rows_pending = true;
+        } else if let Err(e) = crate::storage::contacts::load_messages(&mut conv, storage) {
             crate::logf!("MOLECULE: message load failed for {}: {}", hex::encode(&id.0[..4]), e);
         }
         out.push((id, roster, chains, conv));

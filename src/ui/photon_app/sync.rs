@@ -1676,45 +1676,57 @@ impl PhotonApp {
     /// Fleet history sweep: (re-)arm history recovery for every friend/self conversation so the driver walks each one from the head — served by a sibling when the friend can't. Early-stop makes a re-sweep of an already-complete conversation cost ONE page (zero new rows → complete again), so this fires freely on sibling-online edges and roster merges; conversations mid-walk are left alone.
     /// DURABLE FLEET-FORWARD (the clamshell lesson, 2026-08-30): the live push in `drain_pending_chain_sends` is one shot into possibly-dead pipes — a sibling asleep thru the relay delivery never sees the row, and a chainless origin has no retransmit ladder of its own (chain_transmit never ran), so the message sat undelivered forever while the log said "delivered". Re-offer every outgoing undelivered row to the fleet on the backstop + sibling-online edges until some device transmits and the delivered upgrade replicates back. Receiving siblings dedup known rows (the merge is (timestamp, content)-keyed and only FRESH rows drain to the wire), so a re-push is merge-noise at worst.
     pub(super) fn reserve_fleet_forwards(&self) {
-        const FWD_BURST: usize = 8; // oldest-first, same burst shape as the friend re-serve
         if !self.contacts.iter().any(|c| c.is_sibling && !c.locked_out) {
             return;
         }
         for ci in 0..self.contacts.len() {
-            let c = &self.contacts[ci];
-            if c.is_sibling {
-                continue;
-            }
-            // A device that can transmit itself owns delivery thru its own retransmit ladder — re-serving to siblings is the CHAINLESS origin's only path.
-            // Photon on the alias alone is such an origin whatever chains it holds: it sends a friend nothing itself (transmit_core), so its forwards are re-served like a chainless device's.
-            if !self.alias_alone() && (c.chain_woven || self.lane_transmit_capable(ci)) {
-                continue;
-            }
-            let Some(conv) = self.conv_of(ci) else { continue };
-            let mut rows: Vec<crate::types::ChatMessage> = conv
-                .messages
-                .iter()
-                // Same sendable shape as resend_held_messages: a reaction RETRACT is a legal empty-content row; a plain empty row stays filtered.
-                .filter(|m| {
-                    m.is_outgoing
-                        && !m.delivered
-                        && !m.deleted
-                        && (!m.content.is_empty() || m.reference.is_some() || m.file.is_some())
-                })
-                .cloned()
-                .collect();
-            if rows.is_empty() {
-                continue;
-            }
-            rows.sort_by_key(|m| m.timestamp);
-            rows.truncate(FWD_BURST);
-            crate::logf!(
-                "FLEET-HIST: re-serving {} undelivered forward(s) for {} (chainless origin)",
-                rows.len(),
-                crate::fp(&c.handle_proof)
-            );
-            self.push_rows_to_siblings(ci, &rows, None);
+            self.reserve_fleet_forward_one(ci);
         }
+    }
+
+    /// One contact's re-serve, on the edge its conversation's rows land after Ready (rows_load.rs): the sweep skipped it while they loaded.
+    pub(super) fn reserve_fleet_forward_for(&self, ci: usize) {
+        if self.contacts.iter().any(|c| c.is_sibling && !c.locked_out) {
+            self.reserve_fleet_forward_one(ci);
+        }
+    }
+
+    fn reserve_fleet_forward_one(&self, ci: usize) {
+        const FWD_BURST: usize = 8; // oldest-first, same burst shape as the friend re-serve
+        let c = &self.contacts[ci];
+        if c.is_sibling {
+            return;
+        }
+        // A device that can transmit itself owns delivery thru its own retransmit ladder — re-serving to siblings is the CHAINLESS origin's only path.
+        // Photon on the alias alone is such an origin whatever chains it holds: it sends a friend nothing itself (transmit_core), so its forwards are re-served like a chainless device's.
+        if !self.alias_alone() && (c.chain_woven || self.lane_transmit_capable(ci)) {
+            return;
+        }
+        // Rows still loading after Ready: the undelivered ones may not be in RAM yet, and the load edge calls back here.
+        let Some(conv) = self.conv_of(ci).filter(|v| !v.rows_pending) else { return };
+        let mut rows: Vec<crate::types::ChatMessage> = conv
+            .messages
+            .iter()
+            // Same sendable shape as resend_held_messages: a reaction RETRACT is a legal empty-content row; a plain empty row stays filtered.
+            .filter(|m| {
+                m.is_outgoing
+                    && !m.delivered
+                    && !m.deleted
+                    && (!m.content.is_empty() || m.reference.is_some() || m.file.is_some())
+            })
+            .cloned()
+            .collect();
+        if rows.is_empty() {
+            return;
+        }
+        rows.sort_by_key(|m| m.timestamp);
+        rows.truncate(FWD_BURST);
+        crate::logf!(
+            "FLEET-HIST: re-serving {} undelivered forward(s) for {} (chainless origin)",
+            rows.len(),
+            crate::fp(&c.handle_proof)
+        );
+        self.push_rows_to_siblings(ci, &rows, None);
     }
 
     pub(super) fn kick_fleet_history_sweep(&mut self, reason: &str) {
@@ -1866,7 +1878,9 @@ impl PhotonApp {
                 if c.is_sibling {
                     return None;
                 }
-                let rec = dm_conversation(&self.conversations, &our_pid?, c)?
+                // A walk merges pages against the rows we hold, so a conversation whose rows are still loading after Ready (rows_load.rs) walks once they land.
+                let rec = dm_conversation(&self.conversations, &our_pid?, c)
+                    .filter(|v| !v.rows_pending)?
                     .history_recovery
                     .as_ref()?;
                 if rec.complete {
@@ -1917,7 +1931,7 @@ impl PhotonApp {
         // ROSTER CONVERSATIONS walk too (docs/conversations.md Phase 2 — the walk used to be contacts-only, so a molecule's missing rows waited on live re-sends alone): the group's token and history key; asked of an online friend member at their direct path, else any member's device at its phonebook addresses or the relay alone, else our own fleet under the fleet key.
         for (gid, roster) in &self.molecule_rosters {
             let fid = crate::types::FriendshipId::from_bytes(gid.0);
-            if !self.conversations.iter().any(|v| v.id() == fid && v.history_recovery.as_ref().is_some_and(|r| !r.complete)) {
+            if !self.conversations.iter().any(|v| v.id() == fid && !v.rows_pending && v.history_recovery.as_ref().is_some_and(|r| !r.complete)) {
                 continue;
             }
             let Some((_, chains)) = self.friendship_chains.iter().find(|(id, c)| *id == fid && c.molecule) else { continue };

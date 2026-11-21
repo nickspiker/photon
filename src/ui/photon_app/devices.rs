@@ -1075,6 +1075,10 @@ impl PhotonApp {
         if self.ckpt_busy {
             return;
         }
+        // The cadence counts every syncable row and a mint roots them all (settled_root_now), so both wait for the rows loading after Ready (rows_load.rs): a root over a partial set would advance this device's fleet epoch away from every sibling's.
+        if self.rows_loading() {
+            return;
+        }
         // The row-cadence dial (braid.md §14.3/§14.4): total syncable rows (cheap — a len() sum, no hashing) against the base at the last cadence edge; growth past CKPT_ROW_CADENCE flags a mint so the burn horizon tracks traffic. First observation seeds the base — a restart never mints spuriously. The base advances when the flag raises, so a lost mint race just rides the adopted spine and the next cadence measures from here.
         const CKPT_ROW_CADENCE: usize = 128;
         let rows_now: usize = (0..self.contacts.len())

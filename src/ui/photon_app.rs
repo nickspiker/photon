@@ -87,6 +87,7 @@ mod peer_release;
 mod protocol;
 mod render;
 mod replay;
+mod rows_load;
 mod settings;
 mod status;
 mod sync;
@@ -2114,8 +2115,10 @@ pub struct PhotonApp {
     pub pending_keep_hold: i8,
     /// A wave just started with no reachable address for this device: the next tick pushes our record to it and sweeps presence (set from the engine-start path, which holds only &self).
     wave_needs_addresses: std::cell::Cell<Option<[u8; 32]>>,
-    /// The resume's vault-open worker: (its channel, the remembered session, the boot instant). Some while the open is in flight; the tick polls it and finishes the resume when the handle lands.
-    resume_vault_rx: Option<(std::sync::mpsc::Receiver<Result<std::sync::Arc<crate::storage::FlatStorage>, crate::storage::StorageError>>, Option<tohu::SessionIdentity>, std::time::Instant)>,
+    /// The resume's vault-open worker: (its channel, the remembered session, the boot instant). Some while the open is in flight; the tick polls it and finishes the resume when the vault, the contacts and their conversations' summaries land.
+    resume_vault_rx: Option<(std::sync::mpsc::Receiver<Result<rows_load::ResumeOpened, crate::storage::StorageError>>, Option<tohu::SessionIdentity>, std::time::Instant)>,
+    /// The rows of every conversation, loading after Ready (rows_load.rs): Some until the last conversation lands.
+    rows_load: Option<rows_load::RowsLoad>,
     /// The last frame the ACTIVE wave screen was repainted for its own sake: the timer, the live stats and the ring change at most once a second (Nick 2026-09-12: "wave screen should update at most every second").
     last_wave_redraw: Option<std::time::Instant>,
     /// Attachment fetches in flight, by content hash (see [`FetchAsk`]). A request that gets no answer — the holder dozing, the frame lost — used to leave the row at "fetching" forever; the retry tick moves an ask whose device went quiet to the next device and lets go after a bounded run of fruitless asks (field 2026-09-12: the desktop asked for a wave at 23:55 and nothing ever came back).
@@ -3473,6 +3476,7 @@ impl PhotonApp {
             pending_keep_hold: 0,
             wave_needs_addresses: std::cell::Cell::new(None),
             resume_vault_rx: None,
+            rows_load: None,
             last_wave_redraw: None,
             attach_fetch_inflight: crate::linear_map::SortedMap::new(),
             attach_heard: crate::linear_map::SortedMap::new(),

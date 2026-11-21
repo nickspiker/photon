@@ -230,6 +230,10 @@ impl PhotonApp {
         self.compose_edit_of = None;
         self.compose_react_to = None;
         self.active_conversation = next;
+        // A conversation opened before its rows landed jumps the row worker's queue, newest page first (rows_load.rs).
+        if let Some(id) = next {
+            self.want_rows_now(id);
+        }
         // Putting the draft back needs the text renderer, which the tick holds.
         self.draft_restore_pending = next.is_some();
         self.draft_seen = None;

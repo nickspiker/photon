@@ -62,6 +62,11 @@ impl PhotonApp {
         if ci.is_some_and(|ci| self.contacts[ci].is_sibling) {
             return; // a sibling's conversation is the bridge terminal — it keeps no history to clear
         }
+        // Its rows still loading after Ready (rows_load.rs): a clear now would mark only the rows already here, and the rest would come back as they land. Opened, it is first in the row worker's queue.
+        if self.conversations.iter().any(|v| v.id() == conv_id && v.rows_pending) {
+            crate::log("MANAGE: this conversation's rows are still loading; clear it once they land");
+            return self.want_rows_now(conv_id);
+        }
         let mut cleared: Vec<ChatMessage> = Vec::new();
         let mut discard_blobs: Vec<[u8; 32]> = Vec::new();
         if let Some(conv) = self.conversations.iter_mut().find(|v| v.id() == conv_id) {

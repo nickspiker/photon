@@ -1003,6 +1003,8 @@ impl PhotonApp {
         self.ready_toast = None;
         // THE RESURRECTION CLASS (field 2026-08-25, Android): the wipe deleted the vault and the FGTW backup, then the un-cleared RAM re-persisted everything — `conversations` still held every message row (a stuck un-ACK'd note came back with its attempt counter intact) and the next roster push re-uploaded the roster the wipe had just deleted. Android never re-execs, so this in-place list IS the wipe: every identity-flavoured slot below must die or the identity survives.
         self.conversations.clear();
+        // A row load still running belongs to the identity just wiped: its landings would hydrate nothing, and what it holds must never replay.
+        self.rows_load = None;
         self.chat_replay_queue.clear();
         self.pending_sends.clear();
         self.send_encrypt_busy.clear();

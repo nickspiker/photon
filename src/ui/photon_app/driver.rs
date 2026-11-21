@@ -3200,6 +3200,10 @@ impl FluorApp<Px> for PhotonApp {
         if self.poll_resume_vault() {
             needs_redraw = true;
         }
+        // The rows landing after Ready, a conversation at a time (rows_load.rs).
+        if self.drain_rows_landed() {
+            needs_redraw = true;
+        }
         if self.presence_probe_tick(now) {
             needs_redraw = true;
         }
@@ -4942,10 +4946,13 @@ impl PhotonApp {
                 // THE VAULT OPENS OFF THE UI THREAD (field 2026-09-12, Nick's note "persistent photon isn't responding nag": Android's input dispatcher waited 5001 ms for the focus event while the main thread sat in this open — 3.7 s of a 5.1 s resume, grown with the kept waves; nothing ever stalls to a person, the OS counts it). A worker opens the vault and sends the handle back; `poll_resume_vault` finishes the resume on the tick it lands, and the launch screen keeps consuming input meanwhile.
                 let (tx, rx) = std::sync::mpsc::channel();
                 let (identity_seed, vault_seed) = (remembered.identity_seed, remembered.vault_seed);
+                // The worker reads the contacts and their conversations' summaries too, so the first Ready frame waits on no vault call here (rows_load.rs).
+                let pids = self.resume_pids();
                 let spawned = std::thread::Builder::new()
                     .name("vault-open".into())
                     .spawn(move || {
-                        crate::log_err!(tx.send(crate::storage::open_session_vault(identity_seed, vault_seed, device_secret)), "the opened vault to the UI thread");
+                        let opened = super::rows_load::open_and_load_contacts(crate::storage::open_session_vault(identity_seed, vault_seed, device_secret), &pids, t_boot);
+                        crate::log_err!(tx.send(opened), "the opened vault to the UI thread");
                     })
                     .is_ok();
                 if spawned {
@@ -4954,7 +4961,7 @@ impl PhotonApp {
                     self.show_opening();
                 } else {
                     // No thread: open inline, the old way, rather than never becoming Ready.
-                    let opened = crate::storage::open_session_vault(identity_seed, vault_seed, device_secret);
+                    let opened = super::rows_load::open_and_load_contacts(crate::storage::open_session_vault(identity_seed, vault_seed, device_secret), &pids, t_boot);
                     self.resume_vault_rx = None;
                     self.finish_resume_load(Some(remembered), opened, t_boot);
                 }
@@ -4985,15 +4992,19 @@ impl PhotonApp {
     }
 
     /// The resume's back half, once the vault handle lands (or inline when no worker thread could be spawned): every load that used to sit on the UI thread behind the open — contacts, messages, chains, keypairs, settings — then Ready, the announce and the first pings.
-    pub(super) fn finish_resume_load(&mut self, remembered: Option<tohu::SessionIdentity>, opened: Result<std::sync::Arc<crate::storage::FlatStorage>, crate::storage::StorageError>, t_boot: std::time::Instant) {
+    pub(super) fn finish_resume_load(&mut self, remembered: Option<tohu::SessionIdentity>, opened: Result<super::rows_load::ResumeOpened, crate::storage::StorageError>, t_boot: std::time::Instant) {
         // The person this resume opens for: the session's on the desktop and Android, PhotonKeys' on ferros, where there is no session (PHOTON.md step 4).
         let (Some(our_hp), Some(our_root)) = (self.our_handle_proof(), self.messenger_root()) else {
             crate::log("RESUME: neither a session nor PhotonKeys; nothing to open for");
             return;
         };
         let ms_vault = t_boot.elapsed().as_millis();
+        // The conversations whose stored rows load after Ready (rows_load.rs), each with the newest visible row's time it sorts by, newest first.
+        let mut rows_jobs: Vec<(Option<i64>, crate::types::ConversationId)> = Vec::new();
                         match opened {
-                    Ok(s) => {
+                    Ok(opened) => {
+                        // The vault worker opened the vault and read the contacts, the siblings and each conversation's summary (its durable state and newest visible row) off this thread; the rows themselves load after Ready.
+                        let super::rows_load::ResumeOpened { storage: s, contacts: loaded_contacts, siblings: loaded_siblings, conversations: loaded_convs, group_heads, ms_open, ms_contacts, ms_summaries } = opened;
                         // Preserve any IN-FLIGHT ceremony round across this reload. CLUTCH keypairs/slots are ephemeral scratch, so a wholesale reload from disk wipes a live round — and a warm resume (Android foregrounds constantly) then trips the keygen sweep into minting a DIVERGENT round the peer never agreed to. That is exactly what stranded the relay ceremony: the slow relay round-trip outlived the keys, the peer's KEM came back addressed to keys we'd already discarded, and it was dropped as "old keys". Re-key must be deliberate on real failure — never a side effect of a lifecycle event. Snapshot rounds that are still FRESH by eagle time (a genuinely stale one is let go, to be re-keyed cleanly) and restore them after the reload.
                         let now = vsf::eagle_time_oscillations();
                         let inflight: crate::linear_map::LinearMap<[u8; 32], _> = self
@@ -5021,11 +5032,10 @@ impl PhotonApp {
                             })
                             .collect();
                         let t_phase = std::time::Instant::now();
-                        self.contacts = crate::storage::contacts::load_all_contacts(&s);
+                        self.contacts = loaded_contacts;
                         // Every contact's mark, and ours, rendered once at 256 off this thread (the owner 2026-11-17: rendered at the mint, locally, never again).
                         super::prewarm_marks(self.contacts.iter().map(|c| super::proof_gradient_seed(&c.handle_proof)).chain(self.our_handle_proof().map(|hp| super::proof_gradient_seed(&hp))).collect());
                         self.apply_locked_set();
-                        let ms_contacts = t_phase.elapsed().as_millis();
                         for c in self.contacts.iter_mut() {
                             if let Some((
                                 kp,
@@ -5053,39 +5063,32 @@ impl PhotonApp {
                             }
                         }
                         // Fleet siblings load from their own index (they never enter the contacts index); on the alias alone they are the alias list's devices, and the reconcile below drops any row the list does not name.
-                        {
-                            let siblings = crate::storage::contacts::load_all_siblings(
-                                our_hp,
-                                &s,
-                            );
-                            if !siblings.is_empty() {
-                                crate::logf!(
-                                    "SIBLING: loaded {} sibling(s) from local vault on resume",
-                                    siblings.len()
-                                );
-                            }
-                            self.contacts.extend(siblings);
+                        if !loaded_siblings.is_empty() {
+                            crate::logf!("SIBLING: loaded {} sibling(s) from local vault on resume", loaded_siblings.len());
                         }
-                        // Load each contact's conversation too — load_all_contacts only loads per-peer contact STATE from the vault, not the messages (those live in the rārangi DB, loaded separately). Without this the resume frame paints contacts with empty message lists, and the later query_resume result can't fix it: on_query_result merges by handle_proof and SKIPS already-loaded contacts as duplicates, so the message-bearing copy is discarded → history looks wiped until the next app launch. Loading here makes resume show full history at once.
-                        let t_phase = std::time::Instant::now();
-                        for ci in 0..self.contacts.len() {
-                            let (proof, key) = (
-                                self.contacts[ci].handle_proof,
-                                self.contacts[ci].handle_hash,
-                            );
-                            let Some(conv) = self.conv_mut_of(ci) else {
-                                continue;
-                            };
-                            crate::storage::contacts::load_conversation_state(conv, &key, &s);
-                            if let Err(e) = crate::storage::contacts::load_messages(conv, &s) {
-                                crate::logf!(
-                                    "UI: resume failed to load messages for {}: {}",
-                                    crate::fp(&proof).as_str(),
-                                    e
-                                );
+                        self.contacts.extend(loaded_siblings);
+                        // CONTACTS FIRST (the owner 2026-11-20: "load the contacts first, then show it, then avatars, then show it", messages after): each conversation arrives with its durable state and its newest visible row, which is what the list draws and sorts by, and its stored rows load after Ready off this thread (rows_load.rs).
+                        // A conversation already held and hydrated (a warm resume) keeps its RAM, which is ahead of the vault; any other waits for its rows.
+                        for conv in loaded_convs {
+                            let newest = super::rows_load::newest_visible(&conv.messages);
+                            match self.conversations.iter_mut().find(|v| v.id() == conv.id()) {
+                                Some(v) if v.hydrated => {}
+                                Some(v) => {
+                                    v.unread_count = conv.unread_count;
+                                    v.history_recovery = conv.history_recovery;
+                                    for m in conv.messages {
+                                        v.insert_message_sorted(m);
+                                    }
+                                    v.rows_pending = true;
+                                    rows_jobs.push((newest, v.id()));
+                                }
+                                None => {
+                                    rows_jobs.push((newest, conv.id()));
+                                    self.conversations.push(conv);
+                                }
                             }
                         }
-                        // The bonds' hidden conversations: their control rows, for re-ACK durability (docs/conversations.md §7).
+                        // The bonds' hidden conversations: their control rows, for re-ACK durability (docs/conversations.md §7), load after Ready with the rest.
                         if let Some(us) = self.own_party_id() {
                             let bonds: Vec<(crate::types::friendship::BondId, [u8; 32])> = self.contacts.iter().filter_map(|c| c.bond_id(&us).map(|b| (b, c.handle_hash))).collect();
                             for (b, them) in bonds {
@@ -5093,51 +5096,18 @@ impl PhotonApp {
                                     continue;
                                 }
                                 let mut bc = crate::types::Conversation::new_bond(b, [us, them]);
-                                if let Err(e) = crate::storage::contacts::load_messages(&mut bc, &s) {
-                                    crate::logf!("UI: resume failed to load bond rows {}: {}", hex::encode(&b.0[..4]), e);
-                                }
+                                bc.rows_pending = true;
+                                rows_jobs.push((None, bc.id()));
                                 self.conversations.push(bc);
                             }
                         }
-                        let ms_messages = t_phase.elapsed().as_millis();
+                        let ms_install = t_phase.elapsed().as_millis();
                         crate::logf!(
                             "UI: loaded {} contact(s) from local vault on resume",
                             self.contacts.len()
                         );
-                        // STORAGE CENSUS (field diagnosis, 2026-08-10): one line per contact naming the conversation table and how many rows actually loaded from it. The "messages don't recover" round showed devices advertising 92 rows while serving 3 — the row sets had split across contact keys, and nothing in the logs could say WHICH table held what. This makes the next log round ground truth. Delete once the split-conversation incident is closed.
+                        // The per-conversation STORAGE census lines print as each conversation's rows land (rows_load.rs), and the empty self-stub purge runs once every row has.
                         {
-                            let mut census: Vec<(String, [u8; 32], usize, String)> = Vec::new();
-                            for ci in 0..self.contacts.len() {
-                                let c = &self.contacts[ci];
-                                let fp = crate::fp(&c.handle_proof);
-                                // The row's full identity beside its table: handle_hash names the party id the tokens/tables derive from, first-met names the pinned device, state names the ceremony posture. The 2026-08-12 evening round proved fp+table alone can't distinguish a stale-keyed self row / debris row / sibling from the outside — this makes the next round ground truth without another guessing session.
-                                let detail = format!(
-                                    " [id {} hash {} first-met {} {:?}{}{}]",
-                                    hex::encode(&c.id.as_bytes()[..4]),
-                                    hex::encode(&c.handle_hash[..4]),
-                                    hex::encode(&c.device_key().unwrap_or_default()[..4]),
-                                    c.clutch_state,
-                                    if c.is_sibling { " sibling" } else { "" },
-                                    // The §4.2 owner claim, named (Emma's ghost, 2026-09-08: a one-device fleet rendered "secured on <phantom>" — a foreign/zero owner pubkey nobody could identify remotely because no log ever printed it). fp+woven makes the next ghost self-identifying.
-                                    c.ceremony_owner.map_or(String::new(), |o| format!(
-                                        " owner {}{}",
-                                        hex::encode(&o[..4]),
-                                        if c.owner_woven { " woven" } else { "" }
-                                    ))
-                                );
-                                let Some(conv) = self.conv_of(ci) else {
-                                    continue;
-                                };
-                                census.push((
-                                    fp,
-                                    *conv.id().as_bytes(),
-                                    conv.messages.len(),
-                                    detail,
-                                ));
-                            }
-                            for (fp, table, rows, detail) in &census {
-                                crate::logf!("STORAGE: census — {} table {} holds {} row(s) in RAM after load{}", fp, hex::encode(&table[..4]), rows, detail);
-                            }
                             // OLD-SELF IMPORT — MIGRATION-EXPIRES: 2027-02-01 (Nick 2026-10-27: "that import of old will be english only and version out in 12 versions, no reason to keep old non atoms around in the code"); grep the tag to find every piece.
                             // THE SELF ROW RETIRES (docs/conversations.md Phase 2; Nick 2026-10-26: "You should drop out of your own people list. As Jeff said 'I should be able to unfriend myself'"): the conversation with only us in it is an atom like any other (found_self_atom), so the contact that used to stand for it goes — from the list, the vault and the index; its rows stay in their table.
                             if let Some(us) = self.own_party_id() {
@@ -5175,51 +5145,6 @@ impl PhotonApp {
                                     }
                                 }
                             }
-                            // SELF-STUB PURGE: a non-sibling row carrying OUR handle_proof under a handle_hash that is NOT our identity pid is a corrupt self-contact stub — the source of the "CLUTCH offers toward its OWN identity" storm (ticketed 2026-08-07; the census caught THREE self rows on one desktop, 2026-08-11, two of them empty stubs spraying 573KB offers at the fleet's own contacts). Empty-conversation stubs only: a row that somehow holds messages is somebody's data and stays for a deliberate repair, never a boot-time sweep.
-                            if let (Some(our_proof), Some(our_pid)) = (self.our_handle_proof(), self.own_party_id())
-                            {
-                                let stub_hashes: Vec<[u8; 32]> = self
-                                    .contacts
-                                    .iter()
-                                    .enumerate()
-                                    .filter(|(ci, c)| {
-                                        !c.is_sibling
-                                            && c.handle_proof == our_proof
-                                            && c.handle_hash != our_pid
-                                            && self
-                                                .conv_of(*ci)
-                                                .map_or(true, |v| v.messages.is_empty())
-                                    })
-                                    .map(|(_, c)| c.handle_hash)
-                                    .collect();
-                                if !stub_hashes.is_empty() {
-                                    for hh in &stub_hashes {
-                                        crate::logf!("STORAGE: census — PURGING empty self-contact stub (key {}…) — its ceremony queue dies with it", hex::encode(&hh[..4]));
-                                        crate::log_err!(crate::storage::contacts::delete_contact(hh, &s), "an empty self-contact stub's removal");
-                                    }
-                                    self.contacts
-                                        .retain(|c| !stub_hashes.contains(&c.handle_hash));
-                                    // Rewrite the index too, or the next launch resurrects the stubs from the list (same rule as the ostracism path).
-                                    let index: Vec<crate::storage::contacts::ContactIdentity> =
-                                        self.contacts
-                                            .iter()
-                                            .filter(|c| !c.is_sibling)
-                                            .map(|c| crate::storage::contacts::ContactIdentity {
-                                                handle_proof: c.handle_proof,
-                                                party_id: c.handle_hash,
-                                                avatar_pin: c.avatar_pin,
-                                            })
-                                            .collect();
-                                    if let Err(e) =
-                                        crate::storage::contacts::save_contact_list(&index, &s)
-                                    {
-                                        crate::logf!(
-                                            "STORAGE: census — stub-purge index rewrite failed: {}",
-                                            e
-                                        );
-                                    }
-                                }
-                            }
                         }
                         // Load friendship chains NOW too, not just contacts. Resume paints Ready and the status checker starts answering immediately, but chains used to arrive only later via query_resume — so any chat that landed in that window hit "No friendship found for conversation_token" and was DROPPED (no chain = no decrypt, no buffer). Loading chains here closes that gap so a peer messaging us the instant we come back online doesn't lose messages. query_resume still merges (and won't clobber these — it only adds ids we don't already hold).
                         let t_phase = std::time::Instant::now();
@@ -5240,7 +5165,9 @@ impl PhotonApp {
                             }
                         }
                         // GROUPS (docs/molecules.md §5): the index is the vault's only enumeration — chains join the same registry (the token scan treats them identically), conversations and rosters ride beside. Same never-clobber rule as the friendship pass.
-                        for (gid, roster, chains, conv) in crate::storage::molecule::load_all_molecules(&s) {
+                        // Their rows load after Ready like a pair's (rows_load.rs): each arrives with its head, the newest visible row the vault worker read.
+                        let mut group_heads = group_heads;
+                        for (gid, roster, chains, mut conv) in crate::storage::molecule::load_all_molecules(&s, false) {
                             if let Some(chains) = chains {
                                 let fid = *chains.id();
                                 if !self.friendship_chains.iter().any(|(id, _)| *id == fid) {
@@ -5248,6 +5175,10 @@ impl PhotonApp {
                                 }
                             }
                             if !self.conversations.iter().any(|v| v.id().as_bytes() == &gid.0) {
+                                if let Some(p) = group_heads.iter().position(|(id, _)| id.as_bytes() == &gid.0) {
+                                    conv.messages = group_heads.swap_remove(p).1;
+                                }
+                                rows_jobs.push((super::rows_load::newest_visible(&conv.messages), conv.id()));
                                 self.conversations.push(conv);
                             }
                             if !self.molecule_rosters.iter().any(|(g, _)| *g == gid) {
@@ -5363,9 +5294,12 @@ impl PhotonApp {
                         // Re-key Pending contacts that still lack keypairs after the rehydrate — but ONE AT A TIME (spawn_next_pending_keygen, repeated each tick), never all at once: parallel McEliece keygens on launch starved the UI thread.
                         self.spawn_next_pending_keygen();
                         crate::logf!(
-                            "PERF: resume load — vault {}ms, contacts {}ms, messages {}ms, chains {}ms, keypairs {}ms ({} rehydrated), settings {}ms → local Ready in {}ms (UI thread)",
-                            ms_vault, ms_contacts, ms_messages, ms_chains, ms_keypairs, rehydrated, ms_settings, t_boot.elapsed().as_millis()
+                            "PERF: resume load — vault {}ms, contacts {}ms, summaries {}ms (vault worker, {}ms to the handle) · install {}ms, chains {}ms, keypairs {}ms ({} rehydrated), settings {}ms (UI thread) → local Ready in {}ms; the rows of {} conversation(s) load after Ready",
+                            ms_open, ms_contacts, ms_summaries, ms_vault, ms_install, ms_chains, ms_keypairs, rehydrated, ms_settings, t_boot.elapsed().as_millis(), rows_jobs.len()
                         );
+                        // The rows, newest-active conversation first, off this thread; an opened conversation jumps the queue (rows_load.rs).
+                        rows_jobs.sort_by_key(|(newest, _)| std::cmp::Reverse(*newest));
+                        self.start_rows_load(rows_jobs.drain(..).map(|(_, id)| id).collect());
                     }
                     Err(_) if super::alias::SIGNED_OUT_HELD.swap(false, std::sync::atomic::Ordering::AcqRel) => {
                         // This device signed out of the person whose keys came in (alias.rs): the keys are let go and Photon waits, signed out.

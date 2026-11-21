@@ -93,7 +93,8 @@ impl PhotonApp {
 
     /// The space edges, once per tick: the first tick with a session looks once, and a landed reading is acted on. True when something changed.
     pub(super) fn drain_space(&mut self) -> bool {
-        if !self.space_launch_checked && self.session.is_some() && self.fleet_settings.is_some() {
+        // The launch look waits for the rows (rows_load.rs): letting go of recordings needs every one of them in view.
+        if !self.space_launch_checked && self.session.is_some() && self.fleet_settings.is_some() && !self.rows_loading() {
             self.space_launch_checked = true;
             self.space_check("session up");
             self.keep_trim("session up");
@@ -133,6 +134,10 @@ impl PhotonApp {
         }
         self.space_short = short;
         if !short || self.space_sweep.is_some() {
+            return;
+        }
+        // Short, but the rows still load after Ready (rows_load.rs): which recordings are oldest is unknown until they land, and the last landing looks again.
+        if self.rows_loading() {
             return;
         }
         let recs: Vec<(i64, [u8; 32], u64)> = self

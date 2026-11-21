@@ -807,10 +807,11 @@ impl PhotonApp {
 
             // Anti-entropy digest over the conversation's rows: an ORDER-DEPENDENT rolling hash sorted by eagle_time (Conversation::anti_entropy_digest — the single source of truth, cached). Order matters: a mismatch means the peer is MISSING or has REORDERED a message, which the old order-free XOR fold hid. Digests equal ⇒ same messages in the same sequence; the pong receiver full-walks recovery on mismatch.
             // The conversation shares the friendship's id (both derive from the sorted participant set), so look it up by fid directly — a disjoint-field borrow that doesn't fight the &friendship_chains loop.
+            // A conversation whose rows are still loading after Ready (rows_load.rs) advertises (0, zero) like a legacy peer, which no receiver compares: its head alone would read as a deficit to every peer. Its load edge republishes the real digest.
             let (row_count, row_digest) = self
                 .conversations
                 .iter_mut()
-                .find(|v| v.id() == *fid)
+                .find(|v| v.id() == *fid && !v.rows_pending)
                 .map(|v| v.anti_entropy_digest())
                 .unwrap_or((0, [0u8; 32]));
             records.push(SyncRecord {
@@ -2965,6 +2966,11 @@ impl PhotonApp {
     /// Merge history pages the decrypt workers finished — the commit half of the HistoryPageReceived arm. Runs with full &mut self (no checker borrow pinning it), so the deferral vecs the in-loop arm needed become direct calls. ALL trust/rid gating happens here against CURRENT state: contact indexes, sibling trust, and the in-flight cursor can shift between dispatch and the worker finishing, so nothing decided at dispatch time is trusted for the merge.
     pub(super) fn drain_history_pages(&mut self) {
         while let Ok(opened) = self.hist_opened_rx.try_recv() {
+            // A page for a conversation whose rows are still loading after Ready (rows_load.rs) merges on its load edge: against the head alone, every stored row it carries would read as fresh, ring and count unread.
+            if let Some(id) = self.rows_pending_for_page(&opened.conversation_token) {
+                self.hold_page_for_rows(id, opened);
+                continue;
+            }
             let HistPageOpened {
                 conversation_token,
                 request_id,

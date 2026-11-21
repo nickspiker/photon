@@ -142,6 +142,11 @@ impl PhotonApp {
 
     /// LEAVER, on arming Release (or at launch while a copy-then-release is pending): list every attachment the rows point at and hand the presence probe to a worker; the ask goes out when it lands ([`Self::drain_holdings`]).
     pub(super) fn holdings_check_start(&mut self) {
+        // The list is every attachment the rows point at: while they still load after Ready (rows_load.rs) it would be short, and the last landing starts it again for an armed Release.
+        if self.rows_loading() {
+            crate::log("HOLDINGS: the rows are still loading; the check runs when they land");
+            return;
+        }
         // Every candidate row in order, then ONE sort keeps the first row per blob (an insert per row into a sorted set shifted it every time — quadratic over a long history).
         let mut all: Vec<HeldItem> = Vec::new();
         for conv in &self.conversations {
@@ -190,6 +195,10 @@ impl PhotonApp {
     /// The holdings edges, once per tick: the leaver's probe landing (send the ask), a sibling's finished probes (answer, or start a pull), a silent sibling heard from again (its one re-ask), and a pending copy-then-release after launch (start the check). True when the page should repaint.
     pub(super) fn drain_holdings(&mut self) -> bool {
         let mut changed = false;
+        // Both halves list every attachment the rows point at, so both wait for the rows loading after Ready (rows_load.rs): a list short of rows would release blobs nobody copied, or answer a pull short.
+        if self.rows_loading() {
+            return changed;
+        }
         if self.release_when_copied
             && self.holdings_check.is_none()
             && !self.depart_asking()
