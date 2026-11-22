@@ -446,6 +446,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::HoldingsStopWaiting => "Beklemeyi bırak".into(),
         Msg::HoldingsCopyHint(name) => format!("Yalnızca burada olanları {name} cihazına kopyalar, ardından her dosyanın ikinci bir yuvası olunca bu cihazın bırakılmasını ister.").into(),
         Msg::HoldingsCopyingTo(name) => format!("{name} cihazına kopyalanıyor. İki cihazı da açık ve bağlı tut; her dosyanın ikinci bir yuvası olunca bu cihaz bırakılmayı kendisi ister ve onay kelimeleri burada görünür.").into(),
+        Msg::ReleaseRowsOnlyHere { rows, conversations } => format!("Diğer cihazlarında bu cihazdaki {conversations} sohbetten {rows} mesaj henüz olmayabilir. Şimdi bırakmak bunları kaybettirebilir. Yine de bırakabilir ya da diğer cihazların yetişene kadar bekleyebilirsin.").into(),
         Msg::SecurityRevoke { armed } => if armed { "Gerçekten yasaklansın mı?" } else { "Yasakla" }.into(),
         Msg::SecurityRevokeHint => "Bu cihazın senin adına hareket etmesini durdurur: filon onu reddeder, filo anahtarı döner ve cihaz karanlığa düşer. Her şeyi silip yeniden tasdiklemek bile onu geri getirmez. Burada hiçbir şey silinmez, cihaz filonun zincirinde kalır. Yasağı başka bir cihazından kaldırabilirsin. Çekmecede bekleyen cihaz için ya da donanım elinden çıktığında kullan.".into(),
         Msg::RevokeNeedsAnotherDevice => "Önce başka bir cihaz ekle.\nBu cihazın yasağını ancak başka bir cihazın kaldırabilir.".into(),

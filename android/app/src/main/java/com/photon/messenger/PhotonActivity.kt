@@ -945,6 +945,13 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
                         finishAndRemoveTask()
                         android.os.Process.killProcess(android.os.Process.myPid())
                     }
+                    // WIPED (owner 2026-11-22, "Just close Photon"): a wipe or a release is done and its contacts backup sweep has finished. The capsule goes first, then the service, then the process; nothing starts it again, and the next launch is a blank slate.
+                    -3 -> {
+                        connectionService?.clearSessionBroadcast()
+                        try { stopService(Intent(this@PhotonActivity, PhotonConnectionService::class.java)) } catch (_: Exception) {}
+                        finishAndRemoveTask()
+                        android.os.Process.killProcess(android.os.Process.myPid())
+                    }
                 }
                 // Self-update: a hash-verified APK is staged — hand it to the system installer (the OS owns package installs; its prompt is the second click).
                 nativePollApkInstall(nativePtr)?.let { apkPath ->

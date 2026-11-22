@@ -1126,6 +1126,20 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeServic
     }
 }
 
+/// The background service's poll after each tick while no screen shows: true once a wipe or release is done and the process should end (signal -3; the screen's own poll takes it when the Activity is in front).
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeServicePollWiped(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    context_ptr: jlong,
+) -> jni::sys::jboolean {
+    let Some(ctx) = get_context(context_ptr) else {
+        return 0;
+    };
+    ctx.shell.app().take_wiped_exit() as jni::sys::jboolean
+}
+
 /// Per-frame poll: text the app wants on the OS clipboard, or null. One-shot (same pattern as the APK-install poll); Kotlin hands it to ClipboardManager.setPrimaryClip — Android 13+ shows the system "copied" overlay itself.
 #[cfg(target_os = "android")]
 #[no_mangle]

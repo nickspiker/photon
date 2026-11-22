@@ -449,6 +449,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::HoldingsStopWaiting => "Acha kusubiri".into(),
         Msg::HoldingsCopyHint(name) => format!("Inanakili kwenda {name} kilicho hapa pekee, kisha inaomba kifaa hiki kiachiliwe kila faili ikishapata nyumba ya pili.").into(),
         Msg::HoldingsCopyingTo(name) => format!("Inanakili kwenda {name}. Acha vifaa vyote viwili vikiwa vimewashwa na kuunganishwa; kila faili ikishapata nyumba ya pili, kifaa hiki kitaomba kiachiliwe, na maneno ya idhini yataonekana hapa.").into(),
+        Msg::ReleaseRowsOnlyHere { rows, conversations } => format!("Huenda vifaa vyako vingine bado havina ujumbe {rows} kutoka mazungumzo {conversations} ya kifaa hiki. Kukiachilia sasa kunaweza kuupoteza. Bado unaweza kukiachilia, au usubiri hadi vifaa vyako vingine vifikie.").into(),
         Msg::SecurityRevoke { armed } => if armed { "Kweli ubatilishe?" } else { "Batilisha" }.into(),
         Msg::SecurityRevokeHint => "Huzuia kifaa hiki kutenda kwa niaba yako: kundi lako hukikataa, ufunguo wa kundi hubadilishwa, nacho hukaa gizani. Hata kukifuta na kuthibitisha upya hakukirudishi. Hakuna kinachofutwa hapa, nacho hubaki ndani ya mnyororo wa kundi lako. Kirejeshe kutoka kifaa kingine chako. Tumia hii kwa kifaa kilicho droo, au pale maunzi yametoka mikononi mwako.".into(),
         Msg::RevokeNeedsAnotherDevice => "Ongeza kifaa kingine kwanza.\nNi kifaa kingine chako pekee kinachoweza kukirejesha hiki.".into(),

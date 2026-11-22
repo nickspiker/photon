@@ -2545,8 +2545,10 @@ pub struct PhotonApp {
     group_face_hovered: bool,
     /// One-shot Android image-picker request. Set when the user taps the avatar; consumed by the JNI poll (`nativePollAvatarPicker`) which signals the Activity to launch `ACTION_GET_CONTENT`. Stays `None` on idle frames so the Activity doesn't churn.
     pending_picker_request: bool,
-    /// One-shot signal for the Android sticky session broadcast: 1=send, -1=clear, 0=nothing. Set by attest success and []n nuke.
+    /// One-shot signal for the Android sticky session broadcast: 1=send, -1=clear, 2=ensure, -2=clear and end the process (Kill), -3=clear and end the process after a wipe or release (wipe_exit_tick), 0=nothing.
     pending_broadcast_signal: i8,
+    /// The wipe's last edge: disconnects once the disk half and the contacts backup sweep are both done. Some only between a wipe and the end of the process.
+    wipe_exit_rx: Option<std::sync::mpsc::Receiver<()>>,
     /// Android sticky-session-broadcast freshness timer. `None` = ensure on the next tick (fresh resume/attest); else the next eagle-time-jittered deadline to re-check. On each firing the poll signal goes to `2` ("ensure": Kotlin READS the sticky and re-posts ONLY if the OS evicted it — Samsung drops stickies aggressively, so this keeps the reinstall-survival capsule alive without churning a re-post every interval). Jittered 30–60 min so a fleet doesn't re-post in lockstep.
     next_session_broadcast: Option<Instant>,
     /// The OPEN conversation, by its participant-set id — never an index. An id stays valid across every roster mutation; the index it replaces needed a shift-fixup on tombstone removal and defensive `ci < len` filters at every read, and one missed fixup silently rendered someone else's conversation.
@@ -3097,6 +3099,11 @@ pub struct PhotonApp {
     settings_removeshred_armed: bool,
     /// The Release card's have-set check (holdings.rs): started on arming, answered by siblings, drawn under the pill. RAM only.
     holdings_check: Option<holdings::HoldingsCheck>,
+    /// Each live sibling device's last anti-entropy testimony per conversation, (row_count, row_digest) off its pong's sync records: what the Release warning compares our rows against (holdings::rows_only_here). Runtime only.
+    sibling_rows_seen: crate::linear_map::LinearMap<(crate::types::friendship::FriendshipId, [u8; 32]), (u32, [u8; 32])>,
+    /// The Release warning's counts, (rows, conversations) this device may hold alone; recounted on the edges that set `release_unsynced_dirty` while Release is armed.
+    release_unsynced: (u64, u64),
+    release_unsynced_dirty: bool,
     /// SIBLING side: answers a presence worker finished, waiting for the UI thread to seal, sign and send.
     holdings_serve_tx: std::sync::mpsc::Sender<holdings::HoldingsServe>,
     holdings_serve_rx: std::sync::mpsc::Receiver<holdings::HoldingsServe>,
@@ -3715,6 +3722,7 @@ impl PhotonApp {
             join_startfresh_armed: false,
             pending_picker_request: false,
             pending_broadcast_signal: 0,
+            wipe_exit_rx: None,
             next_session_broadcast: None,
             contact_row_lines: Vec::new(),
             contacts_scroll: 0,
@@ -3959,6 +3967,9 @@ impl PhotonApp {
             depart_nfc_reader: false,
             settings_removeshred_armed: false,
             holdings_check: None,
+            sibling_rows_seen: crate::linear_map::LinearMap::new(),
+            release_unsynced: (0, 0),
+            release_unsynced_dirty: false,
             holdings_serve_tx: holdings_tx,
             holdings_serve_rx: holdings_rx,
             holdings_pulls: Vec::new(),
@@ -4127,6 +4138,15 @@ impl PhotonApp {
         let s = self.pending_broadcast_signal;
         self.pending_broadcast_signal = 0;
         s
+    }
+
+    /// The background service's poll while no screen shows: the wipe's end (-3), taken so the service ends the process; any other signal stays for the screen's own poll.
+    pub fn take_wiped_exit(&mut self) -> bool {
+        if self.pending_broadcast_signal != -3 {
+            return false;
+        }
+        self.pending_broadcast_signal = 0;
+        true
     }
 
     /// The scoped-blob reader set for our avatar (docs/scoped-blobs.md), gathered on the UI thread because it needs `&self`: our own fleet key so every sibling can read, plus the CLUTCH pair secret for each friend. A friend with no pair secret yet is simply not a reader this round — their slot appears the next time we publish after their ceremony completes.

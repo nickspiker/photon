@@ -444,6 +444,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::HoldingsStopWaiting => "Nicht mehr warten".into(),
         Msg::HoldingsCopyHint(name) => format!("Kopiert, was nur hier liegt, auf {name} und bittet dann um die Freigabe dieses Geräts, sobald jede Datei ein zweites Zuhause hat.").into(),
         Msg::HoldingsCopyingTo(name) => format!("Kopiere auf {name}. Lass beide Geräte an und verbunden; sobald jede Datei ein zweites Zuhause hat, bittet dieses Gerät selbst um die Freigabe, und die Zustimmungswörter erscheinen hier.").into(),
+        Msg::ReleaseRowsOnlyHere { rows, conversations } => format!("Deinen anderen Geräten fehlen vielleicht noch {rows} Nachrichten aus {conversations} Unterhaltungen auf diesem Gerät. Jetzt freigeben könnte sie verlieren. Du kannst trotzdem freigeben oder warten, bis deine anderen Geräte aufgeholt haben.").into(),
         Msg::SecurityRevoke { armed } => if armed { "Wirklich widerrufen?" } else { "Widerrufen" }.into(),
         Msg::SecurityRevokeHint => "Hindert dieses Gerät daran, als du zu handeln: deine Flotte weist es ab, der Flottenschlüssel rotiert weg, und es geht dunkel. Selbst Löschen und erneutes Bezeugen holt es nicht zurück. Hier wird nichts gelöscht, und es bleibt in der Kette deiner Flotte. Lass es von einem anderen deiner Geräte wieder zu. Nimm das für die Schublade, oder wenn die Hardware nicht mehr in deinen Händen ist.".into(),
         Msg::RevokeNeedsAnotherDevice => "Füge erst ein weiteres Gerät hinzu.\nNur ein anderes deiner Geräte kann dieses wieder zulassen.".into(),

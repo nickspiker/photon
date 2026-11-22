@@ -387,6 +387,8 @@ pub enum Msg<'a> {
     HoldingsCopyHint(&'a str),
     /// Hint while copy-then-release is pending: who is copying and what happens next.
     HoldingsCopyingTo(&'a str),
+    /// Release armed: messages this device holds that its other devices may not have yet (counts pre-rendered). A warning only; the release still goes.
+    ReleaseRowsOnlyHere { rows: &'a str, conversations: &'a str },
     CopiedPill,
     ResendPill,
     FetchPill,

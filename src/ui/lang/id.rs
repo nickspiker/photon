@@ -442,6 +442,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::HoldingsStopWaiting => "Berhenti menunggu".into(),
         Msg::HoldingsCopyHint(name) => format!("Menyalin yang hanya ada di sini ke {name}, lalu meminta pelepasan perangkat ini setelah setiap file punya rumah kedua.").into(),
         Msg::HoldingsCopyingTo(name) => format!("Menyalin ke {name}. Biarkan kedua perangkat menyala dan terhubung; setelah setiap file punya rumah kedua, perangkat ini meminta dilepas sendiri, dan kata-kata persetujuan muncul di sini.").into(),
+        Msg::ReleaseRowsOnlyHere { rows, conversations } => format!("Perangkatmu yang lain mungkin belum punya {rows} pesan dari {conversations} percakapan di perangkat ini. Melepasnya sekarang bisa menghilangkannya. Kamu tetap bisa melepasnya, atau tunggu sampai perangkatmu yang lain menyusul.").into(),
         Msg::SecurityRevoke { armed } => if armed { "Yakin mau mencabut?" } else { "Cabut" }.into(),
         Msg::SecurityRevokeHint => "Menghentikan perangkat ini bertindak sebagai kamu: armadamu menolaknya, kunci armada berputar menjauh, dan ia menjadi gelap. Bahkan menghapusnya total lalu mengesahkannya ulang tidak akan membawanya kembali. Tidak ada yang dihapus di sini, dan ia tetap ada di rantai armadamu. Pulihkan dari perangkatmu yang lain. Pakai ini untuk perangkat yang tersimpan di laci, atau ketika perangkat kerasnya sudah lepas dari tanganmu.".into(),
         Msg::RevokeNeedsAnotherDevice => "Tambahkan perangkat lain dulu.\nHanya perangkatmu yang lain yang bisa memulihkan yang ini.".into(),

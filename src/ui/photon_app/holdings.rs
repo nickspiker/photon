@@ -12,6 +12,7 @@
 use super::*;
 use crate::network::fgtw::protocol::HoldingsKind;
 use crate::linear_map::{SortedMap, SortedSet};
+use crate::types::friendship::FriendshipId;
 
 /// The device-local setting that makes a departure wait for its copies.
 const RELEASE_WHEN_COPIED: &str = "release.when_copied";
@@ -127,6 +128,27 @@ fn pull_target(answers: &SortedMap<[u8; 32], SortedSet<[u8; 32]>>) -> Option<[u8
     answers.iter().min_by_key(|(k, m)| (m.len(), **k)).map(|(k, _)| *k)
 }
 
+/// The Release warning's counts (owner 2026-11-22: unsynced rows never block a release, "I would warn tho"): (rows, conversations) this device holds that its siblings may not have yet.
+/// `ours` is our (row_count, digest) per conversation the sync records cover; `seen` is each live sibling's last testimony for a conversation, the same pair off its pong.
+/// A conversation is covered when any sibling's testimony equals ours; otherwise the rows we hold past the best sibling count are counted, all of them when no sibling has testified for it.
+/// A sibling holding as many rows as we do but a different set is not counted: the counts cannot say which rows differ, so the warning stays a floor, never a guess.
+pub(super) fn rows_only_here(ours: &[(FriendshipId, u32, [u8; 32])], seen: &[(FriendshipId, u32, [u8; 32])]) -> (u64, u64) {
+    let mut rows = 0u64;
+    let mut conversations = 0u64;
+    for (fid, n, digest) in ours {
+        let theirs = seen.iter().filter(|(f, _, _)| f == fid);
+        if theirs.clone().any(|(_, c, d)| c == n && d == digest) {
+            continue;
+        }
+        let best = theirs.map(|(_, c, _)| *c).max().unwrap_or(0);
+        if *n > best {
+            rows += (*n - best) as u64;
+            conversations += 1;
+        }
+    }
+    (rows, conversations)
+}
+
 fn sibling_name(contacts: &[crate::types::Contact], device: &[u8; 32]) -> String {
     contacts
         .iter()
@@ -140,8 +162,41 @@ impl PhotonApp {
         self.fleet_key_ram.lock().ok().and_then(|g| *g)
     }
 
+    /// Recount the Release warning (rows_only_here) when an edge marked it stale: the arm, a landed row load, a sibling's testimony changing. Only while Release is armed or a copy-then-release waits; the counts are RAM, the digests cached on each conversation.
+    fn release_unsynced_refresh(&mut self) {
+        if !self.release_unsynced_dirty || !(self.settings_removeshred_armed || self.release_when_copied) {
+            return;
+        }
+        self.release_unsynced_dirty = false;
+        // The conversations the sync records cover, as update_sync_records publishes them: a group still waiting for its root advertises nothing, so nothing is compared for it.
+        let covered: Vec<FriendshipId> = self.friendship_chains.iter().filter(|(_, c)| !(c.molecule && c.awaiting_root())).map(|(f, _)| *f).collect();
+        let ours: Vec<(FriendshipId, u32, [u8; 32])> = self
+            .conversations
+            .iter_mut()
+            .filter(|v| !v.rows_pending && covered.contains(&v.id()))
+            .map(|v| {
+                let (n, d) = v.anti_entropy_digest();
+                (v.id(), n, d)
+            })
+            .collect();
+        // A locked-out sibling is no home for anything, so its testimony vouches for nothing.
+        let seen: Vec<(FriendshipId, u32, [u8; 32])> = self
+            .sibling_rows_seen
+            .iter()
+            .filter(|((_, dev), _)| self.contacts.iter().any(|c| c.is_sibling && !c.locked_out && c.knows_device(dev)))
+            .map(|((f, _), (n, d))| (*f, *n, *d))
+            .collect();
+        let counted = rows_only_here(&ours, &seen);
+        if counted != self.release_unsynced {
+            crate::logf!("HOLDINGS: {} rows in {} conversations may exist only on this device", counted.0, counted.1);
+        }
+        self.release_unsynced = counted;
+    }
+
     /// LEAVER, on arming Release (or at launch while a copy-then-release is pending): list every attachment the rows point at and hand the presence probe to a worker; the ask goes out when it lands ([`Self::drain_holdings`]).
     pub(super) fn holdings_check_start(&mut self) {
+        // The row warning recounts on the same edge: the arm, or the rows landing for an armed Release.
+        self.release_unsynced_dirty = true;
         // The list is every attachment the rows point at: while they still load after Ready (rows_load.rs) it would be short, and the last landing starts it again for an armed Release.
         if self.rows_loading() {
             crate::log("HOLDINGS: the rows are still loading; the check runs when they land");
@@ -195,6 +250,9 @@ impl PhotonApp {
     /// The holdings edges, once per tick: the leaver's probe landing (send the ask), a sibling's finished probes (answer, or start a pull), a silent sibling heard from again (its one re-ask), and a pending copy-then-release after launch (start the check). True when the page should repaint.
     pub(super) fn drain_holdings(&mut self) -> bool {
         let mut changed = false;
+        let before = self.release_unsynced;
+        self.release_unsynced_refresh();
+        changed |= self.release_unsynced != before;
         // Both halves list every attachment the rows point at, so both wait for the rows loading after Ready (rows_load.rs): a list short of rows would release blobs nobody copied, or answer a pull short.
         if self.rows_loading() {
             return changed;
@@ -600,5 +658,31 @@ mod tests {
         assert_eq!(split_hashes(&[]), Some(vec![]));
         assert_eq!(split_hashes(&[7u8; 64]), Some(vec![[7u8; 32], [7u8; 32]]));
         assert_eq!(split_hashes(&[7u8; 33]), None);
+    }
+
+    /// The Release warning counts what we hold past the best sibling, per conversation: a matching testimony covers it, a conversation no sibling testified for counts whole, an equal count with a different set is not counted (the counts cannot say which rows differ).
+    #[test]
+    fn rows_only_here_counts_past_the_best_sibling() {
+        let f = |b: u8| FriendshipId([b; 32]);
+        let d = |b: u8| [b; 32];
+        let ours = vec![
+            (f(1), 10, d(0xA1)), // a sibling matches exactly: covered
+            (f(2), 10, d(0xA2)), // siblings at 7 and 4: 3 past the best
+            (f(3), 5, d(0xA3)),  // nobody testified: all 5
+            (f(4), 6, d(0xA4)),  // a sibling holds 6 of another set: not counted
+            (f(5), 0, d(0x00)),  // empty: nothing to lose
+        ];
+        let seen = vec![
+            (f(1), 10, d(0xA1)),
+            (f(1), 3, d(0xB1)),
+            (f(2), 7, d(0xB2)),
+            (f(2), 4, d(0xC2)),
+            (f(4), 6, d(0xB4)),
+            (f(9), 50, d(0xB9)),
+        ];
+        assert_eq!(rows_only_here(&ours, &seen), (8, 2));
+        // With no sibling heard at all, every row of every conversation counts.
+        assert_eq!(rows_only_here(&ours, &[]), (31, 4));
+        assert_eq!(rows_only_here(&[], &seen), (0, 0));
     }
 }

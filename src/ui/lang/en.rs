@@ -552,6 +552,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::HoldingsStopWaiting => "Stop waiting".into(),
         Msg::HoldingsCopyHint(name) => format!("Copies what exists only here to {name}, then asks to release this device once every file has a second home.").into(),
         Msg::HoldingsCopyingTo(name) => format!("Copying to {name}. Keep both devices on and connected; once every file has a second home this device asks to release itself, and the approval words appear here.").into(),
+        Msg::ReleaseRowsOnlyHere { rows, conversations } => format!("Your other devices may not have {rows} messages from {conversations} conversations on this device yet. Releasing now could lose them. You can still release, or wait until your other devices catch up.").into(),
         Msg::SecurityRevoke { armed } => if armed { "Really revoke?" } else { "Revoke" }.into(),
         Msg::SecurityRevokeHint => "Stops this device acting as you: your fleet refuses it, the fleet key rotates away, and it goes dark. Even a wipe and re-attest won\u{2019}t bring it back. Nothing here is deleted, and it stays in your fleet\u{2019}s chain. Reinstate it from another of your devices. Use this for the drawer, or when the hardware is out of your hands.".into(),
         Msg::RevokeNeedsAnotherDevice => "Add another device first.\nOnly another of your devices can reinstate this one.".into(),

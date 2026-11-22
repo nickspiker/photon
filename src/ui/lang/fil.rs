@@ -443,6 +443,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::HoldingsStopWaiting => "Huwag nang maghintay".into(),
         Msg::HoldingsCopyHint(name) => format!("Kinokopya sa {name} ang nandito lang, saka hihilinging i-release ang device na ito kapag may pangalawang tahanan na ang bawat file.").into(),
         Msg::HoldingsCopyingTo(name) => format!("Kinokopya sa {name}. Panatilihing bukas at konektado ang dalawang device; kapag may pangalawang tahanan na ang bawat file, hihilingin ng device na ito na i-release ito, at lalabas dito ang mga salitang pang-apruba.").into(),
+        Msg::ReleaseRowsOnlyHere { rows, conversations } => format!("Maaaring wala pa sa iba mong device ang {rows} mensahe mula sa {conversations} usapan sa device na ito. Kapag ni-release ngayon, baka mawala ang mga ito. Puwede mo pa ring i-release, o maghintay hanggang makahabol ang iba mong device.").into(),
         Msg::SecurityRevoke { armed } => if armed { "Talagang bawiin?" } else { "Bawiin" }.into(),
         Msg::SecurityRevokeHint => "Pinipigilan nitong kumilos ang device na ito bilang ikaw: tinatanggihan ito ng armada mo, umiikot palayo ang susi ng armada, at nagdidilim ito. Kahit burahin at patotohanan ulit, hindi na ito babalik. Walang binubura rito, at mananatili ito sa kadena ng armada mo. Ibalik ito mula sa isa pang device mo. Gamitin ito para sa nasa drawer, o kapag wala na sa kamay mo ang hardware.".into(),
         Msg::RevokeNeedsAnotherDevice => "Magdagdag muna ng ibang device.\nIsa pang device mo lang ang makakapagbalik nito.".into(),

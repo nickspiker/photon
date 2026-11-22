@@ -441,6 +441,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::HoldingsStopWaiting => "Dejar de esperar".into(),
         Msg::HoldingsCopyHint(name) => format!("Copia en {name} lo que solo existe aquí y luego pide liberar este dispositivo cuando cada archivo tenga un segundo hogar.").into(),
         Msg::HoldingsCopyingTo(name) => format!("Copiando en {name}. Mantén ambos dispositivos encendidos y conectados; cuando cada archivo tenga un segundo hogar, este dispositivo pedirá liberarse y las palabras de aprobación aparecerán aquí.").into(),
+        Msg::ReleaseRowsOnlyHere { rows, conversations } => format!("Puede que tus otros dispositivos aún no tengan {rows} mensajes de {conversations} conversaciones de este dispositivo. Liberarlo ahora podría perderlos. Puedes liberarlo igualmente, o esperar a que tus otros dispositivos se pongan al día.").into(),
         Msg::SecurityRevoke { armed } => if armed { "¿Revocarlo de verdad?" } else { "Revocar" }.into(),
         Msg::SecurityRevokeHint => "Impide que este dispositivo act\u{00FA}e como t\u{00FA}: tu flota lo rechaza, la clave de flota rota y se apaga. Ni borrarlo y volver a atestarlo lo devuelve. Aqu\u{00ED} no se borra nada, y sigue en la cadena de tu flota. Restit\u{00FA}yelo desde otro de tus dispositivos. \u{00DA}salo para el caj\u{00F3}n, o cuando el hardware ya no est\u{00E1} en tus manos.".into(),
         Msg::RevokeNeedsAnotherDevice => "Agrega otro dispositivo primero.\nSolo otro de tus dispositivos puede restituir este.".into(),

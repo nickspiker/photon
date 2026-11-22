@@ -863,9 +863,19 @@ impl PhotonApp {
             && key_held(self.chord_rb_press, self.chord_rb_release, now)
     }
 
-    /// SCORCHED EARTH: delete the ENTIRE Photon app dirs — vault rings, parked `.legacy` backups, orphan blobs, markers, every stray — both casings, config + data. A `*.vsf` filter used to leave blobs/ and strays standing after a "nuke everything" (field, 2026-08-20). Returns the count of top-level entries removed. Shared by the `[]n` (nuke, keep running) and `[]x` (nuke + exit) chords; `tag` prefixes the log lines. Does NOT touch the tohu session or any in-memory state — callers handle that.
+    /// SCORCHED EARTH: delete the ENTIRE Photon app dirs — vault rings, parked `.legacy` backups, orphan blobs, markers, every stray — both casings, config + data. A `*.vsf` filter used to leave blobs/ and strays standing after a "nuke everything" (field, 2026-08-20). The device vault goes first thru kete (retired, then discarded); the rest is swept. Returns the count of the device vault plus the top-level entries removed. Shared by the Security-page wipe and the `[]n` (nuke, keep running) and `[]x` (nuke + exit) chords; `tag` prefixes the log lines. Does NOT touch the tohu session or any in-memory state beyond the retired vault engine — callers handle that.
     pub(super) fn dev_wipe_vault_files(tag: &str) -> usize {
         let mut count = 0usize;
+        // The device vault first, thru kete: its engine is retired before its files go, so no Arc of this process writes into deleted files or serves the old identity to the next one.
+        match crate::storage::retire_and_discard_device_vault() {
+            Ok(true) => {
+                crate::logf!("{} discarded the device vault", tag);
+                count += 1;
+            }
+            Ok(false) => crate::logf!("{} no device vault on disk to discard (its engine, if open, is retired)", tag),
+            Err(e) => crate::logf!("{} WARN: {}", tag, e),
+        }
+        // Then whatever else the app dirs still hold: a vault under another root, the parked pre-unification dir, strays.
         let wipe_dir = |dir: Option<std::path::PathBuf>, count: &mut usize| {
             let Some(base) = dir else { return };
             // Both casings: the unified `photon/` dir (device vault) AND the pre-unification `Photon/` parking lot. A wipe means NOTHING survives, parked or live.
@@ -918,13 +928,13 @@ impl PhotonApp {
         count
     }
 
-    /// Fully clean this device for a new owner / a fresh identity: nuke the on-disk vault (all `.vsf` — contacts, chains, keypairs, the cached fleet key) AND clear the tohu session (identity_seed + vault_seed + handle_proof), drop all in-memory state, and drop back to the attest screen. The device KEY is fingerprint-derived (not stored) so it survives — but with no identity bound and an empty vault the device is a blank slate: a new owner types their handle to attest fresh, or JOINs another fleet. This is `[]n` + `[]u` combined, exposed as a real (non-dev-chord) action for the Security page + the removed-device "start fresh" path; the `-1` broadcast signal tells the Android host to drop its sticky session too.
     /// Delete this identity's contacts-backup blobs from FGTW — both the fleet-keyed v1 slot and the device-keyed v0 slot this device may have left behind before the re-key.
     /// Runs on a detached thread: two HTTPS round trips must not stall a wipe the user just confirmed, and the outcome changes nothing locally. Every failure is logged and swallowed.
-    pub(super) fn sweep_contacts_backup_blobs(&self) {
+    /// `done_tx` is dropped when the thread is done, which is bounded because each request carries its own 30 s deadline; the process ends only after every such sender is gone (see `wipe_exit_tick`), or the v0 blob would be stranded.
+    pub(super) fn sweep_contacts_backup_blobs(&self, done_tx: std::sync::mpsc::Sender<()>) {
         let (Some(session), Some(keypair)) = (self.session.as_ref(), self.device_keypair.as_ref())
         else {
-            return; // nothing attested — no identity seed, so no blob was ever written
+            return; // nothing attested — no identity seed, so no blob was ever written; `done_tx` drops here
         };
         let identity_seed = session.identity_seed;
         let device_secret = *keypair.secret.as_bytes();
@@ -937,8 +947,9 @@ impl PhotonApp {
                 .flatten()
                 .and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok())
         });
+        let wake = self.event_proxy.clone();
 
-        std::thread::spawn(move || {
+        let spawned = std::thread::Builder::new().name("contacts-sweep".into()).spawn(move || {
             use crate::network::fgtw::delete_blob_blocking;
             if let Some(fk) = fleet_key {
                 let key = crate::storage::cloud::contacts_storage_key(&identity_seed, &fk);
@@ -956,17 +967,71 @@ impl PhotonApp {
                 Ok(()) => crate::log("CLEAN: legacy device-keyed contacts blob swept"),
                 Err(e) => crate::logf!("CLEAN: legacy contacts blob sweep failed: {}", e),
             }
+            drop(done_tx);
+            if let Some(w) = wake {
+                super::wake_ui(&w);
+            }
         });
+        crate::log_err!(spawned, "the contacts backup sweep thread spawn");
     }
 
+    /// The wipe's last edge, once per tick (draw or headless): the disk half and the contacts backup sweep are both done (every sender of `wipe_exit_rx` is gone), so the log is flushed and the process ends.
+    /// Android closes Photon and does not start it again (owner 2026-11-22: "Just close Photon"): signal -3 has Kotlin clear the session broadcast, finish the task and end the process. A desktop re-execs into a pristine image.
+    pub(super) fn wipe_exit_tick(&mut self) {
+        let Some(rx) = self.wipe_exit_rx.as_ref() else { return };
+        if let Err(std::sync::mpsc::TryRecvError::Empty) = rx.try_recv() {
+            return;
+        }
+        self.wipe_exit_rx = None;
+        #[cfg(target_os = "android")]
+        {
+            crate::log("CLEAN: the vault is discarded and the contacts backup sweep is done; closing Photon");
+            crate::flush_log_buffer();
+            self.pending_broadcast_signal = -3;
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            crate::log("CLEAN: the vault is discarded and the contacts backup sweep is done; starting again as a blank slate");
+            crate::flush_log_buffer();
+            match std::env::current_exe() {
+                Ok(exe) => self.update_reexec = Some(exe),
+                Err(e) => crate::logf!("CLEAN: this image cannot find itself to start again ({}); the next launch starts blank", e),
+            }
+        }
+    }
+
+    /// The wipe's disk half, on the device-wipe worker: the binding cleared on the live vault (an open after the retire would found a fresh vault just to clear it), then the engine retired and its files discarded thru kete, then the strays.
+    fn wipe_device_disk() {
+        crate::storage::device_binding::clear();
+        let count = Self::dev_wipe_vault_files("clean");
+        crate::logf!("CLEAN: wiped {} vault file(s); the device is a blank slate", count);
+    }
+
+    /// Fully clean this device for a new owner / a fresh identity: retire and discard the device vault (contacts, chains, keypairs, the cached fleet key) AND clear the tohu session (identity_seed + vault_seed + handle_proof), drop all in-memory state, and end the process (Android) or start it again (desktop) once the contacts backup sweep is done. The device KEY is fingerprint-derived (not stored) so it survives — but with no identity bound and an empty vault the device is a blank slate: a new owner types their handle to attest fresh, or JOINs another fleet. This is `[]n` + `[]u` combined, exposed as a real (non-dev-chord) action for the Security page + the removed-device "start fresh" path.
     pub(super) fn clean_device_for_reuse(&mut self) {
         // LastRites sweep for the contacts backup — BEFORE the wipe, because both keys die with it.
         // The v0 blob is device-bound: its address is BLAKE3(identity_seed ‖ device_secret), which only THIS device can compute, so this is the last moment it can ever be deleted. Miss it and the ciphertext is stranded on FGTW forever — unreadable by anyone and unreachable by any purge, exactly the problem `delete_avatar_blocking` exists to avoid for the wall.
         // The v1 blob is fleet-bound, so a sibling could also delete it; we do it here anyway because the departing device may be the last member.
         // Best-effort and off the critical path: an already-absent blob is the goal state, and a failure must never block the wipe.
-        self.sweep_contacts_backup_blobs();
-
-        let count = Self::dev_wipe_vault_files("clean");
+        // The process ends only once it is done (wipe_exit_tick), so the one moment the v0 blob is deletable is never cut short.
+        let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
+        self.wipe_exit_rx = Some(done_rx);
+        self.sweep_contacts_backup_blobs(done_tx.clone());
+        // The disk half on a worker (the UI thread makes no vault call): the binding on the live vault, then the engine retired and its files discarded thru kete, then the strays. The exit waits for it too.
+        let wake = self.event_proxy.clone();
+        let disk_tx = done_tx.clone();
+        let spawned = std::thread::Builder::new().name("device-wipe".into()).spawn(move || {
+            Self::wipe_device_disk();
+            drop(disk_tx);
+            if let Some(w) = wake {
+                super::wake_ui(&w);
+            }
+        });
+        if let Err(e) = spawned {
+            crate::logf!("CLEAN: the device-wipe thread did not start ({}); wiping on this thread", e);
+            Self::wipe_device_disk();
+        }
+        drop(done_tx);
         tohu::clear_session();
         self.session = None;
         self.private_s = crate::crypto::blind::PrivateS::None; // zeroized on overwrite
@@ -979,8 +1044,9 @@ impl PhotonApp {
         if let Ok(mut keys) = self.pong_seal_keys.lock() {
             keys.clear();
         }
-        self.storage = None; // next attest re-opens a fresh vault
-                             // EVERY identity-flavoured RAM slot dies here (observed: one identity's avatar surfaced under a different identity after a wipe — the in-place reset only cleared what it knew about, and the settings cache kept feeding the OLD identity's avatar pin + name into the new session's pongs and wall sync). Desktop re-execs below anyway; Android's in-place reset is exactly this list, so the list must be COMPLETE.
+        self.storage = None; // the engine behind it is retired; a fresh vault opens at the next attest
+        // EVERY identity-flavoured RAM slot dies here (observed: one identity's avatar surfaced under a different identity after a wipe — the in-place reset only cleared what it knew about, and the settings cache kept feeding the OLD identity's avatar pin + name into the new session's pongs and wall sync).
+        // The process ends once the disk half and the contacts backup sweep are done (wipe_exit_tick), but the network and the ticks run until then, so the list must be COMPLETE.
         self.fleet_settings = None; // the big one: cached profile.avatar_pin / profile.name of the OLD identity
         if let Ok(mut g) = self.fleet_key_ram.lock() {
             *g = None; // the OLD identity's fleet key must not serve the next session's pages
@@ -1001,7 +1067,7 @@ impl PhotonApp {
         self.active_conversation = None;
         self.forget_drafts();
         self.ready_toast = None;
-        // THE RESURRECTION CLASS (field 2026-08-25, Android): the wipe deleted the vault and the FGTW backup, then the un-cleared RAM re-persisted everything — `conversations` still held every message row (a stuck un-ACK'd note came back with its attempt counter intact) and the next roster push re-uploaded the roster the wipe had just deleted. Android never re-execs, so this in-place list IS the wipe: every identity-flavoured slot below must die or the identity survives.
+        // THE RESURRECTION CLASS (field 2026-08-25, Android): the wipe deleted the vault and the FGTW backup, then the un-cleared RAM re-persisted everything — `conversations` still held every message row (a stuck un-ACK'd note came back with its attempt counter intact) and the next roster push re-uploaded the roster the wipe had just deleted. Until the process ends, this in-place list IS the wipe: every identity-flavoured slot below must die or the identity survives the seconds before the exit.
         self.conversations.clear();
         // A row load still running belongs to the identity just wiped: its landings would hydrate nothing, and what it holds must never replay.
         self.rows_load = None;
@@ -1082,6 +1148,9 @@ impl PhotonApp {
         self.roster_pull_exhausted = false;
         self.fleet_retired.clear();
         self.fleet_release_armed = None;
+        self.sibling_rows_seen.clear();
+        self.release_unsynced = (0, 0);
+        self.release_unsynced_dirty = false;
         self.fleet_lock_armed = None;
         self.fleet_unlock_armed = None;
         self.pending_unlock = None;
@@ -1185,19 +1254,13 @@ impl PhotonApp {
         self.diag_log_close();
         crate::network::status::set_profile_name(""); // pong slots: empty/zero = omitted
         crate::network::status::set_avatar_pin(&[0u8; 64]);
-        self.pending_broadcast_signal = -1; // Android: drop the sticky session broadcast
+        self.pending_broadcast_signal = -1; // Android: drop the sticky session broadcast now; -3 follows when the sweep is done
         self.state = self.not_signed_in_screen();
         // A wipe is the ultimate re-proof teardown: a retained handle turned "attest fresh" into "press the button" (field 2026-08-25 — Shred left the handle sitting in the attest field).
         self.clear_handle_for_reproof();
-        crate::storage::device_binding::clear();
-        crate::logf!("CLEAN: wiped {} vault file(s) + cleared session — device is a blank slate, ready to attest fresh or join another fleet", count);
-        // Full process restart (desktop): the in-place reset leaves launch half-initialized (the wordmark went missing after a shred) and a wiped process still holds freed secrets in reachable memory anyway — exec into a pristine self via the same machinery a self-update uses. Android can't exec; its in-place reset stands.
-        #[cfg(not(target_os = "android"))]
-        {
-            if let Ok(exe) = std::env::current_exe() {
-                self.update_reexec = Some(exe);
-            }
-        }
+        crate::log("CLEAN: session cleared; the process ends once the vault is discarded and the contacts backup sweep is done");
+        // No exec and no relaunch here: a process that held the old identity must not carry on as the next one (the retired engine errs on any stale handle, but every other static of the old session is still in RAM).
+        // Android closes Photon (owner 2026-11-22: "Just close Photon"); a desktop execs into a pristine image, the update machinery's re-exec. Both wait for the wipe's edge in wipe_exit_tick.
     }
 
     /// Dispatch a chord action character (`a`, `h`, `p`, etc.) that was pressed while both brackets are held. Returns true if anything happened (caller should request a redraw); false for unknown letters (no-op fallthrough — no whitelist so new bindings only add to dispatch, not gating).
@@ -1301,7 +1364,13 @@ impl PhotonApp {
             'n' => {
                 // Nuke the local VAULT only — wipes every .vsf in the Photon app dirs (contacts, CLUTCH slots, ephemeral keypairs, friendship chains; also catches old-path strays and derivation-change orphans). Deliberately does NOT touch the tohu session: the identity_seed/vault_seed/handle_proof stay in memory + cache, so you remain attested on Ready with a freshly-empty vault. To clear the identity itself, use []u (de-attest). Only fires in development builds.
                 let count = Self::dev_wipe_vault_files("[]n");
-                // Drop the in-memory vault state so the UI reflects the wipe immediately. Keep the session + a live FlatStorage handle: it points at the now-empty dir and recreates files lazily on the next write, so the app stays usable without a relaunch.
+                // Drop the in-memory vault state so the UI reflects the wipe immediately. Keep the session: the old engine is retired, so the session gets a fresh vault under the same identity and the app stays usable without a relaunch.
+                self.storage = match (self.session.as_ref(), self.device_keypair.as_ref()) {
+                    (Some(s), Some(kp)) => crate::storage::open_session_vault(s.identity_seed, s.vault_seed, *kp.secret.as_bytes())
+                        .map_err(|e| crate::logf!("[]n the fresh vault did not open: {}", e))
+                        .ok(),
+                    _ => None,
+                };
                 self.contacts.clear();
                 self.friendship_chains.clear();
                 if let Ok(mut pks) = self.contact_pubkeys.lock() {
@@ -1330,10 +1399,11 @@ impl PhotonApp {
             }
             'x' => {
                 // Full clean-slate reset for the dev loop: nuke the vault ([]n), clear the session ([]u), then KILL the process so the window dies and the next launch starts truly fresh — no lingering in-memory state, no half-reset UI. The disk wipe is the part that must persist; everything else dies with the process, so we exit right after.
+                // Clear the device-identity BINDING marker too, or the next launch sees a still-bound device and shows "this device already carries an identity — type its handle to resume" (device_binding.vsf lives in the config dir, OUTSIDE the vault the wipe above walks, so it survives a vault nuke). []x means TRULY fresh; the proper Security-page shred (clean_device_for_reuse) already clears it, and this dev chord must match.
+                // On the live vault, before the wipe retires it: an open after the retire would found a fresh vault just to clear it.
+                crate::storage::device_binding::clear();
                 let count = Self::dev_wipe_vault_files("[]x");
                 tohu::clear_session();
-                // Clear the device-identity BINDING marker too, or the next launch sees a still-bound device and shows "this device already carries an identity — type its handle to resume" (device_binding.vsf lives in the config dir, OUTSIDE the vault the wipe above walks, so it survives a vault nuke). []x means TRULY fresh; the proper Security-page shred (clean_device_for_reuse) already clears it, and this dev chord must match.
-                crate::storage::device_binding::clear();
                 crate::clear_log(); // wipe photon.log.vsf too — a clean relaunch leaves no trace
                 eprintln!(
                     "[]x nuked {} vault file(s) + de-attested + cleared device binding + wiped logs; exiting for a clean relaunch",

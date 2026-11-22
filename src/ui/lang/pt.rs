@@ -451,6 +451,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::HoldingsStopWaiting => "Parar de esperar".into(),
         Msg::HoldingsCopyHint(name) => format!("Copia para {name} o que existe só aqui e depois pede para liberar este dispositivo quando cada arquivo tiver um segundo lar.").into(),
         Msg::HoldingsCopyingTo(name) => format!("Copiando para {name}. Mantenha os dois dispositivos ligados e conectados; quando cada arquivo tiver um segundo lar, este dispositivo pede para ser liberado e as palavras de aprovação aparecem aqui.").into(),
+        Msg::ReleaseRowsOnlyHere { rows, conversations } => format!("Seus outros dispositivos talvez ainda não tenham {rows} mensagens de {conversations} conversas deste dispositivo. Liberá-lo agora pode perdê-las. Você ainda pode liberar, ou esperar até que seus outros dispositivos alcancem.").into(),
         Msg::SecurityRevoke { armed } => if armed { "Revogar mesmo?" } else { "Revogar" }.into(),
         Msg::SecurityRevokeHint => "Impede este dispositivo de agir como você: sua frota o recusa, a chave da frota gira para longe dele e ele fica no escuro. Nem apagar tudo e atestar de novo o traz de volta. Nada aqui é apagado, e ele continua na cadeia da sua frota. Reintegre-o a partir de outro dos seus dispositivos. Use isto para a gaveta, ou quando o hardware sai das suas mãos.".into(),
         Msg::RevokeNeedsAnotherDevice => "Adicione outro dispositivo primeiro.\nSó outro dos seus dispositivos pode reintegrar este.".into(),

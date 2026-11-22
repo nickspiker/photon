@@ -442,6 +442,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::HoldingsStopWaiting => "Thôi chờ".into(),
         Msg::HoldingsCopyHint(name) => format!("Sao chép những gì chỉ có ở đây sang {name}, rồi yêu cầu giải phóng thiết bị này khi mọi tệp đã có ngôi nhà thứ hai.").into(),
         Msg::HoldingsCopyingTo(name) => format!("Đang sao chép sang {name}. Giữ cả hai thiết bị bật và kết nối; khi mọi tệp đã có ngôi nhà thứ hai, thiết bị này sẽ tự yêu cầu giải phóng và các từ phê duyệt sẽ hiện ở đây.").into(),
+        Msg::ReleaseRowsOnlyHere { rows, conversations } => format!("Các thiết bị khác của bạn có thể chưa có {rows} tin nhắn từ {conversations} cuộc trò chuyện trên thiết bị này. Giải phóng bây giờ có thể làm mất chúng. Bạn vẫn có thể giải phóng, hoặc chờ đến khi các thiết bị khác của bạn bắt kịp.").into(),
         Msg::SecurityRevoke { armed } => if armed { "Thật sự thu hồi?" } else { "Thu hồi" }.into(),
         Msg::SecurityRevokeHint => "Chặn thiết bị này hành động thay bạn: đội của bạn từ chối nó, khóa đội xoay đi chỗ khác, và nó tối đen. Ngay cả xóa sạch rồi chứng thực lại cũng không đem nó về được. Ở đây không có gì bị xóa, và nó vẫn nằm trong chuỗi của đội bạn. Hãy khôi phục nó từ một thiết bị khác của bạn. Dùng cách này cho cái đang nằm trong ngăn kéo, hoặc khi phần cứng đã ra khỏi tay bạn.".into(),
         Msg::RevokeNeedsAnotherDevice => "Hãy thêm một thiết bị khác trước.\nChỉ một thiết bị khác của bạn mới khôi phục được cái này.".into(),

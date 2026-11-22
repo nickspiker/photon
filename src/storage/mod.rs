@@ -167,6 +167,35 @@ pub fn device_vault() -> Option<std::sync::Arc<FlatStorage>> {
     }
 }
 
+/// Retire the device vault before its files go (a wipe, a release): DEVICE_VAULT is emptied and the engine retired, so every Arc still held anywhere errs instead of writing into deleted files, and the next `device_vault()` opens a fresh vault that takes whichever identity attests next.
+/// Then the ring files are discarded thru kete. Returns whether a vault was discarded; an error names the file that survived.
+/// Off the UI thread (the Security-page wipe runs it on its device-wipe worker): the retire waits for the commit in flight.
+pub fn retire_and_discard_device_vault() -> Result<bool, String> {
+    let held = DEVICE_VAULT.lock().map_err(|_| "the device vault lock is poisoned".to_string())?.take();
+    let secret = match held {
+        Some((secret, v)) => {
+            v.retire();
+            Some(secret)
+        }
+        None => resolved_device_secret(),
+    };
+    let Some(secret) = secret else {
+        return Ok(false);
+    };
+    #[cfg(not(target_os = "ferros"))]
+    {
+        let present = kete::device_vault_present(APP, &secret);
+        kete::discard_device_vault(APP, &secret).map_err(|e| format!("discarding the device vault: {e}"))?;
+        Ok(present)
+    }
+    // On ferros the vault is the kernel's scope; retiring the engine is all this process can do.
+    #[cfg(target_os = "ferros")]
+    {
+        let _ = secret;
+        Ok(false)
+    }
+}
+
 /// Cross-thread storage-failure latch: writer threads and open paths set it, the UI tick mirrors it into `vault_degraded` (the amber banner). Born of the 2026-08-24 zombie boots — a vault-open death and 1,276 fence errors ran for hours as log lines while the screen claimed all was well. Sticky for the session by design: a vault that failed once is a vault to distrust until relaunch.
 static VAULT_SICK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -1584,6 +1613,27 @@ mod tests {
         // And the identity scope round-trips.
         again.write("state/probe", b"x").unwrap();
         assert_eq!(again.read("state/probe").unwrap(), Some(b"x".to_vec()));
+    }
+
+    /// The Android unbind bug, desktop analogue (owner 2026-11-22): a wipe retires the device vault and discards it thru kete in this process, so the next session's open takes a NEW identity, and the old handle errs instead of writing into deleted files.
+    #[test]
+    fn wipe_then_new_identity_opens_in_one_process() {
+        let _g = serial();
+        isolate_test_storage();
+        let device_secret = [0x5Du8; 32];
+        let _session = session_test_lock();
+        let old = open_session_vault([0x5Au8; 32], [0x5Bu8; 32], device_secret).unwrap();
+        old.write("state/probe", b"old").unwrap();
+        // The field error: without a retire the cached engine still carries the old identity and refuses the next.
+        assert!(open_session_vault([0x5Eu8; 32], [0x5Fu8; 32], device_secret).is_err());
+        assert!(retire_and_discard_device_vault().unwrap(), "the device vault was on disk to discard");
+        assert!(old.read("state/probe").is_err(), "a stale handle read a discarded vault");
+        assert!(old.write("state/probe", b"x").is_err(), "a stale handle wrote into a discarded vault");
+        let fresh = open_session_vault([0x5Eu8; 32], [0x5Fu8; 32], device_secret).unwrap();
+        assert!(!std::sync::Arc::ptr_eq(&old, &fresh));
+        assert_eq!(fresh.read("state/probe").unwrap(), None, "the new identity inherited the old vault");
+        fresh.write("state/probe", b"new").unwrap();
+        assert_eq!(fresh.read("state/probe").unwrap(), Some(b"new".to_vec()));
     }
 }
 

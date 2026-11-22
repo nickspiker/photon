@@ -82,6 +82,9 @@ impl PhotonApp {
             }};
         }
 
+        // A wipe or release ends the process once its contacts backup sweep is done; draw and headless ticks alike carry that edge.
+        self.wipe_exit_tick();
+
         // TICK PROFILE regions (2026-09-10): the untimed stretches of this function, named for the 30 s report.
         let __r = Instant::now();
         // DEMAND-DRIVEN presence (Nick 2026-09-02: "zero reason I need the status of my fleet OR friends until I open my fleet page OR my contacts screen; on a chat, ping THEM"): pings + the beacon that rides the full sweep fire only while the human is LOOKING at a presence surface — the contacts screen or the Fleet page (full sweep) or an open conversation (that one contact). Everything else arrives on edges: inbound acks/pongs/messages update state passively, the announce-on-online edge keeps our own mapping findable, retransmit ladders stay work-driven, and Android's FCM/doorbell is the background wake path. Screen ENTRY is an edge (immediate ping); while the surface stays visible a slow 30s refresh keeps the rings honest. Backgrounded = silent.

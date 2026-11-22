@@ -6279,6 +6279,13 @@ impl PhotonApp {
                             3, *theme::PILL_RED, self.settings_removeshred_armed, fleet_verbs);
                         // DEVICE-REMOVAL SAFETY (holdings.rs): while Release is armed or a copy-then-release is pending, what exists only on this device — so the second tap is an informed one — and the pill that copies it away first.
                         if self.settings_removeshred_armed || self.release_when_copied {
+                            // Messages first (owner 2026-11-22: a release is never blocked by them, only warned about): what this device holds past every sibling's testimony.
+                            let (rows, conversations) = self.release_unsynced;
+                            if rows > 0 {
+                                let (rows, conversations) = (crate::fmt_num64(rows), crate::fmt_num64(conversations));
+                                flow.prose(&mut canvas, ctx.text, &tr(Msg::ReleaseRowsOnlyHere { rows: &rows, conversations: &conversations }), hspan2 * 0.9, *theme::ERROR_TEXT_COLOUR, 600);
+                                flow.gap(hspan2 * 0.6);
+                            }
                             if let Some(holdings::HoldingsShown { view, waiting, target }) = holdings::view(self.holdings_check.as_ref(), &self.contacts) {
                                 let at_risk = matches!(view, holdings::HoldingsView::AtRisk { .. });
                                 let (line, colour) = match view {

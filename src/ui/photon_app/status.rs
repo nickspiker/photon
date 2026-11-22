@@ -667,6 +667,13 @@ impl PhotonApp {
                                 }
                             }
                             // ANTI-ENTROPY: the pong carries the peer's (row_count, XOR-fold) for this conversation. A digest mismatch means the two sides provably hold DIFFERENT message sets — the heuristic cursor walk left a hole (the greyed sends a peer never got, 2026-07-25) — so force a FULL recovery walk (early-stop disabled). Zero count+digest = legacy peer, no comparison. Cooldown per contact so a persistent mismatch (peer can't serve) re-fires at a polite cadence instead of every pong.
+                            // A sibling's testimony is what the Release warning counts our rows against (holdings::rows_only_here); (0, zero) is a sibling whose rows still load, which says nothing.
+                            if responder_is_sibling && (record.row_count != 0 || record.row_digest != [0u8; 32]) {
+                                let testimony = (record.row_count, record.row_digest);
+                                if self.sibling_rows_seen.insert((*fid, peer_pubkey.key), testimony) != Some(testimony) {
+                                    self.release_unsynced_dirty = true;
+                                }
+                            }
                             if record.row_count != 0 || record.row_digest != [0u8; 32] {
                                 let fid = *fid;
                                 // No chain_woven gate here: the wedge/rotation era leaves woven flags stale while the HISTORY KEY (the actual page-seal capability, checked at the route) is present — and gating the digest kick on woven left a receiving-fine device 100 rows behind with its walk never arming (field, 2026-08-11: 8 rows vs the peer's advertised 109, zero pull attempts all session).

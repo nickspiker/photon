@@ -449,6 +449,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::HoldingsStopWaiting => "Przestań czekać".into(),
         Msg::HoldingsCopyHint(name) => format!("Kopiuje na {name} to, co jest tylko tutaj, a potem prosi o zwolnienie tego urządzenia, gdy każdy plik będzie miał drugi dom.").into(),
         Msg::HoldingsCopyingTo(name) => format!("Kopiowanie na {name}. Zostaw oba urządzenia włączone i połączone; gdy każdy plik będzie miał drugi dom, to urządzenie samo poprosi o zwolnienie, a słowa zatwierdzenia pojawią się tutaj.").into(),
+        Msg::ReleaseRowsOnlyHere { rows, conversations } => format!("Twoje inne urządzenia mogą jeszcze nie mieć wiadomości z tego urządzenia: {rows}, z rozmów: {conversations}. Zwolnienie teraz może je stracić. Możesz mimo to zwolnić albo poczekać, aż inne urządzenia nadrobią zaległości.").into(),
         Msg::SecurityRevoke { armed } => if armed { "Na pewno unieważnić?" } else { "Unieważnij" }.into(),
         Msg::SecurityRevokeHint => "Odbiera temu urządzeniu prawo działania w twoim imieniu: twoja flota je odrzuca, klucz floty odwraca się od niego, a ono gaśnie. Nie wróci nawet po wyczyszczeniu i ponownym poświadczeniu. Nic tutaj nie jest usuwane, a urządzenie zostaje w łańcuchu twojej floty. Przywróć je z innego swojego urządzenia. Użyj tego przy szufladzie albo gdy sprzęt jest już poza twoimi rękami.".into(),
         Msg::RevokeNeedsAnotherDevice => "Najpierw dodaj inne urządzenie.\nTylko inne twoje urządzenie może przywrócić to.".into(),
