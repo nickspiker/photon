@@ -2,214 +2,10 @@
 
 use super::*;
 
-impl FluorApp<Px> for PhotonApp {
-    /// One-shot absolute-zoom restore: the persisted per-device `display.zoom`, set when settings load; the host applies it exactly like a user zoom.
-    fn take_zoom_request(&mut self) -> Option<f32> {
-        let r = self.pending_zoom_restore.take();
-        // ferros: the person's app scale is the device's one preference, which ferros_fluor's host applies and follows, so Photon's own saved zoom is not put back over it (owner, 2026-11-20: every kist follows the global app scale).
-        let r = if cfg!(target_os = "ferros") { None } else { r };
-        if let Some(v) = r {
-            // Seed the persistence tracker with the restored value so launch doesn't immediately re-save what's already on disk.
-            self.zoom_saved_ru = v;
-        }
-        self.zoom_restore_applying = r;
-        r
-    }
-
-    /// One-shot window-geometry restore: a fluor `window_rect` in GLOBAL desktop units, applied by the host thru its own maximize machinery (clamped into live surfaces). Never raw winit calls — the parked 2026-08-16 version moved the fullscreen OS surface itself and the window vanished with a dead click region.
-    fn take_window_geometry_request(&mut self) -> Option<(i32, i32, u32, u32)> {
-        self.pending_geometry_restore.take()
-    }
-
-    type UserEvent = PhotonEvent;
-
-    fn title(&self) -> &str {
-        // OS WINDOW title only (taskbar / alt-tab / WM) — set once at window creation via winit `with_title`. The brand name lives here. The DRAWN in-app title bar is separate: it's `chrome.set_title(...)` per-frame in `render` ("← Network" on launch, live peer count on Ready). The chrome is constructed with "Photon" too but the first render overrides it before the first rasterize, so the drawn bar never flashes the brand name.
-        "Photon"
-    }
-
-    fn initial_size(&self, monitor: (u32, u32)) -> (u32, u32) {
-        // Portrait launch window — matches the pre-fluor Photon dimensions: height = half the SHORTER screen axis, width = half that. Yields a tall 1:2 (w:h) rectangle on any aspect ratio. Examples: 1920×1080 → 270×540; 1080×1920 → 270×540; 2560×1440 → 360×720.
-        let short = monitor.0.min(monitor.1);
-        let h = short >> 1;
-        let w = h >> 1;
-        (w, h)
-    }
-
-    fn wants_keyboard(&mut self) -> Option<bool> {
-        // Return the one-shot keyboard transition set by `change_focus` and clear it so subsequent polls see `None` until focus moves again — keeps the Android Activity from calling `InputMethodManager.show/hide` every frame.
-        self.pending_keyboard_request.take()
-    }
-
-    /// The system keyboard's rows from the frame's bottom, as a host that composites a keyboard over the frame tells them (ferros: fluor's ferros host, WINDOWS.md "The keyboard"; 0 when it goes).
-    /// Kept here and laid out by the tick's keyboard watch, which has the viewport this call does not.
-    fn on_keyboard_inset(&mut self, rows: u32) {
-        self.keyboard_rows = rows;
-    }
-
-    /// The frame's safe circle as the host tells it (ferros: `EV_SAFE` at the window's first show and as its full screen turns, WINDOWS.md "Drawn under the controls"): where nothing of the system's covers Photon, so its orb, beads and text stay inside.
-    /// It replaces the first frame's guess from the panel's constants (`SafeCircle::of_panel`); the next frame lays out again round it. No other host calls it, so the desktop and Android never have a safe circle.
-    fn on_safe_area(&mut self, area: fluor::host::app::SafeArea) {
-        let c = crate::ui::SafeCircle { cx: area.cx, cy: area.cy, r: area.r };
-        self.safe_told = true;
-        if crate::ui::set_safe_circle(c) {
-            crate::logf!("SAFE: the display's safe circle, centre ({:.1}, {:.1}) radius {:.1} (top {:.1}), the system holding the top {} and the bottom {}", c.cx, c.cy, c.r, c.top(), area.top, area.bottom);
-            self.dirty_from("the host's safe circle");
-        }
-    }
-
-    /// Honest-IME read: the FOCUSED textbox's text + cursor (chars), thru the one registry — any box (compose, search, profile fields) mirrors truthfully to the Android InputConnection.
-    fn ime_editor_state(&mut self) -> Option<(String, usize)> {
-        let focus = self.focused?;
-        // The multi-line compose box lives outside the single-line registry — its branch first.
-        if let Some(tb) = self
-            .message_textbox
-            .as_ref()
-            .filter(|t| t.hit_id() == focus)
-        {
-            let text: String = tb.chars.iter().collect();
-            let cursor = tb.cursor.min(tb.chars.len()); // WHY/PROOF: `Textbox.cursor` and `.chars` are public fields, and this app rewrites `chars` directly (a rename prefill) without moving the cursor — the type cannot hold cursor ≤ len, so its reader must
-            return Some((text, cursor));
-        }
-        let tb = self.textbox_by_hit_mut(focus)?;
-        let text: String = tb.chars.iter().collect();
-        let cursor = tb.cursor.min(tb.chars.len()); // WHY/PROOF: `Textbox.cursor` and `.chars` are public fields, and this app rewrites `chars` directly (a rename prefill) without moving the cursor — the type cannot hold cursor ≤ len, so its reader must
-        Some((text, cursor))
-    }
-
-    /// Honest-IME write: TRUE range replacement on the focused textbox — how voice dictation rewrites earlier words (setComposingRegion) without the backspace-replay hack.
-    fn ime_replace_chars(
-        &mut self,
-        start: usize,
-        end: usize,
-        s: &str,
-        text: &mut fluor::text::TextRenderer,
-    ) {
-        let Some(focus) = self.focused else { return };
-        if let Some(tb) = self
-            .message_textbox
-            .as_mut()
-            .filter(|t| t.hit_id() == focus)
-        {
-            tb.replace_char_range(start, end, s, text);
-        } else if let Some(tb) = self.textbox_by_hit_mut(focus) {
-            tb.replace_char_range(start, end, s, text);
-        }
-        self.mark_dirty();
-    }
-
-    fn wants_input_reset(&mut self) -> bool {
-        // One-shot: drained after a send so the Activity restarts IME input exactly once.
-        std::mem::replace(&mut self.pending_input_reset, false)
-    }
-
-    fn set_event_proxy(&mut self, proxy: Arc<dyn WakeSender<Self::UserEvent>>) {
-        // A permission prompt answered on a system thread wakes the app, so a wave held on it goes out at once.
-        crate::platform::grants::set_wake(proxy.clone());
-        // Desktop resident mode: start serving the second-launch control channel now that we can wake the UI thread. No-op if main never parked a listener (lock-holder only).
-        #[cfg(not(target_os = "android"))]
-        {
-            crate::platform::control::spawn_accept_thread(proxy.clone());
-            crate::platform::desktop_notify::set_wake(proxy.clone());
-            // Resident from launch → the orb parks next to the clock now; a later toggle-on spawns it then (tray_spawned gates the once-per-process).
-            if self.resident_mode && !self.tray_spawned {
-                crate::platform::tray::spawn(proxy.clone());
-                self.tray_spawned = true;
-            }
-        }
-        // Calibration phase edges wake the loop thru this proxy — without it, a finished Wave measurement painted only when something else stirred the loop (the "hang on forever until you scroll" field report, 2026-09-02).
-        {
-            let cal_proxy = proxy.clone();
-            crate::wave::calibrate::register_wake(move || {
-                super::wake_ui(&cal_proxy);
-            });
-        }
-        self.event_proxy = Some(proxy);
-    }
-
-    fn start_hidden(&self) -> bool {
-        self.start_in_background
-    }
-
-    /// The host settled the visible `window_rect` after a user gesture (drag-move release / resize-drag end) — fires once per gesture, so the gesture IS the durability edge: persist immediately, no dirty tracking, no flush edges.
-    fn on_window_rect_changed(&mut self, x: i32, y: i32, w: u32, h: u32) {
-        self.save_window_geometry(x, y, w, h);
-    }
-
-    /// The app's folded OS focus flipped. GAIN counts as fleet-attention input (2026-08-18): alt-tab and titlebar clicks deliver no press to on_event, yet the human is demonstrably here — take the ball (which internally re-claims the open conversation and clears its away-unread). LOSS keeps the 2026-07-23 edge: retract our active-clearer role so a sibling can ding for this conversation again. No timers.
-    fn on_focus_changed(&mut self, focused: bool) {
-        if focused {
-            // Fluor fires this BEFORE dispatching the Focused event that normally stamps the attended atomic — stamp it now (idempotent with that arm) so the re-claim inside take_fleet_attention sees attended=true.
-            #[cfg(not(target_os = "android"))]
-            crate::platform::desktop_notify::set_window_focused(true);
-            // If the ball never left us (alt-tab away and back — no input elsewhere), take() no-ops but the blur edge below already RETRACTED our claim: re-claim explicitly, the 2026-07-23 behavior.
-            if !self.take_fleet_attention()
-                && self.active_conversation.is_some()
-                && matches!(
-                    self.state,
-                    AppState::Conversation | AppState::ConversationPanel(_)
-                )
-            {
-                self.broadcast_focus_claim(true);
-                if let Some(id) = self.active_conversation {
-                    self.clear_unread_of(id);
-                }
-            }
-        } else {
-            // Blur is a write edge for the open draft: a backgrounded app may never come back to write it.
-            self.flush_draft();
-            if self.active_conversation.is_some() && matches!(self.state, AppState::Conversation | AppState::ConversationPanel(_)) {
-                self.broadcast_focus_claim(false);
-            }
-        }
-    }
-
-    fn on_close_requested(&mut self) -> bool {
-        // Deliberate-quit overrides: Shift+Escape's one-shot flag, or shift held on the close itself (shift+✕, shift+Alt-F4). Either way the user asked for the REAL exit — decline residency this once and let the host exit.
-        if self.exit_requested || self.shift_held {
-            crate::log(
-                "EXIT: deliberate quit (shift+close / Shift+Escape) — bypassing resident hide",
-            );
-            // Quit is a flush edge for DATA first: block until the message/chains writers land their queues (the 2026-09-02 vanish — a queued self row died with the process), THEN flush the log batch (field 2026-08-21: freshly-recreated hang evidence evaporated on close because only panic/background/submit flushed).
-            self.flush_draft();
-            self.drain_durable_writers();
-            crate::flush_log_buffer();
-            return false;
-        }
-        // Resident mode: close = hide, keep running (network, timers, notifications). The host does the set_visible(false); we track "nobody's looking" for the notification gate. Non-resident closes exit as ever.
-        if self.resident_mode {
-            #[cfg(not(target_os = "android"))]
-            crate::platform::desktop_notify::set_window_visible(false);
-            crate::log("RESIDENT: window hidden on close — still running; launch photon again to surface it");
-            true
-        } else {
-            // Same drain + flush edge as the deliberate-quit path above — non-resident close exits the process.
-            self.flush_draft();
-            self.drain_durable_writers();
-            crate::flush_log_buffer();
-            false
-        }
-    }
-
-    /// The host un-hid the window — a ShowWindow, a Raise, or a macOS Dock click (field 2026-10-21: after close-to-hide and a Dock reopen the visible flag stayed false, so the open conversation still dinged, and the wave field and live digits stayed frozen).
-    /// The one place the visible half of `window_attended` comes back; the hide half is on_close_requested.
-    fn on_window_shown(&mut self) {
-        #[cfg(not(target_os = "android"))]
-        crate::platform::desktop_notify::set_window_visible(true);
-        self.dirty_from("the host's on_window_shown");
-    }
-
-    fn on_user_event(&mut self, event: PhotonEvent, _ctx: &mut Context) -> EventResponse {
-        // A full-UI instance never yields the lock — Yield from a confused second launch just surfaces us (the lifeline's exit-on-Yield lives in lifeline.rs, not here).
-        // The host's ShowWindow calls on_window_shown, which restores the visible flag.
-        if matches!(event, PhotonEvent::ShowWindow | PhotonEvent::Yield) {
-            return EventResponse::ShowWindow;
-        }
-        // Every other variant is a pure wake — the loop's tick drains whatever channel the sender filled.
-        EventResponse::Pass
-    }
-
-    fn init(&mut self, ctx: &mut Context) {
+impl PhotonApp {
+    /// The display half of `init`: fonts, the chrome and every widget with its hit ids, laid out for the viewport.
+    /// It starts nothing (no vault, no network, no thread), so a desktop render rig can lay out the UI without the core (`core_init`).
+    pub(super) fn init_display(&mut self, ctx: &mut Context) {
         // Every bundled face (the variable Oxanium with the dozenal digits, the Noto symbol/math/mono coverage, the per-script fonts) — one loader, shared with tests/glyph_fallback_probe.rs so the KAT measures the bundle the app actually ships.
         crate::ui::fonts::load_bundled(ctx.text);
         // Optical weight (fluor, with the variable faces — Nick 2026-10-14): small text a touch heavier, display text a touch lighter, so every size reads as the weight it asks for.
@@ -641,7 +437,218 @@ impl FluorApp<Px> for PhotonApp {
         // The per-field boxes are built lazily on first You-page open (build_you_fields) — HitId is a u16, so we allocate the ~32 field ids only when the page is actually visited.
 
         self.update_widget_layout(ctx);
+    }
+}
 
+impl FluorApp<Px> for PhotonApp {
+    /// One-shot absolute-zoom restore: the persisted per-device `display.zoom`, set when settings load; the host applies it exactly like a user zoom.
+    fn take_zoom_request(&mut self) -> Option<f32> {
+        let r = self.pending_zoom_restore.take();
+        // ferros: the person's app scale is the device's one preference, which ferros_fluor's host applies and follows, so Photon's own saved zoom is not put back over it (owner, 2026-11-20: every kist follows the global app scale).
+        let r = if cfg!(target_os = "ferros") { None } else { r };
+        if let Some(v) = r {
+            // Seed the persistence tracker with the restored value so launch doesn't immediately re-save what's already on disk.
+            self.zoom_saved_ru = v;
+        }
+        self.zoom_restore_applying = r;
+        r
+    }
+
+    /// One-shot window-geometry restore: a fluor `window_rect` in GLOBAL desktop units, applied by the host thru its own maximize machinery (clamped into live surfaces). Never raw winit calls — the parked 2026-08-16 version moved the fullscreen OS surface itself and the window vanished with a dead click region.
+    fn take_window_geometry_request(&mut self) -> Option<(i32, i32, u32, u32)> {
+        self.pending_geometry_restore.take()
+    }
+
+    type UserEvent = PhotonEvent;
+
+    fn title(&self) -> &str {
+        // OS WINDOW title only (taskbar / alt-tab / WM) — set once at window creation via winit `with_title`. The brand name lives here. The DRAWN in-app title bar is separate: it's `chrome.set_title(...)` per-frame in `render` ("← Network" on launch, live peer count on Ready). The chrome is constructed with "Photon" too but the first render overrides it before the first rasterize, so the drawn bar never flashes the brand name.
+        "Photon"
+    }
+
+    fn initial_size(&self, monitor: (u32, u32)) -> (u32, u32) {
+        // Portrait launch window — matches the pre-fluor Photon dimensions: height = half the SHORTER screen axis, width = half that. Yields a tall 1:2 (w:h) rectangle on any aspect ratio. Examples: 1920×1080 → 270×540; 1080×1920 → 270×540; 2560×1440 → 360×720.
+        let short = monitor.0.min(monitor.1);
+        let h = short >> 1;
+        let w = h >> 1;
+        (w, h)
+    }
+
+    fn wants_keyboard(&mut self) -> Option<bool> {
+        // Return the one-shot keyboard transition set by `change_focus` and clear it so subsequent polls see `None` until focus moves again — keeps the Android Activity from calling `InputMethodManager.show/hide` every frame.
+        self.pending_keyboard_request.take()
+    }
+
+    /// The system keyboard's rows from the frame's bottom, as a host that composites a keyboard over the frame tells them (ferros: fluor's ferros host, WINDOWS.md "The keyboard"; 0 when it goes).
+    /// Kept here and laid out by the tick's keyboard watch, which has the viewport this call does not.
+    fn on_keyboard_inset(&mut self, rows: u32) {
+        self.keyboard_rows = rows;
+    }
+
+    /// The frame's safe circle as the host tells it (ferros: `EV_SAFE` at the window's first show and as its full screen turns, WINDOWS.md "Drawn under the controls"): where nothing of the system's covers Photon, so its orb, beads and text stay inside.
+    /// It replaces the first frame's guess from the panel's constants (`SafeCircle::of_panel`); the next frame lays out again round it. No other host calls it, so the desktop and Android never have a safe circle.
+    fn on_safe_area(&mut self, area: fluor::host::app::SafeArea) {
+        let c = crate::ui::SafeCircle { cx: area.cx, cy: area.cy, r: area.r };
+        self.safe_told = true;
+        if crate::ui::set_safe_circle(c) {
+            crate::logf!("SAFE: the display's safe circle, centre ({:.1}, {:.1}) radius {:.1} (top {:.1}), the system holding the top {} and the bottom {}", c.cx, c.cy, c.r, c.top(), area.top, area.bottom);
+            self.dirty_from("the host's safe circle");
+        }
+    }
+
+    /// Honest-IME read: the FOCUSED textbox's text + cursor (chars), thru the one registry — any box (compose, search, profile fields) mirrors truthfully to the Android InputConnection.
+    fn ime_editor_state(&mut self) -> Option<(String, usize)> {
+        let focus = self.focused?;
+        // The multi-line compose box lives outside the single-line registry — its branch first.
+        if let Some(tb) = self
+            .message_textbox
+            .as_ref()
+            .filter(|t| t.hit_id() == focus)
+        {
+            let text: String = tb.chars.iter().collect();
+            let cursor = tb.cursor.min(tb.chars.len()); // WHY/PROOF: `Textbox.cursor` and `.chars` are public fields, and this app rewrites `chars` directly (a rename prefill) without moving the cursor — the type cannot hold cursor ≤ len, so its reader must
+            return Some((text, cursor));
+        }
+        let tb = self.textbox_by_hit_mut(focus)?;
+        let text: String = tb.chars.iter().collect();
+        let cursor = tb.cursor.min(tb.chars.len()); // WHY/PROOF: `Textbox.cursor` and `.chars` are public fields, and this app rewrites `chars` directly (a rename prefill) without moving the cursor — the type cannot hold cursor ≤ len, so its reader must
+        Some((text, cursor))
+    }
+
+    /// Honest-IME write: TRUE range replacement on the focused textbox — how voice dictation rewrites earlier words (setComposingRegion) without the backspace-replay hack.
+    fn ime_replace_chars(
+        &mut self,
+        start: usize,
+        end: usize,
+        s: &str,
+        text: &mut fluor::text::TextRenderer,
+    ) {
+        let Some(focus) = self.focused else { return };
+        if let Some(tb) = self
+            .message_textbox
+            .as_mut()
+            .filter(|t| t.hit_id() == focus)
+        {
+            tb.replace_char_range(start, end, s, text);
+        } else if let Some(tb) = self.textbox_by_hit_mut(focus) {
+            tb.replace_char_range(start, end, s, text);
+        }
+        self.mark_dirty();
+    }
+
+    fn wants_input_reset(&mut self) -> bool {
+        // One-shot: drained after a send so the Activity restarts IME input exactly once.
+        std::mem::replace(&mut self.pending_input_reset, false)
+    }
+
+    fn set_event_proxy(&mut self, proxy: Arc<dyn WakeSender<Self::UserEvent>>) {
+        // A permission prompt answered on a system thread wakes the app, so a wave held on it goes out at once.
+        crate::platform::grants::set_wake(proxy.clone());
+        // Desktop resident mode: start serving the second-launch control channel now that we can wake the UI thread. No-op if main never parked a listener (lock-holder only).
+        #[cfg(not(target_os = "android"))]
+        {
+            crate::platform::control::spawn_accept_thread(proxy.clone());
+            crate::platform::desktop_notify::set_wake(proxy.clone());
+            // Resident from launch → the orb parks next to the clock now; a later toggle-on spawns it then (tray_spawned gates the once-per-process).
+            if self.resident_mode && !self.tray_spawned {
+                crate::platform::tray::spawn(proxy.clone());
+                self.tray_spawned = true;
+            }
+        }
+        // Calibration phase edges wake the loop thru this proxy — without it, a finished Wave measurement painted only when something else stirred the loop (the "hang on forever until you scroll" field report, 2026-09-02).
+        {
+            let cal_proxy = proxy.clone();
+            crate::wave::calibrate::register_wake(move || {
+                super::wake_ui(&cal_proxy);
+            });
+        }
+        self.event_proxy = Some(proxy);
+    }
+
+    fn start_hidden(&self) -> bool {
+        self.start_in_background
+    }
+
+    /// The host settled the visible `window_rect` after a user gesture (drag-move release / resize-drag end) — fires once per gesture, so the gesture IS the durability edge: persist immediately, no dirty tracking, no flush edges.
+    fn on_window_rect_changed(&mut self, x: i32, y: i32, w: u32, h: u32) {
+        self.save_window_geometry(x, y, w, h);
+    }
+
+    /// The app's folded OS focus flipped. GAIN counts as fleet-attention input (2026-08-18): alt-tab and titlebar clicks deliver no press to on_event, yet the human is demonstrably here — take the ball (which internally re-claims the open conversation and clears its away-unread). LOSS keeps the 2026-07-23 edge: retract our active-clearer role so a sibling can ding for this conversation again. No timers.
+    fn on_focus_changed(&mut self, focused: bool) {
+        if focused {
+            // Fluor fires this BEFORE dispatching the Focused event that normally stamps the attended atomic — stamp it now (idempotent with that arm) so the re-claim inside take_fleet_attention sees attended=true.
+            #[cfg(not(target_os = "android"))]
+            crate::platform::desktop_notify::set_window_focused(true);
+            // If the ball never left us (alt-tab away and back — no input elsewhere), take() no-ops but the blur edge below already RETRACTED our claim: re-claim explicitly, the 2026-07-23 behavior.
+            if !self.take_fleet_attention()
+                && self.active_conversation.is_some()
+                && matches!(
+                    self.state,
+                    AppState::Conversation | AppState::ConversationPanel(_)
+                )
+            {
+                self.broadcast_focus_claim(true);
+                if let Some(id) = self.active_conversation {
+                    self.clear_unread_of(id);
+                }
+            }
+        } else {
+            // Blur is a write edge for the open draft: a backgrounded app may never come back to write it.
+            self.flush_draft();
+            if self.active_conversation.is_some() && matches!(self.state, AppState::Conversation | AppState::ConversationPanel(_)) {
+                self.broadcast_focus_claim(false);
+            }
+        }
+    }
+
+    fn on_close_requested(&mut self) -> bool {
+        // Deliberate-quit overrides: Shift+Escape's one-shot flag, or shift held on the close itself (shift+✕, shift+Alt-F4). Either way the user asked for the REAL exit — decline residency this once and let the host exit.
+        if self.exit_requested || self.shift_held {
+            crate::log(
+                "EXIT: deliberate quit (shift+close / Shift+Escape) — bypassing resident hide",
+            );
+            // Quit is a flush edge for DATA first: block until the message/chains writers land their queues (the 2026-09-02 vanish — a queued self row died with the process), THEN flush the log batch (field 2026-08-21: freshly-recreated hang evidence evaporated on close because only panic/background/submit flushed).
+            self.flush_draft();
+            self.drain_durable_writers();
+            crate::flush_log_buffer();
+            return false;
+        }
+        // Resident mode: close = hide, keep running (network, timers, notifications). The host does the set_visible(false); we track "nobody's looking" for the notification gate. Non-resident closes exit as ever.
+        if self.resident_mode {
+            #[cfg(not(target_os = "android"))]
+            crate::platform::desktop_notify::set_window_visible(false);
+            crate::log("RESIDENT: window hidden on close — still running; launch photon again to surface it");
+            true
+        } else {
+            // Same drain + flush edge as the deliberate-quit path above — non-resident close exits the process.
+            self.flush_draft();
+            self.drain_durable_writers();
+            crate::flush_log_buffer();
+            false
+        }
+    }
+
+    /// The host un-hid the window — a ShowWindow, a Raise, or a macOS Dock click (field 2026-10-21: after close-to-hide and a Dock reopen the visible flag stayed false, so the open conversation still dinged, and the wave field and live digits stayed frozen).
+    /// The one place the visible half of `window_attended` comes back; the hide half is on_close_requested.
+    fn on_window_shown(&mut self) {
+        #[cfg(not(target_os = "android"))]
+        crate::platform::desktop_notify::set_window_visible(true);
+        self.dirty_from("the host's on_window_shown");
+    }
+
+    fn on_user_event(&mut self, event: PhotonEvent, _ctx: &mut Context) -> EventResponse {
+        // A full-UI instance never yields the lock — Yield from a confused second launch just surfaces us (the lifeline's exit-on-Yield lives in lifeline.rs, not here).
+        // The host's ShowWindow calls on_window_shown, which restores the visible flag.
+        if matches!(event, PhotonEvent::ShowWindow | PhotonEvent::Yield) {
+            return EventResponse::ShowWindow;
+        }
+        // Every other variant is a pure wake — the loop's tick drains whatever channel the sender filled.
+        EventResponse::Pass
+    }
+
+    fn init(&mut self, ctx: &mut Context) {
+        self.init_display(ctx);
         // Everything below is DISPLAY-FREE — split out so the headless lifeline (docs/headless-lifeline.md) runs the identical core with no Context.
         self.core_init();
     }
@@ -4700,7 +4707,10 @@ impl PhotonApp {
                         super::render::conv_blind_step(&mut self.conv_blind_h, &mut self.conv_blind_edge, rests, bar_h, step);
                         let off = self.conv_blind_h[2]; // the row's hidden amount — what the rest of the screen (the filter pill, the ‹ Contacts hit gate) reads
                         let blind_moved = (off - self.conv_topbar_off).abs() > 0.01;
-                        if let (Some(s), false) = (shift, blind_moved) {
+                        // A safe circle (ferros) draws no blind: what follows its rise there is the filter pill alone, in its own band below the list, which a memmove frame draws again whole (`around_pane`), so the list still rides the memmove.
+                        // Until 2026-11-21 every scroll toward the newest row on the Pro was a whole frame for as long as the unseen blind rose (the render rig: 18 of a 32-frame fling's way back).
+                        let blind_over_list = blind_moved && crate::ui::safe_circle().is_none();
+                        if let (Some(s), false) = (shift, blind_over_list) {
                             self.scroll_shift += s;
                             rigid = true;
                         }
@@ -5572,3 +5582,6 @@ mod frame_step_tests {
         assert_eq!(fling_frames(-3, 2), (-5, -1), "a fling up sheds toward zero too");
     }
 }
+
+#[cfg(test)]
+mod scroll_rig;

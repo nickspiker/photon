@@ -72,13 +72,19 @@ pub(super) fn around_pane(pane: fluor::canvas::PixelRect, vw: usize, vh: usize) 
     [PixelRect::new(0, 0, vw, pane.y0), PixelRect::new(0, pane.y1, vw, vh), PixelRect::new(0, pane.y0, pane.x0, pane.y1), PixelRect::new(pane.x1, pane.y0, vw, pane.y1)]
 }
 
-fn clip_to_damage(clip: fluor::paint::Clip, hinted: bool, damage: fluor::canvas::PixelRect) -> fluor::paint::Clip {
+/// The clip is narrowed to the box of the frame's rects where they meet it, not to their own box: a memmove frame's rects (the band, the overlays, the fixed bands around the pane) have the whole frame for their box, while inside the pane they are the band and the overlays.
+fn clip_to_damage(clip: fluor::paint::Clip, hinted: bool, rects: &[fluor::canvas::PixelRect]) -> fluor::paint::Clip {
     if !hinted {
         return clip;
     }
-    let x0 = clip.x_start.max(damage.x0);
-    let y0 = clip.y_start.max(damage.y0);
-    fluor::paint::Clip::new(x0, y0, clip.x_end.min(damage.x1).max(x0), clip.y_end.min(damage.y1).max(y0))
+    let pane = fluor::canvas::PixelRect::new(clip.x_start, clip.y_start, clip.x_end, clip.y_end);
+    // Each rect cut at the pane (an empty result where they do not meet, which the union passes over).
+    let damage = rects.iter().map(|r| fluor::canvas::PixelRect::new(r.x0.max(pane.x0), r.y0.max(pane.y0), r.x1.min(pane.x1), r.y1.min(pane.y1))).fold(fluor::canvas::PixelRect::empty(), |a, r| a.union(r));
+    // No rect meets the pane: an empty clip at its top, so nothing in it is drawn.
+    if damage.is_empty() {
+        return fluor::paint::Clip::new(clip.x_start, clip.y_start, clip.x_start, clip.y_start);
+    }
+    fluor::paint::Clip::new(damage.x0, damage.y0, damage.x1, damage.y1)
 }
 
 impl PhotonApp {
@@ -776,8 +782,12 @@ impl PhotonApp {
         // ONE CLEAN FIELD (owner 2026-11-21: "that galois should be clean for the whole screen"): one offset for the whole screen, the main pane's (`noise_scroll`), with no split at a pinned box or between Settings' rail and content.
         // A frame that draws only part of the screen lays the noise where the rest of the screen already shows it (`noise_drawn`), moved by the frame's memmove when it rides one; damage_rect makes a frame whole when the offset moved any other way, and should one still arrive here, the noise keeps the offset on screen and the next frame is drawn whole.
         let noise_want = (self.noise_scroll(), self.noise_base());
-        let whole_frame = ctx.damage_clip == fluor::canvas::PixelRect::new(0, 0, buf_w, buf_h);
-        let noise_on_screen = match self.scroll_hint_armed.filter(|_| !whole_frame) {
+        // Every pixel drawn: the frame is one rect, the whole of it (a memmove frame names several rects, whose box may be the whole frame while the pane between them is only moved).
+        let whole_frame = ctx.damage_rects() == [fluor::canvas::PixelRect::new(0, 0, buf_w, buf_h)];
+        // The memmove this frame rides: the shift damage_rect armed, as the host says it applied it (`ctx.scroll`), never inferred from the damage's shape.
+        // Until 2026-11-21 it was taken as applied whenever the damage's box was not the whole frame, and a conversation's memmove frame (its header and compose bar drawn again with the band) has the whole frame for its box.
+        let scroll_hint = self.scroll_hint_armed.filter(|(rect, dy, _)| ctx.scroll == Some((*rect, *dy)));
+        let noise_on_screen = match scroll_hint {
             Some((_, dy, _)) => (self.noise_drawn.0 + dy as isize, self.noise_drawn.1),
             None => self.noise_drawn,
         };
@@ -877,8 +887,7 @@ impl PhotonApp {
         let mut measured_extent: Option<(f32, f32)> = None;
         // Stage marks for the >1s breakdown at the end of the frame — the flat "render took Nms" line named the SCREEN but not the STAGE, which stalled the 2026-08-21 hang hunt (5.8-8.8s Conversation renders, no idea where inside).
         let mark_pre = std::time::Instant::now();
-        // SCROLL AS A MEMMOVE (Nick 2026-10-06): when `damage_rect` armed a rigid shift for this frame (and the host did not override it with a full repaint — then the clip IS the viewport and no memmove happened anywhere), the bg layer shifts by the same dy and only the exposed band re-rasters; the hit map shifts after the chrome pass; the lists clip their rows to the damage; the final bg flatten covers only the damage.
-        let scroll_hint = self.scroll_hint_armed.filter(|_| ctx.damage_clip != fluor::canvas::PixelRect::new(0, 0, buf_w, buf_h));
+        // SCROLL AS A MEMMOVE (Nick 2026-10-06): when the host applied the shift `damage_rect` armed for this frame (`scroll_hint` above), the bg layer shifts by the same dy and only the exposed band re-rasters; the hit map shifts after the chrome pass; the lists clip their rows to the damage; the final bg flatten covers only the damage.
         // The rects the host cleared and presents this frame (one, the damage clip, unless a memmove frame named several), copied before the canvas borrows the context.
         let frame_rects: Vec<fluor::canvas::PixelRect> = match ctx.damage_rects.as_slice() { [] => vec![ctx.damage_clip], r => r.to_vec() };
         _rt.3 = scroll_hint.is_some() && self.scroll_frames_hinted < 3 && crate::is_dev_build();
@@ -998,7 +1007,10 @@ impl PhotonApp {
         }
         // The CHROME LAYER (orb, controls strip, title, window buttons) goes in NOW, before any content: fluor is front to back, so it stays on top of everything the screens draw — rows scrolled up under the title strip, the full-screen wave panel. Its bg layer (the speckle) is flattened LAST, under all content (`flatten_bg_into` below).
         // Over the damage only: outside it the frame already holds last frame's composite, chrome included, and a chrome change is chrome damage that widens the frame's damage (damage_rect).
-        chrome.flatten_chrome_into(target, buf_w, buf_h, Some(fluor::paint::Clip::new(ctx.damage_clip.x0, ctx.damage_clip.y0, ctx.damage_clip.x1, ctx.damage_clip.y1)));
+        // Each of the frame's rects alone, not their box: a memmove frame's rects have the whole frame for their box, and the pane between them is last frame's, already opaque.
+        for r in &frame_rects {
+            chrome.flatten_chrome_into(target, buf_w, buf_h, Some(fluor::paint::Clip::new(r.x0, r.y0, r.x1, r.y1)));
+        }
 
         // WAVE OVERLAY (docs/waves.md) — retained fluor Buttons (no hand-rolled pills), painted HERE, EARLY, so under-blend keeps them above every screen's body (the whole point: a ring must be visible + answerable from wherever the user is). A live wave shows the status chip + action bar; an open callable conversation with no wave shows the ☎ start pill. Each button claims its hits right after its own paint (`stamp_hit_into`, the whole pill with its label and anti-aliased rim), in the same front-to-back order as its pixels, so every screen drawn after takes only what the overlay left; a pill that must not dispatch (dimmed, or a label) claims nothing of its own. Hover/press/dispatch ride `visit_app_widgets`. y sits just below the chrome title-bar band.
         {
@@ -2244,7 +2256,7 @@ impl PhotonApp {
                 }
                 self.last_pane = Some((2, fluor::canvas::PixelRect::new(0, pane_top.min(buf_h), buf_w, buf_h), pane_overlays));
             }
-            let rows_clip = clip_to_damage(rows_clip, scroll_hint.is_some(), ctx.damage_clip);
+            let rows_clip = clip_to_damage(rows_clip, scroll_hint.is_some(), &frame_rects);
 
             // Filter by the search text (case-insensitive substring on the handle); empty filter = all.
             let filter: String = self
@@ -3597,7 +3609,7 @@ impl PhotonApp {
                             }
                             self.last_pane = Some((1, pane_rect, pane_overlays));
                         }
-                        let list_clip = clip_to_damage(list_clip, scroll_hint.is_some(), ctx.damage_clip);
+                        let list_clip = clip_to_damage(list_clip, scroll_hint.is_some(), &frame_rects);
 
                         // Lay messages out bottom-up so the newest sits at list_bottom. Clamp scroll offset to the actual overscroll range so a stale offset from a previous (larger) window size can't push every message above list_top on resize.
                         // Probe rows (hidden chain-weave records, persisted for re-ACK durability) never render — filter before layout so the scroll height matches what's drawn.
@@ -3944,7 +3956,7 @@ impl PhotonApp {
                             let band_bot = ((y + line_h * 0.5).min(list_bottom)) as isize;
                             let slot = vi % super::MSG_HIT_SPAN as usize;
                             // On a memmove frame a row outside the damage keeps the stamps the hit-map shift carried; only rows touching the damage re-stamp (the read of every pixel in the band is the cost).
-                            let band_in_damage = scroll_hint.is_none() || (band_bot > ctx.damage_clip.y0 as isize && band_top < ctx.damage_clip.y1 as isize);
+                            let band_in_damage = scroll_hint.is_none() || (band_bot > list_clip.y_start as isize && band_top < list_clip.y_end as isize);
                             // The SELECTED row's strip (its action pills, the reaction glyphs, the circled "+") paints inside this band further down the walk and is in front of it: there the band reads what is in front now and claims behind the strip at the row's end (FrontOpaque), so the strip's pills keep their own taps.
                             let row_selected = sel_key.is_some_and(|(ts, out)| msg.timestamp == ts && msg.is_outgoing == out);
                             let mut band_front: Option<FrontOpaque> = None;
@@ -4183,17 +4195,19 @@ impl PhotonApp {
                                 // No media: the highlight's action region starts at the strip's own top — detail_h carries the wrapped action lines, so the veil grows with them.
                                 let hl_actions_top = media_edges.map(|(_, b)| b).unwrap_or(y - detail_h + line_h * 0.5).max(list_top);
                                 let hl_react_top = (y - line_h * 0.7).max(list_top);
+                                // Each edge floored on its own (`as isize` of a row that is never negative), so a section cut at the list's edge keeps that edge's row however far the other edge has moved: the rows are rigid under the memmove.
+                                // A height floored from the difference dropped the list's last row on frames where the moving edge's fraction passed the list edge's, and the memmove carried that bare row up the screen as a line (the 2026-11-21 render rig).
                                 if hl_media_top > hl_meta_top {
-                                    paint::fill_rect(&mut canvas, 0, hl_meta_top as isize, buf_w as isize, (hl_media_top - hl_meta_top) as isize, meta_tint, Some(list_clip), None);
+                                    paint::fill_rect(&mut canvas, 0, hl_meta_top as isize, buf_w as isize, hl_media_top as isize - hl_meta_top as isize, meta_tint, Some(list_clip), None);
                                 }
                                 if hl_actions_top > hl_media_top {
-                                    paint::fill_rect(&mut canvas, 0, hl_media_top as isize, buf_w as isize, (hl_actions_top - hl_media_top) as isize, theme::RAIL_ACTIVE_COLOUR, Some(list_clip), None);
+                                    paint::fill_rect(&mut canvas, 0, hl_media_top as isize, buf_w as isize, hl_actions_top as isize - hl_media_top as isize, theme::RAIL_ACTIVE_COLOUR, Some(list_clip), None);
                                 }
                                 if hl_react_top > hl_actions_top {
-                                    paint::fill_rect(&mut canvas, 0, hl_actions_top as isize, buf_w as isize, (hl_react_top - hl_actions_top) as isize, action_tint, Some(list_clip), None);
+                                    paint::fill_rect(&mut canvas, 0, hl_actions_top as isize, buf_w as isize, hl_react_top as isize - hl_actions_top as isize, action_tint, Some(list_clip), None);
                                 }
                                 if hl_bot > hl_react_top {
-                                    paint::fill_rect(&mut canvas, 0, hl_react_top as isize, buf_w as isize, (hl_bot - hl_react_top) as isize, react_tint, Some(list_clip), None);
+                                    paint::fill_rect(&mut canvas, 0, hl_react_top as isize, buf_w as isize, hl_bot as isize - hl_react_top as isize, react_tint, Some(list_clip), None);
                                 }
                                 // Lower strip line: the ACTION ROW — reply · edit · copy/copied · resend · delete. Conditional pills: edit only for outgoing (stub until the message-format rework), resend only for undelivered outgoing (manual re-fire on the chain), delete always (LOCAL until tombstones — fleet sync may resurrect it), reply always. Each pill stamps its own hit id with generous padding.
                                 let (copy_label, copy_colour) = if self.selected_msg_copied {
@@ -4641,7 +4655,7 @@ impl PhotonApp {
                                                 let px = wx0 + f * (bx1 - wx0);
                                                 let (py0, py1) = (by0.max(list_top), by1.min(list_bottom));
                                                 if py1 > py0 {
-                                                    paint::fill_rect(&mut canvas, px as isize, py0 as isize, hair.ceil() as isize, (py1 - py0) as isize, *theme::CONTACT_NAME_COLOUR, Some(list_clip), None);
+                                                    paint::fill_rect(&mut canvas, px as isize, py0 as isize, hair.ceil() as isize, py1 as isize - py0 as isize, *theme::CONTACT_NAME_COLOUR, Some(list_clip), None);
                                                 }
                                                 // Elapsed / total beside the header, on the side the header left free.
                                                 let pos_secs = (f * total_slots as f32 / 100.0) as i64;
@@ -4756,7 +4770,7 @@ impl PhotonApp {
                                             let phx = wx0 + f * (wx1 - wx0);
                                             let (py0, py1) = (band_top.max(list_top), band_bot.min(list_bottom));
                                             if py1 > py0 {
-                                                paint::fill_rect(&mut canvas, phx as isize, py0 as isize, 0, (py1 - py0) as isize, *theme::CONTACT_NAME_COLOUR, Some(list_clip), None);
+                                                paint::fill_rect(&mut canvas, phx as isize, py0 as isize, 0, py1 as isize - py0 as isize, *theme::CONTACT_NAME_COLOUR, Some(list_clip), None);
                                             }
                                         }
                                         let played_cols = mfrac.map(|f| (f * cols as f32) as usize).unwrap_or(0);
@@ -4924,8 +4938,9 @@ impl PhotonApp {
                                     );
                                     if let Some(d) = dest {
                                         // Underline: one ru hairline just under the run, and the tap target (collected here, dispatched in driver — a tap inside opens the consent dialog).
-                                        let uy = (ly + msg_size * 0.55).min(list_bottom);
-                                        if uy > list_top {
+                                        // Where the run sits, cut at the list like the run itself: an underline held at the list's floor stood still while the rows moved under the memmove.
+                                        let uy = ly + msg_size * 0.55;
+                                        if uy > list_top && uy < list_bottom {
                                             paint::fill_rect(
                                                 &mut canvas,
                                                 x as isize,
@@ -4933,7 +4948,7 @@ impl PhotonApp {
                                                 w as isize,
                                                 hairline_px(ctx.viewport.ru) as isize,
                                                 *theme::LINK_PURPLE,
-                                                None,
+                                                Some(list_clip),
                                                 None,
                                             );
                                         }
