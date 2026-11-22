@@ -66,6 +66,8 @@ ios/**/.generated/
 /rust_out
 android log.txt
 *.vsf
+# Shipped assets are VSF by design (the orb, the ferros kist icon): kept, not stray.
+!assets/*.vsf
 
 node_modules/
 tools/arch-gate
