@@ -126,6 +126,8 @@ impl PhotonApp {
         self.ready_rings.clear();
         // The rings owed a frame are drawn by this one (`damage_rect` took their boxes before it, or the frame is whole).
         self.ring_damage.clear();
+        // The strip's box is this frame's to record, on a conversation that draws one.
+        self.strip_live_rect = None;
         // A launch-box refill waiting on the text renderer (the minting retype puts the first entry back on a mismatch or a cancel).
         if let Some(s) = self.launch_refill.take() {
             if let Some(tb) = self.textbox.as_mut() {
@@ -3609,7 +3611,10 @@ impl PhotonApp {
                             }
                             self.last_pane = Some((1, pane_rect, pane_overlays));
                         }
-                        let list_clip = clip_to_damage(list_clip, scroll_hint.is_some(), &frame_rects);
+                        // A frame that draws only part of the screen (a memmove's band, the strip's age alone) draws rows only where its rects meet the list: the rest of the list is last frame's, already opaque.
+                        let list_clip = clip_to_damage(list_clip, scroll_hint.is_some() || !whole_frame, &frame_rects);
+                        // The strip records its box below when it is on the list; off it, the box stays empty and its age draws nothing.
+                        self.strip_live_rect = Some(fluor::canvas::PixelRect::empty());
 
                         // Lay messages out bottom-up so the newest sits at list_bottom. Clamp scroll offset to the actual overscroll range so a stale offset from a previous (larger) window size can't push every message above list_top on resize.
                         // Probe rows (hidden chain-weave records, persisted for re-ACK durability) never render — filter before layout so the scroll height matches what's drawn.
@@ -3955,8 +3960,8 @@ impl PhotonApp {
                             let band_top = ((y - block_extra - line_h * 0.5).max(list_top)) as isize;
                             let band_bot = ((y + line_h * 0.5).min(list_bottom)) as isize;
                             let slot = vi % super::MSG_HIT_SPAN as usize;
-                            // On a memmove frame a row outside the damage keeps the stamps the hit-map shift carried; only rows touching the damage re-stamp (the read of every pixel in the band is the cost).
-                            let band_in_damage = scroll_hint.is_none() || (band_bot > list_clip.y_start as isize && band_top < list_clip.y_end as isize);
+                            // On a frame drawn in part (a memmove, the strip's age alone) a row outside the damage keeps last frame's stamps (moved by the hit map's shift on a memmove); only rows touching the damage re-stamp (the read of every pixel in the band is the cost).
+                            let band_in_damage = whole_frame || (band_bot > list_clip.y_start as isize && band_top < list_clip.y_end as isize);
                             // The SELECTED row's strip (its action pills, the reaction glyphs, the circled "+") paints inside this band further down the walk and is in front of it: there the band reads what is in front now and claims behind the strip at the row's end (FrontOpaque), so the strip's pills keep their own taps.
                             let row_selected = sel_key.is_some_and(|(ts, out)| msg.timestamp == ts && msg.is_outgoing == out);
                             let mut band_front: Option<FrontOpaque> = None;
@@ -4167,6 +4172,12 @@ impl PhotonApp {
                                 let meta_lh = detail_size * 1.3;
                                 let meta_lines = wrap_text_lines(ctx.text, &detail, &detail_style, buf_w as f32 - pad_x * 2.0);
                                 let meta_h = meta_lines.len() as f32 * meta_lh + msg_size * 0.4;
+                                // A frame that drew only part of the screen and found the meta a different height (the age's words wrapped to another line) moved the rows under it: the next frame is whole.
+                                if !whole_frame && meta_h != self.sel_meta_h {
+                                    self.scene_dirty = true;
+                                    super::RedrawAsk::here().note(&mut self.redraw_why, &mut self.frame_why);
+                                    ctx.window.request_redraw();
+                                }
                                 self.sel_meta_h = meta_h;
                                 sel_meta_extra = meta_h;
                                 // The meta stacks DOWN from the block's top: above the message body and its media band.
@@ -4174,6 +4185,15 @@ impl PhotonApp {
                                 for (k, ml) in meta_lines.iter().enumerate() {
                                     let ly = meta_bottom - (meta_lines.len() - 1 - k) as f32 * meta_lh;
                                     ctx.text.draw_text_left(&mut canvas, ml, pad_x, ly, &detail_style, Some(list_clip), None);
+                                }
+                                // The meta's box, across the list and a line past its first and last lines' centres (each line's glyphs reach about half a line either side), cut to the list: the live age's change is drawn there alone.
+                                // WHY/PROOF: a strip half scrolled out of the list reaches past its top or bottom, where the frame's header, compose bar or edge are, and a top past the frame's would cast a negative row to a huge usize; the host clears and converts the scratch over a rect's whole extent, so the box is cut to the list, which lies inside the frame, and its edges are floored and ceiled there.
+                                {
+                                    let top = (meta_bottom - meta_lines.len() as f32 * meta_lh).max(list_top).floor() as usize;
+                                    let bot = (meta_bottom + meta_lh).min(list_bottom).ceil() as usize;
+                                    if bot > top {
+                                        self.strip_live_rect = Some(fluor::canvas::PixelRect::new(0, top, buf_w, bot));
+                                    }
                                 }
                                 // SELECTED HIGHLIGHT, painted after the meta so the veil is uniform under topmost-first: the META section wears YELLOW on a development build (a layout debugging aid — the section boundary is visible) and the rail's white on release; the media + strip below always wear the rail's white.
                                 // The veil's OUTER edges snap to the hairline dividers that bound this block: the one the older row drew above, and this row's own below — the sections fill divider to divider, no offset weirdness (Nick 2026-09-12).
@@ -4932,7 +4952,7 @@ impl PhotonApp {
                                 for (b0, b1, dest) in segs {
                                     let run = &line[b0..b1];
                                     let style = if dest.is_some() { &link_style } else { &msg_style };
-                                    let w = ctx.text.draw_text_left(
+                                    let drawn = ctx.text.draw_text_left(
                                         &mut canvas,
                                         run,
                                         x,
@@ -4941,6 +4961,8 @@ impl PhotonApp {
                                         Some(list_clip),
                                         None,
                                     );
+                                    // A run outside a frame drawn in part is culled before it is shaped and reports no width; its link's tap target and the runs after it still need it, so it is measured.
+                                    let w = if drawn == 0.0 && !run.is_empty() { ctx.text.measure_text(run, style) } else { drawn };
                                     if let Some(d) = dest {
                                         // Underline: one ru hairline just under the run, and the tap target (collected here, dispatched in driver — a tap inside opens the consent dialog).
                                         // Where the run sits, cut at the list like the run itself: an underline held at the list's floor stood still while the rows moved under the memmove.

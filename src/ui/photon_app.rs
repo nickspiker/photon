@@ -2042,7 +2042,7 @@ pub struct PhotonApp {
     painted_ring_tiers: Vec<u32>,
     /// Each Ready row's presence ring as the last frame drew it (whose, the colour, the box), rebuilt by every render: a ring that changed alone is drawn again in its box, never the whole frame (`render::ring_rects`).
     ready_rings: Vec<render::DrawnRing>,
-    /// The rings' boxes owed a frame, taken by the next `damage_rect` and cleared by the render.
+    /// The boxes owed a frame alone (a presence ring that changed, a conversation strip's live age), taken by the next `damage_rect` and cleared by the render.
     ring_damage: Vec<PixelRect>,
     /// Whether the orb's current contact had an avatar when the orb was last built — part of the diff key so a mid-conversation avatar download upgrades the orb from the gradient placeholder.
     orb_had_avatar: bool,
@@ -2675,6 +2675,9 @@ pub struct PhotonApp {
     selected_msg: Option<(crate::types::ConversationId, i64, bool)>,
     /// The selected message's wrapped META section height, measured at draw — the extent walk reads it (a frame late on selection change; settles like any overshoot).
     sel_meta_h: f32,
+    /// Where the last frame drew the strip's META lines (the live age among them), cut to the list: None when the last frame was not a conversation's, empty when its strip was off the list.
+    /// A change of the age alone is drawn in this box (`ring_damage`), never the whole frame.
+    strip_live_rect: Option<PixelRect>,
     /// Wrap overflow of the selected message's ACTION ROW (extra lines × pill height): measured in the pill loop, consumed by the next frame's detail_h — the sel_meta_h pattern.
     sel_action_extra_h: f32,
     /// The open strip's copy pill has fired (text on the clipboard): pill turns green + reads "copied". Event-cleared — reset whenever the selection moves or closes, never on a timer.
@@ -3733,6 +3736,7 @@ impl PhotonApp {
             painted_compose_lines: 1,
             selected_msg: None,
             sel_meta_h: 0.0,
+            strip_live_rect: None,
             sel_action_extra_h: 0.0,
             selected_msg_copied: false,
             pending_delete: None,
@@ -5537,6 +5541,23 @@ fn ago_label(osc: i64) -> String {
         Msg::AgoSeconds(secs as u32)
     })
     .into_owned()
+}
+
+/// The oscillations until `ago_label` in arabic next reads differently, from an age of `osc`: the end of the largest whole unit it shows (a second, a minute, an hour or a day).
+/// A conversation's live age wakes at this edge and draws then, and at no other time.
+fn ago_label_next_osc(osc: i64) -> i64 {
+    let osc = osc.max(0); // WHY/PROOF: a row stamped by a peer clock ahead of ours has a negative age, which ago_label reads as now; its negative remainder would put the edge past a whole unit, while held at 0 it wakes within a second and the reading says whether the words moved
+    let secs = osc / crate::OSC_PER_SEC;
+    let unit = if secs >= 86400 {
+        86400
+    } else if secs >= 3600 {
+        3600
+    } else if secs >= 60 {
+        60
+    } else {
+        1
+    } * crate::OSC_PER_SEC;
+    unit - osc % unit
 }
 
 /// Bytes as something a person can read at a glance. Deliberately coarse — one decimal past a megabyte is noise on a figure that exists to answer "is there much in there?".

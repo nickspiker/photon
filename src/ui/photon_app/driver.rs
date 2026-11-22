@@ -3699,7 +3699,20 @@ impl FluorApp<Px> for PhotonApp {
             let live = self.live_readings();
             if live != self.live_last {
                 self.live_last = live;
-                { needs_redraw = true; self.note_redraw(); }
+                // A conversation's reading is its strip's age alone: drawn in the box the last frame drew its lines in (`strip_live_rect`), and not at all when the strip was off the list.
+                // A frame since that was not the conversation's leaves no box, and the frame is whole.
+                match (matches!(self.state, AppState::Conversation), self.strip_live_rect) {
+                    (true, Some(r)) => {
+                        if !r.is_empty() && !self.ring_damage.contains(&r) {
+                            self.ring_damage.push(r);
+                            self.note_redraw();
+                        }
+                    }
+                    _ => {
+                        needs_redraw = true;
+                        self.note_redraw();
+                    }
+                }
             }
         }
         // Full-screen ring panel: the pulse rings are a pure function of now, so a ringing wave just needs the frame to repaint fully (the panel covers the whole surface; partial damage would leave stale pulse arcs).
@@ -3860,7 +3873,10 @@ impl FluorApp<Px> for PhotonApp {
                 self.list_fling = if !moved || !in_bounds { 0 } else { after };
                 if self.list_fling == 0 {
                     // THE SETTLE FRAME: memmove frames paint only the band, so a row's link tap targets and the like are last-known from its last full paint — one ordinary repaint at rest puts every row's bookkeeping back to truth.
-                    self.mark_dirty();
+                    // A conversation needs none: its walk lays out every row on the screen on every frame and measures a link its band culled, so each memmove frame leaves the bookkeeping a whole frame would (the render rig holds them equal, 2026-11-22); the contacts list skips the rows its band misses and still settles.
+                    if !matches!(self.state, AppState::Conversation) {
+                        self.mark_dirty();
+                    }
                     if crate::is_dev_build() {
                         crate::logf!(
                             "SCROLL: fling ended ({}) — renders since the press: {} memmove, {} full",
@@ -4556,10 +4572,9 @@ impl PhotonApp {
                 .map(|(g, _, d)| format!("{} {}", (2.0 * g.max(1.0).log2()).round(), (2.0 * d.max(1.0).log2()).round()))
                 .unwrap_or_default(),
             // The strip's row, selected or the newest shown unasked — the same resolution the render uses.
-            AppState::Conversation => self.strip_target().map(|(_, ts, _)| {
-                let osc = (now_osc - ts).max(0);
-                if crate::dms_ui() { crate::dms_age(osc) } else { (osc / crate::OSC_PER_SEC).to_string() }
-            }).unwrap_or_default(),
+            // Its age as the strip draws it (`ago_label`), so a reading changes exactly when the drawn words do.
+            // Until 2026-11-22 it was the age in whole seconds while arabic draws the largest whole unit ("3 h ago"), and on the Pro a conversation drew a whole frame every second at rest.
+            AppState::Conversation => self.strip_target().map(|(_, ts, _)| super::ago_label(now_osc - ts)).unwrap_or_default(),
             _ => String::new(),
         }
     }
@@ -4813,7 +4828,11 @@ impl PhotonApp {
                 let since = self.base_opened_osc.and_then(|t0| age_edge(t0, 2));
                 [Some(clock), since].into_iter().flatten().min()
             }
-            AppState::Conversation => self.strip_target().and_then(|(_, ts, _)| age_edge(ts, 0)),
+            // In arabic the strip shows the age's largest whole unit, so it wakes when that unit turns over, not every second.
+            AppState::Conversation => self.strip_target().and_then(|(_, ts, _)| match crate::num_base() {
+                crate::NumBase::Arabic => Some(osc_to_instant(super::ago_label_next_osc(now_osc - ts) as f64)),
+                _ => age_edge(ts, 0),
+            }),
             _ => None,
         }
     }
