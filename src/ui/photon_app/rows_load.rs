@@ -372,10 +372,15 @@ impl PhotonApp {
             match l {
                 Landed::Page { id, rows } => {
                     let t = Instant::now();
-                    if let Some(conv) = self.conversations.iter_mut().find(|v| v.id() == id && v.rows_pending) {
+                    let mut moved: Vec<i64> = Vec::new();
+                    let pos = self.conversations.iter().position(|v| v.id() == id && v.rows_pending);
+                    if let Some(pos) = pos {
+                        let conv = &mut self.conversations[pos];
+                        let before: Vec<i64> = conv.messages.iter().map(|m| m.timestamp).collect();
                         for m in rows {
                             conv.insert_message_sorted(m);
                         }
+                        moved = stamps_moved(before, &conv.messages);
                     }
                     if let Some(load) = self.rows_load.as_mut() {
                         load.install += t.elapsed();
@@ -383,7 +388,10 @@ impl PhotonApp {
                             load.first_page = Some(load.since.elapsed());
                         }
                     }
-                    self.mark_dirty();
+                    // A frame only for rows the screen shows: the newest page of the opened conversation is on it, and the rows it holds already move nothing (`ask_frame_for_rows`).
+                    if let Some(p) = pos {
+                        self.ask_frame_for_rows(p, &moved, false);
+                    }
                 }
                 Landed::Full { id, rows, timing } => self.rows_landed(id, rows, timing),
             }
@@ -394,10 +402,14 @@ impl PhotonApp {
     /// One conversation's rows landed (or failed to): hydrate it, release everything that waited on it, and close the load when it was the last.
     fn rows_landed(&mut self, id: ConversationId, rows: Result<Vec<ChatMessage>, String>, timing: RowLoadTiming) {
         let t = Instant::now();
+        let mut moved: Vec<i64> = Vec::new();
         if let Some(conv) = self.conversations.iter_mut().find(|v| v.id() == id) {
             match rows {
                 Ok(rows) => {
+                    // The rows held already are the same rows the store holds (the summary's head rows and the pages read from it) or newer copies, which the adoption keeps: what moves is the rows it adds and the twins it folds away.
+                    let before: Vec<i64> = conv.messages.iter().map(|m| m.timestamp).collect();
                     conv.adopt_loaded_rows(rows);
+                    moved = stamps_moved(before, &conv.messages);
                     // RAM now holds every stored row plus what arrived meanwhile: this licenses a persist (load_messages' rule).
                     conv.hydrated = true;
                 }
@@ -439,7 +451,10 @@ impl PhotonApp {
         if let Some(ci) = self.pair_contact_of(id) {
             self.reserve_fleet_forward_for(ci);
         }
-        self.mark_dirty();
+        // A frame only for rows the screen shows: a conversation's whole history landing after Ready is mostly rows above the screen, or rows of a conversation it does not show (`ask_frame_for_rows`).
+        if let Some(pos) = self.conversations.iter().position(|v| v.id() == id) {
+            self.ask_frame_for_rows(pos, &moved, false);
+        }
         if let Some(load) = self.rows_load.as_mut() {
             load.install += t.elapsed();
         }
@@ -556,6 +571,36 @@ fn take_for<T>(held: &mut Vec<(ConversationId, T)>, id: ConversationId) -> Vec<(
     let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(held).into_iter().partition(|(i, _)| *i == id);
     *held = rest;
     mine
+}
+
+/// The stamps a landing added or took away: `before` the conversation's stamps ahead of it, `after` its rows behind it, each stamp counted as often as rows bear it.
+pub(super) fn stamps_moved(mut before: Vec<i64>, after: &[ChatMessage]) -> Vec<i64> {
+    let mut after: Vec<i64> = after.iter().map(|m| m.timestamp).collect();
+    before.sort_unstable();
+    after.sort_unstable();
+    let (mut a, mut b) = (before.into_iter().peekable(), after.into_iter().peekable());
+    let mut moved = Vec::new();
+    loop {
+        match (a.peek().copied(), b.peek().copied()) {
+            (Some(x), Some(y)) if x == y => {
+                a.next();
+                b.next();
+            }
+            (Some(x), Some(y)) if x < y => {
+                moved.push(x);
+                a.next();
+            }
+            (_, Some(y)) => {
+                moved.push(y);
+                b.next();
+            }
+            (Some(x), None) => {
+                moved.push(x);
+                a.next();
+            }
+            (None, None) => return moved,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -830,5 +875,16 @@ mod tests {
             scale.push(format!("{}px {:.2}ms", d, ms(t.elapsed())));
         }
         eprintln!("  one mark: rendered inline {:.1}ms, AV1 decode {:.1}ms, resample {}", ms(render), ms(decode), scale.join(", "));
+    }
+
+    /// A landing's moved stamps are the rows it added and the rows it took away, each as often as rows bear it: the rows held already move nothing.
+    #[test]
+    fn a_landing_moves_only_the_rows_it_adds_or_folds() {
+        let row = |t: i64| ChatMessage::new_with_timestamp("row".to_string(), t % 2 == 0, t);
+        let before: Vec<i64> = vec![5, 7, 7, 9];
+        let after: Vec<ChatMessage> = [1, 3, 5, 7, 9, 9].into_iter().map(row).collect();
+        assert_eq!(stamps_moved(before.clone(), &after), vec![1, 3, 7, 9], "two older rows added, a twin at 7 folded, a second row at 9");
+        let same: Vec<ChatMessage> = before.iter().copied().map(row).collect();
+        assert!(stamps_moved(before, &same).is_empty(), "the rows held already move nothing");
     }
 }

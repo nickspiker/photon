@@ -1,4 +1,4 @@
-//! A desktop render rig at the Pro's panel (1344 × 2992 under the safe circle): a fling in a long conversation and down the contacts, a conversation left at rest, and a cold launch's contact marks, each frame drawn as fluor's ferros host draws it (the app's rects, the scroll hint taken unless the frame is one whole rect, the rects cleared, the render told the hint it rode), counted, and held to the frame drawn whole at the same state.
+//! A desktop render rig at the Pro's panel (1344 × 2992 under the safe circle): a fling in a long conversation and down the contacts, a conversation left at rest, one back-filled by a sibling's history pages, and a cold launch's contact marks, each frame drawn as fluor's ferros host draws it (the app's rects, the scroll hint taken unless the frame is one whole rect, the rects cleared, the render told the hint it rode), counted, and held to the frame drawn whole at the same state.
 //! Run it with `cargo test --lib scroll_rig -- --ignored --nocapture --test-threads=1`: it prints the frames on the memmove, the part of the frame drawn and the render's time a frame.
 //! It lays out the UI alone (`init_display`): no vault, no network, no thread of the core.
 
@@ -238,17 +238,7 @@ fn contacts_fling_at_the_pros_size() {
 
 /// A conversation left alone, its window attended, at sixty frames a second for `secs` seconds, its newest row `age_secs` old and the ages in arabic (the Pro's base): the frames it drew, each held to the frame drawn whole.
 fn idle(age_secs: i64, secs: u64) -> Tally {
-    crate::platform::desktop_notify::set_window_visible(true);
-    crate::platform::desktop_notify::set_window_focused(true);
-    crate::set_num_base(crate::NumBase::Arabic);
-    let mut r = Rig::new(AppState::Conversation);
-    // The newest row stamped `age_secs` ago, the strip's unasked row.
-    let now = vsf::eagle_time_oscillations();
-    let conv = r.app.conversations.last_mut().unwrap();
-    let n = conv.messages.len() as i64;
-    for (i, m) in conv.messages.iter_mut().enumerate() {
-        m.timestamp = now - (age_secs + (n - 1 - i as i64) * 60) * crate::OSC_PER_SEC;
-    }
+    let mut r = at_rest(age_secs);
     let mut t = Tally::default();
     for _ in 0..8 {
         r.frame(&mut t);
@@ -352,4 +342,109 @@ fn contacts_marks_asked() {
 #[ignore]
 fn contacts_marks_warm() {
     cold_marks(true);
+}
+
+/// The open conversation of a rig, its window attended and the ages in arabic (the Pro's base), its rows a minute apart and the newest, the strip's unasked row, stamped `age_secs` ago.
+fn at_rest(age_secs: i64) -> Rig {
+    crate::platform::desktop_notify::set_window_visible(true);
+    crate::platform::desktop_notify::set_window_focused(true);
+    crate::set_num_base(crate::NumBase::Arabic);
+    let mut r = Rig::new(AppState::Conversation);
+    let now = vsf::eagle_time_oscillations();
+    let conv = r.app.conversations.last_mut().unwrap();
+    let n = conv.messages.len() as i64;
+    for (i, m) in conv.messages.iter_mut().enumerate() {
+        m.timestamp = now - (age_secs + (n - 1 - i as i64) * 60) * crate::OSC_PER_SEC;
+    }
+    r
+}
+
+/// A sibling's history page of `rows` rows, a minute apart, all older than `before`, as its page handler hands it to the merge.
+fn older_page(before: i64, rows: i64) -> Vec<crate::network::history_pages::HistoryRow> {
+    let words = ["the", "walk", "brought", "back", "an", "older", "row", "from", "the", "sibling"];
+    (0..rows)
+        .map(|k| {
+            let body: Vec<&str> = (0..3 + (k as usize * 5) % 20).map(|w| words[(k as usize + w) % words.len()]).collect();
+            crate::network::history_pages::HistoryRow::from_message(&crate::types::ChatMessage::new_with_timestamp(body.join(" "), k % 2 == 0, before - (k + 1) * 60 * crate::OSC_PER_SEC))
+        })
+        .collect()
+}
+
+/// Where the open conversation sits among the conversations (a tick may found others beside it).
+fn open_pos(r: &Rig) -> usize {
+    r.app.conversations.iter().position(|v| Some(v.id()) == r.app.active_conversation).expect("the rig opens its conversation")
+}
+
+/// One page merged into the open conversation as the history page handler merges it: the merge, then the frame its changed rows ask for (`ask_frame_for_rows`).
+fn merge_page(r: &mut Rig, rows: &[crate::network::history_pages::HistoryRow]) -> usize {
+    let pos = open_pos(r);
+    let m = super::super::conversation::merge_pair_page_rows(&mut r.app.conversations[pos], rows, true);
+    r.app.ask_frame_for_rows(pos, &m.drawn, false);
+    m.drawn.len()
+}
+
+/// A long conversation left at rest while a sibling back-fills its history (the Pro 2026-11-22, idle in Jeff's: twelve pages in fifteen seconds, each a whole frame of 68 to 119 ms).
+/// Pages of rows older than the screen draw nothing, and the frame the host holds is the frame drawn whole after them, pixel for pixel; a fling into the history they brought, with no frame drawn since, rides the memmove, every frame the frame drawn whole.
+/// A page whose row lands among the rows on the screen draws one frame, the list above that row alone, and that frame is the frame drawn whole with the rows' tap bookkeeping a whole frame leaves.
+#[test]
+#[ignore]
+fn conversation_backfill_at_the_pros_size() {
+    let mut r = at_rest(86_400 + 7);
+    let mut t = Tally::default();
+    for _ in 0..8 {
+        r.frame(&mut t);
+    }
+    r.verbose = true;
+    let pos = open_pos(&r);
+    let held = r.scratch.clone();
+    let pages = |r: &mut Rig, t: &mut Tally| {
+        let mut landed = 0;
+        for _ in 0..12 {
+            let oldest = r.app.conversations[pos].messages[0].timestamp;
+            landed += merge_page(r, &older_page(oldest, 50));
+            for _ in 0..4 {
+                r.frame(t);
+            }
+        }
+        landed
+    };
+    let mut t = Tally::default();
+    let landed = pages(&mut r, &mut t);
+    report("twelve pages of older rows landing at rest", &t);
+    println!("  {landed} rows landed, the conversation holds {}", r.app.conversations[pos].messages.len());
+    assert_eq!(landed, 12 * 50);
+    assert_eq!(t.frames, 0, "rows above the screen draw nothing");
+    assert!(r.scratch == held, "the frame the host holds is untouched");
+    assert!(r.matches_whole(), "and it is the frame drawn whole with the rows landed");
+
+    // Twelve more, then a fling into them with no frame drawn since: the ceiling the last frame measured is a floor now.
+    let mut t = Tally::default();
+    pages(&mut r, &mut t);
+    assert_eq!(t.frames, 0);
+    let t = r.fling(1, 1 << 5);
+    report("a fling into the history the pages brought", &t);
+    assert_eq!(t.wrong, 0, "a memmove frame is the frame drawn whole");
+    assert_eq!(t.stale, 0, "and leaves the rows' tap bookkeeping a whole frame does");
+    assert!(t.hinted * 4 >= t.frames * 3, "most of a fling rides the memmove");
+
+    // Back at rest at the newest row: a row lands under the third newest row the last frame laid out, on the screen.
+    let mut t = Tally::default();
+    for _ in 0..8 {
+        r.frame(&mut t);
+    }
+    let v = r.app.conv_view.clone().expect("the frame laid the rows out");
+    println!("  the last frame laid out {} rows", v.walked.len());
+    let at = v.walked[2].0 - 30 * crate::OSC_PER_SEC;
+    let row = crate::network::history_pages::HistoryRow::from_message(&crate::types::ChatMessage::new_with_timestamp("a row the walk found on the screen".to_string(), false, at));
+    let mut t = Tally::default();
+    assert_eq!(merge_page(&mut r, &[row]), 1);
+    for _ in 0..4 {
+        r.frame(&mut t);
+    }
+    report("a page whose row lands on the screen", &t);
+    let kept = r.bookkeeping();
+    assert_eq!(t.frames, 1, "one frame");
+    assert_eq!(t.whole, 0, "the list above the row alone");
+    assert!(r.matches_whole(), "the frame drawn whole");
+    assert_eq!(kept, r.bookkeeping(), "the rows' tap bookkeeping a whole frame leaves");
 }

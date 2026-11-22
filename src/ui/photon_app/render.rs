@@ -25,6 +25,15 @@ fn pane_hairline(canvas: &mut Canvas, layout: &SettingsLayout, y: f32, ru: f32, 
     paint::fill_rect(canvas, layout.content.x as isize, y as isize, layout.content.w as isize, hairline_px(ru) as isize, theme::VERSION_COLOUR, clip, None);
 }
 
+/// The hash a conversation row's wrapped lines are kept under (`msg_wrap_rows`): the body it shows and the face it is shaped in.
+fn wrap_body_hash(body: &str, oxanium: bool) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::hash::DefaultHasher::new();
+    body.hash(&mut h);
+    oxanium.hash(&mut h);
+    h.finish()
+}
+
 /// Greedy word wrap against a pixel width: one measure per candidate join. The attest band and stream entry #0's status line both need it — long ceremony steps and locked-device messages must fold, never run off the sides.
 fn wrap_to_width(text: &mut fluor::text::TextRenderer, s: &str, style: &TextStyle, max_w: f32) -> Vec<String> {
     // Explicit '\n' is an authored break (the clutch steps use line returns, never dashes — Nick 2026-09-07): each segment wraps independently and the break always survives.
@@ -128,6 +137,8 @@ impl PhotonApp {
         self.ring_damage.clear();
         // The strip's box is this frame's to record, on a conversation that draws one.
         self.strip_live_rect = None;
+        // So are the rows of the open conversation it lays out.
+        self.conv_view = None;
         // A launch-box refill waiting on the text renderer (the minting retype puts the first entry back on a mismatch or a cancel).
         if let Some(s) = self.launch_refill.take() {
             if let Some(tb) = self.textbox.as_mut() {
@@ -3762,8 +3773,16 @@ impl PhotonApp {
                             (self.active_conversation, n, raw_msgs.len() + (self.img_cache.len() << 20) + sel_key.map_or(0, |(t, o)| (t as usize) ^ (o as usize)), avail_w.to_bits(), msg_size.to_bits(), conv_filter as u8);
                         if self.msg_wrap.as_ref().map(|(k, _, _)| *k) != Some(wrap_key) {
                             let mut all_lines: Vec<Vec<String>> = Vec::with_capacity(n);
+                            // The last build's lines, when it wrapped this conversation at this width and size: a row whose body is unchanged takes its lines from there (`msg_wrap_rows`).
+                            let same_text = self.msg_wrap.as_ref().is_some_and(|(k, _, _)| k.0 == wrap_key.0 && k.3 == wrap_key.3 && k.4 == wrap_key.4);
+                            let (mut old_lines, mut old_rows) = match (same_text, self.msg_wrap.take()) {
+                                (true, Some((_, lines, _))) => (lines, std::mem::take(&mut self.msg_wrap_rows)),
+                                _ => (Vec::new(), Vec::new()),
+                            };
+                            let mut rows: Vec<(i64, bool, Option<u64>)> = Vec::with_capacity(n);
                             let mut total = 0usize;
                             for m in &visible {
+                                let mut row_hash: Option<u64> = None;
                                 // wave.audio rows draw in Oxanium (so the dozenal size + ▶ resolve) — measure with the SAME font or the wrapped line count disagrees with the draw.
                                 let row_wrap = if m.is_wave_recording() {
                                     TextStyle::new(msg_size, 0).weight(500).font("Oxanium")
@@ -3785,9 +3804,24 @@ impl PhotonApp {
                                     None => {
                                         let body = body_of(m);
                                         // A picture row has no text: the band IS the row, so it reserves no body line at all (the draw walks an empty body; the band anchors off max(1)).
-                                        if body.is_empty() && m.attach.is_some() { Vec::new() } else { wrap_text_lines(ctx.text, &body, &row_wrap, avail_w) }
+                                        if body.is_empty() && m.attach.is_some() {
+                                            Vec::new()
+                                        } else {
+                                            let h = wrap_body_hash(&body, m.is_wave_recording());
+                                            row_hash = Some(h);
+                                            // The same row with the same body in the last build (rows sorted by stamp): its lines, taken once.
+                                            let from = old_rows.partition_point(|r| r.0 < m.timestamp);
+                                            match old_rows[from..].iter().take_while(|r| r.0 == m.timestamp).position(|r| r.1 == m.is_outgoing && r.2 == Some(h)) {
+                                                Some(k) => {
+                                                    old_rows[from + k].2 = None;
+                                                    std::mem::take(&mut old_lines[from + k])
+                                                }
+                                                None => wrap_text_lines(ctx.text, &body, &row_wrap, avail_w),
+                                            }
+                                        }
                                     }
                                 };
+                                rows.push((m.timestamp, m.is_outgoing, row_hash));
                                 total += lines.len();
                                 // An image attachment with a micro preview reserves a band above its pill (IMG_PREVIEW_LINES lines) — the picture draws there before any blob is fetched.
                                 total += super::viewer::img_band_lines_of(&self.img_cache, m);
@@ -3807,6 +3841,7 @@ impl PhotonApp {
                                 all_lines.push(lines);
                             }
                             self.msg_wrap = Some((wrap_key, all_lines, total));
+                            self.msg_wrap_rows = rows;
                         }
                         let total_lines = self.msg_wrap.as_ref().map(|(_, _, t)| *t).unwrap_or(n);
                         let content_h = n as f32 * line_h
@@ -3817,6 +3852,7 @@ impl PhotonApp {
                         let max_scroll = (content_h - view_h).max(0.0); // the algorithm: content shorter than its view does not scroll
                         // Publish the ceiling so the tick can clamp the STORED offset (this field write is disjoint from the `contact` borrow above); the local `scroll` only fixes THIS frame's draw.
                         self.msg_max_scroll = max_scroll;
+                        self.msg_max_floor = false;
                         self.msg_view_h = view_h;
                         // WHY/PROOF: the stored offset was set against LAST frame's content — rows tombstoned or re-wrapped since can shrink the ceiling under it.
                         // Whole pixels: the memmove path shifts the buffer by the rounded delta, so the rows must sit where that shift puts them (SCROLL AS A MEMMOVE).
@@ -3903,10 +3939,16 @@ impl PhotonApp {
                             }
                         }
                         _rt.mark("pre-rows");
+                        // The rows the walk lays out (each one's stamp and the bottom of its band) and the stamps they point at: what a page landing before the next frame is held to (`ConvView`).
+                        let mut walked: Vec<(i64, isize)> = Vec::new();
+                        let mut walked_refs: Vec<i64> = Vec::new();
                         for (vi, msg) in visible.iter().enumerate().rev() {
                             if y < list_top - line_h {
                                 reached_oldest = false;
                                 break; // this block's BOTTOM line is above the visible region; wrapped lines extend upward, and older messages sit higher still
+                            }
+                            if let Some((_, t)) = msg.reference {
+                                walked_refs.push(t);
                             }
                             // Cached wrapped lines — scroll frames do zero shaping. `y` is the LAST line's baseline, earlier lines stack upward at `intra` spacing.
                             static EMPTY_LINES: Vec<String> = Vec::new();
@@ -3956,10 +3998,11 @@ impl PhotonApp {
                                 + wave_band_h
                                 + img_band_h
                                 + audio_band_h;
-                            // THE ROW'S HIT BAND — the WHOLE wrapped block, WHY/PROOF (a rect, not the paint): the gaps between a row's glyphs and lines are the row too — claimed BEFORE the row paints and only where nothing opaque already sits (the chrome's strip and orb, since the list runs to the window top on desktop): the stamp rides the paint decision (see claim_hit_rect_under). Clamped to the list region so header/compose never lose their own hits. MODULAR SLOTS, not a spend-down budget (Nick 2026-09-05, after the field bug where the walk's off-screen rows below the viewport exhausted a 64-id budget before any visible row got a target): the slot is `visible_index % MSG_HIT_SPAN`, so every row HAS an id by construction and there is nothing to exhaust. The table write below happens on the same band test, which keeps map and table in lockstep.
+                            // THE ROW'S HIT BAND — the WHOLE wrapped block, WHY/PROOF (a rect, not the paint): the gaps between a row's glyphs and lines are the row too — claimed BEFORE the row paints and only where nothing opaque already sits (the chrome's strip and orb, since the list runs to the window top on desktop): the stamp rides the paint decision (see claim_hit_rect_under). Clamped to the list region so header/compose never lose their own hits. MODULAR SLOTS, not a spend-down budget (Nick 2026-09-05, after the field bug where the walk's off-screen rows below the viewport exhausted a 64-id budget before any visible row got a target): the slot is the count of visible rows newer than this one, modulo MSG_HIT_SPAN (from the newest, so rows landing above the screen move no drawn row's slot), so every row HAS an id by construction and there is nothing to exhaust. The table write below happens on the same band test, which keeps map and table in lockstep.
                             let band_top = ((y - block_extra - line_h * 0.5).max(list_top)) as isize;
                             let band_bot = ((y + line_h * 0.5).min(list_bottom)) as isize;
-                            let slot = vi % super::MSG_HIT_SPAN as usize;
+                            walked.push((msg.timestamp, band_bot));
+                            let slot = (n - 1 - vi) % super::MSG_HIT_SPAN as usize;
                             // On a frame drawn in part (a memmove, the strip's age alone) a row outside the damage keeps last frame's stamps (moved by the hit map's shift on a memmove); only rows touching the damage re-stamp (the read of every pixel in the band is the cost).
                             let band_in_damage = whole_frame || (band_bot > list_clip.y_start as isize && band_top < list_clip.y_end as isize);
                             // The SELECTED row's strip (its action pills, the reaction glyphs, the circled "+") paints inside this band further down the walk and is in front of it: there the band reads what is in front now and claims behind the strip at the row's end (FrontOpaque), so the strip's pills keep their own taps.
@@ -4525,7 +4568,7 @@ impl PhotonApp {
                                 None
                             };
                             // ── WAVE CARD ── one event per wave: the header line, then (for a live wave) the waveform band that IS the seek bar. The recording row referencing this wave folds in here; until it lands the band says so.
-                            let wave_slot = vi % super::MSG_HIT_SPAN as usize;
+                            let wave_slot = (n - 1 - vi) % super::MSG_HIT_SPAN as usize;
                             if let Some(w) = msg.wave {
                                 let right_aligned = msg.is_outgoing || is_self_contact;
                                 let hy = y - react_off - wave_band_h;
@@ -4739,7 +4782,7 @@ impl PhotonApp {
                                     }
                                     // The picture is its own tap target: inside opens the viewer, the rest of the row opens the actions.
                                     if let (Some(a), Some((hash, _, _))) = (msg.attach, msg.file_parts()) {
-                                        let slot = vi % super::MSG_HIT_SPAN as usize;
+                                        let slot = (n - 1 - vi) % super::MSG_HIT_SPAN as usize;
                                         if slot < self.msg_attach_visuals.len() {
                                             self.msg_attach_visuals[slot] = Some(super::AttachVisual { hash, held: crate::storage::blob_present_or_pending(&hash), kind: a.kind, x0: cx - bw * 0.5, x1: cx + bw * 0.5, y0: (cy - bh * 0.5).max(list_top), y1: (cy + bh * 0.5).min(list_bottom) });
                                         }
@@ -4841,7 +4884,7 @@ impl PhotonApp {
                                         }
                                         // The band is the row's visual: the driver routes its taps (options / the play twelfth / seek-while-playing).
                                         if let Some(a) = msg.attach {
-                                            let slot = vi % super::MSG_HIT_SPAN as usize;
+                                            let slot = (n - 1 - vi) % super::MSG_HIT_SPAN as usize;
                                             if slot < self.msg_attach_visuals.len() {
                                                 self.msg_attach_visuals[slot] = Some(super::AttachVisual { hash: ahash, held: true, kind: a.kind, x0: wx0, x1: wx1, y0: band_top.max(list_top), y1: band_bot.min(list_bottom) });
                                             }
@@ -4852,7 +4895,7 @@ impl PhotonApp {
                             // A code or text row's preview lines are its visual: the body rect opens the reader, the margins open the actions.
                             if let (Some(a), Some((hash, _, _))) = (msg.attach, msg.file_parts()) {
                                 if a.kind.is_text() && !lines.is_empty() {
-                                    let slot = vi % super::MSG_HIT_SPAN as usize;
+                                    let slot = (n - 1 - vi) % super::MSG_HIT_SPAN as usize;
                                     let top = y - react_off - (lines.len() - 1) as f32 * intra - msg_size * 0.6;
                                     let bot = y - react_off + msg_size * 0.6;
                                     if slot < self.msg_attach_visuals.len() {
@@ -5077,6 +5120,7 @@ impl PhotonApp {
                             y -= line_h + block_extra + sel_meta_extra;
                         }
                         _rt.mark("rows");
+                        self.conv_view = (!walked.is_empty()).then(|| super::ConvView { id: hdr.conv_id, list: fluor::canvas::PixelRect::new(0, list_top as usize, buf_w, list_bottom as usize), walked, reached_first: reached_oldest, refs: walked_refs });
                         // STREAM ENTRY #0 — avatar, name, optional ceremony/lifecycle status: drawn ONLY when the walk reached message 1 (genesis on screen); `y` then sits just above it and the entry is the stream's literal first item. Ordinary stream content: same clip as every message, no pinning, no slide. Off-screen anywhere but genesis.
                         if reached_oldest && y > list_top - header_block_h - line_h {
                             let (block_status, status_h) = match &status_wrapped {

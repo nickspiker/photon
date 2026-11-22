@@ -3051,10 +3051,9 @@ impl PhotonApp {
                             self.persist_conversation_async(fid);
                             self.push_conversation_rows_to_siblings(fid, &fresh, Some(sender_pubkey.key));
                         }
-                        // A frame for new rows and the completion edge; a page that held nothing new asks for none.
-                        if !fresh.is_empty() || completed {
-                            self.mark_dirty();
-                        }
+                        // A frame for new rows the screen shows and the completion edge; a page that held nothing new, or only rows above the screen, asks for none (`ask_frame_for_rows`).
+                        let drawn: Vec<i64> = fresh.iter().map(|m| m.timestamp).collect();
+                        self.ask_frame_for_rows(conv_pos, &drawn, completed);
                     }
                     continue;
                 }
@@ -3159,6 +3158,7 @@ impl PhotonApp {
                 queue_job(&self.attach_job_tx, move || names.iter().for_each(crate::storage::blob_delete));
             }
             let PairPageMerge { fresh, answer_back, known_undelivered, mut drawn, .. } = merged;
+            let mut completed = false;
             {
                 let conv = &mut self.conversations[conv_pos];
 
@@ -3179,7 +3179,7 @@ impl PhotonApp {
                         }
                         if !page.more || (rec.was_complete_before && fresh.is_empty()) {
                             // The conversation panel's history line moves from syncing to complete, once.
-                            drawn |= !rec.complete;
+                            completed = !rec.complete;
                             rec.complete = true;
                         }
                     }
@@ -3286,14 +3286,13 @@ impl PhotonApp {
                     if self.chain_transmit(idx, &text, ts, re_ref, bw.as_ref()) {
                         crate::log("CHAT: fleet-forwarded row transmitted on the local chain");
                         // A row sent from here shows its sending state.
-                        drawn = true;
+                        drawn.push(ts);
                     }
                 }
             }
-            // A frame only for a page that changed what is drawn (`PairPageMerge::drawn`); the wave and alert paths above ask for their own.
-            if drawn {
-                self.mark_dirty();
-            }
+            // A frame only for a page that changed what the screen shows (`PairPageMerge::drawn`, held to the last frame by `ask_frame_for_rows`); the wave and alert paths above ask for their own.
+            // Until 2026-11-22 every page with a new row was a whole frame, though a sibling back-filling a long conversation lands its rows far above the screen (the Pro idle in Jeff's: a 68-119 ms frame each second).
+            self.ask_frame_for_rows(conv_pos, &drawn, completed);
         }
     }
 
@@ -3301,6 +3300,62 @@ impl PhotonApp {
     pub(super) fn looking_at(&self, conv_pos: usize) -> bool {
         let open = matches!(self.state, AppState::Conversation | AppState::ConversationPanel(_)) && self.active_conversation == self.conversations.get(conv_pos).map(|c| c.id());
         open && crate::platform::attended_here() && self.attention_is_ours() && self.last_poke.is_some_and(|t| t.elapsed() <= ATTENTION_RECENCY)
+    }
+
+    /// The frame a change to rows of the conversation at `conv_pos` asks for: its rows changed at the stamps `rows`, and its history line when `history_line` moved.
+    /// On the open conversation the list lays out from its newest row up and its offset counts from there, so a row older than every row the last frame laid out (`ConvView`) sits wholly above the screen: nothing on it moves, and no frame is drawn.
+    /// The ceiling that frame measured is then a floor of the true one (`msg_max_floor`), for the next frame to measure.
+    /// A row landing among the rows on the screen moves the rows above it and nothing below, so the list from its top to the bottom of the newer row it lands under is owed a frame alone (`ring_damage`).
+    /// A row at or after the newest walked (the strip's row and the rows below the screen), a row a walked row points at, or a list the walk read to its first row is a whole frame.
+    /// The contacts list draws a conversation by its newest row alone, and the open conversation's panel counts its rows and shows its history line.
+    pub(super) fn ask_frame_for_rows(&mut self, conv_pos: usize, rows: &[i64], history_line: bool) {
+        let id = self.conversations[conv_pos].id();
+        let open = self.active_conversation == Some(id);
+        let whole = match (self.state.clone(), rows.iter().max().copied()) {
+            (AppState::ConversationPanel(_), _) => open && (history_line || !rows.is_empty()),
+            (_, None) => false,
+            // Another conversation's rows are not on this one's screen (its unread and its alert ask for their own frames); the wave screen is drawn whole.
+            (AppState::Conversation, _) if !open => self.wave_screen(),
+            (AppState::Conversation, Some(newest)) => {
+                // What the rows did to the screen the last frame drew: None when they changed the whole of it, Some(None) when nothing on it, Some(the box) when the rows of that box alone.
+                let moved: Option<Option<PixelRect>> = self.conv_view.as_ref().filter(|v| v.id == id && !v.reached_first && !rows.iter().any(|t| v.refs.contains(t))).and_then(|v| {
+                    // The walk laid out one row at least (the render keeps no view of an empty one), newest first.
+                    let top = v.walked.last().expect("a view holds a row").0;
+                    if newest >= v.walked[0].0 {
+                        None
+                    } else if newest < top {
+                        Some(None)
+                    } else {
+                        // The oldest walked row newer than every changed row: the rows from its band's bottom down keep their pixels.
+                        // It sits below a walked row no newer than `newest`, whose band reaches the screen, so its own bottom is inside the list.
+                        let under = v.walked.iter().take_while(|(t, _)| *t > newest).last().expect("the newest walked row is newer");
+                        Some(Some(PixelRect::new(v.list.x0, v.list.y0, v.list.x1, under.1 as usize)))
+                    }
+                });
+                match moved {
+                    None => true,
+                    Some(None) => {
+                        self.msg_max_floor = true;
+                        false
+                    }
+                    Some(Some(r)) => {
+                        if !self.ring_damage.contains(&r) {
+                            self.ring_damage.push(r);
+                        }
+                        self.note_redraw();
+                        false
+                    }
+                }
+            }
+            (AppState::Ready, Some(_)) => {
+                let newest = self.conversations[conv_pos].messages.iter().filter(|m| !m.is_control() && !m.deleted).map(|m| m.timestamp).max();
+                rows.iter().any(|t| newest.is_none_or(|n| *t >= n))
+            }
+            _ => true,
+        };
+        if whole {
+            self.mark_dirty();
+        }
     }
 
     /// Who a conversation's alert speaks as, any size: a pair's friend by name and relationship digest, a group by its title and its id — so one conversation sounds the same on every device.
@@ -3776,9 +3831,10 @@ pub(super) struct PairPageMerge {
     pub(super) known_undelivered: Vec<crate::types::ChatMessage>,
     /// The stored names of each file row the page tombstoned, for the caller to shred off the UI thread.
     pub(super) shred: Vec<Vec<[u8; 32]>>,
-    /// Whether the conversation draws differently now: a row new or upgraded, or our own row newly held by a sibling (its delivery ladder).
+    /// The stamps of the rows that draw differently now: a row new or upgraded, or our own row newly held by a sibling (its delivery ladder).
     /// A page that held nothing new (the history walk's every page from a sibling that already gave us all of it) changes nothing drawn and asks for no frame (the Pro 2026-11-21: one whole frame per such page).
-    pub(super) drawn: bool,
+    /// A page of rows older than the screen's changes nothing drawn either: `ask_frame_for_rows` holds these stamps to what the last frame showed.
+    pub(super) drawn: Vec<i64>,
 }
 
 /// Merge a history page's rows into a pair conversation, to OUR perspective.
@@ -3787,7 +3843,7 @@ pub(super) fn merge_pair_page_rows(conv: &mut crate::types::Conversation, rows: 
     let mut answer_back: Vec<crate::types::ChatMessage> = Vec::new();
     let mut known_undelivered: Vec<crate::types::ChatMessage> = Vec::new();
     let mut shred: Vec<Vec<[u8; 32]>> = Vec::new();
-    let mut replicated_now = false;
+    let mut replicated: Vec<i64> = Vec::new();
     // Merge to OUR perspective: friend pages flip direction (their outgoing = our incoming); sibling pages ride verbatim (same identity, their flags ARE ours). Friend-recovered outgoing is delivered by definition (the friend has it); dedup on (timestamp, content) against what we already hold.
     // Index existing rows ONCE by (timestamp, identity-hash) — each row is an O(1) lookup; inserts are deferred so the indices stay valid thru the upgrade pass.
     let row_hash = |ident: &[u8]| -> u64 {
@@ -3835,7 +3891,7 @@ pub(super) fn merge_pair_page_rows(conv: &mut crate::types::Conversation, rows: 
                 // Drawn: the row's delivery ladder moves from sending to replicated, once.
                 if !existing.replicated {
                     existing.replicated = true;
-                    replicated_now = true;
+                    replicated.push(existing.timestamp);
                 }
             }
             if from_sibling && existing.is_outgoing && is_outgoing && !delivered {
@@ -3965,7 +4021,7 @@ pub(super) fn merge_pair_page_rows(conv: &mut crate::types::Conversation, rows: 
     if tombstoned_in_merge {
         conv.invalidate_digest();
     }
-    let drawn = !fresh.is_empty() || replicated_now;
+    let drawn: Vec<i64> = fresh.iter().map(|m| m.timestamp).chain(replicated).collect();
     PairPageMerge { fresh, answer_back, known_undelivered, shred, drawn }
 }
 
@@ -4033,7 +4089,7 @@ mod pair_page_merge_tests {
         for _ in 0..2 {
             let m = merge_pair_page_rows(&mut conv, &rows, true);
             assert!(m.fresh.is_empty());
-            assert!(!m.drawn, "nothing on the screen moved");
+            assert!(m.drawn.is_empty(), "nothing on the screen moved");
         }
         assert_eq!(conv.messages.len(), 2);
     }
@@ -4045,10 +4101,10 @@ mod pair_page_merge_tests {
         let mut rows = page_of(&conv);
         rows.push(HistoryRow::from_message(&ChatMessage::new_with_timestamp("new".to_string(), false, (1 << 20) + 2)));
         let m = merge_pair_page_rows(&mut conv, &rows, true);
-        assert!(m.drawn);
+        assert!(!m.drawn.is_empty());
         assert_eq!(m.fresh.len(), 1);
         let m = merge_pair_page_rows(&mut conv, &rows, true);
-        assert!(!m.drawn, "the row is held now");
+        assert!(m.drawn.is_empty(), "the row is held now");
         assert!(m.fresh.is_empty());
         assert_eq!(conv.messages.len(), 3);
     }
@@ -4060,10 +4116,10 @@ mod pair_page_merge_tests {
         conv.insert_message_sorted(ChatMessage::new_with_timestamp("sending".to_string(), true, 1 << 20));
         let rows = page_of(&conv);
         let m = merge_pair_page_rows(&mut conv, &rows, true);
-        assert!(m.drawn, "sending became replicated");
+        assert!(!m.drawn.is_empty(), "sending became replicated");
         assert!(m.fresh.is_empty(), "replicated is runtime state, never gossiped");
         assert_eq!(m.known_undelivered.len(), 1);
         let m = merge_pair_page_rows(&mut conv, &rows, true);
-        assert!(!m.drawn);
+        assert!(m.drawn.is_empty());
     }
 }

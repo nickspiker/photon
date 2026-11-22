@@ -3786,10 +3786,12 @@ impl FluorApp<Px> for PhotonApp {
             }
             if matches!(self.state, AppState::Conversation) && !self.wave_screen() {
                 let ceiling = self.msg_max_scroll;
+                let floor = self.msg_max_floor;
                 if let Some(conv) = self.active_conv_mut() {
                     spring |= relax_frames(&mut conv.scroll_offset, f32::INFINITY);
                     // Clamp the STORED offset to the last-rendered ceiling: the 0-end rubber-bands (relax above, hi=∞), but drifting PAST the top (offset > max_scroll after the viewport shrank/grew) must snap back, else the list sticks above the oldest message until you scroll down thru the excess. Only pull DOWN — never fight an active drag toward 0.
-                    if conv.scroll_offset > ceiling {
+                    // A ceiling that rows landing above the screen left a floor (`msg_max_floor`) pulls nothing down: the true one is higher, and the next frame measures it.
+                    if !floor && conv.scroll_offset > ceiling {
                         conv.scroll_offset = ceiling;
                         spring = true;
                     }
@@ -4786,7 +4788,9 @@ impl PhotonApp {
 
     /// Inside [0, max] (a hair of slack for the rounding the memmove path does) — the fling lives only here; the rubber zones belong to the spring.
     fn pane_in_bounds(&self) -> bool {
-        self.pane_offset_and_max().map_or(false, |(o, m)| o >= -0.5 && o <= m + 0.5)
+        // A conversation's ceiling left a floor by rows landing above the screen (`msg_max_floor`) bounds nothing yet: the step past it draws a whole frame, which measures the true one.
+        let floor = matches!(self.state, AppState::Conversation) && self.msg_max_floor;
+        self.pane_offset_and_max().map_or(false, |(o, m)| o >= -0.5 && (floor || o <= m + 0.5))
     }
 
     /// The scroll positions the fling can move — compared before and after a fling step, so a step that hit a bound ends the fling.

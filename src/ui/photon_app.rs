@@ -1305,6 +1305,22 @@ impl AttachVisual {
     }
 }
 
+/// The rows of the open conversation the last frame laid out, kept by the render's row walk for `ask_frame_for_rows`.
+/// The list lays out from its newest row up and the offset counts from there, so a row older than every row walked sits wholly above the screen and moves nothing on it.
+#[derive(Clone, Debug)]
+pub(crate) struct ConvView {
+    pub id: crate::types::ConversationId,
+    /// The list's pane.
+    pub list: PixelRect,
+    /// Each row the walk laid out, newest first: its stamp and the bottom of its band.
+    /// The last is the top of what is on the screen.
+    pub walked: Vec<(i64, isize)>,
+    /// The walk reached the conversation's first row (its entry #0 may be on the screen, and a row older than every row sits between them).
+    pub reached_first: bool,
+    /// The stamps the walked rows point at (a reply's source, a recording's wave row): an older row landing there changes how the pointing row draws.
+    pub refs: Vec<i64>,
+}
+
 /// A wave card's waveform band as drawn this frame, slot-indexed beside [`PhotonApp::msg_hit_rows`]: the tap/press/drag geometry the input path resolves against. `x0..glyph_x1` is the play/stop glyph; `glyph_x1..x1` the seekable waveform; `total` the slot count a fraction maps onto.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct WaveBand {
@@ -2368,7 +2384,7 @@ pub struct PhotonApp {
     conv_filter_hit: HitId,
     /// The compose digit strip's twelve hit ids (dozenal base only, while the message box is focused).
     digit_strip_base: HitId,
-    /// Wave cards' waveform bands as drawn this frame, slot-indexed like `msg_hit_rows` (`visible_index % MSG_HIT_SPAN`).
+    /// Wave cards' waveform bands as drawn this frame, slot-indexed like `msg_hit_rows` (`rows_newer % MSG_HIT_SPAN`).
     msg_wave_bands: Vec<Option<WaveBand>>,
     /// Attachment visuals as drawn this frame, slot-indexed like `msg_hit_rows`.
     msg_attach_visuals: Vec<Option<AttachVisual>>,
@@ -2639,7 +2655,7 @@ pub struct PhotonApp {
     exit_requested: bool,
     /// Live shift-key mirror (refreshed each `on_event`) so `on_close_requested` — which gets no Context — can honor "shift+close = real exit".
     shift_held: bool,
-    /// Base hit id for the conversation's visible message rows (fixed span [`MSG_HIT_SPAN`]). The render stamps `msg_hit_base + visible_row` per drawn row and rebuilds [`Self::msg_hit_rows`] in lockstep, so a tap resolves to the message with no knowledge of scroll or backfill. Tap = select (details strip: direction, age, delivery, copy); tap the same again = deselect.
+    /// Base hit id for the conversation's visible message rows (fixed span [`MSG_HIT_SPAN`]). The render stamps `msg_hit_base + slot` per drawn row (its count of rows newer, modulo the span) and rebuilds [`Self::msg_hit_rows`] in lockstep, so a tap resolves to the message with no knowledge of scroll or backfill. Tap = select (details strip: direction, age, delivery, copy); tap the same again = deselect.
     msg_hit_base: HitId,
     /// Per-frame link-span hit rects in the conversation: (x0, y0, x1, y1, dest). A tap inside one opens the consent dialog instead of the row strip.
     msg_link_hits: Vec<(f32, f32, f32, f32, String)>,
@@ -2665,7 +2681,7 @@ pub struct PhotonApp {
     msg_copy_id: HitId,
     /// Base hit id for the rest of the details-strip action pills (span 8): 0=reply, 1=edit, 2=resend, 3=delete. Copy keeps its own id above.
     msg_action_base: HitId,
-    /// Slot table (fixed [`MSG_HIT_SPAN`] entries): stamped row identity at slot `visible_index % MSG_HIT_SPAN` (Nick 2026-09-05 — modular slots instead of a spend-down id budget, so there is nothing to exhaust and every on-screen row has an id by construction; a wrap collision needs 256+ rows on one screen). `None` = no on-screen row stamped that slot this frame. The identity is (timestamp, is_outgoing) — index-free so a mid-frame history backfill can't redirect a tap.
+    /// Slot table (fixed [`MSG_HIT_SPAN`] entries): stamped row identity at slot `rows_newer % MSG_HIT_SPAN`, the visible rows newer than it (counted from the newest, so rows landing above the screen leave every drawn row's slot as it was, and a frame drawn in part after them still agrees with the hit map it keeps). (Nick 2026-09-05 — modular slots instead of a spend-down id budget, so there is nothing to exhaust and every on-screen row has an id by construction; a wrap collision needs 256+ rows on one screen). `None` = no on-screen row stamped that slot this frame. The identity is (timestamp, is_outgoing) — index-free so a mid-frame history backfill can't redirect a tap.
     msg_hit_rows: Vec<Option<(i64, bool, Option<(f32, f32, i64)>)>>,
     /// The list viewport height at the last conversation render — the scroll-to-message centering math needs it outside the render pass (same pattern as msg_max_scroll).
     msg_view_h: f32,
@@ -2701,6 +2717,10 @@ pub struct PhotonApp {
     conv_blind_edge: f32,
     /// Word-wrap cache for the conversation's message list: key (contact id, message count, avail_w bits, msg_size bits) + the wrapped line STRINGS per visible message (chronological, probes excluded) + the total line count. Rebuilt only when the key changes (resize / zoom / new message / conversation switch). Caching the STRINGS (not just counts) means scroll frames do ZERO text shaping — the per-frame re-wrap of drawn messages was the "glitches and sticks" scroll regression.
     msg_wrap: Option<((Option<crate::types::ConversationId>, usize, usize, u32, u32, u8), Vec<Vec<String>>, usize)>,
+    /// Which row each of `msg_wrap`'s line sets is: its stamp, its direction and the hash of the body it wrapped (None for a row whose lines are not shaped text).
+    /// A rebuild for the same conversation at the same width and size takes a row's lines from here when its body is unchanged, so rows landing shape only themselves.
+    /// Until 2026-11-22 every row was shaped again on each rebuild (about 100 ms for 1800 rows on the desktop rig), and every page of rows landing paid it.
+    msg_wrap_rows: Vec<(i64, bool, Option<u64>)>,
     /// Last IME inset applied to the layout (Android) — the tick diffs the JNI mirror against this and relayouts on change, since the keyboard no longer produces resize events.
     #[cfg(target_os = "android")]
     last_ime_inset: i32,
@@ -3054,6 +3074,11 @@ pub struct PhotonApp {
     settings_content_extent: f32,
     /// The active conversation's message-scroll ceiling, captured each render (content height − viewport height). The render clamps a LOCAL copy for drawing but the stored `message_scroll_offset` must be clamped too — else it drifts past the ceiling when the viewport height changes (the soft keyboard opening/closing, exaggerated now that the width-pinned scale keeps line height constant while the surface height swings), and the list sticks at the top until you scroll back past the excess. The tick clamps the stored offset against this.
     msg_max_scroll: f32,
+    /// `msg_max_scroll` is a floor of the true ceiling: rows landed above the view since the frame that measured it, and no frame was drawn for them (`ask_frame_for_rows`).
+    /// The true ceiling is the next frame's to measure; until then the tick neither pulls the offset down to the floor nor ends a fling at it, and a scroll past it is not rigid (a whole frame, which measures it).
+    msg_max_floor: bool,
+    /// Which rows the last frame drew of the open conversation (`ConvView`): what a page of rows landing later is held to before it asks for a frame. None when the last frame drew no conversation list.
+    conv_view: Option<ConvView>,
     contacts_scroll_extent: isize,
     settings_shred_armed: bool,
     /// Two-tap confirm armed for the Security page's SELF-revoke (this device revoking itself — the desk case). Mutually exclusive with the other destructive pills; cleared on any page switch.
@@ -3749,6 +3774,7 @@ impl PhotonApp {
             conv_blind_h: [0.0; 3],
             conv_blind_edge: f32::MAX,
             msg_wrap: None,
+            msg_wrap_rows: Vec::new(),
             #[cfg(target_os = "android")]
             last_ime_inset: 0,
             keyboard_rows: 0,
@@ -3921,6 +3947,8 @@ impl PhotonApp {
             settings_rail_extent: 0.0,
             settings_content_extent: 0.0,
             msg_max_scroll: 0.0,
+            msg_max_floor: false,
+            conv_view: None,
             contacts_scroll_extent: 0,
             settings_shred_armed: false,
             depart: None,
