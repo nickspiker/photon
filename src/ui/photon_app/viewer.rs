@@ -160,10 +160,13 @@ impl PhotonApp {
             let marked = crate::storage::decode_mark(&hash);
             let out: Result<opsin::view::Loaded, String> = (|| {
                 let bytes = crate::storage::blob_load(&seed, &hash).ok_or_else(|| "the blob would not open".to_string())?;
-                let keep_decode = !cfg!(target_os = "android");
+                // A phone (Android, ferros) keeps no second full decode beside the view's.
+                let keep_decode = !cfg!(any(target_os = "android", target_os = "ferros"));
                 let edge = Some(crate::ui::attach_preview::LINEAR_VIEW_MAX_EDGE);
-                if !matches!(opsin::sniff::sniff(&bytes), opsin::sniff::Kind::Unknown) {
-                    let path = super::attachments::view_temp_path(&name, &hash, &bytes).ok_or_else(|| "no runtime dir for the decode".to_string())?;
+                // opsin reads from a file; where none can be written (ferros has no file system, so no runtime dir) the in-memory decode below opens the picture instead.
+                // Until 2026-11-21 a missing temp ended the job, so on ferros a JPEG, WebP, TIFF or JPEG XL opened as its preview alone, with no view to pinch or pan.
+                let temp = if matches!(opsin::sniff::sniff(&bytes), opsin::sniff::Kind::Unknown) { None } else { super::attachments::view_temp_path(&name, &hash, &bytes) };
+                if let Some(path) = temp {
                     let r = opsin::view::load_image_folded_with(&path, edge, keep_decode, &report);
                     // An already-gone temp is the goal reached; any other refusal leaves a decode temp behind and says so.
                     match std::fs::remove_file(&path) {

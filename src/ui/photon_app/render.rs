@@ -4614,6 +4614,11 @@ impl PhotonApp {
                                                 None
                                             };
                                             let sides = [(resolve(env_ours_h, 0), false), (resolve(env_theirs_h, 1), true)];
+                                            // No waveform for either side (neither party's envelope is held, and this build cannot derive one from the recording: ferros has no Opus decoder): the band says what the row is, dimmed, rather than stand empty.
+                                            // Until 2026-11-21 such a band showed nothing but its faint centre line (the Pro: a blank band in a conversation).
+                                            if sides.iter().all(|(s, _)| s.is_none()) && !show_head {
+                                                ctx.text.draw_text_left(&mut canvas, &super::wave_ui::wave_header(w), glyph_x1, bcy + msg_size * 0.35, &small, Some(list_clip), None);
+                                            }
                                             // THE CUMULATIVE STACK WITH OPACITY CONTRIBUTIONS (Nick 2026-09-12): wave_fold_coverage lands every bin in one column at its own height and tracks per-row coverage; the draw is one solid run plus a graded contour. Height reference −12 dBFS; the played/unplayed split rides the colour.
                                             const WAVE_FULL_HEIGHT_AMP: f32 = 0.25;
                                             let rows = half as usize;

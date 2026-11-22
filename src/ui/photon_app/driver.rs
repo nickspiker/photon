@@ -2098,6 +2098,11 @@ impl FluorApp<Px> for PhotonApp {
                 Event::KeyboardInput { event: k } => matches!(k.logical_key, Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowRight)) || (matches!(k.logical_key, Key::Named(NamedKey::Escape)) && ctx.modifiers.shift_key()),
                 _ => false,
             };
+            // A touch host (Android, ferros) follows each move of a held finger with the same move as a pixel wheel step, for panes that scroll by the wheel; the view's own drag already pans the picture by the move, so the echo is swallowed here or the picture would pan twice as far as the finger.
+            let finger_echo = cfg!(any(target_os = "android", target_os = "ferros")) && view.plain() && (self.press_held || self.pointer_down) && matches!(event, Event::MouseWheel { delta: MouseScrollDelta::Pixels(..) });
+            if finger_echo {
+                return EventResponse::Handled;
+            }
             if forward && !photon_key {
                 let hit = self.chrome.as_ref().map(|c| c.hit_at(ctx.cursor_x, ctx.cursor_y)).unwrap_or(HIT_NONE);
                 if !(matches!(event, Event::MouseInput { .. }) && own_pill(hit)) {

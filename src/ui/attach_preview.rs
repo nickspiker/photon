@@ -10,7 +10,7 @@ pub const PREVIEW_MAX_EDGE: usize = 512;
 /// Long edge of the "open original" render (a 50 MP photo folds to this on the way to the screen; the file itself stays untouched).
 pub const FULL_VIEW_MAX_EDGE: usize = 4096;
 /// Long edge of the LINEAR buffer the viewer keeps — twelve bytes a pixel, so a phone keeps 2048 (50 MB) and a desktop 4096. opsin's view folds its display copy to this; the raw sensor counts stay whole for the histogram.
-pub const LINEAR_VIEW_MAX_EDGE: usize = if cfg!(target_os = "android") { 2048 } else { 4096 };
+pub const LINEAR_VIEW_MAX_EDGE: usize = if cfg!(any(target_os = "android", target_os = "ferros")) { 2048 } else { 4096 };
 /// The most pixels a source image may declare before it is decoded (security audit UPW-008): 64 MP covers every phone and full-frame camera; a few KB of JPEG XL or PNG can declare a canvas that decodes to gigabytes.
 pub const MAX_SOURCE_PIXELS: u64 = 1 << 26;
 /// The most jxl-oxide may allocate for one decode, in bytes; the tracker refuses past it instead of the process aborting.
