@@ -1043,6 +1043,7 @@ impl PhotonApp {
         self.you_fields_loaded = false;
         // Avatar/orb caches beyond the device-avatar slots already cleared below.
         self.avatar_dl_started.clear();
+        self.avatar_local_started.clear();
         self.avatar_req_pending.clear();
         self.avatar_probe_cache.clear();
         self.egged_cache.clear();

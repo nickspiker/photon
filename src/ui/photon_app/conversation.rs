@@ -1411,32 +1411,29 @@ impl PhotonApp {
         let (hp, party_id, avatar_pin) = (c.handle_proof, c.handle_hash, c.avatar_pin);
         // The publisher's own devices: a scoped avatar is honoured only when they signed it (avatar_scoped::fetch_pinned).
         let publisher_devices = c.answerable_pubkeys();
-        // No device key = no one to request the avatar from yet (the FGTW fallback still runs elsewhere).
-        let Some(their_device) = c.device_key() else {
-            return;
-        };
-        if self.avatar_dl_started.contains(&hp) {
+        // Their device, whose scoped slot we share: with none known yet there is no one to fetch from, but the copy this vault already holds is still read (and our own devices are asked when it holds none).
+        // Until 2026-11-21 a contact with no device key read nothing at all, so a face held in the vault never showed (ferros, whose contacts come as the person's people, drew every row's ring empty).
+        let their_device = c.device_key();
+        // One try a session for each way: the local read alone, then the whole fetch once a device is known.
+        if self.avatar_dl_started.contains(&hp) || (their_device.is_none() && self.avatar_local_started.contains(&hp)) {
             return;
         }
         let Some(storage) = self.storage.as_ref().map(Arc::clone) else {
             return;
         };
-        // The scoped-blob reader key: the CLUTCH pair secret we share with this friend's device. It addresses AND opens our private slot, so no pin has to be announced to us at all — we simply look where only the two of us can look.
-        let scoped_kek = self
-            .device_keypair
-            .as_ref()
-            .map(|kp| *kp.public.as_bytes())
-            .and_then(|ours| {
-                crate::storage::fanout_pairs::load(&ours, &their_device, storage.as_ref())
-            });
-        if scoped_kek.is_none() && avatar_pin == [0u8; 64] {
-            return; // no scoped slot to read and no legacy pin — nothing to fetch with
+        if their_device.is_some() {
+            self.avatar_dl_started.insert(hp);
+        } else {
+            self.avatar_local_started.insert(hp);
         }
-        self.avatar_dl_started.insert(hp);
+        let ours = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
         let tx = self.avatar_dl_tx.clone();
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
         std::thread::spawn(move || {
+            // The scoped-blob reader key: the CLUTCH pair secret we share with this friend's device. It addresses AND opens our private slot, so no pin has to be announced to us at all — we simply look where only the two of us can look.
+            // Read here, off the UI thread (a vault read; until 2026-11-21 the sweep made it on the UI thread every tick for a contact with neither this key nor a pin).
+            let scoped_kek = ours.zip(their_device).and_then(|(ours, theirs)| crate::storage::fanout_pairs::load(&ours, &theirs, storage.as_ref()));
             // LOCAL-FIRST, always: the sweep's LocalCached plan promises "never touches the network", but the scoped-slot read used to run before any cache look — every boot re-fetched every scoped avatar, and an offline boot showed placeholders for faces sitting in the vault (Nick, 2026-08-12). The one party-id cache slot holds either form — raw AV1 (scoped write-thru below) or the pin-sealed VSF (the pinned path's own cache) — and each decode rejects the other form cleanly, so try both before any network. The pin-rotation sweep evicts this slot, which is what keeps a changed avatar from being served stale.
             let cached = storage
                 .read_addr(&crate::storage::vault_key("avatar", &party_id))

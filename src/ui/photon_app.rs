@@ -1913,6 +1913,8 @@ pub struct PhotonApp {
     braid_job_tx: std::sync::mpsc::Sender<Job>,
     /// Handles we've already kicked an avatar download for this session, so we don't re-spawn a fetch every time a conversation is reopened or the contact list re-renders.
     avatar_dl_started: crate::linear_map::SortedSet<[u8; 32]>,
+    /// Handles whose held copy alone was read this session (`spawn_avatar_download_with` for a contact with no device key yet): the whole fetch still runs once a device is known.
+    avatar_local_started: crate::linear_map::SortedSet<[u8; 32]>,
     /// Mutual peers we've sent a direct P2P AvatarRequest to, mapped to the eagle-time we sent it. The per-tick sweep asks each mutual peer once, then — if no AvatarResponse has installed an avatar within `AVATAR_P2P_FALLBACK_OSC` — falls back to FGTW. So a friend's avatar comes from the friend first, and FGTW only covers the case where the friend is offline or avatar-less.
     avatar_req_pending: crate::linear_map::LinearMap<[u8; 32], i64>,
     /// Friends whose picture we asked our siblings for this session (want_avatar_from_siblings): once each.
@@ -3372,6 +3374,7 @@ impl PhotonApp {
             fanout_seen_tx,
             fanout_seen_rx,
             avatar_dl_started: crate::linear_map::SortedSet::new(),
+            avatar_local_started: crate::linear_map::SortedSet::new(),
             avatar_req_pending: crate::linear_map::LinearMap::new(),
             avatar_want_sent: crate::linear_map::SortedSet::new(),
             own_avatar_asked: conversation::OwnAvatarAsk::default(),
@@ -4397,9 +4400,9 @@ fn mark_doc_schema() -> vsf::schema::SectionSchema {
     vsf::schema::SectionSchema::new("image").field("pixels", vsf::schema::TypeConstraint::Wrapped(b'a'))
 }
 
-/// The mark kept in the vault for `seed`, decoded to its 256 square (worker only: a vault read and an AV1 decode).
-fn mark_from_vault(seed: u64) -> Option<Vec<u8>> {
-    let bytes = crate::storage::device_vault()?.read_addr(&crate::storage::vault_key("mark", &mark_salt(seed))).ok().flatten()?;
+/// The mark kept in `vault` for `seed`, decoded to its 256 square (worker only: a vault read and an AV1 decode).
+fn mark_from_vault(vault: &crate::storage::FlatStorage, seed: u64) -> Option<Vec<u8>> {
+    let bytes = vault.read_addr(&crate::storage::vault_key("mark", &mark_salt(seed))).ok().flatten()?;
     let section = vsf::schema::SectionBuilder::parse_document(mark_doc_schema(), &bytes, None).ok()?;
     let av1 = match section.get("pixels").ok()?.first()? {
         vsf::VsfType::v(b'a', av1) => av1.clone(),
@@ -4408,9 +4411,8 @@ fn mark_from_vault(seed: u64) -> Option<Vec<u8>> {
     crate::ui::avatar::decode_avatar_av1_to_display(&av1).filter(|(side, _)| *side == MARK_SIDE).map(|(_, rgb)| rgb)
 }
 
-/// Keep `rgb` (a mark's 256 square) in the vault as AV1, as a photo is kept (worker only: an AV1 encode and a vault write).
-fn mark_to_vault(seed: u64, rgb: &[u8]) {
-    let Some(vault) = crate::storage::device_vault() else { return };
+/// Keep `rgb` (a mark's 256 square) in `vault` as AV1, as a photo is kept (worker only: an AV1 encode and a vault write).
+fn mark_to_vault(vault: &crate::storage::FlatStorage, seed: u64, rgb: &[u8]) {
     let f32s: Vec<f32> = rgb.iter().map(|&b| b as f32 * (1. / 255.)).collect();
     let av1 = match crate::ui::avatar::encode_avatar_rgb_f32(&f32s) {
         Ok(a) => a,
@@ -4426,6 +4428,8 @@ fn mark_to_vault(seed: u64, rgb: &[u8]) {
 }
 
 /// Every mark of `seeds` made ready off the UI thread, one after another: the vault's copy where it holds one, else rendered once at 256 and kept there (the mint), so no later launch renders it again.
+/// Every mark lands first and is kept after: a row waits for its own mark (a vault read and a decode, or a render, a few ms each), never for another's AV1 encode (about a quarter second each on the desktop, longer on a phone) nor for a vault that is still opening.
+/// Until 2026-11-21 each missing mark was encoded and written before it landed, so on a launch with marks missing every row behind it stayed an empty ring for as long as the encodes before it took.
 pub(crate) fn prewarm_marks(seeds: Vec<u64>, wake: Option<Arc<dyn WakeSender<PhotonEvent>>>) {
     {
         let mut asked = MARKS_ASKED.lock().unwrap();
@@ -4435,18 +4439,22 @@ pub(crate) fn prewarm_marks(seeds: Vec<u64>, wake: Option<Arc<dyn WakeSender<Pho
             }
         }
     }
-    crate::log_err!(std::thread::Builder::new().name("marks".into()).spawn(move || {
+    let asked: Vec<u64> = seeds.clone();
+    let spawned = std::thread::Builder::new().name("marks".into()).spawn(move || {
+        // Rendered here because the vault held none (or was not open yet): kept once every mark has landed.
+        let mut rendered: Vec<(u64, Vec<u8>)> = Vec::new();
         for s in seeds {
             // Once held, a seed is no longer asked for: a later draw that misses (the store dropped its oldest) asks again.
             if MARK_RGB_STORE.lock().unwrap().iter().any(|(k, _)| *k == s) {
                 MARKS_ASKED.lock().unwrap().retain(|a| *a != s);
                 continue;
             }
-            let rgb = match mark_from_vault(s) {
+            // The vault only when it is open already: one still opening is waited for below, after the marks are on screen.
+            let rgb = match crate::storage::device_vault_if_open().and_then(|v| mark_from_vault(&v, s)) {
                 Some(rgb) => rgb,
                 None => {
                     let rgb = mark_render_rgb(s);
-                    mark_to_vault(s, &rgb);
+                    rendered.push((s, rgb.clone()));
                     rgb
                 }
             };
@@ -4457,7 +4465,19 @@ pub(crate) fn prewarm_marks(seeds: Vec<u64>, wake: Option<Arc<dyn WakeSender<Pho
                 wake_ui(w);
             }
         }
-    }), "spawn the mark worker");
+        // The mint: each mark rendered here kept as AV1, unless the vault (open by now) holds it already.
+        let Some(vault) = crate::storage::device_vault() else { return };
+        for (s, rgb) in rendered {
+            if mark_from_vault(&vault, s).is_none() {
+                mark_to_vault(&vault, s, &rgb);
+            }
+        }
+    });
+    // No worker: the seeds are no longer asked for, so the next draw that misses asks again rather than leaving its ring empty for the session.
+    if let Err(e) = spawned {
+        crate::logf!("MARK: no worker for {} mark(s) ({}); the next draw asks again", asked.len(), e);
+        MARKS_ASKED.lock().unwrap().retain(|a| !asked.contains(a));
+    }
 }
 
 /// The default UNSET avatar: a deterministic per-identity tapuwae mark (salted from the public seed, so identical on every device that knows it), as a `diam×diam×3` visible-RGB buffer for `draw_avatar`: the mark's 256 square resampled as a photo's is. Black outside the disc, which `draw_avatar` masks away.

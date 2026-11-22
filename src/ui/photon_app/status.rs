@@ -6387,6 +6387,7 @@ impl PhotonApp {
                 // A rotated pin names a NEW avatar: drop the once-per-session latch first, or the fetch dedups itself into a no-op and the new picture never arrives until a restart (one device picked, the peer kept the old face — 2026-08-02).
                 if let Some(hp) = self.contacts.get(i).map(|c| c.handle_proof) {
                     self.avatar_dl_started.remove(&hp);
+                    self.avatar_local_started.remove(&hp);
                 }
                 // NEVER EVICT BEFORE A REPLACEMENT (2026-11-17, every device and every identity losing faces one restart at a time): the held copy stays in the vault and on screen; the fetch tries the new source first (fresh) and only a replacement that decodes overwrites it. The peer ask is re-armed too, so the friend's own device is asked for the new picture.
                 if let Some(dk) = self.contacts.get(i).and_then(|c| c.device_key()) {
