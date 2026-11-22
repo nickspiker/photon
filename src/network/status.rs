@@ -210,6 +210,30 @@ pub fn molecule_admits(token: &[u8; 32], dev: &[u8; 32]) -> bool {
         .unwrap_or(false)
 }
 
+/// Devices the UI vouched for on this network, each with the largest transfer it may open: a device beaconing under our own handle that is no device of ours (a joiner), and a device of the fleet this device is joining (a sponsor).
+/// A binding request carries every egg (about 10 KB with SPHINCS+) and a chain or fan-out handed to a joiner is bigger still, so both ride PT, and PT opens a transfer only for a contact (NET-01): until this list, no request reached a sponsor over the LAN and every way of adding a device waited on it (Brittany's 8a, 2026-11-22).
+static LAN_ADMITTED: std::sync::Mutex<Vec<([u8; 32], u32)>> = std::sync::Mutex::new(Vec::new());
+
+/// How many vouched devices are kept, newest last.
+/// WHY: our handle proof is public, so anyone on the network can beacon under it with a fresh key each time; without a bound each beacon would grow this list for the life of the process.
+const LAN_ADMITTED_KEPT: usize = 1 << 3;
+
+/// Vouch for `device` on this network: it may open one PT transfer of at most `max` bytes, which then meets the same parse ladder and stranger gate as any frame.
+pub fn admit_lan_device(device: [u8; 32], max: u32) {
+    if let Ok(mut g) = LAN_ADMITTED.lock() {
+        g.retain(|(d, _)| *d != device);
+        g.push((device, max));
+        if g.len() > LAN_ADMITTED_KEPT {
+            g.remove(0);
+        }
+    }
+}
+
+/// The largest transfer `device` may open, when the UI vouched for it.
+fn lan_admitted_max(device: &[u8; 32]) -> Option<u32> {
+    LAN_ADMITTED.lock().ok().and_then(|g| g.iter().find(|(d, _)| d == device).map(|(_, m)| *m))
+}
+
 fn is_sibling_device(pk: &[u8; 32]) -> bool {
     SIBLING_DEVICES
         .lock()
@@ -2226,7 +2250,8 @@ async fn run_checker(
                                         vsf::verification::extract_signer_pubkey(&data)
                                     {
                                         // A molecule member we never friended passes this gate too (its file frames are admitted below by the conversation they name); every other arm still asks for a contact.
-                                        if !is_known_sender_pt(&signer) && !molecule_member_device(&signer) {
+                                        // A device vouched for on this network passes too: its request or chain meets the stranger gate when it is dispatched again below.
+                                        if !is_known_sender_pt(&signer) && !molecule_member_device(&signer) && lan_admitted_max(&signer).is_none() {
                                             crate::logf!("PT: CLUTCH message REJECTED before parse - sender not in contacts (pubkey: {})", hex::encode(&signer[..signer.len().min(8)]));
                                             continue;
                                         }
@@ -5851,8 +5876,17 @@ async fn handle_pt_vsf_packet(
                         }
                         None => false, // No pubkey = unsigned = reject
                     };
+                    // A device the UI vouched for on this network (a joiner beaconing under our handle, or a sponsor of the fleet we are joining) opens one signed transfer up to the size it was vouched for.
+                    let vouched = !is_known_contact
+                        && sender_pubkey
+                            .filter(|_| signed)
+                            .and_then(|k| lan_admitted_max(&k))
+                            .is_some_and(|max| spec.total_size <= max);
+                    if vouched {
+                        crate::logf!("PT: SPEC from {} admitted: a device vouched for on this network ({} B)", src_addr, spec.total_size);
+                    }
 
-                    if !is_known_contact {
+                    if !is_known_contact && !vouched {
                         crate::logf!(
                             "PT: SPEC REJECTED from {} - sender not in contacts (pubkey: {})",
                             src_addr,

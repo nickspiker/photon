@@ -3258,6 +3258,10 @@ impl PhotonApp {
                                 Some(e) => e.1 = from,
                                 None => self.lan_heard_addr.push((dk, from)),
                             }
+                            // A device under our handle that is none of ours is a joiner: its binding request rides PT, which opens a transfer only for a device vouched for.
+                            if !self.contacts.iter().any(|c| c.is_sibling && c.device_key() == Some(dk)) {
+                                crate::network::status::admit_lan_device(dk, super::join::BIND_REQ_MAX);
+                            }
                             if !self.contacts.iter().any(|c| c.is_sibling && c.device_key() == Some(dk)) && !self.lan_heard.iter().any(|(k, _)| *k == dk) {
                                 let to = std::net::SocketAddr::from((local_ip, port));
                                 if !joiner_beacon_reply.contains(&to) {

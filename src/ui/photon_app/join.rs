@@ -6,6 +6,12 @@ use super::*;
 use fgtw::flow::join::{Do, JoinNote, Phase};
 use fgtw::pq::FleetSigner;
 
+/// The largest transfer a joiner heard under our handle may open on a sponsor: its binding request, every egg included (about 10 KB with SPHINCS+), with room to spare.
+pub(super) const BIND_REQ_MAX: u32 = 1 << 15;
+
+/// The largest transfer a device of the fleet we are joining may open on us: its chain (every op carries its eggs, about 10 KB each) or a fan-out.
+pub(super) const JOIN_HANDOFF_MAX: u32 = 1 << 21;
+
 impl PhotonApp {
     /// The look-up found the identity's fleet (the probe's JoinOurs, or an attest the fleet refused as "not in the fleet"): make the Join machine with the roots the proof already paid for, and tell it what was found.
     /// The device-busy gate is the machine's input here, computed after the memory-hard proof so the binding marker is never a cheap handle oracle (2026-08-23 ticket).
@@ -87,6 +93,8 @@ impl PhotonApp {
 
     /// A fleet device of the identity this device is joining was heard on this network: remember where, and tell the machine (it hands the request once per stamp).
     pub(super) fn join_heard(&mut self, device: [u8; 32], addr: std::net::SocketAddr) {
+        // The chain and the fan-out it hands us ride PT, which opens a transfer only for a device vouched for.
+        crate::network::status::admit_lan_device(device, JOIN_HANDOFF_MAX);
         match self.add_join_sponsors.iter_mut().find(|(k, _)| *k == device) {
             Some(e) => e.1 = addr,
             None => {
@@ -104,6 +112,11 @@ impl PhotonApp {
                 Do::Hand { to, frame } => match self.add_join_sponsors.iter().find(|(k, _)| *k == to).map(|(_, a)| *a) {
                     Some(addr) => {
                         crate::logf!("JOIN: handing our binding request to {} at {}", crate::fp(&to), addr);
+                        // Our beacon goes to it first, straight: a device that started after our last beacon has not heard us, and it opens our request's transfer only for a device it heard under its handle.
+                        if let (Some(roots), Some(checker)) = (self.join_roots, self.status_checker.as_ref()) {
+                            let port = self.handle_query.as_ref().map(|h| h.port()).unwrap_or(crate::PHOTON_PORT);
+                            checker.send_lan_unicast(roots.handle_proof, port, addr);
+                        }
                         self.send_frame_direct(frame, to, addr, None);
                     }
                     None => crate::logf!("JOIN: no address for {}; the request waits for its beacon", crate::fp(&to)),
