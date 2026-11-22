@@ -1,4 +1,4 @@
-//! A desktop render rig at the Pro's panel (1344 × 2992 under the safe circle): a fling in a long conversation and down the contacts and a conversation left at rest, each frame drawn as fluor's ferros host draws it (the app's rects, the scroll hint taken unless the frame is one whole rect, the rects cleared, the render told the hint it rode), counted, and held to the frame drawn whole at the same state.
+//! A desktop render rig at the Pro's panel (1344 × 2992 under the safe circle): a fling in a long conversation and down the contacts, a conversation left at rest, and a cold launch's contact marks, each frame drawn as fluor's ferros host draws it (the app's rects, the scroll hint taken unless the frame is one whole rect, the rects cleared, the render told the hint it rode), counted, and held to the frame drawn whole at the same state.
 //! Run it with `cargo test --lib scroll_rig -- --ignored --nocapture --test-threads=1`: it prints the frames on the memmove, the part of the frame drawn and the render's time a frame.
 //! It lays out the UI alone (`init_display`): no vault, no network, no thread of the core.
 
@@ -295,4 +295,61 @@ fn conversation_live_age_at_the_pros_size() {
     assert!(t.frames <= 4, "a frame a second at most");
     assert_eq!(t.whole, 0, "the age alone draws only its own box");
     assert_eq!(t.wrong, 0, "each frame is the frame drawn whole");
+}
+
+/// A cold launch's contacts list, none of them with a picture: the frames and the time until every row on the screen wears its mark, the launch's warm of every contact's mark (`prewarm_marks`, as the resume starts it) first when `warm`.
+/// The marks are the process's: each test that calls this is run alone, by its whole name.
+fn cold_marks(warm: bool) {
+    let t0 = std::time::Instant::now();
+    let mut r = Rig::new(AppState::Ready);
+    if warm {
+        super::super::prewarm_marks(r.app.contacts.iter().map(|c| super::super::proof_gradient_seed(&c.handle_proof)).collect(), None);
+    }
+    let mut t = Tally::default();
+    let mut every: Option<u32> = None;
+    let mut shown_first = 0usize;
+    while t0.elapsed() < std::time::Duration::from_secs(2) {
+        // The marks held as the frame begins: a row drawn with one wears it (one that lands during the render is drawn by the landing's own frame).
+        let before: Vec<u64> = super::super::MARK_RGB_STORE.lock().unwrap().iter().map(|(k, _)| *k).collect();
+        let drawn = t.frames;
+        r.frame(&mut t);
+        if t.frames == drawn {
+            std::thread::sleep(std::time::Duration::from_millis(4));
+            continue;
+        }
+        // The rows this frame left on the screen, and how many of them wear their mark.
+        let rows: Vec<u64> = r.app.ready_rings.iter().filter_map(|d| match d.key {
+            super::super::render::RingKey::Contact(id) => r.app.contacts.iter().find(|c| c.id == id).map(|c| super::super::proof_gradient_seed(&c.handle_proof)),
+            _ => None,
+        }).collect();
+        let held = rows.iter().filter(|s| before.contains(s)).count();
+        if t.frames == 1 {
+            shown_first = held;
+            println!("  first frame: {held} of {} rows wear their mark, at {} ms", rows.len(), t0.elapsed().as_millis());
+        }
+        if held == rows.len() && !rows.is_empty() && every.is_none() {
+            every = Some(t.frames);
+            println!("  every row wears its mark from frame {}, at {} ms", t.frames, t0.elapsed().as_millis());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(4));
+    }
+    report(if warm { "contacts cold start, the launch's warm first" } else { "contacts cold start, the rows' asks alone" }, &t);
+    let same = r.matches_whole();
+    println!("  marks on the first frame: {shown_first}; the frame held is the frame drawn whole: {same}");
+    assert!(every.is_some_and(|f| f <= 3), "every row wears its mark by the frame its landing draws (the first asks, the second may be the layout's own)");
+    assert!(same, "the host's frame is the frame drawn whole");
+}
+
+/// The rows' own asks: `cargo test --lib scroll_rig::contacts_marks_asked -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn contacts_marks_asked() {
+    cold_marks(false);
+}
+
+/// The launch's warm first: `cargo test --lib scroll_rig::contacts_marks_warm -- --ignored --nocapture`.
+#[test]
+#[ignore]
+fn contacts_marks_warm() {
+    cold_marks(true);
 }

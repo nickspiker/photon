@@ -4404,10 +4404,9 @@ fn mark_doc_schema() -> vsf::schema::SectionSchema {
     vsf::schema::SectionSchema::new("image").field("pixels", vsf::schema::TypeConstraint::Wrapped(b'a'))
 }
 
-/// The mark kept in `vault` for `seed`, decoded to its 256 square (worker only: a vault read and an AV1 decode).
-fn mark_from_vault(vault: &crate::storage::FlatStorage, seed: u64) -> Option<Vec<u8>> {
-    let bytes = vault.read_addr(&crate::storage::vault_key("mark", &mark_salt(seed))).ok().flatten()?;
-    let section = vsf::schema::SectionBuilder::parse_document(mark_doc_schema(), &bytes, None).ok()?;
+/// A kept mark's document decoded to its 256 square (worker only: an AV1 decode).
+fn mark_from_doc(bytes: &[u8]) -> Option<Vec<u8>> {
+    let section = vsf::schema::SectionBuilder::parse_document(mark_doc_schema(), bytes, None).ok()?;
     let av1 = match section.get("pixels").ok()?.first()? {
         vsf::VsfType::v(b'a', av1) => av1.clone(),
         _ => return None,
@@ -4431,53 +4430,113 @@ fn mark_to_vault(vault: &crate::storage::FlatStorage, seed: u64, rgb: &[u8]) {
     }
 }
 
-/// Every mark of `seeds` made ready off the UI thread, one after another: the vault's copy where it holds one, else rendered once at 256 and kept there (the mint), so no later launch renders it again.
-/// Every mark lands first and is kept after: a row waits for its own mark (a vault read and a decode, or a render, a few ms each), never for another's AV1 encode (about a quarter second each on the desktop, longer on a phone) nor for a vault that is still opening.
-/// Until 2026-11-21 each missing mark was encoded and written before it landed, so on a launch with marks missing every row behind it stayed an empty ring for as long as the encodes before it took.
-pub(crate) fn prewarm_marks(seeds: Vec<u64>, wake: Option<Arc<dyn WakeSender<PhotonEvent>>>) {
-    {
-        let mut asked = MARKS_ASKED.lock().unwrap();
-        for s in &seeds {
-            if !asked.contains(s) {
-                asked.push(*s);
-            }
-        }
+/// Seeds whose mint a worker has taken, so a draw's worker and the launch's never encode one mark twice.
+static MARKS_MINTING: std::sync::Mutex<Vec<u64>> = std::sync::Mutex::new(Vec::new());
+
+/// Whether this process holds `seed`'s mark.
+fn mark_held(seed: u64) -> bool {
+    MARK_RGB_STORE.lock().unwrap().iter().any(|(k, _)| *k == seed)
+}
+
+/// `rgb` held as `seed`'s mark, unless one is held already (a draw's worker and the launch's may both make it; both are the same pixels).
+fn land_mark(seed: u64, rgb: Vec<u8>) {
+    let mut store = MARK_RGB_STORE.lock().unwrap();
+    if store.iter().any(|(k, _)| *k == seed) {
+        return;
     }
-    let asked: Vec<u64> = seeds.clone();
-    let spawned = std::thread::Builder::new().name("marks".into()).spawn(move || {
-        // Rendered here because the vault held none (or was not open yet): kept once every mark has landed.
-        let mut rendered: Vec<(u64, Vec<u8>)> = Vec::new();
-        for s in seeds {
-            // Once held, a seed is no longer asked for: a later draw that misses (the store dropped its oldest) asks again.
-            if MARK_RGB_STORE.lock().unwrap().iter().any(|(k, _)| *k == s) {
-                MARKS_ASKED.lock().unwrap().retain(|a| *a != s);
+    if store.len() >= AVATAR_CACHE {
+        store.remove(0);
+    }
+    store.push((seed, std::sync::Arc::new(rgb)));
+}
+
+/// The mint: each mark of `rendered` kept in the vault as AV1 where it holds none, after every one of them is on the screen (worker only: the vault's open waited for, a read, an encode of about a quarter second on the desktop and a write each).
+fn mint_marks(rendered: Vec<(u64, Vec<u8>)>) {
+    if rendered.is_empty() {
+        return;
+    }
+    let Some(vault) = crate::storage::device_vault() else { return };
+    for (s, rgb) in rendered {
+        {
+            let mut minting = MARKS_MINTING.lock().unwrap();
+            if minting.contains(&s) {
                 continue;
             }
-            // The vault only when it is open already: one still opening is waited for below, after the marks are on screen.
-            let rgb = match crate::storage::device_vault_if_open().and_then(|v| mark_from_vault(&v, s)) {
-                Some(rgb) => rgb,
-                None => {
-                    let rgb = mark_render_rgb(s);
-                    rendered.push((s, rgb.clone()));
-                    rgb
-                }
-            };
-            keep_newest(&MARK_RGB_STORE, s, std::sync::Arc::new(rgb));
-            MARKS_ASKED.lock().unwrap().retain(|a| *a != s);
-            MARKS_LANDED.store(true, std::sync::atomic::Ordering::Release);
-            if let Some(w) = wake.as_ref() {
-                wake_ui(w);
+            minting.push(s);
+        }
+        if !matches!(vault.read_addr(&crate::storage::vault_key("mark", &mark_salt(s))), Ok(Some(_))) {
+            mark_to_vault(&vault, s, &rgb);
+        }
+        MARKS_MINTING.lock().unwrap().retain(|m| *m != s);
+    }
+}
+
+/// Every contact's mark at a launch, off the UI thread and before any row asks: the vault's copies in one read when it is open already (one message to its librarian for them all, never waiting on an open), each decoded, the rest rendered, the marks across the cores, and all landed together (one repaint); the rendered ones are kept after (the mint), so a later launch reads them.
+/// It claims nothing a draw asks for: a row on the screen whose mark this has not landed yet asks its own worker (`marks_for_draws`), which never waits on the vault.
+/// Until 2026-11-22 this walk claimed every contact's seed and read the vault one mark at a time before each landed, behind the resume's rows worker and the history merges on the vault, so on the Pro's cold launch the rows' marks waited on it and their discs stood empty.
+pub(crate) fn prewarm_marks(seeds: Vec<u64>, wake: Option<Arc<dyn WakeSender<PhotonEvent>>>) {
+    let n = seeds.len();
+    let spawned = std::thread::Builder::new().name("marks-kept".into()).spawn(move || {
+        use rayon::prelude::*;
+        let t0 = std::time::Instant::now();
+        let mut todo: Vec<u64> = Vec::new();
+        for s in seeds {
+            if !todo.contains(&s) && !mark_held(s) {
+                todo.push(s);
             }
         }
-        // The mint: each mark rendered here kept as AV1, unless the vault (open by now) holds it already.
-        let Some(vault) = crate::storage::device_vault() else { return };
-        for (s, rgb) in rendered {
-            if mark_from_vault(&vault, s).is_none() {
-                mark_to_vault(&vault, s, &rgb);
-            }
+        if todo.is_empty() {
+            return;
         }
+        let addrs: Vec<[u8; 32]> = todo.iter().map(|s| crate::storage::vault_key("mark", &mark_salt(*s))).collect();
+        let kept: Vec<Option<Vec<u8>>> = crate::storage::device_vault_if_open().and_then(|v| v.read_addr_batch(&addrs).ok()).unwrap_or_else(|| vec![None; todo.len()]);
+        let read_ms = t0.elapsed().as_millis();
+        // Each kept mark decoded, the rest rendered: (seed, pixels, rendered here).
+        let marks: Vec<(u64, Vec<u8>, bool)> = todo.par_iter().zip(kept).map(|(&s, doc)| match doc.as_deref().and_then(mark_from_doc) {
+            Some(rgb) => (s, rgb, false),
+            None => (s, mark_render_rgb(s), true),
+        }).collect();
+        let from_vault = marks.iter().filter(|m| !m.2).count();
+        let mut rendered: Vec<(u64, Vec<u8>)> = Vec::new();
+        for (s, rgb, fresh) in marks {
+            if fresh {
+                rendered.push((s, rgb.clone()));
+            }
+            land_mark(s, rgb);
+        }
+        MARKS_LANDED.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(w) = wake.as_ref() {
+            wake_ui(w);
+        }
+        crate::logf!("MARK: {} kept at the launch landed in {} ms: {} from the vault (read in {} ms), {} rendered", todo.len(), t0.elapsed().as_millis(), from_vault, read_ms, rendered.len());
+        mint_marks(rendered);
     });
-    // No worker: the seeds are no longer asked for, so the next draw that misses asks again rather than leaving its ring empty for the session.
+    if let Err(e) = spawned {
+        crate::logf!("MARK: no worker for the launch's {} mark(s) ({}); each row asks for its own", n, e);
+    }
+}
+
+/// The marks the rows drawn asked for, off the UI thread: each rendered at 256 (a few ms, its rows across the cores), the marks across the cores, all landed together (one repaint), never waiting on the vault; then kept in the vault where it holds none (the mint).
+/// A worker that cannot be spawned un-asks its seeds, so the next draw asks again instead of leaving the rings empty for the session.
+fn marks_for_draws(seeds: Vec<u64>, wake: Option<Arc<dyn WakeSender<PhotonEvent>>>) {
+    let asked: Vec<u64> = seeds.clone();
+    let spawned = std::thread::Builder::new().name("marks".into()).spawn(move || {
+        use rayon::prelude::*;
+        let t0 = std::time::Instant::now();
+        let todo: Vec<u64> = seeds.iter().copied().filter(|s| !mark_held(*s)).collect();
+        let rendered: Vec<(u64, Vec<u8>)> = todo.par_iter().map(|&s| (s, mark_render_rgb(s))).collect();
+        for (s, rgb) in &rendered {
+            land_mark(*s, rgb.clone());
+        }
+        // Once held, a seed is no longer asked for: a later draw that misses (the store dropped its oldest) asks again.
+        MARKS_ASKED.lock().unwrap().retain(|a| !seeds.contains(a));
+        MARKS_LANDED.store(true, std::sync::atomic::Ordering::Release);
+        if let Some(w) = wake.as_ref() {
+            wake_ui(w);
+        }
+        crate::logf!("MARK: {} for the rows drawn landed in {} ms", rendered.len(), t0.elapsed().as_millis());
+        mint_marks(rendered);
+    });
     if let Err(e) = spawned {
         crate::logf!("MARK: no worker for {} mark(s) ({}); the next draw asks again", asked.len(), e);
         MARKS_ASKED.lock().unwrap().retain(|a| !asked.contains(a));
@@ -4528,7 +4587,7 @@ fn draw_gradient_avatar(canvas: &mut Canvas, cx: f32, cy: f32, r: f32, seed: u64
 pub(super) fn marks_tick(wake: Option<Arc<dyn WakeSender<PhotonEvent>>>) -> bool {
     let wanted = std::mem::take(&mut *MARKS_WANTED.lock().unwrap());
     if !wanted.is_empty() {
-        prewarm_marks(wanted, wake);
+        marks_for_draws(wanted, wake);
     }
     MARKS_LANDED.swap(false, std::sync::atomic::Ordering::AcqRel)
 }
