@@ -525,6 +525,10 @@ impl PhotonApp {
                 | AppState::Launch(LaunchState::Confirm)
                 | AppState::Launch(LaunchState::KnownHandle)
         ) {
+            // Leaving the join question drops its machine: nothing was sent, so there is nothing to withdraw.
+            if matches!(self.state, AppState::Launch(LaunchState::KnownHandle)) {
+                self.end_join_flow();
+            }
             // A cancelled minting retype puts the first entry back to edit.
             if matches!(self.state, AppState::Launch(LaunchState::Confirm)) {
                 self.launch_refill = self.mint_first_entry.take();
@@ -640,6 +644,9 @@ impl PhotonApp {
             self.unattended_confirm_tb
                 .as_mut()
                 .map(|t| (TextboxRole::UnattendedConfirm, t)),
+            self.release_confirm_tb
+                .as_mut()
+                .map(|t| (TextboxRole::ReleaseConfirm, t)),
             self.fleet_rename
                 .as_mut()
                 .map(|(_, t)| (TextboxRole::FleetRename, t)),
@@ -1063,6 +1070,7 @@ impl PhotonApp {
         self.avatar_pick_for = None;
         self.pending_fleet_key = None;
         self.probed_session = None;
+        self.attest_roots = None;
         self.probed_handle = None;
         self.active_conversation = None;
         self.forget_drafts();
@@ -1191,10 +1199,9 @@ impl PhotonApp {
                 }
             }
         }
-        // Pairing/join machinery: stop flags signalled, channels dropped, candidates gone.
-        if let Some(stop) = self.add_stop.take() {
-            stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        }
+        // Pairing/join machinery: stop flags signalled, channels dropped, candidates gone; the Join machine dropped without a withdraw (the request lapses at fgtw.org on its own, and the wipe sends nothing in this identity's name).
+        self.join = None;
+        self.end_join_flow();
         // An add of the old identity's fleet must not land in the new session: the Add machine goes, and its job answers are drained with the Depart machine's below.
         self.add = None;
         self.add_view = None;

@@ -108,7 +108,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("bu cihaz: {name}").into(),
         Msg::CopyWords => "kelimeleri kopyala".into(),
         Msg::WordsCopied => "kopyalandı: diğer cihazına yapıştır".into(),
-        Msg::LaunchJoinInstructions => "Diğer cihazında: Ayarlar \u{2192} Filo \u{2192} Ekle\nYakında mı? Bu cihazın adına dokunman yeter.\nUzakta mı? Şu kelimeleri oraya yaz:".into(),
         Msg::StartFreshIdle => "Yanlış cihaz mı? Sıfırdan başla (bu cihazı sil)".into(),
         Msg::StartFreshArmed => "Sıfırdan başla: silmek için tekrar dokun".into(),
         Msg::OffGridListening => "şebeke dışı: yakınlar dinleniyor...".into(),
@@ -131,9 +130,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::OpeningConversations => "sohbetlerin açılıyor".into(),
         Msg::IdentityCarriedHint => "bu cihaz zaten bir kimlik taşıyor".into(),
         Msg::PermanenceWarning => "Bu, kalıcı bir kimlik basar.\nParola yok. Sıfırlama yok. Kurtarma yok.\nTasdikleyen ilk insan onun sahibidir.\nCihazlar değiştirilebilir. Kimlik değiştirilemez.\nAdı tekrar yaz, ciddiysen bas.".into(),
-        Msg::KnownHandleWarning => "Bu ada zaten biri cevap veriyor.".into(),
         Msg::PickAnotherName => "Ben değilim, başka bir ad seç".into(),
-        Msg::ItsMineShowWords => "Benim, bu cihazı ekle".into(),
         Msg::LockedRetry => "Başka bir cihazdan yasağı kaldırdın mı? Yeniden denemek için dokun".into(),
         // ---- ready screen ----
         // Türkçede sayıdan sonra ad tekil kalır, tekil/çoğul dalı yok.

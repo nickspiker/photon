@@ -489,6 +489,8 @@ impl PhotonApp {
         let mut addresses_after: Vec<crate::network::fgtw::PeerRecord> = Vec::new();
         // The join over the mesh, deferred likewise: binding request frames handed to this sponsor (for the Add machine, screen up or not), and fan-outs handed to this device.
         let mut bind_reqs_after: Vec<(Vec<u8>, std::net::SocketAddr)> = Vec::new();
+        // Fleet devices heard on this network while joining: told to the Join machine after the drain.
+        let mut join_heard_after: Vec<([u8; 32], std::net::SocketAddr)> = Vec::new();
         // Own-handle LAN beacons heard this drain, for the Add machine (it marks the device nearby).
         let mut lan_heard_after: Vec<[u8; 32]> = Vec::new();
         let mut fanouts_after: Vec<([u8; 32], Vec<u8>, [u8; 32])> = Vec::new();
@@ -3277,21 +3279,11 @@ impl PhotonApp {
                             }
                         }
                     }
-                    // THE JOINER'S SIDE (docs/pairing-v2.md over the mesh): a beacon under the handle this device is joining is a sponsor on this network — hand it our binding request directly, once per sponsor per request stamp. The sponsor's screen then shows us as a nearby candidate without any registry.
+                    // THE JOINER'S SIDE (docs/pairing-v2.md over the mesh): a beacon under the handle this device is joining is a fleet device on this network. The Join machine hands it our request once per stamp (only past the yes), and its being heard closes the window before fgtw.org's registry, the last rung.
                     if self.session.is_none() && self.add_join_hp == Some(handle_proof) {
-                        if let (Some(dk), Some(frame)) = (device_pubkey, self.add_join_bind_req.clone()) {
-                            let me = self.device_keypair.as_ref().map(|kp| kp.public.to_bytes());
-                            let addr = std::net::SocketAddr::from((local_ip, port));
-                            if Some(dk) != me {
-                                if !self.add_join_sponsors.iter().any(|(k, _)| *k == dk) {
-                                    self.add_join_sponsors.push((dk, addr));
-                                }
-                                if !self.add_join_sent.contains(&dk) {
-                                    self.add_join_sent.push(dk);
-                                    crate::logf!("JOIN: sponsor device {} heard at {} — handing it our binding request", crate::fp(&dk), addr);
-                                    self.send_frame_direct(frame, dk, addr, None);
-                                }
-                            }
+                        let me = self.device_keypair.as_ref().map(|kp| kp.public.to_bytes());
+                        if let Some(dk) = device_pubkey.filter(|dk| Some(*dk) != me) {
+                            join_heard_after.push((dk, std::net::SocketAddr::from((local_ip, port))));
                         }
                     }
                     // WOODS ADD (docs/offgrid.md open house): a pending off-grid add whose derived proof matches this beacon — the beacon IS the registry record (hp in the provenance, device key in `ke`, address in the source). Create the contact and the normal machinery takes over: ping → pong → CLUTCH over the group.
@@ -5957,6 +5949,10 @@ impl PhotonApp {
         }
         for record in addresses_after {
             self.pass_address_on(record);
+        }
+        for (dk, addr) in join_heard_after {
+            self.join_heard(dk, addr);
+            changed!();
         }
         // The Add machine lives the whole session and every own-handle beacon is a step: the screen moves only when what its page draws (`add_view`) moved.
         for (bytes, from) in bind_reqs_after {

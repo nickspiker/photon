@@ -173,7 +173,6 @@ pub enum Msg<'a> {
     ThisDeviceName(&'a str),
     CopyWords,
     WordsCopied,
-    LaunchJoinInstructions,
     StartFreshIdle,
     StartFreshArmed,
     OffGridListening,
@@ -195,10 +194,8 @@ pub enum Msg<'a> {
     IdentityCarriedHint,
     // '\n'-joined passage; the call site iterates .lines() and gives the FIRST line the headline (error) colour.
     PermanenceWarning,
-    // '\n'-joined passage; same first-line-headline colour rule as PermanenceWarning.
-    KnownHandleWarning,
+    /// The join question's way out (the typo, or a stranger's name); the yes beside it is fgtw's JoinConfirmYes.
     PickAnotherName,
-    ItsMineShowWords,
     LockedRetry,
     // ---- ready screen ----
     PeersOnline(usize),

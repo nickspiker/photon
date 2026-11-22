@@ -527,6 +527,7 @@ impl PhotonApp {
     }
 
     /// The Release card's slot-5 pill: start copy-then-release, or stop waiting.
+    /// Starting it takes the handle typed above, as Unbind does (owner, 2026-11-22): its proof runs, and a match holds the removal for the copies (holdings_copy_then_release_begin). Stopping drops the held removal too.
     pub(super) fn holdings_copy_then_release_tap(&mut self) {
         if self.release_when_copied {
             crate::log("HOLDINGS: copy-then-release cancelled — this device stays");
@@ -534,8 +535,16 @@ impl PhotonApp {
             if let Some(c) = self.holdings_check.as_mut() {
                 c.pull = None;
             }
+            if matches!(self.depart.as_ref().map(|m| m.removal()), Some(fgtw::flow::depart::Removal::Held { .. })) {
+                self.depart_step(fgtw::flow::Event::User(fgtw::flow::UserOp::GiveUp));
+            }
             return;
         }
+        self.release_verify_start(true);
+    }
+
+    /// The removal is confirmed with the handle and held: copy what exists only here to the most complete sibling, then release by itself.
+    pub(super) fn holdings_copy_then_release_begin(&mut self) {
         self.set_release_when_copied(true);
         if !self.holdings_pull_start() {
             self.holdings_release_if_safe();

@@ -110,7 +110,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("это устройство: {name}").into(),
         Msg::CopyWords => "скопировать слова".into(),
         Msg::WordsCopied => "скопировано: вставь на другом своём устройстве".into(),
-        Msg::LaunchJoinInstructions => "На другом своём устройстве: Настройки \u{2192} Флот \u{2192} Добавить\nОно рядом? Просто коснись имени этого устройства.\nДалеко? Введи там эти слова:".into(),
         Msg::StartFreshIdle => "Не то устройство? Начать с нуля (стереть это устройство)".into(),
         Msg::StartFreshArmed => "Начать с нуля: коснись ещё раз, чтобы стереть это устройство".into(),
         Msg::OffGridListening => "вне сети: слушаем рядом...".into(),
@@ -134,9 +133,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::OpeningConversations => "открываем твои разговоры".into(),
         Msg::IdentityCarriedHint => "это устройство уже несёт личность".into(),
         Msg::PermanenceWarning => "Так создаётся постоянная личность.\nБез пароля. Без сброса. Без восстановления.\nКто первым её аттестует, тому она и принадлежит.\nУстройства можно заменить. Личность нельзя.\nВведи имя ещё раз, потом нажми, если это всерьёз.".into(),
-        Msg::KnownHandleWarning => "На это имя уже кто-то отзывается.".into(),
         Msg::PickAnotherName => "Это не я, выбрать другое".into(),
-        Msg::ItsMineShowWords => "Это я, добавить это устройство".into(),
         Msg::LockedRetry => "Уже восстановлено с другого устройства? Коснись, чтобы повторить".into(),
         // ---- ready screen ----
         Msg::PeersOnline(n) => {

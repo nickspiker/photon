@@ -108,7 +108,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("यह डिवाइस: {name}").into(),
         Msg::CopyWords => "शब्द कॉपी करो".into(),
         Msg::WordsCopied => "कॉपी हो गए: अपने दूसरे डिवाइस पर चिपकाओ".into(),
-        Msg::LaunchJoinInstructions => "अपने दूसरे डिवाइस पर: सेटिंग्स \u{2192} बेड़ा \u{2192} जोड़ो\nपास है? बस इस डिवाइस के नाम पर टैप करो।\nदूर है? ये शब्द वहाँ लिखो:".into(),
         Msg::StartFreshIdle => "ग़लत डिवाइस? नए सिरे से शुरू करो (यह डिवाइस मिटा दो)".into(),
         Msg::StartFreshArmed => "नए सिरे से शुरू: यह डिवाइस मिटाने के लिए दोबारा टैप करो".into(),
         Msg::OffGridListening => "बिना नेटवर्क: आस-पास सुना जा रहा है...".into(),
@@ -131,9 +130,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::OpeningConversations => "तुम्हारी बातचीत खुल रही है".into(),
         Msg::IdentityCarriedHint => "इस डिवाइस पर पहले से एक पहचान है".into(),
         Msg::PermanenceWarning => "इससे एक हमेशा के लिए बनी पहचान बनती है।\nकोई पासवर्ड नहीं। कोई रीसेट नहीं। कोई रिकवरी नहीं।\nजो इंसान पहले अटेस्ट करे, पहचान उसी की।\nडिवाइस बदले जा सकते हैं। पहचान नहीं।\nनाम दोबारा टाइप करो, फिर इरादा पक्का है तो दबाओ।".into(),
-        Msg::KnownHandleWarning => "इस नाम से कोई पहले ही जवाब देता है।".into(),
         Msg::PickAnotherName => "मैं नहीं, कोई और चुनो".into(),
-        Msg::ItsMineShowWords => "मैं ही हूँ, यह डिवाइस जोड़ो".into(),
         Msg::LockedRetry => "किसी और डिवाइस से बहाल किया? दोबारा कोशिश के लिए टैप करो".into(),
         // ---- ready screen ----
         // "साथी" सीधे बहुवचन में नहीं बदलता, इसलिए en.rs वाली एकवचन/बहुवचन शाखा यहाँ नहीं चाहिए।

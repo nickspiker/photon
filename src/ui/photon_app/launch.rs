@@ -10,10 +10,11 @@ impl PhotonApp {
                 return;
             }
         }
-        // In JOIN mode the launch textbox feeds the pairing flow (handle then words), not a fresh attestation.
+        // A handle typed again on the join screen is a fresh look-up, never a send (owner, 2026-11-22: it used to re-submit the join with no press): the join ends here, and the probe below asks the question again if the identity has a fleet.
         if self.launch_add_mode {
-            self.submit_join_step(None);
-            return;
+            self.launch_add_mode = false;
+            self.end_join_flow();
+            self.add_join_status.clear();
         }
         let handle: String = match self.textbox.as_ref() {
             Some(tb) => tb.chars.iter().collect(),
@@ -57,6 +58,8 @@ impl PhotonApp {
     }
 
     pub(super) fn fire_attest_query_with_roots(&mut self, session: tohu::SessionIdentity) {
+        // Kept for the "not in the fleet" answer, which asks the join question with them; cleared when the attest succeeds.
+        self.attest_roots = Some(session);
         if let Some(hq) = self.handle_query.as_ref() {
             hq.query_first_attest_with_roots(session);
             self.state = AppState::Launch(LaunchState::Attesting);
@@ -101,10 +104,9 @@ impl PhotonApp {
                         self.fire_attest_query_with_roots(session);
                     }
                     ProbeOutcome::JoinOurs => {
-                        // A fleet exists whose genesis binds to this handle's identity — EITHER the user's own other device OR a collider who typed the same name; the derivation makes them indistinguishable (docs/lifecycle.md D1). KnownHandle presents both readings; NOTHING posts to the network (no bind request, no beacon) until "it's mine" is pressed — the old straight-to-join route made every collision read as device pairing and spammed the owner's registry with stranger requests.
-                        crate::log("attest: handle already has a fleet → KnownHandle fork");
-                        self.probed_session = Some(session);
-                        self.state = AppState::Launch(LaunchState::KnownHandle);
+                        // A fleet exists whose genesis binds to this handle's identity: EITHER the user's own other device OR a collider who typed the same name; the derivation makes them indistinguishable (docs/lifecycle.md D1).
+                        // The Join machine (fgtw::flow::join) decides from here: busy refuses, otherwise it asks "are you sure?" (the KnownHandle screen) and NOTHING leaves this device until the yes.
+                        self.join_look(session);
                     }
                     ProbeOutcome::Taken => {
                         self.state = AppState::Launch(LaunchState::Error(
@@ -122,6 +124,7 @@ impl PhotonApp {
                 }
             }
             QueryResult::Success(data) => {
+                self.attest_roots = None;
                 // The handle string's job ends at the proof: clear the widget buffer NOW so the secret can't linger a whole session and re-surface on any later drop back to the attest screen (the Shred field case — but this kills the CLASS, not the one path). Every teardown asks for a re-type by design.
                 if let Some(tb) = self.textbox.as_mut() {
                     tb.clear();
@@ -421,11 +424,14 @@ impl PhotonApp {
                     // Transient network failure on a resume refresh — the local session is still valid. Stay on Ready; the next presence cycle retries. Do NOT drop the user back to the attest screen.
                     crate::log("UI: background refresh failed (network); staying on local session");
                 } else if e.contains("not in the fleet") && !self.launch_add_mode {
-                    // Safety net for a probe→announce race (device removed from the fleet in the gap): the announce says "not in the fleet". The probe normally routes this to add-this-device UP FRONT, but if it slips thru, catch it here too.
-                    self.launch_add_mode = true;
-                    self.state = AppState::Launch(LaunchState::Fresh);
-                    self.add_join_handle = None;
-                    self.submit_join_step(None);
+                    // Safety net for a probe→announce race (device removed from the fleet in the gap): the announce says "not in the fleet". It used to start the join with no press; now it is the way to the question, the Join machine made with the roots this attest was fired with, and nothing goes out before the yes (owner, 2026-11-22).
+                    match self.attest_roots.take() {
+                        Some(session) => self.join_look(session),
+                        None => {
+                            self.state = AppState::Launch(LaunchState::Error(e));
+                            self.refocus_handle_select_all();
+                        }
+                    }
                 } else if e.contains("device_owned") || e.contains("another identity's fleet") {
                     // JOINER-SIDE HONESTY (the 2026-09-04 retire/Release incident): the new user staring at branded hardware gets the truth — who can free it and where — instead of a mystery brick. The fgtw fallback string stays for logs; the screen speaks the catalog.
                     crate::logf!("attest: refused — hardware branded to another identity ({})", e);

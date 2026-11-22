@@ -107,7 +107,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("ang device na ito: {name}").into(),
         Msg::CopyWords => "kopyahin ang mga salita".into(),
         Msg::WordsCopied => "nakopya: i-paste ang mga ito sa kabilang device mo".into(),
-        Msg::LaunchJoinInstructions => "Sa kabilang device mo: Mga Setting \u{2192} Armada \u{2192} Idagdag\nMalapit lang? Pindutin lang ang pangalan ng device na ito.\nMalayo? I-type ang mga salitang ito doon:".into(),
         Msg::StartFreshIdle => "Maling device? Magsimula ulit (burahin ang device na ito)".into(),
         Msg::StartFreshArmed => "Magsimula ulit: pindutin ulit para burahin ang device na ito".into(),
         Msg::OffGridListening => "labas sa grid: nakikinig sa paligid...".into(),
@@ -130,9 +129,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::OpeningConversations => "binubuksan ang mga usapan mo".into(),
         Msg::IdentityCarriedHint => "may dala nang pagkakakilanlan ang device na ito".into(),
         Msg::PermanenceWarning => "Bumubuo ito ng permanenteng pagkakakilanlan.\nWalang password. Walang reset. Walang pagbabalik.\nSa unang taong magpapatotoo ito mapupunta.\nMapapalitan ang mga device. Ang pagkakakilanlan, hindi.\nI-type ulit ang pangalan, saka pindutin kung totoo ang loob mo.".into(),
-        Msg::KnownHandleWarning => "May sumasagot na sa pangalang ito.".into(),
         Msg::PickAnotherName => "Hindi ako, pumili ng iba".into(),
-        Msg::ItsMineShowWords => "Ako iyan, idagdag ang device na ito".into(),
         Msg::LockedRetry => "Naibalik mula sa ibang device? Pindutin para subukan ulit".into(),
         // ---- ready screen ----
         // Walang pagbabago ang pangngalan sa bilang: iisa ang anyo ng "kapantay" sa isa at sa marami, kaya isang sangay lang.

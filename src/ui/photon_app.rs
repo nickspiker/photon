@@ -68,6 +68,7 @@ mod group_avatar;
 pub mod root_conversion;
 mod devices;
 mod holdings;
+mod join;
 mod alias;
 mod space;
 mod keep;
@@ -1491,6 +1492,8 @@ enum TextboxRole {
     ProfileField,
     /// The unattended-confirm modal's handle-entry box — in the registry so it takes keys / IME / blink like every other box (without this it rendered but couldn't be typed into).
     UnattendedConfirm,
+    /// The Security page's Release handle box (the owner's removal: press Release, type the handle, press Unbind): registry membership per the two-walk rule.
+    ReleaseConfirm,
     /// The Fleet page's inline machine-rename box (one device card's name band swaps to it) — registry membership per the two-walk rule.
     FleetRename,
     /// The Manage page's New-group title box (docs/molecules.md §10.5) — registry membership per the two-walk rule.
@@ -2282,13 +2285,25 @@ pub struct PhotonApp {
     /// The No beside it: back to the list, nothing to undo.
     add_select_no_hit_id: HitId,
     add_join_poke: Option<std::sync::mpsc::Sender<()>>,
-    /// The joining device's binding request as a signed `bind_req` frame, re-minted on each re-post; handed to every sponsor device heard beaconing under the joined handle.
-    add_join_bind_req: Option<Vec<u8>>,
-    /// Sponsor devices this request stamp has already been handed to (cleared on re-mint), and every sponsor heard with where it was heard.
-    add_join_sent: Vec<[u8; 32]>,
+    /// The Join machine (fgtw::flow::join, the owner's rules of 2026-11-22): made when the look-up finds the identity's fleet, it decides what leaves this device and when; Photon carries out its acts (join.rs).
+    join: Option<fgtw::flow::join::Join>,
+    join_view: Option<fgtw::flow::join::View>,
+    join_wake: Option<(i64, fgtw::flow::Wake)>,
+    /// The roots the look-up derived for the join (the proof paid once), the tap secret drawn at the yes, and the request as last minted (for fgtw.org's registry, the last rung).
+    join_roots: Option<tohu::SessionIdentity>,
+    join_nfc_secret: Option<[u8; 32]>,
+    join_req: Option<crate::network::fgtw::fleet::BindRequest>,
+    /// The join's radios while the machine holds them on: the BLE beacon for the request stamp, the NFC tap secret.
+    join_beacon: Option<crate::network::pairing_beacon::AnnounceGuard>,
+    join_nfc: Option<crate::network::pairing_nfc::ServeGuard>,
+    /// Where the join's jobs (mint, post) answer: the same channel the watch thread reports on.
+    join_tx: Option<std::sync::mpsc::Sender<JoinUpdate>>,
+    /// Every fleet device heard on this network while joining, with where it was heard (the machine names it; the address is Photon's).
     add_join_sponsors: Vec<([u8; 32], std::net::SocketAddr)>,
     /// A fan-out handed to the joining device (the sponsor's grow), waiting for the join thread, which holds the ira that opens it.
     add_join_fanout: std::sync::Arc<std::sync::Mutex<Option<Vec<u8>>>>,
+    /// The roots the last first attest was fired with, kept until it succeeds: a "not in the fleet" answer asks the join question with them (the Join machine), never a re-typed handle.
+    attest_roots: Option<tohu::SessionIdentity>,
     /// Roots from the pre-attest probe, stashed so the permanence-confirm press claims WITHOUT re-deriving the ~1s proof. Set on a `Fresh` probe outcome; cleared on any handle edit (via clear_launch_error) or when the claim fires.
     probed_session: Option<tohu::SessionIdentity>,
     /// Canonical spelling of the handle `probed_session` was derived from — the confirm press fires the stashed roots ONLY when the box still canonicalizes to this, so stale roots can never attest a different identity than the one on screen.
@@ -2597,9 +2612,12 @@ pub struct PhotonApp {
     /// "My devices aren't nearby: ask through fgtw.org" on the JOIN words screen, and "Not nearby? Look through fgtw.org" on the Add-device screen (local first, 2026-11-10).
     join_mailbox_hit_id: HitId,
     add_mailbox_hit_id: HitId,
-    /// The running join's mailbox opt-in, set by the tap; the join thread posts to fgtw.org once it reads true.
+    /// The join watch thread's registry flag: set when the Join machine says fgtw.org holds the request (Do::Watch { registry }), after which the thread also reads fgtw.org's copy of the chain.
     join_mailbox: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
-    join_mailbox_asked: bool,
+    /// The Security page's removal (fgtw::flow::depart::Removal): the handle box after Remove, its Unbind and Cancel pills, and the typed handle's proof running off the UI thread (with whether it is for "Copy, then release").
+    release_confirm_tb: Option<Textbox>,
+    release_confirm_base: HitId,
+    release_verify: Option<(std::sync::mpsc::Receiver<[u8; 32]>, bool)>,
     /// Interaction-state for the copy affordance label ("copy words" → "copied — paste them on your other device"). Cleared when the flow ends, never by a timer (no time-based UI).
     join_words_copied: bool,
     /// Two-tap arm for "Start fresh" on the JOIN screen (destructive → confirm).
@@ -3590,10 +3608,18 @@ impl PhotonApp {
             add_select_hit_id: HIT_NONE,
             add_select_no_hit_id: HIT_NONE,
             add_join_poke: None,
-            add_join_bind_req: None,
-            add_join_sent: Vec::new(),
+            join: None,
+            join_view: None,
+            join_wake: None,
+            join_roots: None,
+            join_nfc_secret: None,
+            join_req: None,
+            join_beacon: None,
+            join_nfc: None,
+            join_tx: None,
             add_join_sponsors: Vec::new(),
             add_join_fanout: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            attest_roots: None,
             probed_session: None,
             probed_handle: None,
             mint_first_entry: None,
@@ -3717,7 +3743,9 @@ impl PhotonApp {
             join_mailbox_hit_id: HIT_NONE,
             add_mailbox_hit_id: HIT_NONE,
             join_mailbox: None,
-            join_mailbox_asked: false,
+            release_confirm_tb: None,
+            release_confirm_base: HIT_NONE,
+            release_verify: None,
             join_words_copied: false,
             join_startfresh_armed: false,
             pending_picker_request: false,
@@ -4680,14 +4708,14 @@ enum CkptOutcome {
 }
 
 enum JoinUpdate {
-    /// The fleet-masked words this device displays for the user to type on an existing device.
-    ShowWords(String),
-    /// The join thread has aimed this device at fleet `hp` and minted its binding request (the signed `bind_req` frame to hand sponsors on the LAN), and listens on `poke` for a chain or a fan-out the UI thread receives for it. Re-sent on every re-mint.
-    Aimed { hp: [u8; 32], bind_req: Vec<u8>, poke: std::sync::mpsc::Sender<()> },
+    /// The binding request minted for Do::Mint (stamp, the request, its signed `bind_req` frame), or why not.
+    Minted(Result<(crate::network::fgtw::fleet::BindRequest, Vec<u8>), String>),
+    /// fgtw.org's registry answered Do::PostRegistry.
+    Posted(Result<(), String>),
     /// This device is now in the fleet — hand off to the normal attest. Carries the fleet key recovered from the fan-out (None = bound but the green-confirm rotation hasn't landed yet; the post-attest sync retries) plus the session roots derived ONCE at join start, so the attest skips the second ~1s memory-hard proof.
     Joined(Option<[u8; 32]>, tohu::SessionIdentity),
-    /// A device of the fleet picked this one (`bind_select`, its sender checked against the fleet's chain): the green, carrying that device's name. Nothing is bound yet; the keys follow the person's Add.
-    Selected(String),
+    /// A device of the fleet picked this one (`bind_select`, its sender checked against the fleet's chain): the green, carrying that device and its name. Nothing is bound yet; the keys follow the person's Add.
+    Selected { by: [u8; 32], name: String },
     /// An error to surface in the status line.
     Failed(String),
 }
@@ -4794,7 +4822,7 @@ impl PhotonApp {
         }
         if matches!(self.state, AppState::Launch(_)) {
             // The attest button is only part of the tree when there's a handle to attest — same reveal as the render gate. An empty field yields just the textbox, so Tab can't land focus on a button that isn't drawn and a hit-test can't dispatch to it. Join words phase (new device displaying its pairing words): no input widgets at all — the screen is display-only until bound or cancelled.
-            let join_words_up = self.launch_add_mode && self.add_join_words.is_some();
+            let join_words_up = self.join_asking();
             let handle_entered = self
                 .textbox
                 .as_ref()
@@ -4876,6 +4904,12 @@ impl PhotonApp {
                     // Load-on-startup rides Security now (Nick 2026-09-03 — it belongs beside the auto-attest arm it enables).
                     if let Some(cb) = self.settings_background_check.as_mut() {
                         f(cb);
+                    }
+                    // Release armed shows its handle box.
+                    if self.settings_removeshred_armed {
+                        if let Some(tb) = self.release_confirm_tb.as_mut() {
+                            f(tb);
+                        }
                     }
                     // Confirm state shows the handle box; normal state shows the checkbox — only one is live.
                     if self.unattended_confirm.is_some() {

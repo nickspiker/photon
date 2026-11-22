@@ -106,7 +106,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("dieses Gerät: {name}").into(),
         Msg::CopyWords => "Wörter kopieren".into(),
         Msg::WordsCopied => "kopiert: füge sie auf deinem anderen Gerät ein".into(),
-        Msg::LaunchJoinInstructions => "Auf deinem anderen Gerät: Einstellungen \u{2192} Flotte \u{2192} Hinzufügen\nIn der Nähe? Tippe einfach auf den Namen dieses Geräts.\nWeit weg? Tippe dort diese Wörter ein:".into(),
         Msg::StartFreshIdle => "Falsches Gerät? Neu anfangen (dieses Gerät löschen)".into(),
         Msg::StartFreshArmed => "Neu anfangen: nochmal tippen, um dieses Gerät zu löschen".into(),
         Msg::OffGridListening => "ohne Netz: lausche in der Nähe...".into(),
@@ -129,9 +128,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::OpeningConversations => "deine Unterhaltungen werden geöffnet".into(),
         Msg::IdentityCarriedHint => "dieses Gerät trägt bereits eine Identität".into(),
         Msg::PermanenceWarning => "Das prägt eine dauerhafte Identität.\nKein Passwort. Kein Zurücksetzen. Keine Wiederherstellung.\nDer erste Mensch, der sie bezeugt, besitzt sie.\nGeräte lassen sich ersetzen. Die Identität nicht.\nTippe den Namen noch einmal, dann drücke, wenn du es ernst meinst.".into(),
-        Msg::KnownHandleWarning => "Auf diesen Namen hört schon jemand.".into(),
         Msg::PickAnotherName => "Nicht ich, anderen wählen".into(),
-        Msg::ItsMineShowWords => "Das bin ich, dieses Gerät hinzufügen".into(),
         Msg::LockedRetry => "Von einem anderen Gerät wieder zugelassen? Tippe für einen neuen Versuch".into(),
         // ---- ready screen ----
         Msg::PeersOnline(n) => format!("{} {}", fmt_mag(n as u64), if n == 1 { "Peer" } else { "Peers" }).into(),

@@ -106,7 +106,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("perangkat ini: {name}").into(),
         Msg::CopyWords => "salin kata-katanya".into(),
         Msg::WordsCopied => "tersalin: tempel di perangkatmu yang lain".into(),
-        Msg::LaunchJoinInstructions => "Di perangkatmu yang lain: Pengaturan \u{2192} Armada \u{2192} Tambah\nDekat? Cukup ketuk nama perangkat ini.\nJauh? Ketik kata-kata ini di sana:".into(),
         Msg::StartFreshIdle => "Salah perangkat? Mulai dari nol (hapus perangkat ini)".into(),
         Msg::StartFreshArmed => "Mulai dari nol: ketuk lagi untuk menghapus perangkat ini".into(),
         Msg::OffGridListening => "luar jaringan: mendengarkan di sekitar...".into(),
@@ -129,9 +128,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::OpeningConversations => "membuka percakapanmu".into(),
         Msg::IdentityCarriedHint => "perangkat ini sudah membawa sebuah identitas".into(),
         Msg::PermanenceWarning => "Ini mencetak identitas yang permanen.\nTanpa kata sandi. Tanpa reset. Tanpa pemulihan.\nManusia pertama yang mengesahkannya adalah pemiliknya.\nPerangkat bisa diganti. Identitas tidak.\nKetik namanya sekali lagi, lalu tekan kalau kamu sungguh-sungguh.".into(),
-        Msg::KnownHandleWarning => "Sudah ada yang menyahut nama ini.".into(),
         Msg::PickAnotherName => "Bukan aku, pilih yang lain".into(),
-        Msg::ItsMineShowWords => "Itu aku, tambahkan perangkat ini".into(),
         Msg::LockedRetry => "Sudah dipulihkan dari perangkat lain? Ketuk untuk mencoba lagi".into(),
         // ---- ready screen ----
         // Indonesian does not mark plural, so one form serves every count and the English one/many branch disappears.

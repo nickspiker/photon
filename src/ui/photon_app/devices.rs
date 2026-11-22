@@ -1,6 +1,5 @@
 //! Fleet device management — add-device/join flows, roster sync, fleet key custody, checkpoints, lockout, log submission, and reseeding the derived key sets.
 
-use fgtw::pq::FleetSigner;
 use super::*;
 
 /// Where each device keeps the departure requests it denied or heard denied: its own single-writer settings key (`fleet.depart_denied.<device>`, the `react.recent.` shape: the settings layer is LWW per key, so one shared key would drop concurrent denies). Fleet-synced like every setting; the refusal reads the union of every device's list.
@@ -443,18 +442,32 @@ impl PhotonApp {
         });
     }
 
-    /// Stop the NEW-device join thread and clear its display state (words, ready light, handle step).
+    /// End the NEW-device join: a join past the yes is backed out thru its machine first (the request withdrawn, the radios stopped), then the machine, its watch thread and its display state go.
     pub(super) fn end_join_flow(&mut self) {
+        if self.join.as_ref().is_some_and(|j| j.phase() == fgtw::flow::join::Phase::Asking) {
+            self.join_step(fgtw::flow::Event::User(fgtw::flow::UserOp::Back));
+        }
+        self.join = None;
+        self.join_view = None;
+        self.join_wake = None;
+        self.join_roots = None;
+        self.join_nfc_secret = None;
+        self.join_req = None;
+        self.join_beacon = None;
+        self.join_nfc = None;
+        self.join_tx = None;
+        self.join_mailbox = None;
         if let Some(stop) = self.add_stop.take() {
             stop.store(true, std::sync::atomic::Ordering::Relaxed);
         }
+        if let Some(poke) = self.add_join_poke.take() {
+            crate::log_err!(poke.send(()), "the stop poke to the join watch");
+        }
+        self.join_selected_by = None;
         self.add_join_handle = None;
         self.add_join_rx = None;
         self.add_join_words = None;
         self.add_join_hp = None;
-        self.add_join_poke = None;
-        self.add_join_bind_req = None;
-        self.add_join_sent.clear();
         self.add_join_sponsors.clear();
         if let Ok(mut s) = self.add_join_chain.lock() {
             *s = None;
@@ -913,12 +926,122 @@ impl PhotonApp {
         self.ready_toast = Some(body);
     }
 
-    /// REQUESTER: ask the fleet to let this device go (the Security page's Release). The Depart machine (fgtw::flow) refuses on the last device, has the request signed off this thread, and hands it to every live member until each has it; this device wipes when the fold no longer lists it.
+    /// The Security page's Release, first press (owner, 2026-11-22: press remove once, type the handle, press Unbind): the Depart machine is told Remove, and the handle box opens under the pill. Nothing is sent; the last device is refused here already.
+    pub(super) fn release_arm(&mut self) {
+        if !self.depart_machine_make() {
+            crate::log("SECURITY: no session or device key to request a departure with");
+            self.ready_toast = Some(tr(Msg::NoIdentityToRemove).into_owned());
+            return;
+        }
+        self.depart_step(fgtw::flow::Event::User(fgtw::flow::UserOp::Remove));
+        if !matches!(self.depart.as_ref().map(|m| m.removal()), Some(fgtw::flow::depart::Removal::TypeHandle { .. })) {
+            return;
+        }
+        self.settings_removeshred_armed = true;
+        self.settings_shred_armed = false;
+        self.settings_revoke_armed = false;
+        self.holdings_check_start();
+        self.release_verify = None;
+        if let Some(tb) = self.release_confirm_tb.as_mut() {
+            tb.clear();
+            let id = tb.hit_id();
+            self.change_focus(Some(id));
+        }
+    }
+
+    /// Release put back (its second press, leaving the Security page): a removal still waiting for its handle is dropped. Nothing was sent; a request already out or a removal held for its copies is left alone.
+    pub(super) fn depart_removal_cancel(&mut self) {
+        self.release_verify = None;
+        if let Some(tb) = self.release_confirm_tb.as_mut() {
+            tb.clear();
+        }
+        if matches!(self.depart.as_ref().map(|m| m.removal()), Some(fgtw::flow::depart::Removal::TypeHandle { .. })) {
+            self.depart_step(fgtw::flow::Event::User(fgtw::flow::UserOp::GiveUp));
+        }
+    }
+
+    /// Unbind (or "Copy, then release", `hold`) pressed with the handle typed: its ~1 s memory-hard proof runs OFF the UI thread, as attest's does, so the check is never a cheap handle oracle; the verdict is the machine's (release_unbind, drained in the tick).
+    pub(super) fn release_verify_start(&mut self, hold: bool) {
+        if self.release_verify.is_some() {
+            return;
+        }
+        let typed: String = self.release_confirm_tb.as_ref().map(|tb| tb.chars.iter().collect()).unwrap_or_default();
+        if typed.is_empty() {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        let wake = self.event_proxy.clone();
+        std::thread::spawn(move || {
+            let proof = crate::types::Handle::username_to_handle_proof(&typed);
+            crate::log_err!(tx.send(proof), "the typed handle's proof to the UI thread");
+            if let Some(w) = wake.as_ref() {
+                super::wake_ui(w);
+            }
+        });
+        self.release_verify = Some((rx, hold));
+    }
+
+    /// The typed handle's proof is in: the Depart machine decides. A match sends the request at once (or holds it for "Copy, then release"); anything else leaves the box open with the mismatch said, and nothing sent.
+    pub(super) fn release_unbind(&mut self, proof: [u8; 32], hold: bool) {
+        use fgtw::flow::depart::Removal;
+        let salt: [u8; 32] = {
+            use rand::RngCore;
+            let mut s = [0u8; 32];
+            rand::thread_rng().fill_bytes(&mut s);
+            s
+        };
+        self.depart_step(fgtw::flow::Event::Unbind { proof, intent: 1, salt, hold });
+        match self.depart.as_ref().map(|m| m.removal()) {
+            Some(Removal::TypeHandle { wrong: true }) => {
+                crate::log("SECURITY: the handle typed for Release is not this identity's; nothing sent");
+                // The box empties for the handle to be typed again; the mismatch line stays until it is.
+                if let Some(tb) = self.release_confirm_tb.as_mut() {
+                    tb.clear();
+                }
+            }
+            Some(Removal::TypeHandle { wrong: false }) | None => {}
+            Some(Removal::Held { .. }) => {
+                crate::log("SECURITY: Release confirmed with the handle; held until every item has a second home");
+                self.release_confirmed_close();
+                self.holdings_copy_then_release_begin();
+            }
+            Some(Removal::Idle) => {
+                // The warning the person saw on the arm, on the record: never a block.
+                if self.release_unsynced.0 > 0 {
+                    crate::logf!("SECURITY: releasing past the warning: {} rows in {} conversations may exist only on this device", self.release_unsynced.0, self.release_unsynced.1);
+                }
+                // Releasing NOW overrides a pending copy-then-release.
+                if self.release_when_copied {
+                    self.set_release_when_copied(false);
+                }
+                self.release_confirmed_close();
+            }
+        }
+    }
+
+    /// The handle box closes once the machine took the removal.
+    fn release_confirmed_close(&mut self) {
+        self.settings_removeshred_armed = false;
+        if let Some(tb) = self.release_confirm_tb.as_mut() {
+            tb.clear();
+        }
+        self.change_focus(None);
+    }
+
+    /// REQUESTER: ask the fleet to let this device go, for a removal already confirmed with the handle and held for its copies ("Copy, then release", once nothing is at risk). The Depart machine refuses anything else, refuses on the last device, has the request signed off this thread, and hands it to every live member until each has it; this device wipes when the fold no longer lists it.
     /// `intent` 1: approving frees the hardware too (every Release asks this).
     pub(super) fn request_fleet_departure(&mut self, intent: u8) {
         if !self.depart_machine_make() {
             crate::log("SECURITY: no session or device key to request a departure with");
             self.ready_toast = Some(tr(Msg::NoIdentityToRemove).into_owned());
+            return;
+        }
+        // A copy-then-release left from before the typed handle was asked for holds no confirmed removal: it is dropped, and Release asks for the handle again.
+        if !matches!(self.depart.as_ref().map(|m| m.removal()), Some(fgtw::flow::depart::Removal::Held { .. })) {
+            crate::log("SECURITY: no removal confirmed with the handle is held; the departure is not sent");
+            if self.release_when_copied {
+                self.set_release_when_copied(false);
+            }
             return;
         }
         // The salt names this request (owner, 2026-11-10): 32 fresh random bytes inside the envelope our key signs. A Deny refuses it for good, so asking again is always a new salt.
@@ -3404,340 +3527,6 @@ impl PhotonApp {
         // Drop focus off the words textbox — clearing chars doesn't unfocus it, so without this the (now hidden) widget keeps its blinkey firing, keystrokes still route to it, and Android's soft keyboard stays up over the contact list.
         self.change_focus(None);
         self.add_page(false);
-    }
-
-    /// New-device JOIN: the handle was entered — generate this device's pairing identity, display its words, post the signed request, and poll for the matched flag + membership off-thread.
-    pub(super) fn submit_join_step(&mut self, precomputed_proof: Option<[u8; 32]>) {
-        use crate::network::fgtw::fleet;
-        use std::sync::atomic::{AtomicBool, Ordering};
-        if self.add_join_rx.is_some() {
-            return; // already joining
-        }
-        let handle: String = match self.textbox.as_ref() {
-            Some(tb) => tb.chars.iter().collect(),
-            None => return,
-        };
-        // HANDLES ARE BYTE-PRECISE: the RAW typed string goes to the derivation — no trim, no fold, ever. Non-empty is the ONLY validation; whitespace-only is a valid handle. This was the last surface still trimming (attest never did), which made an edge-whitespace handle attestable but unjoinable.
-        if handle.is_empty() {
-            return;
-        }
-        let Some(device_key) = self.device_signer() else {
-            self.add_join_status = tr(fgtw::text::Msg::NoDeviceKey).into_owned();
-            return;
-        };
-        // ONE IDENTITY PER DEVICE at the join door (docs/lifecycle.md D2) is gated INSIDE the join thread now, after the proof — the cheap pre-proof compare that used to sit here was the same offline handle oracle as the attest gate (2026-08-23 ticket). The words still show first (they're inert without the bind request), and the gate fires before the request, the NFC serve, or any beacon.
-        self.add_join_handle = Some(handle.clone());
-        self.add_join_status = tr(fgtw::text::Msg::Preparing).into_owned();
-        self.change_focus(None);
-        if let Some(tb) = self.textbox.as_mut() {
-            tb.clear();
-        }
-        let (tx, rx) = std::sync::mpsc::channel();
-        self.add_join_rx = Some(rx);
-        let stop = std::sync::Arc::new(AtomicBool::new(false));
-        self.add_stop = Some(stop.clone());
-        // The mesh's two hand-offs to this joiner (a sponsor's chain push, its fan-out push) land in these slots from the UI thread; the thread below owns the identity roots that verify and open them.
-        let chain_slot = self.add_join_chain.clone();
-        let fanout_slot = self.add_join_fanout.clone();
-        if let Ok(mut s) = chain_slot.lock() {
-            *s = None;
-        }
-        if let Ok(mut s) = fanout_slot.lock() {
-            *s = None;
-        }
-        self.add_join_sent.clear();
-        self.add_join_sponsors.clear();
-        // LAN visibility for the sponsor: the join loop announces this device on the local network (UDP discovery, same frame the fleet uses), so the sponsor's AddDevice screen shows a tappable "nearby" row instead of demanding the words. The words remain the remote/no-LAN fallback.
-        let lan_tx = self
-            .status_checker
-            .as_ref()
-            .map(|c| c.lan_broadcast_handle());
-        let lan_port = self
-            .handle_query
-            .as_ref()
-            .map(|h| h.port())
-            .unwrap_or(crate::PHOTON_PORT);
-        // The mailbox opt-in (local first): the join posts to fgtw.org only after the person taps "My devices aren't nearby" (join_mailbox).
-        // A sponsor's pick lands here (bind_select), checked by the thread against the fleet's chain before the green.
-        let select_slot = self.add_join_select.clone();
-        if let Ok(mut s) = select_slot.lock() {
-            *s = None;
-        }
-        self.join_selected_by = None;
-        let mailbox = std::sync::Arc::new(AtomicBool::new(false));
-        self.join_mailbox = Some(mailbox.clone());
-        self.join_mailbox_asked = false;
-        std::thread::spawn(move || {
-            // Derive the COMPLETE session roots once. identity_seed is microseconds; the ~1s memory-hard proof is reused from the probe when the caller passed it (the add-this-device branch already paid it), else computed here. Joined hands them to the attest worker so it never re-derives.
-            let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
-            let me = device_key.keypair().public.to_bytes();
-            // SHOW THE WORDS FIRST — they only need identity_seed (microseconds) + the device pubkey, NOT the ~1s memory-hard handle_proof or the radio. Deferring this behind either left the screen on "Preparing…" for the whole proof (and, on Android, behind a blocking BLE-advertise JNI call) — the "stuck on Preparing" report. The words are this device's OWN pubkey masked to the fleet: shoulder-surfing them is inert (nothing binds without the request signature below; the mask makes them noise outside this fleet).
-            crate::log_err!(tx.send(JoinUpdate::ShowWords(fleet::masked_device_words(
-                &me,
-                &identity_seed,
-            ))), "the join words to the UI thread");
-            // NOW the expensive derivation (reused from the probe when the caller passed it; else the ~1s proof here) — the words are already up, so this cost is invisible.
-            let handle_proof = precomputed_proof
-                .unwrap_or_else(|| crate::types::Handle::username_to_handle_proof(&handle));
-            let session = tohu::SessionIdentity {
-                identity_seed,
-                vault_seed: identity_seed,
-                handle_proof,
-            };
-            // The join door's DEVICE BUSY verdict (docs/lifecycle.md D2), post-proof so the marker never verifies a cheap guess (2026-08-23 oracle fix). Everything network-visible — the bind request, the NFC secret, the LAN beacon — sits below this gate; the words above are this device's own masked pubkey and bind nothing.
-            if crate::storage::device_binding::busy_for(
-                &handle_proof,
-                &crate::crypto::clutch::identity_party_id(&identity_seed),
-            ) {
-                crate::log("join: DEVICE BUSY — bound to another identity; refused post-proof");
-                crate::log_err!(tx.send(JoinUpdate::Failed(tr(Msg::IdentityOccupied).into_owned())), "the join refusal to the UI thread");
-                return;
-            }
-            let hp = session.handle_proof;
-            // NFC instant-add secret: 32 random bytes for THIS join session, served as a dumb tag over HCE (Android) while the ceremony is up. The put publishes its keyed commitment; a sponsor's tap reads S and matches it — proximity IS the selection. One S per session (the commitment re-binds each repost's fresh stamp).
-            let nfc_secret: [u8; 32] = {
-                use rand::RngCore;
-                let mut s = [0u8; 32];
-                rand::thread_rng().fill_bytes(&mut s);
-                s
-            };
-            let _nfc_serve = crate::network::pairing_nfc::serve_guard(&nfc_secret);
-            // The wake channel: the seed's hub events, AND the UI thread's pokes when a chain or a fan-out for this fleet arrives over the mesh (JoinUpdate::Aimed hands the UI the sender).
-            let (wake_tx, wake_rx) = std::sync::mpsc::channel::<()>();
-            let poke_tx = wake_tx.clone();
-            // The binding request: "I consent to join fleet hp", signed by the device key + co-signed by the identity key — the consent egg the Add op will carry. Built ONCE and sent two ways with the same stamp (docs/pairing-v2.md over the mesh): to the seed's registry when it answers, and straight to every sponsor device heard on the LAN as a `bind_req` frame (the UI thread hands it out on each beacon). A seed that cannot be reached is logged, never fatal — the LAN carries the request; the seed's one-owner verdict (device_owned) still ends the ceremony.
-            let mint = |tx: &std::sync::mpsc::Sender<JoinUpdate>| -> Result<fgtw::fleet::BindRequest, String> {
-                let req = fleet::make_bind_request(&device_key, &identity_seed, &hp, &nfc_secret);
-                let frame = crate::network::fgtw::protocol::build_bind_req_vsf(&req, &hp, device_key.keypair().secret.as_bytes())?;
-                crate::log_err!(tx.send(JoinUpdate::Aimed { hp, bind_req: frame, poke: poke_tx.clone() }), "the join aim to the UI thread");
-                Ok(req)
-            };
-            // LOCAL FIRST (Nick 2026-11-10: fgtw.org "a notify upon request"): the request goes to the person's devices nearby (LAN beacon, the direct bind_req, NFC), and fgtw.org's registry is posted to only when the person says their devices aren't nearby (the mailbox flag); until then fgtw.org is not touched at all.
-            let posted = std::cell::Cell::new(false);
-            let post = |req: &fgtw::fleet::BindRequest| -> Result<(), String> {
-                match fleet::bindreq_post(req, &hp) {
-                    Ok(()) => crate::log("JOIN: binding request posted to fgtw.org's mailbox, as asked"),
-                    Err(e) if e.starts_with("device_owned") => return Err(e),
-                    Err(e) => crate::logf!("JOIN: fgtw.org did not take the binding request ({}) — the LAN carries it", e),
-                }
-                Ok(())
-            };
-            let mut req = match mint(&tx) {
-                Ok(r) => r,
-                Err(e) => {
-                    crate::log_err!(tx.send(JoinUpdate::Failed(tr(Msg::RequestFailed(&e)).into_owned())), "the join failure to the UI thread");
-                    return;
-                }
-            };
-            let offer_et = req.t;
-            // Pairing v2 proximity beacon (docs/pairing-v2.md): advertise keyed_hash(device_pk ‖ published eagle_time) within the handle for the whole ceremony — the guard drops on every exit path below, stopping the radio. Re-announced on each repost (below) so the aired id tracks the offer's current stamp.
-            let _beacon = crate::network::pairing_beacon::announce_guard(&hp, &me, offer_et);
-
-            // Push subscription: the FGTW hub broadcasts `pair_evt` frames on registry changes ("request") and when the chain extends ("fleet"). Each one for OUR identity pokes `wake_tx`, and the poll loop's sleep below is a `recv_timeout` — so the ceremony reacts the moment the other device acts, with the poll cadence as the guarantee when the socket drops (best-effort accelerator, never load-bearing). The task dies with the socket or the stop flag; no reconnect — the poll still covers everything.
-            // Started only with the mailbox (local first): until the person asks through fgtw.org, nothing in this ceremony connects to it.
-            let mut hub_wake = Some(wake_tx);
-            let subscribe_hub = |wake_tx: std::sync::mpsc::Sender<()>| {
-                #[cfg(not(target_os = "ferros"))]
-                {
-                    let stop = stop.clone();
-                    crate::network::http::runtime().spawn(async move {
-                        use futures::StreamExt;
-                        let Ok((mut ws, _)) = tokio_tungstenite::connect_async(crate::network::http::SEED_WS).await else {
-                            return;
-                        };
-                        loop {
-                            tokio::select! {
-                                frame = ws.next() => {
-                                    match frame {
-                                        Some(Ok(m)) => {
-                                            if stop.load(Ordering::Relaxed) {
-                                                return;
-                                            }
-                                            if let Some((_kind, evt_hp)) = fleet::parse_pair_event(&m.into_data()) {
-                                                if evt_hp == hp {
-                                                    // The poll loop holding wake_rx has ended (its ceremony is over): this subscription has no one left to wake.
-                                                    if wake_tx.send(()).is_err() {
-                                                        return;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        _ => return, // closed or errored — poll cadence takes over
-                                    }
-                                }
-                                _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {
-                                    if stop.load(Ordering::Relaxed) {
-                                        return;
-                                    }
-                                }
-                            }
-                        }
-                    });
-                }
-                #[cfg(target_os = "ferros")]
-                drop(wake_tx);
-            };
-            // PUSH-DRIVEN, no deadline, no poll cadence. The hub events (request / fleet) wake each check instantly; the ONLY timers are the ones the protocol/transport demand — the binding request's 5-minute freshness (re-post at ~3.5min when no event arrives sooner) and a degraded-transport fallback cadence when the socket is dead. The user standing at the screen is the timeout: the ceremony ends when the bind lands, when they tap the orb (the stop flag), or on a hard network error. The request is WITHDRAWN by this device (its author) on every exit — green, cancel, or wrong-fleet — and lapses by stamp if the thread dies unclean.
-            let withdraw = |why: &str| {
-                if !posted.get() {
-                    return; // nothing was posted to withdraw
-                }
-                if let Err(e) = fleet::bindreq_withdraw(device_key.keypair(), &hp) {
-                    crate::logf!(
-                        "JOIN: request withdraw ({}) failed (lapses anyway): {}",
-                        why,
-                        e
-                    );
-                }
-            };
-            // GREEN: this device folds into the fleet's chain. Leaving the words screen is what the far-side human confirms, so it happens NOW; the key follows — a fan-out handed over the mesh opens here at once, else the seed's, else the post-attest sync.
-            let green = |tx: &std::sync::mpsc::Sender<JoinUpdate>, how: &str| {
-                crate::logf!("JOIN: bound — this device is in the fleet chain ({})", how);
-                withdraw("green");
-                let pushed = fanout_slot.lock().ok().and_then(|mut s| s.take()).and_then(|blob| fleet::fanout_open_blob(&hp, &blob, device_key.keypair(), &identity_seed).ok().flatten().map(|(_, k)| k));
-                let fleet_key = pushed.or_else(|| fleet::recover_fleet_key(&hp, device_key.keypair(), &identity_seed).ok().flatten());
-                crate::logf!(
-                    "JOIN: fleet key {} — attesting",
-                    if fleet_key.is_some() { "recovered" } else { "follows the sponsor's confirm (event-synced)" }
-                );
-                crate::log_err!(tx.send(JoinUpdate::Joined(fleet_key, session)), "the join success to the UI thread");
-            };
-            let mut last_repost = std::time::Instant::now();
-            let mut known_chain: Option<fleet::MembershipBlob> = None;
-            let mut pending_select: Option<[u8; 32]> = None;
-            let ceremony_start = std::time::Instant::now();
-            // Give-up backstop: a real ceremony binds in seconds-to-a-minute. Past this it's a forgotten or backgrounded screen — and Android keeps this raw thread alive after the Activity pauses (onPause emits no focus event), so without a cap it re-posts the registry every 3.5 min forever (observed: a backgrounded phone re-posting for 1.6h). Generous enough that a live pairing never hits it.
-            const MAX_CEREMONY: std::time::Duration = std::time::Duration::from_secs(15 * 60);
-            loop {
-                if stop.load(Ordering::Relaxed) {
-                    withdraw("cancel");
-                    return;
-                }
-                // The person asked through fgtw.org (their devices aren't nearby): post the request there, once, and start listening to its hub.
-                if mailbox.load(Ordering::Relaxed) && !posted.get() {
-                    if let Err(e) = post(&req) {
-                        crate::log_err!(tx.send(JoinUpdate::Failed(tr(Msg::RequestFailed(&e)).into_owned())), "the join failure to the UI thread");
-                        return;
-                    }
-                    posted.set(true);
-                    if let Some(w) = hub_wake.take() {
-                        subscribe_hub(w);
-                    }
-                }
-                if ceremony_start.elapsed() >= MAX_CEREMONY {
-                    crate::log("JOIN: ceremony ran too long without binding — stopping re-posts");
-                    withdraw("timeout");
-                    crate::log_err!(tx.send(JoinUpdate::Failed(
-                        "timed out waiting to be added\nre-enter the handle to try again".into(),
-                    )), "the join timeout to the UI thread");
-                    return;
-                }
-                // Announce on the LAN each round (rides the poll cadence): the sponsor's screen lights this device's candidate row "nearby" the moment a frame lands.
-                if let Some(tx) = lan_tx.as_ref() {
-                    crate::log_err!(tx.send(crate::network::status::LanBroadcastRequest {
-                        our_handle_proof: hp,
-                        our_port: lan_port,
-                        unicast: None,
-                    }), "the join LAN announce request");
-                }
-                // THE MESH FIRST: a chain a sponsor pushed to us. Verified exactly as a seed copy is — it claims this slot, its genesis is this identity's, it folds — and green iff it folds US in. A chain that does not name us yet is held (the sponsor may have pushed before the bind) and we wait on.
-                if let Some(bytes) = chain_slot.lock().ok().and_then(|mut s| s.take()) {
-                    match fleet::MembershipBlob::from_vsf_bytes(&bytes) {
-                        Ok(blob) if blob.genesis_handle_proof() == Some(hp) && blob.genesis_identity_matches(&identity_seed) => match blob.fold() {
-                            Ok(members) => {
-                                fleet::hold_chain(&blob);
-                                if members.contains(&me) {
-                                    green(&tx, "over the mesh");
-                                    return;
-                                }
-                                crate::log("JOIN: a chain for our fleet arrived over the mesh — not bound yet");
-                                // Kept: a sponsor's pick is checked against it.
-                                known_chain = Some(blob.clone());
-                            }
-                            Err(e) => crate::logf!("SECURITY: a chain pushed to this joiner does not fold ({}) — ignored", format!("{:?}", e)),
-                        },
-                        Ok(_) => crate::log("SECURITY: a chain pushed to this joiner is not this identity's fleet — ignored"),
-                        Err(e) => crate::logf!("JOIN: a chain pushed to this joiner did not parse ({}) — ignored", e),
-                    }
-                }
-                // A sponsor's pick (bind_select): green only when the sender folds as a live member of this identity's chain (the one pushed to us, or one held for this slot whose genesis is this identity's); held until a chain arrives to check it against.
-                if let Some(s) = select_slot.lock().ok().and_then(|mut g| g.take()) {
-                    pending_select = Some(s);
-                }
-                if let Some(sender) = pending_select {
-                    let chain = known_chain.clone().or_else(|| fleet::held_chain(&hp).filter(|c| c.genesis_handle_proof() == Some(hp) && c.genesis_identity_matches(&identity_seed)));
-                    if let Some(c) = chain {
-                        pending_select = None;
-                        let live = c.fold().ok().zip(c.locked_out().ok()).is_some_and(|(m, l)| m.contains(&sender) && !l.contains(&sender));
-                        if live {
-                            crate::log_err!(tx.send(JoinUpdate::Selected(fleet::device_name_default(&sender, &identity_seed))), "the green to the UI thread");
-                        } else {
-                            crate::logf!("SECURITY: a pick from {} is not from a live member of this fleet — ignored", crate::fp(&sender));
-                        }
-                    }
-                }
-                // Genesis re-checked on EVERY fetch, not just the probe: a relay that served the real chain once must not be able to swap in a structurally-valid foreign chain mid-ceremony and have this loop adopt its members (the probe-time-only TOCTOU — docs/pairing-v2.md).
-                // fgtw.org's copy is read only once the person asked through it; nearby, the sponsor hands this device its chain directly (above).
-                match if posted.get() { fleet::current_members_verified(&hp) } else { Ok(Vec::new()) } {
-                    Ok(m) if m.contains(&me) => {
-                        // In the fleet by the seed's (or the held) copy — the green.
-                        green(&tx, "by the seed");
-                        return;
-                    }
-                    Ok(_) => {} // not bound yet — keep the request fresh and wait
-                    Err(e) if e.contains("not rooted in this identity") => {
-                        // Wrong-fleet is a VERDICT, not a blip: the chain now folds to a genesis that isn't ours, mid-ceremony. Scream and stop — retrying would just poll an imposter chain forever.
-                        crate::log(
-                            "JOIN: chain genesis no longer matches this identity — aborting",
-                        );
-                        withdraw("wrong-fleet");
-                        crate::log_err!(tx.send(JoinUpdate::Failed(
-                            "this handle's fleet is not ours\nthe chain changed hands mid-join"
-                                .into(),
-                        )), "the join abort to the UI thread");
-                        return;
-                    }
-                    Err(e) => {
-                        // A transient fetch failure (laptop sleep/wake, dropped wifi, a server blip, or no seed at all) must NOT kill the ceremony — the user is still standing at the words screen, and a dead thread strands it there forever (observed: macbook stuck on its words after one failed fetch). Log and fall through to the wait below, where a mesh poke (the sponsor's chain push) wakes us at once; the stop flag (orb cancel) is the only exit.
-                        crate::logf!("JOIN: membership fetch failed ({}) — the mesh may answer first", e);
-                    }
-                }
-                // Wait for a push, but re-poll membership on a SHORT cadence so the ceremony completes fast even when the hub WebSocket push never arrives (observed on macOS: the bind landed but the new device sat ~3.5 min on the old 210s timeout before its next `current_members` check). The request re-post stays on its protocol cadence (~3.5 min — the registry stamp lapses at 5), tracked separately so the frequent membership polls don't spam re-posts. A hub event still short-circuits instantly.
-                const MEMBERSHIP_POLL: std::time::Duration = std::time::Duration::from_secs(8);
-                const REPOST_EVERY: std::time::Duration = std::time::Duration::from_secs(210);
-                match wake_rx.recv_timeout(crate::jitter_dur(MEMBERSHIP_POLL)) {
-                    Ok(()) => {} // hub push — loop re-checks membership immediately
-                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                        if last_repost.elapsed() >= REPOST_EVERY {
-                            // Restamp the offer (registry + LAN, one stamp), then re-emit the beacon under the NEW eagle_time so the aired id keeps matching the entry the sponsor now reads.
-                            if let Ok(r) = mint(&tx) {
-                                crate::network::pairing_beacon::reannounce(&hp, &me, r.t);
-                                if posted.get() {
-                                    crate::log_err!(post(&r), "re-posting the binding request to fgtw.org");
-                                }
-                                req = r;
-                            }
-                            last_repost = std::time::Instant::now();
-                        }
-                        // else: just loop and re-poll current_members (the fast path)
-                    }
-                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                        std::thread::sleep(crate::jitter_dur(std::time::Duration::from_secs(8)));
-                        if last_repost.elapsed() >= REPOST_EVERY {
-                            // Restamp the offer (registry + LAN, one stamp), then re-emit the beacon under the NEW eagle_time so the aired id keeps matching the entry the sponsor now reads.
-                            if let Ok(r) = mint(&tx) {
-                                crate::network::pairing_beacon::reannounce(&hp, &me, r.t);
-                                if posted.get() {
-                                    crate::log_err!(post(&r), "re-posting the binding request to fgtw.org");
-                                }
-                                req = r;
-                            }
-                            last_repost = std::time::Instant::now();
-                        }
-                    }
-                }
-            }
-        });
     }
 }
 

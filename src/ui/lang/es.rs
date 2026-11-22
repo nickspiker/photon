@@ -106,7 +106,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("este dispositivo: {name}").into(),
         Msg::CopyWords => "copiar palabras".into(),
         Msg::WordsCopied => "copiadas: pégalas en tu otro dispositivo".into(),
-        Msg::LaunchJoinInstructions => "En tu otro dispositivo: Ajustes \u{2192} Flota \u{2192} Agregar\n¿Está cerca? Solo toca el nombre de este dispositivo.\n¿Lejos? Escribe estas palabras allí:".into(),
         Msg::StartFreshIdle => "¿Dispositivo equivocado? Empezar de cero (borrar este dispositivo)".into(),
         Msg::StartFreshArmed => "Empezar de cero: toca otra vez para borrar este dispositivo".into(),
         Msg::OffGridListening => "fuera de red: escuchando cerca...".into(),
@@ -129,9 +128,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::OpeningConversations => "abriendo tus conversaciones".into(),
         Msg::IdentityCarriedHint => "este dispositivo ya lleva una identidad".into(),
         Msg::PermanenceWarning => "Esto acuña una identidad permanente.\nSin contraseña. Sin reinicio. Sin recuperación.\nEl primer humano en atestarla es su dueño.\nLos dispositivos se pueden reemplazar. La identidad no.\nEscribe el nombre otra vez y presiona si lo dices en serio.".into(),
-        Msg::KnownHandleWarning => "Alguien ya responde a este nombre.".into(),
         Msg::PickAnotherName => "No soy yo, elegir otro".into(),
-        Msg::ItsMineShowWords => "Soy yo, agregar este dispositivo".into(),
         Msg::LockedRetry => "¿Lo restituiste desde otro dispositivo? Toca para reintentar".into(),
         // ---- ready screen ----
         Msg::PeersOnline(n) => format!("{} {}", fmt_mag(n as u64), if n == 1 { "par" } else { "pares" }).into(),

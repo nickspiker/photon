@@ -109,7 +109,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("questo dispositivo: {name}").into(),
         Msg::CopyWords => "copia le parole".into(),
         Msg::WordsCopied => "copiate: incollale sull’altro dispositivo".into(),
-        Msg::LaunchJoinInstructions => "Sull’altro dispositivo: Impostazioni \u{2192} Flotta \u{2192} Aggiungi\nÈ qui vicino? Tocca il nome di questo dispositivo.\nÈ lontano? Scrivi lì queste parole:".into(),
         Msg::StartFreshIdle => "Dispositivo sbagliato? Ricomincia da zero (cancella questo dispositivo)".into(),
         Msg::StartFreshArmed => "Ricomincia da zero: tocca di nuovo per cancellare questo dispositivo".into(),
         Msg::OffGridListening => "fuori rete: ascolto qui vicino...".into(),
@@ -132,9 +131,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::OpeningConversations => "apertura delle tue conversazioni".into(),
         Msg::IdentityCarriedHint => "questo dispositivo porta già un’identità".into(),
         Msg::PermanenceWarning => "Questo conia un’identità permanente.\nNessuna password. Nessun reset. Nessun recupero.\nLa prima persona che la attesta ne è il proprietario.\nI dispositivi si possono sostituire. L’identità no.\nRiscrivi il nome, poi premi se lo intendi davvero.".into(),
-        Msg::KnownHandleWarning => "Qualcuno risponde già a questo nome.".into(),
         Msg::PickAnotherName => "Non sono io, ne scelgo un altro".into(),
-        Msg::ItsMineShowWords => "Sono io, aggiungi questo dispositivo".into(),
         Msg::LockedRetry => "L’hai ripristinato da un altro dispositivo? Tocca per riprovare".into(),
         // ---- ready screen ----
         // "pari" è invariabile in italiano (una rete tra pari), quindi qui non serve il ramo singolare/plurale che l’inglese richiede.

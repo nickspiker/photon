@@ -107,7 +107,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("thiết bị này: {name}").into(),
         Msg::CopyWords => "chép các từ".into(),
         Msg::WordsCopied => "đã chép: dán chúng trên thiết bị kia của bạn".into(),
-        Msg::LaunchJoinInstructions => "Trên thiết bị kia của bạn: Cài đặt \u{2192} Đội \u{2192} Thêm\nỞ gần? Chỉ cần chạm vào tên thiết bị này.\nỞ xa? Gõ các từ này ở đó:".into(),
         Msg::StartFreshIdle => "Nhầm thiết bị? Bắt đầu lại từ đầu (xóa sạch thiết bị này)".into(),
         Msg::StartFreshArmed => "Bắt đầu lại từ đầu: chạm lần nữa để xóa sạch thiết bị này".into(),
         Msg::OffGridListening => "ngoài lưới: đang lắng nghe quanh đây...".into(),
@@ -130,9 +129,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::OpeningConversations => "đang mở các cuộc trò chuyện của bạn".into(),
         Msg::IdentityCarriedHint => "thiết bị này đã mang sẵn một danh tính".into(),
         Msg::PermanenceWarning => "Việc này đúc ra một danh tính vĩnh viễn.\nKhông mật khẩu. Không đặt lại. Không khôi phục.\nNgười đầu tiên chứng thực là chủ của nó.\nThiết bị thì thay được. Danh tính thì không.\nGõ lại cái tên, rồi nhấn nếu bạn thật sự muốn.".into(),
-        Msg::KnownHandleWarning => "Đã có người nhận cái tên này.".into(),
         Msg::PickAnotherName => "Không phải tôi, chọn tên khác".into(),
-        Msg::ItsMineShowWords => "Đúng là tôi, thêm thiết bị này".into(),
         Msg::LockedRetry => "Đã khôi phục từ thiết bị khác? Chạm để thử lại".into(),
         // ---- ready screen ----
         Msg::PeersOnline(n) => format!("{} máy ngang hàng", fmt_mag(n as u64)).into(),

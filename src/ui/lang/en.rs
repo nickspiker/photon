@@ -91,7 +91,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("this device: {name}").into(),
         Msg::CopyWords => "copy words".into(),
         Msg::WordsCopied => "copied: paste them on your other device".into(),
-        Msg::LaunchJoinInstructions => "On your other device: Settings \u{2192} Fleet \u{2192} Add\nNearby? Just tap this device's name.\nFar away? Type these words there:".into(),
         Msg::StartFreshIdle => "Wrong device? Start fresh (wipe this device)".into(),
         Msg::StartFreshArmed => "Start fresh: tap again to wipe this device".into(),
         Msg::OffGridListening => "off-grid: listening nearby...".into(),
@@ -114,9 +113,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::OpeningConversations => "opening your conversations".into(),
         Msg::IdentityCarriedHint => "this device already carries an identity".into(),
         Msg::PermanenceWarning => "This mints a permanent identity.\nNo password. No reset. No recovery.\nThe first human to attest owns it.\nDevices can be replaced. The identity can't.\nType the name again, then press if you mean it.".into(),
-        Msg::KnownHandleWarning => "Someone already answers to this name.".into(),
         Msg::PickAnotherName => "Not me, pick another".into(),
-        Msg::ItsMineShowWords => "That's me, add this device".into(),
         Msg::LockedRetry => "Reinstated from another device? Tap to retry".into(),
         // ---- ready screen ----
         Msg::PeersOnline(n) => format!("{} {}", fmt_mag(n as u64), if n == 1 { "peer" } else { "peers" }).into(),

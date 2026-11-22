@@ -119,7 +119,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("cet appareil : {name}").into(),
         Msg::CopyWords => "copier les mots".into(),
         Msg::WordsCopied => "copiés : colle-les sur ton autre appareil".into(),
-        Msg::LaunchJoinInstructions => "Sur ton autre appareil : Réglages \u{2192} Flotte \u{2192} Ajouter\nTout près ? Touche simplement le nom de cet appareil.\nLoin ? Écris ces mots là-bas :".into(),
         Msg::StartFreshIdle => "Mauvais appareil ? Repartir de zéro (effacer cet appareil)".into(),
         Msg::StartFreshArmed => "Repartir de zéro : touche encore pour effacer cet appareil".into(),
         Msg::OffGridListening => "hors réseau : à l\u{2019}écoute autour...".into(),
@@ -142,9 +141,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::OpeningConversations => "ouverture de tes conversations".into(),
         Msg::IdentityCarriedHint => "cet appareil porte déjà une identité".into(),
         Msg::PermanenceWarning => "Ceci frappe une identité permanente.\nPas de mot de passe. Pas de réinitialisation. Pas de récupération.\nLe premier humain qui l\u{2019}atteste en est le propriétaire.\nLes appareils se remplacent. L\u{2019}identité, non.\nRetape le nom, puis appuie si tu le penses vraiment.".into(),
-        Msg::KnownHandleWarning => "Quelqu\u{2019}un répond déjà à ce nom.".into(),
         Msg::PickAnotherName => "Ce n\u{2019}est pas moi, en choisir un autre".into(),
-        Msg::ItsMineShowWords => "C\u{2019}est bien moi, ajouter cet appareil".into(),
         Msg::LockedRetry => "Réintégré depuis un autre appareil ? Touche pour réessayer".into(),
         // ---- ready screen ----
         Msg::PeersOnline(n) => format!("{} {}", fmt_mag(n as u64), if n == 1 { "pair" } else { "pairs" }).into(),

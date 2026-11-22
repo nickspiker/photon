@@ -108,7 +108,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("kifaa hiki: {name}").into(),
         Msg::CopyWords => "nakili maneno".into(),
         Msg::WordsCopied => "yamenakiliwa: yabandike kwenye kifaa chako kingine".into(),
-        Msg::LaunchJoinInstructions => "Kwenye kifaa chako kingine: Mipangilio \u{2192} Kundi \u{2192} Ongeza\nKipo karibu? Gusa tu jina la kifaa hiki.\nKipo mbali? Andika maneno haya huko:".into(),
         Msg::StartFreshIdle => "Kifaa kibaya? Anza upya (futa kifaa hiki)".into(),
         Msg::StartFreshArmed => "Anza upya: gusa tena ili kufuta kifaa hiki".into(),
         Msg::OffGridListening => "nje ya gridi: inasikiliza karibu...".into(),
@@ -131,9 +130,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::OpeningConversations => "inafungua mazungumzo yako".into(),
         Msg::IdentityCarriedHint => "kifaa hiki tayari kina utambulisho".into(),
         Msg::PermanenceWarning => "Hii huzalisha utambulisho wa kudumu.\nHakuna nywila. Hakuna kuanza upya. Hakuna urejeshaji.\nMtu wa kwanza kuthibitisha ndiye mwenyewe.\nVifaa vinaweza kubadilishwa. Utambulisho hauwezi.\nAndika jina tena, kisha bonyeza kama unamaanisha.".into(),
-        Msg::KnownHandleWarning => "Tayari kuna mtu anayeitikia jina hili.".into(),
         Msg::PickAnotherName => "Si mimi, chagua lingine".into(),
-        Msg::ItsMineShowWords => "Ni mimi, ongeza kifaa hiki".into(),
         Msg::LockedRetry => "Umekirejesha kutoka kifaa kingine? Gusa ili kujaribu tena".into(),
         // ---- ready screen ----
         Msg::PeersOnline(n) => if n == 1 { format!("mshirika {}", fmt_mag(1)) } else { format!("washirika {}", fmt_mag(n as u64)) }.into(),

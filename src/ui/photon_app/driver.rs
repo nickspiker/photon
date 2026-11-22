@@ -191,6 +191,9 @@ impl PhotonApp {
         reserve_hits(&mut self.hit_counter, super::viewer::VIEW_HIT_IDS);
         self.unattended_confirm_base = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 2); // confirm / cancel
+        // The Security page's Release: Unbind under the handle box (and one spare).
+        self.release_confirm_base = self.hit_counter;
+        reserve_hits(&mut self.hit_counter, 2);
         self.locked_retry_hit = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 1);
         // GROUPS (docs/molecules.md §10.5): Ready-list group rows (64) — appended here, never mid-run (the contiguous-id contract).
@@ -434,6 +437,8 @@ impl PhotonApp {
         self.molecule_title_textbox = Some(Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         // Unattended-confirm handle box: built once here so its hit_id is stable (lazy creation at open time bumped hit_counter every open, drifting the id out from under the render's stamp — the box then took no input).
         self.unattended_confirm_tb = Some(Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+        // Release's handle box, built once here for a stable hit id like the unattended one.
+        self.release_confirm_tb = Some(Textbox::with_depth(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         // The per-field boxes are built lazily on first You-page open (build_you_fields) — HitId is a u16, so we allocate the ~32 field ids only when the page is actually visited.
 
         self.update_widget_layout(ctx);
@@ -753,6 +758,14 @@ impl FluorApp<Px> for PhotonApp {
     ) -> EventResponse {
         // WAVE overlay controls are now retained Buttons (wave_action/decline/start) — their activation rides `dispatch_release` + the `take_click` poll in the Released and key paths (`dispatch_wave_button_clicks`), NOT this hit-id branch. Nothing to do here.
 
+        // Release's Unbind (Security page, the owner's removal of 2026-11-22): the typed handle's proof runs off this thread and the Depart machine decides (release_unbind in the tick).
+        if self.settings_removeshred_armed && self.release_confirm_base != HIT_NONE && hit_id == self.release_confirm_base {
+            self.release_verify_start(false);
+            self.mark_dirty();
+            ctx.window.request_redraw();
+            return EventResponse::Handled;
+        }
+
         // Unattended-confirm (Security page) ARM/DISARM/cancel — dispatched HERE, at the top of on_activate, BEFORE any state gate. (These pills previously sat inside the `AppState::Conversation` block and so never fired on the Settings page — the arm click reached on_activate but was skipped.)
         if self.unattended_confirm.is_some() {
             if self.unattended_confirm_base != HIT_NONE && hit_id == self.unattended_confirm_base {
@@ -861,14 +874,10 @@ impl FluorApp<Px> for PhotonApp {
             return EventResponse::Handled;
         }
 
-        // The JOIN screen's opt-in: the person's devices aren't nearby, so the request is posted to fgtw.org's mailbox (the join thread reads the flag; the poke wakes it now).
+        // The JOIN screen's "Not in range? Show words to copy/paste or dictate": the Join machine shows the words and gives fgtw.org's registry the request at once (the explicit edge).
         if hit_id == self.join_mailbox_hit_id && self.join_mailbox_hit_id != HIT_NONE {
-            if let Some(flag) = self.join_mailbox.as_ref() {
-                flag.store(true, std::sync::atomic::Ordering::Relaxed);
-                if let Some(poke) = self.add_join_poke.as_ref() {
-                    crate::log_err!(poke.send(()), "the mailbox poke to the join thread");
-                }
-                self.join_mailbox_asked = true;
+            if self.join_asking() {
+                self.join_step(fgtw::flow::Event::User(fgtw::flow::UserOp::ShowWords));
                 ctx.window.request_redraw();
             }
             return EventResponse::Handled;
@@ -1185,26 +1194,17 @@ impl FluorApp<Px> for PhotonApp {
                             self.settings_revoke_armed = false;
                         }
                     } else if slot == 3 {
-                        // "Release" (Nick 2026-09-08, the four verbs: Lock / Wipe / Release / Revoke): the BILATERAL departure — signs out, wipes, AND removes this device from the fleet, freeing the hardware brand. No intent question any more — the drawer case is LOCK (stays a member, nothing departs), so every departure is a real handoff. Two-tap confirm; the wipe is GATED on observing our own de-fold. Why not unilateral: whoever briefly holds one unlocked device could sign it out — forcing a key rotation and laundering the hardware into their own fleet.
+                        // "Release" (Nick 2026-09-08, the four verbs: Lock / Wipe / Release / Revoke): the BILATERAL departure: signs out, wipes, AND removes this device from the fleet, freeing the hardware brand. Why not unilateral: whoever briefly holds one unlocked device could sign it out, forcing a key rotation and laundering the hardware into their own fleet.
+                        // The owner's removal (2026-11-22): press once, type the handle, press Unbind; the Depart machine sends nothing until the typed handle's proof is this identity's. A second press puts it back.
                         if self.settings_removeshred_armed {
                             self.settings_removeshred_armed = false;
-                            // The warning the person saw on the arm, on the record: never a block.
-                            if self.release_unsynced.0 > 0 {
-                                crate::logf!("SECURITY: releasing past the warning: {} rows in {} conversations may exist only on this device", self.release_unsynced.0, self.release_unsynced.1);
-                            }
-                            // Releasing NOW overrides a pending copy-then-release.
-                            if self.release_when_copied {
-                                self.set_release_when_copied(false);
-                            }
-                            self.request_fleet_departure(1);
+                            self.depart_removal_cancel();
+                            self.change_focus(None);
                         } else {
-                            self.settings_removeshred_armed = true;
-                            self.holdings_check_start();
-                            self.settings_shred_armed = false;
-                            self.settings_revoke_armed = false;
+                            self.release_arm();
                         }
-                    } else if slot == 5 {
-                        // "Copy, then release" / "Stop waiting" (holdings.rs, removal safety phase 3): drawn under Release while something exists only here.
+                    } else if slot == 6 {
+                        // "Copy, then release" / "Stop waiting" (holdings.rs, removal safety phase 3): drawn under Release while something exists only here. Slot 6: slot 5 is the Shell switch, which took every tap on this pill before (both read slot 5, the Shell arm first).
                         self.holdings_copy_then_release_tap();
                     }
                 } else if page == SettingsPage::You {
@@ -2482,32 +2482,12 @@ impl FluorApp<Px> for PhotonApp {
                     }
                 }
 
-                // KnownHandle fork (docs/lifecycle.md D1): the two pills act; any OTHER press cancels back to Fresh (interstitial rules) and falls thru to its normal meaning. "It's mine" is the FIRST moment anything posts to the network — the bind request + beacon start in submit_join_step, never before.
+                // KnownHandle fork (docs/lifecycle.md D1), the Join machine's question: the two pills act; any OTHER press cancels back to Fresh (interstitial rules) and falls thru to its normal meaning.
+                // The owner's sentence ("Yes, I really would like to add this device and this is my identity and not a typo") is the FIRST moment anything leaves this device; the machine refuses it on a busy device.
                 if matches!(self.state, AppState::Launch(LaunchState::KnownHandle)) {
                     if hit_id == self.known_mine_hit {
-                        if let Some(session) = self.probed_session.take() {
-                            // ONE IDENTITY PER DEVICE holds HERE too (docs/lifecycle.md D2): this path bypasses the probe worker's marker gate, and the worker's bindreq gate would only fire AFTER the words screen showed. The probe already paid the memory-hard proof, so the hardened compare is free — no cheap-oracle path (2026-08-23 ticket).
-                            if crate::storage::device_binding::busy_for(
-                                &session.handle_proof,
-                                &crate::crypto::clutch::identity_party_id(&session.identity_seed),
-                            ) {
-                                crate::log("KnownHandle: DEVICE BUSY — bound to another identity; refusing the join");
-                                self.state = AppState::Launch(LaunchState::Error(
-                                    tr(Msg::IdentityOccupied).into_owned(),
-                                ));
-                                self.refocus_handle_select_all();
-                                ctx.window.request_redraw();
-                                return EventResponse::Handled;
-                            }
-                            crate::log(
-                                "KnownHandle: it's-mine → pairing words (the ceremony posts NOW)",
-                            );
-                            self.probed_handle = None;
-                            self.launch_add_mode = true;
-                            self.state = AppState::Launch(LaunchState::Fresh);
-                            self.add_join_handle = None;
-                            self.submit_join_step(Some(session.handle_proof));
-                        }
+                        self.probed_handle = None;
+                        self.join_confirm();
                         ctx.window.request_redraw();
                         return EventResponse::Handled;
                     }
@@ -3191,6 +3171,8 @@ impl FluorApp<Px> for PhotonApp {
             .then(|| Instant::now() + std::time::Duration::from_millis(500));
         // The Add machine's one deadline: a request or a nearby mark lapsing changes the candidates by time alone.
         let add_lapse = self.add_wake_at(now);
+        // The Join machine's one deadline: the hearing window after the yes, or the request's re-mint.
+        let join_lapse = self.join_wake_at(now);
         // Periodic own-chain re-fold (the fleet-membership doorbell) — only where advance_protocol runs it: a Settings page someone is watching.
         let fleet_refold = self.fleet_refold_due_at(now);
         // Live wave timer: an Active wave recomputes its duration each frame, so it needs frames flowing — but only at ~2 Hz (seconds granularity), not the pulse's full rate. A minimized Active wave still ticks so the strip's timer stays honest. Ringing already animates at full rate above.
@@ -3206,7 +3188,7 @@ impl FluorApp<Px> for PhotonApp {
         // LIVE DIGITS (Nick 2026-10-01): the Base page's clock and since-opened counter, and a selected message's live age, each wake at the exact moment their last digit next changes — an edge computed from the reading, never a timer. In dozenal the counter's edges are a gross-th of a doubling apart and a message's age moves only at each doubling; in hex and arabic the clock ticks on the second.
         let live = self.live_digit_edge();
         // Soonest of all scheduled wakeups.
-        [blink, anim, presence, lan_beacon, pairing, add_lapse, fleet_refold, wave_timer, probe, draft, live]
+        [blink, anim, presence, lan_beacon, pairing, add_lapse, join_lapse, fleet_refold, wave_timer, probe, draft, live]
             .into_iter()
             .flatten()
             .min()
@@ -3593,6 +3575,9 @@ impl FluorApp<Px> for PhotonApp {
 
         // The Add machine's edges Photon learns by looking: the AddDevice screen shown or gone by any path (back, orb, an add starting), the fleet key's RAM copy, the BLE beacons heard since the last tick, and its deadline.
         if self.add_tick() {
+            { needs_redraw = true; self.note_redraw(); }
+        }
+        if self.join_tick() {
             { needs_redraw = true; self.note_redraw(); }
         }
         // Pairing v2 beacon scan (docs/pairing-v2.md): scan exactly while the Add machine asks for it (its Radios), diffed per tick so the radio follows its state without scattered call sites.
@@ -3992,6 +3977,14 @@ impl FluorApp<Px> for PhotonApp {
         }
         self.drain_route_reports();
         if self.drain_wave_export() {
+            { needs_redraw = true; self.note_redraw(); }
+        }
+        // Release's typed handle: its proof is in, and the Depart machine decides (sent, held for the copies, or the mismatch said).
+        let release_verdict = self.release_verify.as_ref().and_then(|(rx, hold)| rx.try_recv().ok().map(|p| (p, *hold)));
+        if let Some((proof, hold)) = release_verdict {
+            self.release_verify = None;
+            self.release_unbind(proof, hold);
+            self.mark_dirty();
             { needs_redraw = true; self.note_redraw(); }
         }
         // Auto-attest arm/disarm: apply the off-thread handle-proof verdict (spawned on the confirm click). Done here on the main thread so set_unattended's vault write, the checkbox, and focus stay UI-thread. Compute the verdict first so `self` isn't borrowed while we mutate it.

@@ -120,7 +120,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("цей пристрій: {name}").into(),
         Msg::CopyWords => "копіювати слова".into(),
         Msg::WordsCopied => "скопійовано: встав їх на іншому своєму пристрої".into(),
-        Msg::LaunchJoinInstructions => "На іншому своєму пристрої: Налаштування \u{2192} Флот \u{2192} Додати\nПоруч? Просто торкнись назви цього пристрою.\nДалеко? Введи там ці слова:".into(),
         Msg::StartFreshIdle => "Не той пристрій? Почати з нуля (стерти цей пристрій)".into(),
         Msg::StartFreshArmed => "Почати з нуля: торкнись ще раз, щоб стерти цей пристрій".into(),
         Msg::OffGridListening => "поза мережею: слухаю поруч...".into(),
@@ -143,9 +142,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::OpeningConversations => "відкриваємо твої розмови".into(),
         Msg::IdentityCarriedHint => "цей пристрій уже несе ідентичність".into(),
         Msg::PermanenceWarning => "Це карбує вічну ідентичність.\nНі пароля. Ні скидання. Ні відновлення.\nПерша людина, яка її засвідчить, нею й володіє.\nПристрої можна замінити. Ідентичність не можна.\nВведи ім'я ще раз, потім натисни, якщо серйозно.".into(),
-        Msg::KnownHandleWarning => "Хтось уже відгукується на це ім'я.".into(),
         Msg::PickAnotherName => "Це не я, вибрати інше".into(),
-        Msg::ItsMineShowWords => "Це я, додати цей пристрій".into(),
         Msg::LockedRetry => "Поновив його з іншого пристрою? Торкнись, щоб спробувати ще".into(),
         // ---- ready screen ----
         Msg::PeersOnline(n) => format!("{} {}", fmt_mag(n as u64), plural(n as u64, "вузол", "вузли", "вузлів")).into(),

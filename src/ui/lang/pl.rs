@@ -108,7 +108,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("to urządzenie: {name}").into(),
         Msg::CopyWords => "kopiuj słowa".into(),
         Msg::WordsCopied => "skopiowane: wklej je na drugim urządzeniu".into(),
-        Msg::LaunchJoinInstructions => "Na drugim urządzeniu: Ustawienia \u{2192} Flota \u{2192} Dodaj\nBlisko? Po prostu dotknij nazwy tego urządzenia.\nDaleko? Wpisz tam te słowa:".into(),
         Msg::StartFreshIdle => "Nie to urządzenie? Zacznij od zera (wyczyść to urządzenie)".into(),
         Msg::StartFreshArmed => "Zacznij od zera: dotknij ponownie, by wyczyścić to urządzenie".into(),
         Msg::OffGridListening => "poza siecią: nasłuch w pobliżu...".into(),
@@ -131,9 +130,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::OpeningConversations => "otwieramy twoje rozmowy".into(),
         Msg::IdentityCarriedHint => "to urządzenie nosi już tożsamość".into(),
         Msg::PermanenceWarning => "To powołuje trwałą tożsamość.\nBez hasła. Bez resetu. Bez odzyskiwania.\nPierwszy człowiek, który ją poświadczy, jest jej właścicielem.\nUrządzenia można wymienić. Tożsamości nie.\nWpisz nazwę jeszcze raz, potem naciśnij, jeśli mówisz serio.".into(),
-        Msg::KnownHandleWarning => "Ktoś już odpowiada na tę nazwę.".into(),
         Msg::PickAnotherName => "To nie ja, wybierz inną".into(),
-        Msg::ItsMineShowWords => "To ja, dodaj to urządzenie".into(),
         Msg::LockedRetry => "Przywrócone z innego urządzenia? Dotknij, by spróbować ponownie".into(),
         // ---- ready screen ----
         // Peer po polsku odmienia się jak zwykły rzeczownik męski: 1 peer, 2-4 peery, 5+ peerów (i 12-14 zawsze peerów).

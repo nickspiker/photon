@@ -106,7 +106,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("tēnei pūrere: {name}").into(),
         Msg::CopyWords => "tāruatia ngā kupu".into(),
         Msg::WordsCopied => "kua tāruatia: whakapiria ki tō pūrere kē".into(),
-        Msg::LaunchJoinInstructions => "I tō pūrere kē: Tautuhinga \u{2192} Kāhui \u{2192} Tāpiri\nKei te taha? Pāwhiritia noatia te ingoa o tēnei pūrere.\nKei tawhiti? Tāurua ēnei kupu ki reira:".into(),
         Msg::StartFreshIdle => "He pūrere hē? Tīmata anō (mukua tēnei pūrere)".into(),
         Msg::StartFreshArmed => "Tīmata anō: pāwhiritia anō kia mukua tēnei pūrere".into(),
         Msg::OffGridListening => "waho-whatunga: e whakarongo ana ki te takiwā...".into(),
@@ -129,9 +128,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::OpeningConversations => "e huaki ana i ō kōrero".into(),
         Msg::IdentityCarriedHint => "kei tēnei pūrere kē tētahi tuakiri".into(),
         Msg::PermanenceWarning => "Ka whānau mai i konei he tuakiri pūmau.\nKāore he kupuhipa. Kāore he tautuhi anō. Kāore he whakaoranga.\nMā te tangata tuatahi ka whakaū, ka riro.\nKa taea ngā pūrere te whakakapi. Kāore te tuakiri.\nPatohia anō te ingoa, kātahi ka pāwhiri mehemea e tino hiahia ana koe.".into(),
-        Msg::KnownHandleWarning => "Kei te whakautu kē tētahi ki tēnei ingoa.".into(),
         Msg::PickAnotherName => "Ehara i a au, kōwhiria he ingoa kē".into(),
-        Msg::ItsMineShowWords => "Ko au tērā, tāpirihia tēnei pūrere".into(),
         Msg::LockedRetry => "Kua whakahokia mai i tētahi atu pūrere? Pāwhiritia kia ngana anō".into(),
         // ---- ready screen ----
         Msg::PeersOnline(n) => if n == 1 { format!("{} hoa tūhono", fmt_mag(1)) } else { format!("{} ngā hoa tūhono", fmt_mag(n as u64)) }.into(),

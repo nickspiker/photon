@@ -1637,8 +1637,8 @@ impl PhotonApp {
                 }
             }
 
-            // KnownHandle fork (docs/lifecycle.md D1) — the claimed-name screen, drawn in the same band as the permanence block. Both readings, taken-first (the more common visitor is the collider), then the two pills. Nothing has touched the network yet.
-            // Suppressed when device_bound: a bound device can't join another fleet, so the "It's mine — show pairing words" pill and the whole claimed-name fork have no meaning here.
+            // KnownHandle fork (docs/lifecycle.md D1), the Join machine's question (fgtw::flow::join, the owner's rules of 2026-11-22): the identity has a fleet and this device is unbound, and NOTHING has left this device. The prompt (headline in the error colour), then the two pills: the typo or the collider's way out first, then the owner's sentence, the one press that lets the join out.
+            // Suppressed when device_bound: a bound device can't join another fleet (the machine refuses it too).
             if matches!(launch_state, LaunchState::KnownHandle)
                 && !self.launch_add_mode
                 && !device_bound
@@ -1647,31 +1647,22 @@ impl PhotonApp {
                 let line_h = (tb_h * 0.45).min(buf_w as f32 / 22.0);
                 let cx = buf_w as f32 * 0.5;
                 let mut y = attest.attest.y1 as f32 + line_h * 1.6;
-                // Same passage discipline as the permanence block: line 0 = headline in error colour, the rest in status grey.
-                let passage = tr(Msg::KnownHandleWarning);
-                for (i, line) in passage.lines().enumerate() {
-                    let colour = if i == 0 {
-                        *theme::ERROR_TEXT_COLOUR
-                    } else {
-                        *theme::STATUS_TEXT_COLOUR
-                    };
-                    ctx.text.draw_text_center(
-                        &mut canvas,
-                        line,
-                        cx,
-                        y,
-                        &TextStyle::new(line_h, colour).weight(600).font("Oxanium"),
-                        None,
-                        None,
-                    );
-                    y += line_h * 1.35;
-                }
-                y += line_h * 0.5;
                 let px = attest.textbox.x0 as f32;
                 let pw = (attest.textbox.x1 - attest.textbox.x0) as f32;
+                // Wrapped to the pill's width: the prompt is a sentence, and a narrow phone breaks it further.
+                let passage = tr(fgtw::text::Msg::JoinConfirmPrompt);
+                let mut first = true;
+                for seg in passage.split('\n') {
+                    let colour = if first { *theme::ERROR_TEXT_COLOUR } else { *theme::STATUS_TEXT_COLOUR };
+                    let style = TextStyle::new(line_h, colour).weight(600).font("Oxanium");
+                    for line in wrap_text_lines(ctx.text, seg, &style, pw) {
+                        ctx.text.draw_text_center(&mut canvas, &line, cx, y, &style, None, None);
+                        y += line_h * 1.35;
+                    }
+                    first = false;
+                }
+                y += line_h * 0.5;
                 let pick = fluor::region::Region::new(px, y, pw, tb_h);
-                y += tb_h * 1.3;
-                let mine = fluor::region::Region::new(px, y, pw, tb_h);
                 draw_stub_pill(
                     &mut canvas,
                     ctx.text,
@@ -1683,6 +1674,15 @@ impl PhotonApp {
                     self.known_pick_hit,
                     ctx.pressed_hit,
                 );
+                y += tb_h * 1.3;
+                // The owner's sentence is long, so its pill grows to the lines it wraps to and the words are laid over it (the pill's own label fits one line only).
+                let yes = tr(fgtw::text::Msg::JoinConfirmYes);
+                let ysize = line_h * 0.85;
+                let ystyle = TextStyle::new(ysize, *theme::CONTACT_NAME_COLOUR).weight(600).font("Open Sans");
+                let ylines = wrap_text_lines(ctx.text, &yes, &ystyle, pw - tb_h);
+                let pitch = ysize * 1.3;
+                let mine_h = tb_h.max(ylines.len() as f32 * pitch + ysize);
+                let mine = fluor::region::Region::new(px, y, pw, mine_h);
                 draw_stub_pill(
                     &mut canvas,
                     ctx.text,
@@ -1690,102 +1690,76 @@ impl PhotonApp {
                     buf_w,
                     buf_h,
                     mine,
-                    &tr(Msg::ItsMineShowWords),
+                    "",
                     self.known_mine_hit,
                     ctx.pressed_hit,
                 );
+                let mut ly = y + mine_h * 0.5 - pitch * (ylines.len() as f32 - 1.) * 0.5;
+                for line in &ylines {
+                    ctx.text.draw_text_center(&mut canvas, line, cx, ly, &ystyle, None, None);
+                    ly += pitch;
+                }
             }
 
-            // Join words phase (new device): the screen becomes display-only — this device's pairing words, drawn in rows for reading onto the other device, flipping to the found-colour when a member matches them. No textbox, no attest button.
-            // Suppressed when device_bound: a bound device must never display its pairing words (it can't be paired into another fleet).
-            let join_words_up = self.launch_add_mode && self.add_join_words.is_some();
-            if join_words_up && !device_bound {
-                if let Some(words) = self.add_join_words.as_ref() {
-                    let tokens: Vec<String> = {
-                        let mut v = Vec::new();
+            // The join screen (new device, past the yes; fgtw::flow::join): display-only. How to finish first (the two devices together, else the touch to add), this device's name, and the words only behind "Not in range?" (shoulder surfing), which is also what gives fgtw.org's registry the request. No textbox, no attest button.
+            // Suppressed when device_bound: a bound device must never ask to join another fleet.
+            let join_up = self.launch_add_mode && self.join_view.as_ref().is_some_and(|v| v.phase == fgtw::flow::join::Phase::Asking);
+            if join_up && !device_bound {
+                let cx = buf_w as f32 * 0.5;
+                // Size + anchor from the attest-block layout so the screen scales with ru/zoom like every other widget and sits BELOW the status slot. Width-capped so 4-word lines fit a narrow window.
+                let tb_h = (attest.textbox.y1 - attest.textbox.y0) as f32;
+                let line_h = (tb_h * 0.45).min(buf_w as f32 / 18.0);
+                let wrap_w = (attest.textbox.x1 - attest.textbox.x0) as f32;
+                let mut y = attest.error.y1 as f32 + line_h * 1.0;
+                // THE GREEN (owner 2026-11-10): a device of this fleet picked this one (bind_select, its sender checked against the chain). Nothing is bound yet; the keys follow the Add the person presses there.
+                if let Some(by) = self.join_selected_by.as_ref() {
+                    let gsize = line_h * 1.3;
+                    ctx.text.draw_text_center(&mut canvas, &tr(fgtw::text::Msg::SelectedBy(by)), cx, y + gsize * 0.5, &TextStyle::new(gsize, *theme::SEARCH_FOUND_COLOUR).weight(800).font("Oxanium"), None, None);
+                    y += gsize * 1.6;
+                }
+                // How to finish (owner, 2026-11-22): NFC first, the other device's screen on and its Fleet page open; else the touch to add over BLE.
+                {
+                    let gsize = line_h * 0.62;
+                    let style = TextStyle::new(gsize, fluor::theme::HINT_COLOUR).font("Oxanium");
+                    for line in wrap_text_lines(ctx.text, &tr(fgtw::text::Msg::JoinTogether), &style, wrap_w) {
+                        ctx.text.draw_text_center(&mut canvas, &line, cx, y, &style, None, None);
+                        y += gsize * 1.5;
+                    }
+                    y += line_h * 0.5;
+                }
+                // Name the device being enrolled, so a person adding several can tell on both screens which one this is: the keyed default the Fleet list on every device of this fleet shows (the machine's view).
+                if let Some(name) = self.join_view.as_ref().map(|v| v.name.clone()) {
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        &tr(Msg::ThisDeviceName(&name)),
+                        cx,
+                        y,
+                        &TextStyle::new(line_h * 0.8, fluor::theme::HINT_COLOUR).weight(500).font("Oxanium"),
+                        None,
+                        None,
+                    );
+                    y += line_h * 1.2;
+                }
+                match self.add_join_words.as_ref() {
+                    // The words, only once asked for: drawn in rows for reading onto the other device or dictating, then "Copy words".
+                    Some(words) => {
+                        let mut tokens: Vec<String> = Vec::new();
                         let mut cur = String::new();
                         for c in words.chars() {
                             if c.is_ascii_uppercase() && !cur.is_empty() {
-                                v.push(std::mem::take(&mut cur));
+                                tokens.push(std::mem::take(&mut cur));
                             }
                             cur.push(c);
                         }
                         if !cur.is_empty() {
-                            v.push(cur);
+                            tokens.push(cur);
                         }
-                        v
-                    };
-                    // No intermediate ready-flip: red-until-green — the words stay neutral until membership folds, at which point this screen is LEFT (that departure is the green the far side confirms).
-                    let colour = *theme::STATUS_TEXT_COLOUR;
-                    let cx = buf_w as f32 * 0.5;
-                    // Size + anchor from the attest-block layout so the words scale with ru/zoom like every other widget and sit BELOW the status slot instead of floating into the wordmark. Width-capped so 4-word lines fit a narrow window.
-                    let tb_h = (attest.textbox.y1 - attest.textbox.y0) as f32;
-                    let line_h = (tb_h * 0.45).min(buf_w as f32 / 18.0);
-                    let lines: Vec<String> = tokens.chunks(4).map(|c| c.join(" ")).collect();
-                    let mut y = attest.error.y1 as f32 + line_h * 1.0;
-                    // THE GREEN (owner 2026-11-10): a device of this fleet picked this one (bind_select, its sender checked against the chain). Nothing is bound yet; the keys follow the Add the person presses there.
-                    if let Some(by) = self.join_selected_by.as_ref() {
-                        let gsize = line_h * 1.3;
-                        ctx.text.draw_text_center(&mut canvas, &tr(fgtw::text::Msg::SelectedBy(by)), cx, y + gsize * 0.5, &TextStyle::new(gsize, *theme::SEARCH_FOUND_COLOUR).weight(800).font("Oxanium"), None, None);
-                        y += gsize * 1.6;
-                    }
-                    // Guidance FIRST (Nick 2026-09-06): say what to do, then hand over the payload — the instructions end with a colon pointing at the words below. Nearby-tap and far-away-words are the user's two experiences; LAN vs BLE is our plumbing, never their decision.
-                    {
-                        let gsize = line_h * 0.62;
-                        let s = tr(Msg::LaunchJoinInstructions);
-                        for line in s.lines() {
-                            ctx.text.draw_text_center(
-                                &mut canvas,
-                                line,
-                                cx,
-                                y,
-                                &TextStyle::new(gsize, fluor::theme::HINT_COLOUR).font("Oxanium"),
-                                None,
-                                None,
-                            );
-                            y += gsize * 1.5;
+                        for line in tokens.chunks(4).map(|c| c.join(" ")) {
+                            ctx.text.draw_text_center(&mut canvas, &line, cx, y, &TextStyle::new(line_h, *theme::STATUS_TEXT_COLOUR).weight(600).font("Oxanium"), None, None);
+                            y += line_h * 1.35;
                         }
+                        // "Copy words" tappable: the space-separated words on the clipboard so they can ride email/messenger to the other device. Label flips on interaction, never on a timer.
                         y += line_h * 0.5;
-                    }
-                    for line in &lines {
-                        ctx.text.draw_text_center(
-                            &mut canvas,
-                            line,
-                            cx,
-                            y,
-                            &TextStyle::new(line_h, colour).weight(600).font("Oxanium"),
-                            None,
-                            None,
-                        );
-                        y += line_h * 1.35;
-                    }
-                    // Name the device being enrolled, so a user pairing several devices can tell on both screens which one these words belong to. Deterministic two-word default from the device PUBLIC key + the fleet's identity seed, so the Fleet list on every device in this fleet shows this same name; the owner-edited override arrives with the devices page. Pre-attest the session isn't set yet, so derive the seed from the handle being joined (`add_join_handle`).
-                    let join_seed = self.session.as_ref().map(|s| s.identity_seed).or_else(|| {
-                        self.add_join_handle
-                            .as_ref()
-                            .map(|h| crate::storage::contacts::derive_identity_seed(h))
-                    });
-                    if let (Some(kp), Some(seed)) = (self.device_keypair.as_ref(), join_seed) {
-                        let name = crate::network::fgtw::fleet::device_name_default(
-                            kp.public.as_bytes(),
-                            &seed,
-                        );
-                        y += line_h * 0.4;
-                        ctx.text.draw_text_center(
-                            &mut canvas,
-                            &tr(Msg::ThisDeviceName(&name)),
-                            cx,
-                            y,
-                            &TextStyle::new(line_h * 0.8, fluor::theme::HINT_COLOUR)
-                                .weight(500)
-                                .font("Oxanium"),
-                            None,
-                            None,
-                        );
-                    }
-                    // "Copy words" tappable: puts the space-separated words on the clipboard so they can ride email/messenger to the sponsor device instead of being read + retyped. Label flips on interaction, never on a timer.
-                    {
-                        y += line_h * 0.9;
                         let csize = line_h * 0.7;
                         let (clabel, ccolour) = if self.join_words_copied {
                             (tr(Msg::WordsCopied), *theme::STATUS_TEXT_COLOUR)
@@ -1795,86 +1769,59 @@ impl PhotonApp {
                         // WHY/PROOF (a rect, not the paint): the line's tap band (most of the width, padded round the glyphs, so more than the text shows), claimed before the text paints.
                         let half_w = buf_w as f32 * 0.4;
                         claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, (cx - half_w) as isize, (y - csize * 0.8) as isize, (cx + half_w) as isize, (y + csize * 0.8) as isize, self.join_copywords_hit_id);
-                        ctx.text.draw_text_center(
-                            &mut canvas,
-                            &clabel,
-                            cx,
-                            y,
-                            &TextStyle::new(csize, ccolour).weight(600).font("Oxanium"),
-                            None,
-                            None,
-                        );
+                        ctx.text.draw_text_center(&mut canvas, &clabel, cx, y, &TextStyle::new(csize, ccolour).weight(600).font("Oxanium"), None, None);
                         y += csize * 0.9;
                     }
-                    // The mailbox opt-in (local first, 2026-11-10): the request goes to the person's devices nearby, and to fgtw.org only after this tap.
-                    {
-                        y += line_h * 0.6;
-                        let msize = line_h * 0.6;
-                        let (mlabel, mcolour) = if self.join_mailbox_asked {
-                            (tr(fgtw::text::Msg::JoinAskedFgtw), *theme::STATUS_TEXT_COLOUR)
-                        } else {
-                            (tr(fgtw::text::Msg::JoinAskFgtw), *theme::CONTACT_NAME_COLOUR)
-                        };
-                        // WHY/PROOF (a rect, not the paint): the line's padded tap band, as Copy words above, before the text paints.
-                        if !self.join_mailbox_asked {
-                            let half_w = buf_w as f32 * 0.4;
-                            claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, (cx - half_w) as isize, (y - msize * 0.8) as isize, (cx + half_w) as isize, (y + msize * 0.8) as isize, self.join_mailbox_hit_id);
-                        }
-                        ctx.text.draw_text_center(
-                            &mut canvas,
-                            &mlabel,
-                            cx,
-                            y,
-                            &TextStyle::new(msize, mcolour).weight(500).font("Oxanium"),
-                            None,
-                            None,
-                        );
-                        y += msize * 0.9;
-                    }
-                    // The confirm reminder closes the block: the add is approved on the OTHER device.
-                    {
-                        y += line_h * 0.9;
-                        let gsize = line_h * 0.62;
-                        ctx.text.draw_text_center(
-                            &mut canvas,
-                            &tr(fgtw::text::Msg::LaunchJoinConfirmNote),
-                            cx,
-                            y,
-                            &TextStyle::new(gsize, fluor::theme::HINT_COLOUR).font("Oxanium"),
-                            None,
-                            None,
-                        );
-                        y += gsize * 1.5;
-                    }
-                    // "Start fresh (wipe this device)" — the secondary escape: a device that was REMOVED from a fleet can't attest (can't reach the Security page), so this is its only self-clean path. Two-tap confirm. Hit-stamped so a tap on Android works (no chords there). Pushed well below the add guidance so it reads as the edge case, not the main action.
-                    {
-                        y += line_h * 1.4;
-                        let sf_label = tr(if self.join_startfresh_armed {
-                            Msg::StartFreshArmed
-                        } else {
-                            Msg::StartFreshIdle
-                        });
-                        let sf_size = line_h * 0.7;
-                        let sf_colour = if self.join_startfresh_armed {
-                            *theme::ERROR_TEXT_COLOUR
-                        } else {
-                            fluor::theme::HINT_COLOUR
-                        };
-                        // WHY/PROOF (a rect, not the paint): the line's padded tap band, as Copy words above, before the text paints.
+                    // "Not in range? Show words to copy/paste or dictate": the words wait behind it.
+                    None => {
+                        let msize = line_h * 0.62;
+                        let style = TextStyle::new(msize, *theme::CONTACT_NAME_COLOUR).weight(500).font("Oxanium");
+                        let lines = wrap_text_lines(ctx.text, &tr(fgtw::text::Msg::JoinShowWords), &style, wrap_w);
+                        let band_h = lines.len() as f32 * msize * 1.4;
+                        // WHY/PROOF (a rect, not the paint): the button's padded tap band over every line it wraps to, before the text paints.
                         let half_w = buf_w as f32 * 0.4;
-                        claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, (cx - half_w) as isize, (y - sf_size * 0.8) as isize, (cx + half_w) as isize, (y + sf_size * 0.8) as isize, self.join_startfresh_hit_id);
-                        ctx.text.draw_text_center(
-                            &mut canvas,
-                            &sf_label,
-                            cx,
-                            y,
-                            &TextStyle::new(sf_size, sf_colour)
-                                .weight(500)
-                                .font("Oxanium"),
-                            None,
-                            None,
-                        );
+                        claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, (cx - half_w) as isize, (y - msize * 0.8) as isize, (cx + half_w) as isize, (y + band_h) as isize, self.join_mailbox_hit_id);
+                        for line in &lines {
+                            ctx.text.draw_text_center(&mut canvas, line, cx, y, &style, None, None);
+                            y += msize * 1.4;
+                        }
                     }
+                }
+                // The confirm reminder closes the block: the add is approved on the OTHER device.
+                {
+                    y += line_h * 0.9;
+                    let gsize = line_h * 0.62;
+                    ctx.text.draw_text_center(&mut canvas, &tr(fgtw::text::Msg::LaunchJoinConfirmNote), cx, y, &TextStyle::new(gsize, fluor::theme::HINT_COLOUR).font("Oxanium"), None, None);
+                    y += gsize * 1.5;
+                }
+                // "Start fresh (wipe this device)" — the secondary escape: a device that was REMOVED from a fleet can't attest (can't reach the Security page), so this is its only self-clean path. Two-tap confirm. Hit-stamped so a tap on Android works (no chords there). Pushed well below the add guidance so it reads as the edge case, not the main action.
+                {
+                    y += line_h * 1.4;
+                    let sf_label = tr(if self.join_startfresh_armed {
+                        Msg::StartFreshArmed
+                    } else {
+                        Msg::StartFreshIdle
+                    });
+                    let sf_size = line_h * 0.7;
+                    let sf_colour = if self.join_startfresh_armed {
+                        *theme::ERROR_TEXT_COLOUR
+                    } else {
+                        fluor::theme::HINT_COLOUR
+                    };
+                    // WHY/PROOF (a rect, not the paint): the line's padded tap band, as Copy words above, before the text paints.
+                    let half_w = buf_w as f32 * 0.4;
+                    claim_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, (cx - half_w) as isize, (y - sf_size * 0.8) as isize, (cx + half_w) as isize, (y + sf_size * 0.8) as isize, self.join_startfresh_hit_id);
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        &sf_label,
+                        cx,
+                        y,
+                        &TextStyle::new(sf_size, sf_colour)
+                            .weight(500)
+                            .font("Oxanium"),
+                        None,
+                        None,
+                    );
                 }
             } else {
                 // Hint slot — static "handle" label below the textbox. Tells the user what to type.
@@ -6274,9 +6221,32 @@ impl PhotonApp {
                             &tr(Msg::SecurityShredHint),
                             2, *theme::PILL_ORANGE, self.settings_shred_armed, true);
                         action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
-                            &tr(Msg::SecurityRemoveShred { armed: self.settings_removeshred_armed }),
+                            // Armed, the same pill puts the removal back.
+                            &tr(if self.settings_removeshred_armed { Msg::Cancel } else { Msg::SecurityRemoveShred { armed: false } }),
                             &tr(if fleet_verbs { Msg::SecurityRemoveShredHint } else { Msg::SecurityReleaseAloneHint }),
                             3, *theme::PILL_RED, self.settings_removeshred_armed, fleet_verbs);
+                        // THE OWNER'S REMOVAL (2026-11-22): after the first press the handle is typed here and Unbind sends the removal; the Depart machine checks the typed handle's proof and sends nothing on a mismatch. The warnings below say what the person releases past.
+                        if self.settings_removeshred_armed {
+                            let checking = self.release_verify.is_some();
+                            let wrong = matches!(self.depart.as_ref().map(|m| m.removal()), Some(fgtw::flow::depart::Removal::TypeHandle { wrong: true }));
+                            flow.prose(&mut canvas, ctx.text, &tr(fgtw::text::Msg::RemoveTypeHandle), hspan2, *theme::ERROR_TEXT_COLOUR, 600);
+                            let tb_band = flow.band(hspan2 * 2.2);
+                            if let Some(tb) = self.release_confirm_tb.as_mut() {
+                                tb.set_font_size(hspan2, ctx.text);
+                                tb.set_rect(tb_band.center_x(), tb_band.center_y(), tb_band.w * 0.9, tb_band.h * 0.85);
+                                let id = tb.hit_id();
+                                tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
+                            }
+                            if checking {
+                                flow.line(&mut canvas, ctx.text, &tr(fgtw::text::Msg::RemoveChecking), hspan2, *theme::LABEL_COLOUR, 600);
+                            } else if wrong {
+                                flow.prose(&mut canvas, ctx.text, &tr(fgtw::text::Msg::RemoveHandleWrong), hspan2, *theme::ERROR_TEXT_COLOUR, 600);
+                            }
+                            flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
+                                (&tr(fgtw::text::Msg::UnbindPill), self.release_confirm_base, !checking, Some(*theme::PILL_RED)),
+                            ], "Open Sans");
+                            flow.gap(hspan2 * 0.6);
+                        }
                         // DEVICE-REMOVAL SAFETY (holdings.rs): while Release is armed or a copy-then-release is pending, what exists only on this device — so the second tap is an informed one — and the pill that copies it away first.
                         if self.settings_removeshred_armed || self.release_when_copied {
                             // Messages first (owner 2026-11-22: a release is never blocked by them, only warned about): what this device holds past every sibling's testimony.
@@ -6308,12 +6278,12 @@ impl PhotonApp {
                                         action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
                                             &tr(Msg::HoldingsStopWaiting),
                                             &tr(Msg::HoldingsCopyingTo(&name)),
-                                            5, *theme::PILL_ORANGE, false, true);
+                                            6, *theme::PILL_ORANGE, false, true);
                                     } else {
                                         action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
                                             &tr(Msg::HoldingsCopyThenRelease),
                                             &tr(Msg::HoldingsCopyHint(&name)),
-                                            5, *theme::PILL_GREEN, false, true);
+                                            6, *theme::PILL_GREEN, false, true);
                                     }
                                 }
                             }

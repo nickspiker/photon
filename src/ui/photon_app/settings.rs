@@ -17,6 +17,9 @@ impl PhotonApp {
         if *p != SettingsPage::Octopus {
             self.octopus_armed = None;
         }
+        if *p != SettingsPage::Security && self.settings_removeshred_armed {
+            self.depart_removal_cancel();
+        }
         if *p != SettingsPage::Security {
             self.settings_removeshred_armed = false;
             self.settings_shred_armed = false;

@@ -715,6 +715,15 @@ impl PhotonApp {
             }
         }
 
+        // Release's mismatch line clears the moment the handle is typed again: Remove told once more puts the machine back to a plain TypeHandle (event-shown, interaction-cleared, no timers).
+        if self.settings_removeshred_armed
+            && matches!(self.depart.as_ref().map(|m| m.removal()), Some(fgtw::flow::depart::Removal::TypeHandle { wrong: true }))
+            && self.release_confirm_tb.as_ref().is_some_and(|tb| !tb.chars.is_empty())
+        {
+            self.depart_step(fgtw::flow::Event::User(fgtw::flow::UserOp::Remove));
+            { needs_redraw = true; self.note_redraw(); }
+        }
+
         // Clear the "handle didn't match" line as soon as the operator edits the confirm box again — event-shown, interaction-cleared, no timers.
         if self.unattended_confirm_failed {
             let has_text = self
@@ -772,27 +781,23 @@ impl PhotonApp {
             .unwrap_or_default();
         for update in join_updates {
             match update {
-                JoinUpdate::Selected(name) => {
-                    crate::logf!("JOIN: selected by {} — green; the keys follow the Add there", name);
+                JoinUpdate::Selected { by, name } => {
+                    crate::logf!("JOIN: selected by {}; green, the keys follow the Add there", name);
                     self.join_selected_by = Some(name);
+                    self.join_step(fgtw::flow::Event::Picked { by });
                 }
-                JoinUpdate::ShowWords(words) => {
-                    self.add_join_words = Some(words);
-                    self.add_join_status = tr(fgtw::text::Msg::AddFromSignedIn).into_owned();
-                }
-                JoinUpdate::Aimed { hp, bind_req, poke } => {
-                    // A fresh request stamp: every sponsor heard so far gets it now, and the LAN arm hands it to each sponsor heard from here on.
-                    self.add_join_hp = Some(hp);
-                    self.add_join_poke = Some(poke);
-                    self.add_join_sent.clear();
-                    let sponsors = self.add_join_sponsors.clone();
-                    for (dk, addr) in sponsors {
-                        self.add_join_sent.push(dk);
-                        self.send_frame_direct(bind_req.clone(), dk, addr, None);
+                JoinUpdate::Minted(r) => match r {
+                    Ok((req, frame)) => {
+                        let t = req.t;
+                        self.join_req = Some(req);
+                        self.join_step(fgtw::flow::Event::Minted { t, result: Ok(&frame) });
                     }
-                    self.add_join_bind_req = Some(bind_req);
-                }
+                    Err(e) => self.join_step(fgtw::flow::Event::Minted { t: 0, result: Err(&e) }),
+                },
+                JoinUpdate::Posted(r) => self.join_step(fgtw::flow::Event::Posted { result: r.as_ref().map(|_| ()).map_err(|e| e.as_str()) }),
                 JoinUpdate::Joined(fleet_key, session) => {
+                    // In the fleet: the machine stops the radios and withdraws a registry copy.
+                    self.join_step(fgtw::flow::Event::InFleet);
                     if fleet_key.is_none() {
                         // JOINER SELECTED (docs/lifecycle.md): bound into the chain but the sponsor's human hasn't confirmed — THIS screen going green IS what they're being asked to verify. Flood green, say "Selected!", and HOLD; sign-in fires when the confirm rotation releases the fleet key. The poller re-emits Joined(Some(key)) thru a fresh channel, so the Some-branch below is the single sign-in path.
                         crate::log(
@@ -844,6 +849,7 @@ impl PhotonApp {
                     }
                     // The confirm landed — leave the green hold and run the normal attest (it now passes the fleet gate). Stash the fleet key to persist once attest sets the vault up.
                     self.joiner_selected = false;
+                    self.end_join_flow();
                     self.add_join_rx = None;
                     self.launch_add_mode = false;
                     self.add_join_words = None;
@@ -858,9 +864,8 @@ impl PhotonApp {
                     }
                 }
                 JoinUpdate::Failed(e) => {
-                    // The ceremony is dead — take the words DOWN with it. Leaving them up strands the screen on a corpse: the user keeps waiting on words no thread is polling for. Back to handle entry with the error visible; re-submitting starts a fresh ceremony.
-                    self.add_join_rx = None;
-                    self.add_join_words = None;
+                    // The join is dead: backed out thru its machine (the request withdrawn, the radios off) and its screen taken down with it, back to handle entry with the error visible; a handle typed again asks the question again.
+                    self.end_join_flow();
                     self.add_join_status = tr(Msg::JoinFailed(&e)).into_owned();
                 }
             }
