@@ -56,6 +56,7 @@ macro_rules! ctx {
             is_maximized: true,
             window_origin: (0, 0),
             pressed_hit: HIT_NONE,
+            layers: None,
         }
     };
 }
@@ -447,4 +448,100 @@ fn conversation_backfill_at_the_pros_size() {
     assert_eq!(t.whole, 0, "the list above the row alone");
     assert!(r.matches_whole(), "the frame drawn whole");
     assert_eq!(kept, r.bookkeeping(), "the rows' tap bookkeeping a whole frame leaves");
+}
+
+impl Rig {
+    /// The frame drawn whole at the rig's state, as one blake3 of its pixels.
+    fn whole_digest(&mut self) -> String {
+        let full = PixelRect::new(0, 0, W, H);
+        let mut buf = vec![Px::default(); W * H];
+        self.app.mark_dirty();
+        {
+            let mut ctx = ctx!(self, full, DamageRects::one(full), None);
+            self.app.render(&mut buf, &mut ctx);
+        }
+        let bytes: Vec<u8> = buf.iter().flat_map(|p| p.to_le_bytes()).collect();
+        blake3::hash(&bytes).to_hex()[..16].to_string()
+    }
+}
+
+/// Whole frames at the Pro's size as blake3 digests, printed: the attest screen, a conversation at rest and scrolled into its history, each twice from a rig of its own (the two must agree, or the frame is not a function of the state).
+/// A change meant to leave every pixel alone is checked by running it before and after: `cargo test --lib scroll_rig::whole_frames_digest -- --ignored --nocapture` (2026-11-22: the noise and the chrome laid thru fluor's `Context::lay_noise` and `Context::lay_chrome`).
+#[test]
+#[ignore]
+fn whole_frames_digest() {
+    let one = || {
+        let mut t = Tally::default();
+        let mut launch = Rig::new(AppState::Launch(LaunchState::Fresh));
+        for _ in 0..3 {
+            launch.frame(&mut t);
+        }
+        let a = launch.whole_digest();
+        let mut r = Rig::new(AppState::Conversation);
+        for _ in 0..3 {
+            r.frame(&mut t);
+        }
+        let b = r.whole_digest();
+        r.scroll(1 << 8);
+        for _ in 0..3 {
+            r.frame(&mut t);
+        }
+        let c = r.whole_digest();
+        [a, b, c]
+    };
+    let (x, y) = (one(), one());
+    println!("whole frames digest: attest {}, conversation {}, scrolled {}", x[0], x[1], x[2]);
+    assert_eq!(x, y, "the same state draws the same frame");
+}
+
+/// A conversation's whole frame laid in layers, as for a ferros display that composes them (fluor `Context::layers`): the noise handed over as parameters and the chrome in a layer of its own.
+/// Laid back under the frame, the noise makes every pixel outside the chrome's box the frame drawn flat, and every pixel the chrome's layer covers whole is the flat frame's; nothing of the chrome's layer lies outside its box.
+#[test]
+#[ignore]
+fn layered_frame_is_the_flat_frame() {
+    use fluor::pixel::Pixel;
+    let mut r = Rig::new(AppState::Conversation);
+    let mut t = Tally::default();
+    for _ in 0..3 {
+        r.frame(&mut t);
+    }
+    let full = PixelRect::new(0, 0, W, H);
+    let mut flat = vec![Px::default(); W * H];
+    r.app.mark_dirty();
+    {
+        let mut ctx = ctx!(r, full, DamageRects::one(full), None);
+        r.app.render(&mut flat, &mut ctx);
+    }
+    let mut layers = fluor::host::app::Layers::new::<Px>(W, H);
+    let mut buf = vec![Px::default(); W * H];
+    r.app.mark_dirty();
+    {
+        let mut ctx = ctx!(r, full, DamageRects::one(full), None);
+        ctx.layers = Some(&mut layers);
+        r.app.render(&mut buf, &mut ctx);
+    }
+    let noise = layers.noise.expect("the frame lays its noise");
+    assert_eq!((noise.axis, noise.clip, noise.frame), (W >> 1, None, 0));
+    assert!(buf.iter().any(|&p| p == Px::EMPTY), "the noise is not in the frame");
+    noise.lay_over(&mut fluor::canvas::Canvas::new(&mut buf, W, H, &mut Damage::new()), &[full]);
+    let b = layers.chrome_box;
+    assert!(!b.is_empty() && b != full, "the chrome's layer is its own box: {b:?}");
+    let chrome = layers.chrome::<Px>();
+    let (mut whole, mut outside) = (0usize, 0usize);
+    for y in 0..H {
+        for x in 0..W {
+            let i = y * W + x;
+            if (b.x0..b.x1).contains(&x) && (b.y0..b.y1).contains(&y) {
+                if chrome[i].alpha() == Px::ONE {
+                    assert_eq!(chrome[i], flat[i], "the chrome's layer at {x}, {y}");
+                    whole += 1;
+                }
+            } else {
+                assert_eq!((chrome[i], buf[i]), (Px::EMPTY, flat[i]), "outside the chrome's box at {x}, {y}");
+                outside += 1;
+            }
+        }
+    }
+    println!("layered frame: the chrome's box {b:?}, {whole} pixels of it whole, {outside} outside it as the flat frame");
+    assert!(whole > 0 && outside > 0);
 }

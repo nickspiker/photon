@@ -1021,9 +1021,8 @@ impl PhotonApp {
         // The CHROME LAYER (orb, controls strip, title, window buttons) goes in NOW, before any content: fluor is front to back, so it stays on top of everything the screens draw — rows scrolled up under the title strip, the full-screen wave panel. Its bg layer (the speckle) is flattened LAST, under all content (`flatten_bg_into` below).
         // Over the damage only: outside it the frame already holds last frame's composite, chrome included, and a chrome change is chrome damage that widens the frame's damage (damage_rect).
         // Each of the frame's rects alone, not their box: a memmove frame's rects have the whole frame for their box, and the pane between them is last frame's, already opaque.
-        for r in &frame_rects {
-            chrome.flatten_chrome_into(target, buf_w, buf_h, Some(fluor::paint::Clip::new(r.x0, r.y0, r.x1, r.y1)));
-        }
+        // Laid thru the host (fluor `Context::lay_chrome`, ferros GPU-COMPOSE.md 3.2): flattened into `target` over each rect on the desktop and Android, and on a ferros display that composes layers put in a layer of its own in front of this frame.
+        ctx.lay_chrome(target, chrome);
 
         // WAVE OVERLAY (docs/waves.md) — retained fluor Buttons (no hand-rolled pills), painted HERE, EARLY, so under-blend keeps them above every screen's body (the whole point: a ring must be visible + answerable from wherever the user is). A live wave shows the status chip + action bar; an open callable conversation with no wave shows the ☎ start pill. Each button claims its hits right after its own paint (`stamp_hit_into`, the whole pill with its label and anti-aliased rim), in the same front-to-back order as its pixels, so every screen drawn after takes only what the overlay left; a pill that must not dispatch (dimmed, or a label) claims nothing of its own. Hover/press/dispatch ride `visit_app_widgets`. y sits just below the chrome title-bar band.
         {
@@ -8067,9 +8066,8 @@ impl PhotonApp {
         // THE NOISE, last and under everything: generated where it is drawn, one field for the whole screen at the one offset taken above, mirrored about the screen's centre.
         // Laid over each of the frame's rects alone (a memmove frame names several): the rows between them are last frame's and opaque, and generating under them would draw nothing at the cost of the walk.
         // Ready for the pane-composite model (panes drawn past the viewport and scrolled by their offset): there the noise is this same plain under, at whatever offset the field then takes.
-        for r in &frame_rects {
-            fluor::paint::noise_under(&mut Canvas::new(target, buf_w, buf_h, ctx.damage), buf_w / 2, noise_scroll, bg_fullscreen, Some(fluor::paint::Clip::new(r.x0, r.y0, r.x1, r.y1)), noise_base);
-        }
+        // Laid thru the host (fluor `Context::lay_noise`, ferros GPU-COMPOSE.md 3.2): `noise_under` over each rect on the desktop and Android, and on a ferros display that composes layers handed over as parameters, generated there under the window.
+        ctx.lay_noise(target, fluor::paint::NoiseLayer::new(buf_w / 2, noise_scroll, bg_fullscreen, None, noise_base));
         self.scroll_shift = 0;
         self.scroll_hint_armed = None;
         // The idle whole-frame hunt (damage_rect's log): a flag this render raised for the next frame, and the asks this frame answered.
