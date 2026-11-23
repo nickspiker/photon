@@ -734,7 +734,7 @@ impl PhotonApp {
         // A SECOND ANSWER to our Join (2026-11-01, Brittany: two of Emma's devices answered, each with its own era 1, and the last to land replaced the first): an era we already hold at a higher index, or at the same index under a lower root, stands — the lower root wins on every device (era_superseded_by), so we keep the one the sponsor's fleet converges on.
         if let Some((held_era, held_root)) = self.friendship_chains.iter().find(|(id, _)| *id == fid).and_then(|(_, c)| Some((c.era_index, *c.lane_root()?))) {
             if held_era > w.era || (held_era == w.era && held_root <= root) {
-                crate::logf!("MOLECULE: a second join answer for {} (era {}, root {}) — the era we hold (era {}, root {}) stands", hex::encode(&gid.0[..4]), w.era, hex::encode(&root[..4]), held_era, hex::encode(&held_root[..4]));
+                crate::logf!("MOLECULE: a second join answer for {} (era {}, root {}) — the era we hold (era {}, root {}) stands", hex::encode(&gid.0[..4]), w.era, hex::encode(&blake3::hash(&root).as_bytes()[..4]), held_era, hex::encode(&blake3::hash(&held_root).as_bytes()[..4]));
                 return;
             }
         }

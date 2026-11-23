@@ -1935,7 +1935,7 @@ impl PhotonApp {
                                                 storage,
                                             )
                                         {
-                                            crate::logf!("CLUTCH: Failed to delete keypairs file for seed {}: {}", hex::encode(&their_identity_seed[..4]), e);
+                                            crate::logf!("CLUTCH: Failed to delete keypairs file for seed {}: {}", hex::encode(&blake3::hash(&their_identity_seed).as_bytes()[..4]), e);
                                         }
                                     }
                                 }

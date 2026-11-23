@@ -4877,9 +4877,9 @@ impl PhotonApp {
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         std::thread::spawn(|| match tohu::device::tpm_plate() {
             Ok(plate) => {
-                // The key half beside it: the chip's HMAC over a fixed label, the candidate root; a prefix only, and still nothing derives from it.
+                // The key half beside it: the chip's HMAC over a fixed label, the candidate root; logged as a hash prefix, never its own bytes, and still nothing derives from it.
                 match tohu::device::tpm_root() {
-                    Ok(root) => crate::logf!("device plate: tpm {}, key root {}", hex::encode(&plate[..4]), hex::encode(&root[..4])),
+                    Ok(root) => crate::logf!("device plate: tpm {}, key root {}", hex::encode(&plate[..4]), hex::encode(&blake3::hash(&root).as_bytes()[..4])),
                     Err(e) => crate::logf!("device plate: tpm {}, key root unavailable ({})", hex::encode(&plate[..4]), e),
                 }
             }

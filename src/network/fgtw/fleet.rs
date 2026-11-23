@@ -904,6 +904,7 @@ fn push_fstate_cas(
     prev: Option<[u8; 32]>,
 ) -> Result<[u8; 32], String> {
     // Fingerprint every write: the vanishing-avatar-pin hunt (2026-08-02) burned three sessions inferring what a push carried. Key NAMES are internal labels, not secrets; values never log.
+    // The key is named by fgtw's derived fingerprint, the one the fan-out publishes and ferros logs; until 2026-11-22 this printed the key's own first four bytes.
     crate::logf!(
         "FSTATE→ push: {} roster, globals [{}], {} device map(s), key {}{}",
         state.roster.len(),
@@ -914,7 +915,7 @@ fn push_fstate_cas(
             .collect::<Vec<_>>()
             .join(" "),
         state.device_settings.len(),
-        crate::fp(fleet_key).as_str(),
+        crate::fp(&fgtw::fanout::fleet_key_fingerprint(fleet_key)).as_str(),
         if prev.is_some() { ", replacing the slot as last seen" } else { "" }
     );
     fgtw::client::push_fstate_cas(&PhotonTransport, &PhotonSealer, handle_proof, &signer_for(device_key), fleet_key, state, prev)
@@ -945,7 +946,7 @@ fn pull_fstate_seen(
                 .collect::<Vec<_>>()
                 .join(" "),
             s.device_settings.len(),
-            crate::fp(fleet_key).as_str()
+            crate::fp(&fgtw::fanout::fleet_key_fingerprint(fleet_key)).as_str()
         );
         note_slot(handle_proof, *h, s.clone());
     }

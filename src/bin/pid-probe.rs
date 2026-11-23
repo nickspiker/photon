@@ -28,6 +28,18 @@ fn main() {
             }
             Err(e) => println!("hp {}…  chain fetch failed: {}", &hex_hp[..8], e),
         }
+        // The fan-out envelope needs only the handle proof: which key fingerprint is published, at what revision, by whom.
+        match photon_messenger::network::fgtw::fleet::fetch_fanout(&hp) {
+            Ok(Some((revision, kfp, rotator, wraps))) => println!(
+                "fan-out: revision {}  key {}…  publisher {}…  {} wrap(s)",
+                revision,
+                hex::encode(&kfp[..4]),
+                hex::encode(&rotator[..4]),
+                wraps.len()
+            ),
+            Ok(None) => println!("fan-out: none published"),
+            Err(e) => println!("fan-out: fetch failed: {}", e),
+        }
         return;
     }
     let seed = photon_messenger::storage::contacts::derive_identity_seed(&handle);
