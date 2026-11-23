@@ -6027,7 +6027,15 @@ impl PhotonApp {
                         changed!();
                     }
                 }
-                Err(e) => crate::logf!("FLEET: state from sibling {} did not open under our key ({}) — a key rotation in flight; its next push carries it", crate::fp(&sender), e),
+                Err(e) => {
+                    // A sibling seals under a key we do not hold: it minted, or we did. Its pushes never carry the key, so waiting on them waited forever (the 3a's mint, 2026-11-22: Leviathan and the Pro stayed on the old key for hours); the fan-out names the live key, and the sync adopts it when it is newer and wrapped to us.
+                    let held = fgtw::fanout::fleet_key_fingerprint(&key);
+                    if self.fleet_key_sync_for != Some(held) {
+                        self.fleet_key_sync_for = Some(held);
+                        crate::logf!("FLEET: state from sibling {} did not open under our key ({}); syncing the key from the fan-out", crate::fp(&sender), e);
+                        self.spawn_fleet_key_sync();
+                    }
+                }
             }
         }
         for (hp, blob, sender) in fanouts_after {

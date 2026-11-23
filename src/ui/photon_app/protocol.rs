@@ -1259,7 +1259,9 @@ impl PhotonApp {
                         .iter()
                         .any(|c| !c.is_sibling && Some(c.handle_proof) != our_proof);
                     if have_friend_state {
-                        crate::log("FLEET: the slot cannot be decrypted under the current key — pushing to re-seal it from local state rather than re-reading bytes nobody can open");
+                        crate::log("FLEET: the slot cannot be decrypted under the current key — syncing the key from the fan-out, and pushing to re-seal only if ours is the live key");
+                        // The push re-seals only when the fan-out publishes our key (merge_into_slot); when it publishes another, the sync adopts that one.
+                        self.spawn_fleet_key_sync();
                         self.spawn_roster_push();
                         // Re-pull AFTER our re-seal lands so the merged slot round-trips (the push also fires the worker's fstate event, which re-pulls every sibling).
                         self.needs_initial_roster_pull = true;

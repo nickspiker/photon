@@ -978,7 +978,12 @@ pub fn merge_into_slot(
         Ok(Some((s, h))) => (s, Some(h)),
         Ok(None) => (fgtw::fstate::FleetState::default(), None),
         Err(e) if e.contains("aead") || e.contains("decrypt") => {
-            crate::logf!("FLEET: slot is sealed under a superseded key ({}) — re-sealing from local state, since bytes no device can open are already lost", e);
+            // A slot we cannot open is superseded only when OUR key is the live one; the fan-out names it, and a newer key there means the slot is newer than we are (Leviathan re-sealed over the 3a's key, 2026-11-22).
+            let ours_live = matches!(fetch_fanout(handle_proof), Ok(Some((_, kfp, _, _))) if kfp == fgtw::fanout::fleet_key_fingerprint(fleet_key));
+            if !ours_live {
+                return Err(format!("refusing to re-seal the fleet state: it does not open under our key ({e}) and the fan-out publishes another key, so ours is the stale one; the key sync adopts the live key"));
+            }
+            crate::logf!("FLEET: slot is sealed under a superseded key ({}); ours is the one the fan-out publishes, so it is re-sealed from local state", e);
             (fgtw::fstate::FleetState::default(), None)
         }
         Err(e) => {
