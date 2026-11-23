@@ -49,6 +49,7 @@ Hooks are reminders; read the topic file before acting on one.
 
 ## Active / open
 - [Add device over LAN](project_add_device_lan_path.md) — WORKED 2026-11-22 (8a→Brittany); four faults behind every add avenue + the 3a fleet-key split
+- [deploy FERROS_DIR stale](project_deploy_ferros_dir_stale.md) — v156 kist built from ../ferros at 11-20, not the forge; verify std/photon before a deploy
 - [Android dark in background](project_android_headless_dark.md) — fix built, verify pending
 - [Backfill dings](project_backfill_dings.md) · [Redox dropped](project_redox_dropped.md) · [Bindreq peer-to-peer](project_bindreq_peer_to_peer.md) — BUILT 2026-10-26
 - [Fleet over the mesh](project_fleet_over_mesh.md) — BUILT 2026-10-26; attest from the held chain BUILT 2026-11-02 (seed = mirror); offline field test pending
