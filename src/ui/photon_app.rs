@@ -186,6 +186,8 @@ fn plate_kind_words(kind: u8) -> &'static str {
     }
 }
 
+/// The posture the dedicated Security page will show: (security, recovery) pips; kept for that page, as POSTURE_PIPS is.
+#[allow(dead_code)]
 fn identity_posture() -> (usize, usize) {
     let security = 1; // readable root on every platform today
     #[cfg(target_os = "macos")]

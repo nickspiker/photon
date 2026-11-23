@@ -7,6 +7,20 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 - **New versions reach you through your own devices and friends.** When one of your devices or a friend's learns a release is out, it hands the signed release on to the others it is connected to, and each one checks the release's signature itself before it updates, so an update no longer waits for a server to ring.
+- **Adding a device works again, by tap, by Bluetooth, or by its words.** The new device's request now reaches your other devices on the same network, and the fallback through fgtw.org no longer refuses phones that carry a hardware plate.
+- **A new device asks before it says anything.** Type your handle once and tap attest; only if the handle is taken does Photon ask whether this is really you, and only after your yes does it ask your other devices.
+- **Your devices hear a new device only while you are looking.** A request to join shows on a device of yours only while its Fleet page is open, so someone typing your name elsewhere cannot make your phone light up.
+- **The words are there when you need them.** "Not in range?" shows the device's words to copy or dictate, and sends the request through fgtw.org when none of your devices are nearby.
+- **Releasing a device asks for your handle first.** Settings, Security, Release now asks you to type your handle before anything is sent, then signs the device out; on Android, Photon then closes with nothing of yours left on it.
+- **Your devices agree on one fleet key.** When one of your devices moves to a new key, the others now pick it up, from that device first and from fgtw.org only if it does not answer, and never fall back to an older one.
+- **A locked device never gets a key.** Moving a phone onto a new hardware root no longer hands the fleet key to a device you locked out.
+- **Unread is a solid magenta dot.** On every platform, an unread conversation shows a magenta dot at the upper left of the picture, and the taskbar, tray and Dock icons show the same dot.
+- **The delivery ring says who has your message.** Your part of the ring stays black until your other devices hold the message, then turns your own grey; each friend's part turns their bright colour when they have it.
+- **Contacts show up first.** Your contacts appear as soon as Photon opens, pictures and messages follow, and a row never waits on the drawing to show its picture.
+- **A scroll puts hover out.** Scrolling clears the glow and bold under the pointer until you move it again, and a pinch leaves the background still under your fingers.
+- **One clean background.** The background is one even field under the whole screen, with no seam between panes.
+- **The connect and end sounds are quieter.** They now play well under the wave they overlay instead of louder than it.
+- **Photon on ferros: settings from the orb.** The orb opens the settings, Back climbs back to them, and pages follow your finger across.
 
 ## v155
 - **Joining a group no longer waits on one particular device.** Whichever of the inviter's devices hears your join now lets you in, and all of their devices agree on the same new keys, so a join can no longer sit unanswered.
