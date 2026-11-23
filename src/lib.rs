@@ -183,6 +183,32 @@ pub fn set_num_base(b: NumBase) {
     NUM_BASE.store(b as u8, std::sync::atomic::Ordering::Relaxed);
 }
 
+/// The base and language the HOST says this device shows (ferros: the device's own setting, which the person sets in ferros), over Photon's fleet setting; `None` where no host says (desktop, Android), and the fleet's `display.base` / `display.lang` decide.
+static HOST_NUMERALS: std::sync::Mutex<(Option<NumBase>, Option<fgtw::text::Lang>)> = std::sync::Mutex::new((None, None));
+
+/// The host's base and language, applied at once and kept over the fleet setting until the host says otherwise; the host calls it on its own edge (the person changed the setting).
+pub fn set_host_numerals(base: Option<NumBase>, lang: Option<fgtw::text::Lang>) {
+    if let Ok(mut g) = HOST_NUMERALS.lock() {
+        *g = (base, lang);
+    }
+    if let Some(b) = base {
+        set_num_base(b);
+    }
+    if let Some(l) = lang {
+        crate::ui::lang::set_lang(l);
+    }
+}
+
+/// The host's base, when it set one.
+pub fn host_base() -> Option<NumBase> {
+    HOST_NUMERALS.lock().ok().and_then(|g| g.0)
+}
+
+/// The host's language, when it set one.
+pub fn host_lang() -> Option<fgtw::text::Lang> {
+    HOST_NUMERALS.lock().ok().and_then(|g| g.1)
+}
+
 /// Is the base dozenal? The sites that are TWELVE-shaped (the clutch ladder's radix-point step, the zoom-per-gross, the digit cheat sheet, spelled digit names) key on this; everything merely numeric goes thru [`fmt_num`].
 pub fn dozenal_ui() -> bool {
     num_base() == NumBase::Dozenal

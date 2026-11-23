@@ -28,6 +28,15 @@ fn main() {
             }
             Err(e) => println!("hp {}…  chain fetch failed: {}", &hex_hp[..8], e),
         }
+        // The chain's own locked set: what a device that reads only the chain (ferros) excludes from a grow.
+        match photon_messenger::network::fgtw::fleet::fetch(&hp) {
+            Ok(Some(blob)) => match blob.locked_out() {
+                Ok(locked) => println!("chain locked: {}", locked.iter().map(|d| format!("{}…", hex::encode(&d[..4]))).collect::<Vec<_>>().join(" ")),
+                Err(e) => println!("chain locked: fold failed: {:?}", e),
+            },
+            Ok(None) => println!("chain locked: no chain"),
+            Err(e) => println!("chain locked: fetch failed: {}", e),
+        }
         // The fan-out envelope needs only the handle proof: which key fingerprint is published, at what revision, by whom.
         match photon_messenger::network::fgtw::fleet::fetch_fanout(&hp) {
             Ok(Some((revision, kfp, rotator, wraps))) => println!(

@@ -653,18 +653,19 @@ impl PhotonApp {
             cb.set_checked(auto);
         }
         // Numeral base (the Dozenal page's pills, fleet-wide): `display.base` = the radix; a pre-base-key fleet's `display.dozenal` bool still reads (true → dozenal, false → arabic). Absent = house default dozenal.
-        let base = self
-            .fleet_settings
-            .as_ref()
-            .and_then(|fs| {
-                fs.effective("display.base")
-                    .and_then(|v| v.as_u64())
-                    .and_then(crate::NumBase::from_radix)
-                    .or_else(|| {
-                        fs.effective("display.dozenal")
-                            .and_then(crate::storage::fleet_settings::as_bool)
-                            .map(|d| if d { crate::NumBase::Dozenal } else { crate::NumBase::Arabic })
-                    })
+        // A host that says the base (ferros: the device's own setting) decides it over the fleet's.
+        let base = crate::host_base()
+            .or_else(|| {
+                self.fleet_settings.as_ref().and_then(|fs| {
+                    fs.effective("display.base")
+                        .and_then(|v| v.as_u64())
+                        .and_then(crate::NumBase::from_radix)
+                        .or_else(|| {
+                            fs.effective("display.dozenal")
+                                .and_then(crate::storage::fleet_settings::as_bool)
+                                .map(|d| if d { crate::NumBase::Dozenal } else { crate::NumBase::Arabic })
+                        })
+                })
             })
             .unwrap_or(crate::NumBase::Dozenal);
         // Adoption edge made LOUD (field 2026-09-02: "not sure why that checkbox isn't synchronizing fleetwide") — if this line never fires on the other device, the merge/event path lost the write (LWW clock skew or a dropped fstate event), not this mirror.
@@ -678,7 +679,8 @@ impl PhotonApp {
             .as_ref()
             .and_then(|fs| fs.effective("display.lang"))
             .and_then(crate::storage::fleet_settings::as_text);
-        match stored_lang.as_deref().and_then(crate::ui::lang::Lang::from_code) {
+        // A host that says the language (ferros: the device's own setting) decides it over the fleet's, and never seeds the fleet's from the OS.
+        match crate::host_lang().or_else(|| stored_lang.as_deref().and_then(crate::ui::lang::Lang::from_code)) {
             Some(l) => crate::ui::lang::set_lang(l),
             None => {
                 if stored_lang.is_none() {
