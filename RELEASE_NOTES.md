@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v156
 - **New versions reach you through your own devices and friends.** When one of your devices or a friend's learns a release is out, it hands the signed release on to the others it is connected to, and each one checks the release's signature itself before it updates, so an update no longer waits for a server to ring.
 - **Adding a device works again, by tap, by Bluetooth, or by its words.** The new device's request now reaches your other devices on the same network, and the fallback through fgtw.org no longer refuses phones that carry a hardware plate.
 - **A new device asks before it says anything.** Type your handle once and tap attest; only if the handle is taken does Photon ask whether this is really you, and only after your yes does it ask your other devices.
@@ -21,6 +23,8 @@ One sentence per line, however long; plain language for the person who installs 
 - **One clean background.** The background is one even field under the whole screen, with no seam between panes.
 - **The connect and end sounds are quieter.** They now play well under the wave they overlay instead of louder than it.
 - **Photon on ferros: settings from the orb.** The orb opens the settings, Back climbs back to them, and pages follow your finger across.
+
+Built from photon 8a37eca0 · chirp b01db995 · fgtw 77855922 · fluor ee473739 · ihi 92796ee6 · kete c712e071 · limbus 30ab5cc3 · manifestus eb7f91ed · nunc b518ad11 · opsin 29b686d0 · rarangi 387b44ab · spirix 915a71a5 · tapuwae 0bc864d7 · tohu 7df2ac9b · voca 04dcf2df · vsf c0e92f35
 
 ## v155
 - **Joining a group no longer waits on one particular device.** Whichever of the inviter's devices hears your join now lets you in, and all of their devices agree on the same new keys, so a join can no longer sit unanswered.
