@@ -363,6 +363,7 @@ impl PhotonApp {
                 StatusUpdate::ChainPullMissReceived { .. } => "ChainPullMissReceived",
                 StatusUpdate::DepartFrame { .. } => "DepartFrame",
                 StatusUpdate::FleetChainAsked { .. } => "FleetChainAsked",
+                StatusUpdate::FanoutAsked { .. } => "FanoutAsked",
                 StatusUpdate::BindReqFrame { .. } => "BindReqFrame",
                 StatusUpdate::FanoutReceived { .. } => "FanoutReceived",
                 StatusUpdate::FleetStatePushed { .. } => "FleetStatePushed",
@@ -491,6 +492,8 @@ impl PhotonApp {
         let mut depart_frames_after: Vec<(Vec<u8>, std::net::SocketAddr)> = Vec::new();
         // Membership chains over the mesh (docs/peers-are-fgtw.md), deferred past the checker borrow: asks to answer (handle, asker, where), and chains handed to us (handle, bytes, sender).
         let mut fleet_asks_after: Vec<([u8; 32], [u8; 32], std::net::SocketAddr)> = Vec::new();
+        // Siblings asking for our fan-out (`fanout_req`), answered after the drain: (handle proof, the revision they hold, the asker, where it asked from).
+        let mut fanout_asks_after: Vec<([u8; 32], u64, [u8; 32], std::net::SocketAddr)> = Vec::new();
         let mut fleet_chains_after: Vec<([u8; 32], Vec<u8>, [u8; 32])> = Vec::new();
         let mut addresses_after: Vec<crate::network::fgtw::PeerRecord> = Vec::new();
         // The join over the mesh, deferred likewise: binding request frames handed to this sponsor (for the Add machine, screen up or not), and fan-outs handed to this device.
@@ -4516,6 +4519,12 @@ impl PhotonApp {
                         fleet_asks_after.push((handle_proof, sender_pubkey.key, sender_addr));
                     }
                 }
+                // Only a live device of OUR fleet gets our fan-out: it wraps the fleet key, and only a member's wrap opens.
+                StatusUpdate::FanoutAsked { handle_proof, held_revision, sender_pubkey, sender_addr } => {
+                    if self.our_handle_proof() == Some(handle_proof) && self.contacts.iter().any(|c| c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)) {
+                        fanout_asks_after.push((handle_proof, held_revision, sender_pubkey.key, sender_addr));
+                    }
+                }
                 // DEVICES FIRST on this link (ferros, 2026-11-10): a fleet_req for OUR identity heard on the beacon port. A device our fold knows gets the chain over PT at its frame port; any other device here gets our beacon, a few bytes it could hear by listening; another identity's ask gets nothing.
                 StatusUpdate::LanFleetAsked { handle_proof, sender_pubkey, src_ip } => {
                     if self.our_handle_proof() == Some(handle_proof) {
@@ -5952,6 +5961,9 @@ impl PhotonApp {
         for (hp, asker, addr) in fleet_asks_after {
             self.answer_fleet_ask(hp, asker, addr);
         }
+        for (hp, held, asker, addr) in fanout_asks_after {
+            self.answer_fanout_ask(hp, held, asker, addr);
+        }
         for (hp, chain, sender) in fleet_chains_after {
             if self.adopt_peer_chain(hp, &chain, sender) {
                 changed!();
@@ -6035,11 +6047,23 @@ impl PhotonApp {
                 }
                 Err(e) => {
                     // A sibling seals under a key we do not hold: it minted, or we did. Its pushes never carry the key, so waiting on them waited forever (the 3a's mint, 2026-11-22: Leviathan and the Pro stayed on the old key for hours); the fan-out names the live key, and the sync adopts it when it is newer and wrapped to us.
+                    // Peers first: the sibling that sealed it holds the fan-out it sealed under, and is asked for it; fgtw.org's published one is the last rung, asked on the next failure under the same key, and after that nothing more until our key moves.
                     let held = fgtw::fanout::fleet_key_fingerprint(&key);
-                    if self.fleet_key_sync_for != Some(held) {
-                        self.fleet_key_sync_for = Some(held);
-                        crate::logf!("FLEET: state from sibling {} did not open under our key ({}); syncing the key from the fan-out", crate::fp(&sender), e);
-                        self.spawn_fleet_key_sync();
+                    match self.fleet_key_sync_for {
+                        Some((h, true)) if h == held => {}
+                        Some((h, false)) if h == held => {
+                            self.fleet_key_sync_for = Some((held, true));
+                            crate::logf!("FLEET: state from sibling {} still does not open under our key ({}); syncing the key from fgtw.org's fan-out", crate::fp(&sender), e);
+                            self.spawn_fleet_key_sync();
+                        }
+                        _ => {
+                            let asked = self.our_handle_proof().is_some_and(|hp| self.ask_sibling_for_fanout(hp, sender));
+                            self.fleet_key_sync_for = Some((held, !asked));
+                            if !asked {
+                                crate::logf!("FLEET: state from sibling {} did not open under our key ({}); no fan-out held to compare, so syncing the key from fgtw.org's", crate::fp(&sender), e);
+                                self.spawn_fleet_key_sync();
+                            }
+                        }
                     }
                 }
             }

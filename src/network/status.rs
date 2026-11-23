@@ -574,6 +574,8 @@ pub enum StatusUpdate {
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
     },
+    /// A sibling asking for our fan-out of `handle_proof` (`fanout_req`): our state does not open under its key, and it holds revision `held_revision`; the UI answers with the fan-out it holds when that is newer.
+    FanoutAsked { handle_proof: [u8; 32], held_revision: u64, sender_pubkey: DevicePubkey, sender_addr: SocketAddr },
     /// A `fleet_req` heard on the beacon port (DEVICES FIRST, ferros 2026-11-10): a device on this link asking for its identity's devices. The UI answers our own identity's: a device our fold knows gets the chain, any other gets our beacon; another identity's gets nothing.
     LanFleetAsked { handle_proof: [u8; 32], sender_pubkey: DevicePubkey, src_ip: std::net::IpAddr },
     /// A sponsor picked this joining device (`bind_select`): the join thread checks the sender against the fleet's chain and lights green; nothing is bound by it.
@@ -885,6 +887,7 @@ impl StatusUpdate {
             }
             StatusUpdate::DepartFrame { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FleetChainAsked { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::FanoutAsked { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::BindReqFrame { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FanoutReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FleetStatePushed { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
@@ -3067,6 +3070,27 @@ async fn run_checker(
                                     &status_tx_recv,
                                     StatusUpdate::FleetChainAsked {
                                         handle_proof,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                        sender_addr: src_addr,
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            // A sibling whose key does not open our state asks for our fan-out (`fanout_req`); same mandatory packet-ack.
+                            if let Ok((handle_proof, held_revision, sender_pubkey)) = crate::network::fgtw::protocol::parse_fanout_req_vsf(msg_bytes) {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::FanoutAsked {
+                                        handle_proof,
+                                        held_revision,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                         sender_addr: src_addr,
                                     },

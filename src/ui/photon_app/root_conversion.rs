@@ -119,7 +119,8 @@ fn convert(old: &DeviceSigner, identity_seed: &[u8; 32], hp: &[u8; 32], legacy: 
     // Grown now, while the old key still signs; the fan-out is the fleet's own hand-off, so no sponsor's edge ever covers a self-sponsored move.
     match crate::storage::device_vault().and_then(|v| v.read_addr(&crate::storage::vault_key("fleet_key", identity_seed)).ok().flatten()).and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok()) {
         Some(held) => {
-            let members = fleet::held_chain(hp).and_then(|c| c.fold().ok()).unwrap_or_default();
+            // The fold minus the locked: a locked member never gets a wrap of the fleet key.
+            let members = fleet::held_unlocked_members(hp);
             if members.is_empty() {
                 crate::log("ROOT: the held chain folds to nobody — the fan-out is not grown here; the key sync at the next start grows it");
             } else {

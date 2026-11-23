@@ -2243,8 +2243,8 @@ pub struct PhotonApp {
     fleet_evt_rx: Option<std::sync::mpsc::Receiver<(&'static str, [u8; 32])>>,
     /// One-heal-at-a-time latch for the removal-rotates flow (braid.md §14.2), shared with the key-sync thread and cleared on its exit. Guards both the duplicate-rotation race and the stale-cache window (a plain key sync running mid-heal would re-cache the pre-rotation key over the fresh one).
     fleet_heal_busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
-    /// The fingerprint of the fleet key we held when a sibling's state last failed to open and we synced the key from the fan-out: one sync per key held, so a sibling pushing again under the same newer key asks nothing more.
-    fleet_key_sync_for: Option<[u8; 32]>,
+    /// The fingerprint of the fleet key we held when a sibling's state last failed to open, and whether fgtw.org was asked under it: the first failure asks that sibling for its fan-out, the next under the same key asks fgtw.org (the last rung), and after that nothing more until our key moves.
+    fleet_key_sync_for: Option<([u8; 32], bool)>,
     /// A sibling pair just became egged (Phase A) — mint the next fan-out epoch so that sibling finally gets a wrap. Set by the ceremony drain, consumed by the tick (the rotation needs `&self` off the drain's borrows).
     fanout_grow_pending: bool,
     /// Reader secrets that just changed and need a fresh scoped slot written for them (the ceremony drain cannot do the blocking upload itself). Drained by the tick.

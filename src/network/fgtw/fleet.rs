@@ -379,6 +379,25 @@ pub fn hold_fanout(handle_proof: &[u8; 32], revision: u64, blob: &[u8]) {
     fgtw::held::FanoutHold::hold_fanout(&HELD_FANOUT, handle_proof, revision, blob)
 }
 
+/// The members a grow may wrap, from the held chain: its fold minus the devices it locked out, which must never hold the fleet key.
+/// Empty when no chain is held or it does not fold.
+pub fn held_unlocked_members(handle_proof: &[u8; 32]) -> Vec<[u8; 32]> {
+    let Some(chain) = held_chain(handle_proof) else { return Vec::new() };
+    let (Ok(members), Ok(locked)) = (chain.fold(), chain.locked_out()) else { return Vec::new() };
+    members.into_iter().filter(|m| !locked.contains(m)).collect()
+}
+
+/// The held fan-out's revision for `handle_proof` (0 = none held this process).
+pub fn held_fanout_revision(handle_proof: &[u8; 32]) -> u64 {
+    HELD_FANOUT.lock().map(|g| g.revision(handle_proof)).unwrap_or(0)
+}
+
+/// The held fan-out blob for `handle_proof` and its revision, the copy a sibling's `fanout_req` is answered with.
+pub fn held_fanout(handle_proof: &[u8; 32]) -> Option<(u64, Vec<u8>)> {
+    let g = HELD_FANOUT.lock().ok()?;
+    g.blob(handle_proof).map(|b| (g.revision(handle_proof), b.to_vec()))
+}
+
 /// GROW the fan-out HELD-FIRST: seal the current key to `members` at the next revision (the seed's revision + 1 when it answers, else the held one + 1), hold the blob, mirror it to the seed as a best effort, and return (revision, blob) for the caller to hand to the newcomer and the siblings as a `fanout_resp`. Never a mint. A seed that holds a DIFFERENT key fingerprint is a rotation this device missed: the grow is refused, since sealing a stale key to the newcomer would hand it a dead key.
 pub fn fanout_grow_held(
     handle_proof: &[u8; 32],
@@ -770,7 +789,8 @@ pub fn self_sponsor_from_legacy_root(handle_proof: &[u8; 32], identity_seed: &[u
     // The fleet key: the old key opens its own wrap and grows the fan-out for the current key, so the roster and the backup open here too. A fleet with no fan-out yet has nothing to wrap; the key sync establishes one.
     match recover_fleet_key(handle_proof, old.keypair(), identity_seed) {
         Ok(Some(k)) => {
-            let now: Vec<[u8; 32]> = held_chain(handle_proof).and_then(|c| c.fold().ok()).unwrap_or_default();
+            // The fold minus the locked: a grow that wrapped a locked member handed it the live key, and the next device to see the fan-out minted over it (the owner's fleet, 2026-11-22).
+            let now = held_unlocked_members(handle_proof);
             match fgtw::client::grow_fleet_wraps(&PhotonTransport, handle_proof, &old, &k, &now, identity_seed) {
                 Ok(revision) => crate::logf!("ROOT: fan-out grown to revision {} for the current key", revision),
                 Err(e) => crate::logf!("ROOT: fan-out grow failed ({}); the key sync at the next start retries", e),

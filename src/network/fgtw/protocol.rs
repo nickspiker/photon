@@ -2433,6 +2433,16 @@ pub fn parse_fleet_req_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32]), Str
     fgtw::protocol::parse_fleet_req(vsf_bytes)
 }
 
+/// Build a `fanout_req`: our sibling's state does not open under our key, so we ask it for its fan-out of `hp` if it is newer than the revision we hold (fgtw::protocol::fanout_req).
+pub fn build_fanout_req_vsf(handle_proof: &[u8; 32], held_revision: u64, device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
+    fgtw::protocol::fanout_req(handle_proof, held_revision, &envelope_signer(device_secret), vsf::eagle_time_oscillations())
+}
+
+/// Parse + verify a `fanout_req`. Returns (handle proof, the revision the asker holds, the asking device).
+pub fn parse_fanout_req_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], u64, [u8; 32]), String> {
+    fgtw::protocol::parse_fanout_req(vsf_bytes)
+}
+
 /// Build a `bind_select` — "the person picked you to join fleet `hp`", from this sponsor to the joining device `joiner`; it binds nothing (fgtw::protocol::bind_select).
 pub fn build_bind_select_vsf(handle_proof: &[u8; 32], joiner: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
     fgtw::protocol::bind_select(handle_proof, joiner, &envelope_signer(device_secret), vsf::eagle_time_oscillations())

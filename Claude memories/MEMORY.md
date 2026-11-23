@@ -38,6 +38,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [any-size conversation](feedback_any_size_conversation.md) — HARD: 1, 2 or N = ONE model; friendship/molecule split is debt
 - [handles byte-precise](feedback_handles_byte_precise.md) — HARD: full Unicode, whitespace-only valid
 - [VSF readers widen](feedback_vsf_readers_width_agnostic.md) · [numbers binary at rest](feedback_numbers_binary_at_rest.md) — display Arabic, dozenal = Base setting
+- [base + language are identity prefs](feedback_base_lang_identity_prefs.md) — owner 2026-11-22: the identity's space (fgtw), not Photon fleet settings; migration OPEN
 - Shell traps: [sed address guard](feedback_sed_address_guard.md) · [perl UTF-8](feedback_perl_utf8_trap.md) · [perl pipe delimiter](feedback_perl_pipe_delimiter.md) · [pgrep self-match](feedback_pgrep_self_match.md)
 - [fgtw deploys freely](feedback_fgtw_deploy_freely.md) · [terminal clipboard](feedback_terminal_clipboard.md) — spaces around = · [script timestamps](feedback_script_timestamps.md)
 - [no redundant disk ops](feedback_no_redundant_disk_ops.md) — reflink · [legacy first](feedback_legacy_first.md) · [persist findings early](persist-findings-early.md)

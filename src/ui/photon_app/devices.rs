@@ -490,7 +490,13 @@ impl PhotonApp {
             return true;
         }
         let (Some(kp), Some(seed)) = (self.device_keypair.clone(), self.session.as_ref().map(|s| s.identity_seed)) else { return false };
+        // The revision held before this one opens: a fan-out older than it carries an older key, which is never adopted over ours.
+        let held_before = crate::network::fgtw::fleet::held_fanout_revision(&hp);
         match crate::network::fgtw::fleet::fanout_open_blob(&hp, blob, &kp, &seed) {
+            Ok(Some((revision, _))) if held_before > 0 && revision <= held_before => {
+                crate::logf!("FANOUT: revision {} from {} over the mesh is not newer than the {} we hold — kept ours", revision, crate::fp(&sender), held_before);
+                false
+            }
             Ok(Some((revision, k))) => {
                 if self.fleet_key_cached() != Some(k) {
                     crate::logf!("FANOUT: revision {} from {} over the mesh opens to a key we did not hold — adopting", revision, crate::fp(&sender));
@@ -1627,6 +1633,20 @@ impl PhotonApp {
         sent > 0
     }
 
+    /// Ask the sibling `device`, whose state did not open under our key, for its fan-out if it is newer than ours (`fanout_req`, peers before fgtw.org). Returns whether the ask went out: not when we hold no revision to compare (fgtw.org's published fan-out decides then), and not when we hold no address for it.
+    pub(super) fn ask_sibling_for_fanout(&self, hp: [u8; 32], device: [u8; 32]) -> bool {
+        let held = crate::network::fgtw::fleet::held_fanout_revision(&hp);
+        if held == 0 {
+            return false;
+        }
+        let Some(kp) = self.device_keypair.as_ref() else { return false };
+        let Some((addr, alt)) = self.contacts.iter().find(|c| c.is_sibling && !c.locked_out && c.device_key() == Some(device)).and_then(|c| c.race_addrs()) else { return false };
+        let Ok(frame) = crate::network::fgtw::protocol::build_fanout_req_vsf(&hp, held, kp.secret.as_bytes()) else { return false };
+        crate::logf!("FANOUT: asked {} for its fan-out over the mesh (we hold revision {})", crate::fp(&device), held);
+        self.send_frame_direct(frame, device, addr, alt);
+        true
+    }
+
     /// Ask the contact holding `hp` for its membership chain: a `fleet_req` to every device of theirs we hold an address for. Returns whether any ask went out.
     fn ask_peers_for_chain(&self, hp: [u8; 32]) -> bool {
         let Some(kp) = self.device_keypair.as_ref() else { return false };
@@ -1668,6 +1688,26 @@ impl PhotonApp {
                 self.send_frame_direct(frame, asker, addr, None);
             }
             Err(e) => crate::logf!("FLEET: fleet_resp build failed: {}", e),
+        }
+    }
+
+    /// A sibling's `fanout_req`: our state did not open under its key. It gets the fan-out we hold, only when that is newer than the revision it holds, so an answer never hands a sibling an older key.
+    pub(super) fn answer_fanout_ask(&self, hp: [u8; 32], their_revision: u64, asker: [u8; 32], addr: std::net::SocketAddr) {
+        let Some(kp) = self.device_keypair.as_ref() else { return };
+        let Some((revision, blob)) = crate::network::fgtw::fleet::held_fanout(&hp) else {
+            crate::logf!("FANOUT: {} asked for our fan-out; we hold none this session", crate::fp(&asker));
+            return;
+        };
+        if revision <= their_revision {
+            crate::logf!("FANOUT: {} asked for our fan-out; ours (revision {}) is not newer than theirs ({})", crate::fp(&asker), revision, their_revision);
+            return;
+        }
+        match crate::network::fgtw::protocol::build_fanout_resp_vsf(&hp, &blob, &kp.public.to_bytes(), kp.secret.as_bytes()) {
+            Ok(frame) => {
+                crate::logf!("FANOUT: revision {} to {} at {}, which held {}", revision, crate::fp(&asker), addr, their_revision);
+                self.send_frame_direct(frame, asker, addr, None);
+            }
+            Err(e) => crate::logf!("FANOUT: fanout_resp build failed: {}", e),
         }
     }
 
