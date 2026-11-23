@@ -191,6 +191,12 @@ impl PhotonApp {
             self.avatar_probe_cache = probe_cache;
         } // end avatar sweep (skipped when every contact already has an avatar)
 
+        // A device with no party id holds no identity yet: a join is all that can be under way, and every arm below needs the identity it does not hold.
+        // Until 2026-11-22 the drain returned here and dropped everything, the answers a joiner's beacon draws included, so a join over the LAN never heard a fleet device (the 8a joining Brittany).
+        if self.own_party_id().is_none() {
+            return self.drain_joining_updates();
+        }
+
         let checker = match &self.status_checker {
             Some(c) => c,
             None => return false,

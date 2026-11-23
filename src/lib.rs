@@ -1098,13 +1098,18 @@ pub(crate) fn log_dir() -> Option<std::path::PathBuf> {
     crate::storage::photon_config_dir().ok()
 }
 
+/// The log files' mode: owner-only, but group-readable on Android (see [`private_file`]).
+#[cfg(all(feature = "logging", unix))]
+const LOG_FILE_MODE: u32 = if cfg!(target_os = "android") { 0o660 } else { 0o600 };
+
 /// The log's files open owner-only (0600 when created) and never thru a symlink (CSTV-07): the log, its trim and the crash sidecar.
+/// Android is the one exception, 0660: the files live in the app's external dir, which scoped storage already closes to every other app, and its group (ext_data_rw) is how adb reads the log of a phone that cannot submit one (a device mid-join, 2026-11-22: owner-only left the 8a's log unreadable).
 #[cfg(feature = "logging")]
 fn private_file(opts: &mut std::fs::OpenOptions) -> &mut std::fs::OpenOptions {
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600).custom_flags(libc::O_NOFOLLOW);
+        opts.mode(LOG_FILE_MODE).custom_flags(libc::O_NOFOLLOW);
     }
     opts
 }
@@ -1127,6 +1132,20 @@ fn ensure_log_open(guard: &mut Option<std::fs::File>) {
     {
         use std::os::windows::fs::OpenOptionsExt;
         opts.attributes(0x100);
+    }
+    // A log an earlier build created owner-only is written again in place under the Android mode: Android's external storage keeps a file's mode from its creation and ignores a chmod (the 8a, 2026-11-22).
+    #[cfg(target_os = "android")]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if std::fs::metadata(&path).is_ok_and(|m| m.permissions().mode() & 0o060 == 0) {
+            // WHY: the sink re-creating its own file; a log line here would re-enter it, and a failed rewrite leaves the old log in place or starts a fresh one.
+            if let Ok(bytes) = std::fs::read(&path) {
+                let _ = std::fs::remove_file(&path);
+                if let Ok(mut f) = private_file(std::fs::OpenOptions::new().create_new(true).write(true)).open(&path) {
+                    let _ = f.write_all(&bytes);
+                }
+            }
+        }
     }
     if let Ok(mut f) = opts.open(&path) {
         if let Ok(mut pending) = LOG_PENDING.lock() {

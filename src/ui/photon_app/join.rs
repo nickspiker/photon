@@ -91,6 +91,39 @@ impl PhotonApp {
         Some(if ahead > 0 { now + std::time::Duration::from_secs_f64(ahead as f64 / vsf::OSCILLATIONS_PER_SECOND as f64) } else { now })
     }
 
+    /// The status drain of a device with no identity yet: a joiner's own four updates are handled, everything else is dropped (it needs the identity this device does not hold).
+    /// A beacon under the handle being joined (the answer our beacon draws) is a fleet device heard; a sponsor's pick, its chain and its fan-out go where the join already parks them.
+    pub(super) fn drain_joining_updates(&mut self) -> bool {
+        use crate::network::status::StatusUpdate;
+        let me = self.device_keypair.as_ref().map(|kp| kp.public.to_bytes());
+        let mut changed = false;
+        while let Some(update) = self.status_checker.as_ref().and_then(|c| c.try_recv()) {
+            let Some(hp) = self.add_join_hp.filter(|_| self.session.is_none()) else { continue };
+            match update {
+                StatusUpdate::LanPeerDiscovered { device_pubkey: Some(dk), handle_proof, local_ip, port, .. } if handle_proof == hp && Some(dk) != me => {
+                    self.join_heard(dk, std::net::SocketAddr::from((local_ip, port)));
+                    changed = true;
+                }
+                StatusUpdate::BindSelectReceived { handle_proof, joiner, sender_pubkey } if handle_proof == hp && Some(joiner) == me => {
+                    if let Ok(mut slot) = self.add_join_select.lock() {
+                        *slot = Some(*sender_pubkey.as_bytes());
+                    }
+                    if let Some(poke) = self.add_join_poke.as_ref() {
+                        crate::log_err!(poke.send(()), "the select poke to the join thread");
+                    }
+                }
+                StatusUpdate::FleetChainReceived { handle_proof, chain, sender_pubkey, .. } if handle_proof == hp => {
+                    changed |= self.adopt_peer_chain(hp, &chain, sender_pubkey.key);
+                }
+                StatusUpdate::FanoutReceived { handle_proof, blob, sender_pubkey, .. } if handle_proof == hp => {
+                    changed |= self.on_fanout(hp, &blob, sender_pubkey.key);
+                }
+                _ => {}
+            }
+        }
+        changed
+    }
+
     /// A fleet device of the identity this device is joining was heard on this network: remember where, and tell the machine (it hands the request once per stamp).
     pub(super) fn join_heard(&mut self, device: [u8; 32], addr: std::net::SocketAddr) {
         // The chain and the fan-out it hands us ride PT, which opens a transfer only for a device vouched for.
