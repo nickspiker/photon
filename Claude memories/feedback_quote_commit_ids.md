@@ -9,3 +9,5 @@ On 2026-11-17 I sent the ferros session five wrong commit ids (bec01aa4, d9c2fa3
 **Why:** a peer session builds and stows exactly the commit named; a wrong id costs a round trip at best and a wrong build on a device at worst.
 
 **How to apply:** commit, run `git log --oneline -1` in the same command, and copy that id into the message; if the message is composed before the commit exists, name it "photon main HEAD" instead of an id.
+
+**Repeat, 2026-11-22 (twice: 9fe1cb85 for c7935249, 24ad8fd for 1b64f9d):** both times the SendMessage went out in the SAME parallel tool batch as the commit, so the id was invented before git printed it. Never batch a message that names a commit with the command that makes it: commit in one call, read the id, then send.
