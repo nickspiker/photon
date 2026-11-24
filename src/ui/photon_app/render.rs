@@ -1683,6 +1683,15 @@ impl PhotonApp {
                 let pitch = ysize * 1.3;
                 let mine_h = tb_h.max(ylines.len() as f32 * pitch + ysize);
                 let mine = fluor::region::Region::new(px, y, pw, mine_h);
+                // The words first, the pill after: front to back, what is drawn later lands under what is there, so the words laid after the opaque pill were hidden under it (the owner's blank button, 2026-11-24).
+                let mut ly = y + mine_h * 0.5 - pitch * (ylines.len() as f32 - 1.) * 0.5;
+                let mut line_boxes: Vec<(f32, f32, f32, f32)> = Vec::with_capacity(ylines.len());
+                for line in &ylines {
+                    ctx.text.draw_text_center(&mut canvas, line, cx, ly, &ystyle, None, None);
+                    let half = ctx.text.measure_text(line, &ystyle) * 0.5;
+                    line_boxes.push((cx - half, ly - pitch * 0.5, cx + half, ly + pitch * 0.5));
+                    ly += pitch;
+                }
                 draw_stub_pill(
                     &mut canvas,
                     ctx.text,
@@ -1694,10 +1703,19 @@ impl PhotonApp {
                     self.known_mine_hit,
                     ctx.pressed_hit,
                 );
-                let mut ly = y + mine_h * 0.5 - pitch * (ylines.len() as f32 - 1.) * 0.5;
-                for line in &ylines {
-                    ctx.text.draw_text_center(&mut canvas, line, cx, ly, &ystyle, None, None);
-                    ly += pitch;
+                // The pill claims only what it paints, and the words' pixels were opaque before it went in, so a tap on a letter found no hit: each line's box is the pill's too, wherever nothing in front claimed it.
+                for (bx0, by0, bx1, by1) in line_boxes {
+                    // WHY the min: the pill grows with the lines it wraps to, so on a short window a line's box can run past the buffer's right or bottom edge; past it the index leaves the hit map.
+                    let (x0, x1) = (bx0 as usize, (bx1 as usize).min(buf_w));
+                    let (y0, y1) = (by0 as usize, (by1 as usize).min(buf_h));
+                    for row in y0..y1 {
+                        for col in x0..x1 {
+                            let i = row * buf_w + col;
+                            if chrome.hit_test_map[i] == HIT_NONE {
+                                chrome.hit_test_map[i] = self.known_mine_hit;
+                            }
+                        }
+                    }
                 }
             }
 
