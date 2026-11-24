@@ -12,6 +12,10 @@ FERROS_KIST_PROFILE="debug"
 FERROS_KIST_TARGET="${FERROS_KIST_TARGET:-$(pwd)/target}"
 FERROS_KIST_IMAGE="$FERROS_KIST_TARGET/aarch64-unknown-ferros/$FERROS_KIST_PROFILE/photon.bin"
 FERROS_KIST_CAPSULE="$FERROS_KIST_TARGET/aarch64-unknown-ferros/$FERROS_KIST_PROFILE/photon.capsule.vsf"
+# The capsule's entry in the kists directory (ferros KIST-DISTRIBUTION.md 1.0), signed with the same key and written beside it: what lists the capsule on kists.fgtw.org, so ferros devices offer the update.
+FERROS_KIST_ENTRY="$FERROS_KIST_TARGET/aarch64-unknown-ferros/$FERROS_KIST_PROFILE/photon.capsule.entry.vsf"
+# The first ferros forge commit with the entry form (photon-capsule.sh --entry, 25abc81c) and `kistcat publish` with the append endpoint (7376db93).
+FERROS_KIST_ENTRY_FORGE="7376db93"
 # ferros-rust (the std fork) and ferros-libc are named by absolute path in photon-build.sh and std/photon's Cargo.toml; checked here, recorded in the provenance below.
 FERROS_RUST_DIR="/mnt/Harbor/Code/ferros-rust"
 FERROS_LIBC_DIR="/mnt/Harbor/Code/ferros-libc"
@@ -30,6 +34,8 @@ ferros_kist_preflight() {
         command -v "$t" >/dev/null 2>&1 || missing="$missing\n    $t (binutils-aarch64-linux-gnu, gcc-aarch64-linux-gnu)"
     done
     cargo +nightly --version >/dev/null 2>&1 || missing="$missing\n    the nightly Rust toolchain (rustup toolchain install nightly)"
+    git -C "$FERROS_DIR" merge-base --is-ancestor "$FERROS_KIST_ENTRY_FORGE" HEAD 2>/dev/null || missing="$missing\n    ferros forge $FERROS_KIST_ENTRY_FORGE or later (the entry form and kistcat publish; git -C $FERROS_DIR pull)"
+    [ -f "$FERROS_DIR/tools/kistcat/Cargo.toml" ] || missing="$missing\n    $FERROS_DIR/tools/kistcat (the entry and the publish)"
     [ -f "$PHOTON_KIST_KEY" ] || missing="$missing\n    $PHOTON_KIST_KEY (Photon's release key as VSF: ferros tools/kistcat devkey convert --raw <keys>/photon-signing-key --label PHOTON_RELEASE --secret <keys>/photon-signing-key.vsf)"
     if [ -n "$missing" ]; then
         echo "ERROR: the ferros toolchain is incomplete; Photon for ferros (the kist capsule) is a required target. Missing:"
@@ -121,11 +127,21 @@ ferros_kist_build() {
     [ -s "$FERROS_KIST_IMAGE" ] || { echo "ERROR: no image at $FERROS_KIST_IMAGE after the ferros build" >&2; return 1; }
 }
 
-# Sign the image into the capsule with the release key, then check it with Photon's own trust root: every release egg verifies, the content hash holds, the kist section's option is Photon's. A capsule that fails is never in the manifest. Its declaration carries the version this deploy ships (FULL_VERSION, the one injected into the snapshot), so a ferros device lists it and offers the update (ferros KISTS.md "The version").
+# Sign the image into the capsule with the release key, its directory entry beside it, then check the capsule with Photon's own trust root: every release egg verifies, the content hash holds, the kist section's option is Photon's. A capsule that fails is never in the manifest. Its declaration carries the version this deploy ships (FULL_VERSION, the one injected into the snapshot), so a ferros device lists it and offers the update (ferros KISTS.md "The version").
 # Arg: the photon-manifest tool (it carries AUTHOR_PUBKEY).
 ferros_kist_sign() {
     local tool="$1"
-    rm -f "$FERROS_KIST_CAPSULE"
-    FERROS_DEV_KEY="$PHOTON_KIST_KEY" PHOTON_VERSION="$FULL_VERSION" "$FERROS_DIR/tools/photon-capsule.sh" "$FERROS_KIST_IMAGE" "$FERROS_KIST_CAPSULE" || { echo "ERROR: signing the ferros capsule failed" >&2; return 1; }
+    rm -f "$FERROS_KIST_CAPSULE" "$FERROS_KIST_ENTRY"
+    FERROS_DEV_KEY="$PHOTON_KIST_KEY" PHOTON_VERSION="$FULL_VERSION" "$FERROS_DIR/tools/photon-capsule.sh" "$FERROS_KIST_IMAGE" "$FERROS_KIST_CAPSULE" --entry "$FERROS_KIST_ENTRY" || { echo "ERROR: signing the ferros capsule or writing its entry failed" >&2; return 1; }
+    [ -s "$FERROS_KIST_ENTRY" ] || { echo "ERROR: no entry at $FERROS_KIST_ENTRY after signing the capsule" >&2; return 1; }
     "$tool" --check-capsule "$FERROS_KIST_CAPSULE" "$FERROS_KIST_OPTION" || { echo "ERROR: the ferros capsule is not Photon's (key or option); refusing to ship it" >&2; return 1; }
+}
+
+# List the capsule in the kists directory: its entry appended at kists.fgtw.org (`kistcat publish`, which checks the entry as a device would first), once the capsule and the entry are live on the kists bucket.
+# The answer is printed (taken, or refused and why); a refusal returns 1 and names the command that sends it again.
+ferros_kist_publish() {
+    ( cd "$FERROS_DIR" && cargo run -q --release --manifest-path tools/kistcat/Cargo.toml -- publish "$FERROS_KIST_ENTRY" ) && return 0
+    echo "  ✗ the kists directory did not take Photon's entry; the release is live but ferros devices are not offered it. Send it again:" >&2
+    echo "      (cd $FERROS_DIR && cargo run -q --release --manifest-path tools/kistcat/Cargo.toml -- publish $FERROS_KIST_ENTRY)" >&2
+    return 1
 }

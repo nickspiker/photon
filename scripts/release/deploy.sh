@@ -430,9 +430,12 @@ r2_put "$R2_BUCKET/$REL_PATH/photon-messenger-macos-arm64-release" \
 r2_put "$R2_BUCKET/$REL_PATH/photon-messenger-android-release.apk" \
     --file android/app/build/outputs/apk/release/app-release.apk \
     --content-type application/vnd.android.package-archive --remote
-# The ferros capsule to kists.fgtw.org under its blake3 (the owner's hosting, 2026-11-24); the directory there is built on the ferros side by kistcat, told this blake3.
+# The ferros capsule to kists.fgtw.org under its blake3 (the owner's hosting, 2026-11-24); its entry beside it, and the directory listing after the switch (ferros_kist_publish).
 r2_put "$KISTS_BUCKET/$FERROS_KIST_KEY" \
     --file "$FERROS_KIST_CAPSULE" --content-type application/octet-stream --remote
+# Its entry beside it (ferros KIST-DISTRIBUTION.md 1.0): the signed record a device restoring from the web fetches by the capsule's blake3. Content-addressed, so cached for good.
+r2_put "$KISTS_BUCKET/capsules/$FERROS_B3.entry.vsf" \
+    --file "$FERROS_KIST_ENTRY" --content-type application/vnd.vsf --cache-control 'public, max-age=31536000, immutable' --remote
 
 # THE SWITCH: the installers (patched to the folder above, which is now fully up), then the manifest — a few small files, so the new release goes live together.
 r2_put "$R2_BUCKET/$R2_PATH/install-release.sh" \
@@ -453,11 +456,15 @@ r2_put "$R2_BUCKET/$R2_PATH/manifest-release.vsf" \
 # The ROLLED release notes ride beside the manifest (Nick 2026-09-09): the Updates page shows what's new in the release the green button offers, which a running build can't know from its own compiled-in copy.
 r2_put "$R2_BUCKET/$R2_PATH/release-notes.md" \
     --file "${SNAP_DIR:-.}/RELEASE_NOTES.md" --content-type "text/markdown; charset=utf-8" --remote
+# Then the kists directory lists the capsule (kistcat publish to kists.fgtw.org/append), the step that makes ferros devices offer the update; last, so it never names a capsule that is not up.
+# Everything is public by now, so a refusal does not undo the release: it is said at the end, with the command that sends it again.
+KIST_LISTED=1
+ferros_kist_publish || KIST_LISTED=0
 
-note_time "R2 upload (11 artefacts)" $((SECONDS - PHASE_T0))
+note_time "R2 upload (12 artefacts)" $((SECONDS - PHASE_T0))
 echo ""
 echo "Linux ARM64, Linux x86_64, Windows x86_64, Windows ARM64, macOS x86_64, macOS ARM64, Android binaries, the ferros capsule + manifest deployed to R2"
-echo "  ferros capsule: $KISTS_URL/$FERROS_KIST_KEY (blake3 $FERROS_B3: tell the ferros session, whose kistcat folds it into the kists.fgtw.org directory)"
+echo "  ferros capsule: $KISTS_URL/$FERROS_KIST_KEY (blake3 $FERROS_B3), its entry beside it; $( [ "$KIST_LISTED" = 1 ] && echo "listed in the kists directory" || echo "NOT listed in the kists directory (see above)" )"
 echo "  Windows SHA256: $WINDOWS_SHA256"
 
 # R2 is fully live — the release is public. Its provenance is the built commit $COMMIT: the hash build.rs baked into every binary (PHOTON_GIT_COMMIT) and the SHA the signed manifest stamped. Pin it with the IMMUTABLE v<n> tag and push THAT — the commit rides along with its hash intact, even tho main has moved past its parent during the ~1h build. This is NOT a branch push (a plain `git push` of the hour-old bump is rejected non-fast-forward the moment any device touched main during the build — five deploys died exactly here, 2026-08-28). main itself only ever gets the fast-forwarding dev-line bump, further down.
@@ -600,6 +607,9 @@ if [ "${LINT_COUNT:-0}" -gt 0 ]; then
     echo "  ⚠ shipped with ${LINT_COUNT} outstanding warning(s) — see the lint check at the top"
 else
     echo "  ✓ lint-clean"
+fi
+if [ "${KIST_LISTED:-1}" != 1 ]; then
+    echo "  ⚠ the kists directory did not take the ferros entry: ferros devices are not offered v${SHIP_VERSION} until it is sent again (the command is above)"
 fi
 echo "  phase times:"
 printf '%s' "$BUILD_TIMES"
