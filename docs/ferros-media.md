@@ -30,10 +30,21 @@ Mouth to ear, two ferros phones on one LAN. "Today" is the design as built (AUDI
 | Mix period | 256 frames (5.3 ms) | 64–128 frames (1.3–2.7 ms), if the AoC takes it |
 | **Mouth to ear** | ~40–50 ms by design | **~12–15 ms** |
 
-**Measured** (ferros's audio agent, the Pro, 2026-11-24):
-- ferros had been playing thru the AoC's deep-buffer entry point (EP6), which takes 480 frames every 10 ms whatever period it is told. EP0 (Android's MMAP path) rings at the period asked, down to 1 ms (48 frames); a 1 ms block with only 64 frames queued (1.33 ms) ran 3 s with 0 underruns. The service is moving to EP0 at 1 ms.
-- AoC interrupt to the audio service running: 24–36 µs mean, 66–383 µs worst.
+**Measured** (ferros's audio agent, the Pro, 2026-11-24; ferros forge 59abc9f6, docs/AUDIO.md "The bench and the sweep"):
+
+| What | Measured |
+|---|---|
+| Speaker at the AoC, EP5 (deep buffer) | 10 ms blocks of 480 frames, whatever period it is told |
+| Speaker at the AoC, EP1 (low latency) | 10 ms blocks too |
+| Speaker at the AoC, EP0 (MMAP) | 1 ms blocks of 48 frames (a 1 ms floor), but silent so far: blocked on something Android's HAL sends from userspace |
+| Mic period at the AoC | 1 ms works (whole ms only, so no 2.5 ms period; Photon's reader gathers periods into its frame); 32-bit capture works |
+| Loopback, speaker ring to mic (sweep impulse response, ferros's queue included) | EP5 34.2–34.3 ms, EP1 35.0 ms, raw record 34.85 ms; ferros's own queue is 0.67 ms of it |
+| AoC interrupt to the service thread, idle | 24–36 µs mean, 66–123 µs worst on the A715s; 47 µs mean pinned to A510 core 2; under load not yet measured |
+
+- **The ~34 ms is inside the AoC**: it does not move with the play path, the record path or the capture period, so it is the AoC's speaker chain or the shared mic front end. MMAP on both sides (EP0 and the MMAP record ring) is the critical path for sound; the next step is an AoC control capture under rooted Android (slot b), the owner's call.
+- A fix on the way: the service was starving EP5 (5.84 s of samples out in 7.29 s) by topping up in 256-frame periods; it now tops up in frames.
 - The draft APIs fit the engine's seam as they stand: ferros_sys `audio::mic` on the MIC mailbox (one writer, many readers, i32 per channel, a monotonic position and a capture-time anchor) and `audio::Shared` on SYS_SHARE, forge e4781298 (WRITE/READ/WAKE_AT, the DAC anchor, underruns).
+- **openh264 on ferros** needs no C++ runtime library (Android builds it -fno-rtti -fno-exceptions, C headers only, its one dynamic_cast an upcast): about 300 lines of Rust shims in ferros_rt (new/delete, __cxa_pure_virtual, static-init guards), ~25 pthread and 7 semaphore calls onto ferros threads and futexes, and stubbed time, vsnprintf, getauxval and sysconf, for 62.6k lines of C++ and 8.5k of arm64 asm. The shims are the owner's call.
 
 Glass to glass (camera to the far panel): today nothing; target ~25–35 ms at 60 frames/s capture, against 150–300 ms for a typical video call.
 
