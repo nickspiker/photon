@@ -6222,7 +6222,7 @@ impl PhotonApp {
                         let asked = status.as_ref().is_some_and(|(s, _)| *s == fgtw::security::Status { act: row.act, phase: fgtw::security::Phase::Asked });
                         let armed = self.security_page.armed(row.act);
                         // Asked, the same pill puts it back.
-                        let label = if asked { tr(Msg::Cancel) } else { tr(row.button(armed)) };
+                        let label = if asked { tr(Msg::SecurityCancel) } else { tr(row.button(armed)) };
                         let note = row.note.map(tr).unwrap_or_default();
                         action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, &label, &note, super::security::SECURITY_ROW_SLOT0 + i as HitId, super::security::tone_fill(row.tone), armed || asked, row.enabled);
                         if let Some(warn) = row.warn {
@@ -6414,7 +6414,7 @@ impl PhotonApp {
                             }
                             flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
                                 (&tr(if target_on { Msg::Arm } else { Msg::Disarm }), self.unattended_confirm_base, true, Some(*theme::PILL_RED)),
-                                (&tr(Msg::Cancel), (self.unattended_confirm_base + 1), true, None),
+                                (&tr(Msg::SecurityCancel), (self.unattended_confirm_base + 1), true, None),
                             ], "Open Sans");
                         } else {
                             let armed = self

@@ -439,7 +439,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- security page ----
         Msg::SecurityKill => "ख़त्म".into(),
         Msg::SecurityKillHint => "तुम्हारी पहचान छोड़ देता है और photon को इसी पल बंद कर देता है, एक टैप, कोई पुष्टि नहीं। कुछ भी मिटता नहीं: photon दोबारा खोलो और अपना हैंडल लिखकर वापस आ जाओ।".into(),
-        Msg::SecurityShell { on } => if on { "Shell: चालू" } else { "Shell: बंद" }.into(),
+        Msg::SecurityShell { on } => if on { "shell: चालू" } else { "shell: बंद" }.into(),
         Msg::SecurityShellHint => "आपके दूसरे डिवाइस को ब्रिज के ज़रिए इस डिवाइस पर कमांड चलाने देता है। जब तक आप इसे यहाँ चालू न करें तब तक बंद, सिर्फ़ इसी डिवाइस पर, कभी सिंक नहीं होता: खोया हुआ फ़ोन या किसी और का कोड चला रहा फ़ोन आपके हर कंप्यूटर पर शेल नहीं होना चाहिए।".into(),
         Msg::BridgeShellOff => "यह डिवाइस कमांड स्वीकार नहीं करता। उस डिवाइस पर सेटिंग्स → सुरक्षा में Shell चालू करें।".into(),
         Msg::HoldingsChecking => "जाँच रहे हैं कि आपकी कौन-सी फ़ाइलें और रिकॉर्डिंग सिर्फ़ इसी डिवाइस पर हैं\u{2026}".into(),
@@ -448,7 +448,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::HoldingsAtRisk { files, recordings, size } => format!("सिर्फ़ इसी डिवाइस पर: {files} फ़ाइलें और {recordings} रिकॉर्डिंग ({size})। अभी रिलीज़ करने से ये खो जाएँगी। पहले इन्हें अपने किसी और डिवाइस पर खोलें ताकि वह इन्हें ले आए, या कहीं और सहेज लें।").into(),
         Msg::HoldingsWaiting(names) => format!("अभी तक जवाब नहीं: {names}").into(),
         Msg::HoldingsNotHeard => "शुरू होने के बाद से कोई खबर नहीं".into(),
-        Msg::HoldingsCopyThenRelease => "कॉपी करें, फिर रिलीज़".into(),
+        Msg::HoldingsCopyThenRelease => "कॉपी करें, फिर अनबाइंड".into(),
+        Msg::SecurityCancel => "रद्द".into(),
         Msg::HoldingsStopWaiting => "इंतज़ार बंद करें".into(),
         Msg::HoldingsCopyHint(name) => format!("जो सिर्फ़ यहीं है उसे {name} पर कॉपी करता है, फिर हर फ़ाइल को दूसरा घर मिलते ही इस डिवाइस को रिलीज़ करने का अनुरोध करता है।").into(),
         Msg::HoldingsCopyingTo(name) => format!("{name} पर कॉपी हो रहा है। दोनों डिवाइस चालू और जुड़े रखें; हर फ़ाइल को दूसरा घर मिलते ही यह डिवाइस खुद रिलीज़ का अनुरोध करेगा, और मंज़ूरी के शब्द यहाँ दिखेंगे।").into(),

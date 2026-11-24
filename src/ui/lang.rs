@@ -568,6 +568,8 @@ pub enum Msg<'a> {
     /// KILL (Nick 2026-09-10): one tap drops the identity and ends the process this instant; the vault stays.
     SecurityKill,
     SecurityKillHint,
+    /// The Security page's own cancel, lower case like every button there (owner 2026-11-24).
+    SecurityCancel,
     /// The bridge shell's host-side switch (Nick 2026-11-03, security audit UPW-027): default OFF, set on this device only, never synced — a lost phone must not be a shell on every computer you own.
     SecurityShell { on: bool },
     SecurityShellHint,
