@@ -39,21 +39,63 @@ ferros_kist_preflight() {
     fi
 }
 
-# Freeze std/photon with the rest of the source: a copy placed in the snapshot at <root>/ferros/std/photon, where its `../../../photon` is the snapshot's Photon (the version-injected, frozen tree), never the live one. With no root (the snapshot did not take) the live std/photon builds, against the live tree, as every other platform does then.
-# Also reads what the ferros build stands on, for the tag: ferros (std/photon, ferros_rt, the target JSON, the scripts), ferros-rust, ferros-libc, each HEAD, `+dirty` when that repo has changes the build reads. ferros_rt and the std fork build from their live trees (named by absolute path inside ferros-rust), so their commits are what this records.
+# Freeze ferros's source with the rest: its whole working tree (tracked and untracked, never what git ignores: target/, the disk images), reflinked into the snapshot at <root>/ferros, where std/photon's `../../../photon` is the snapshot's Photon (the version-injected, frozen tree), never the live one.
+# The whole tree, not std/photon alone: std/photon names ferros crates by path (ferros_fluor, ferros_sys and theirs), and those inherit from ferros's workspace root, which cargo loads with every member (v157's first deploy, 2026-11-24: a snapshot holding std/photon alone failed on ferros_fluor).
+# A repo beside ferros that a crate names by `../../<repo>` (tatau) is carried the same way (ferros_kist_carry_siblings).
+# With no root (the snapshot did not take) the live std/photon builds, against the live tree, as every other platform does then.
+# Also reads what the ferros build stands on, for the tag: ferros (its tree, its memories aside), each repo carried beside it, ferros-rust, ferros-libc, each HEAD, `+dirty` when that repo has changes the build reads. ferros_rt and the std fork build from their live trees (named by absolute path inside ferros-rust), so their commits are what this records.
 ferros_kist_freeze() {
-    local root="$1" entry
+    local root="$1"
     FERROS_KIST_PKG="$FERROS_DIR/std/photon"
+    FERROS_KIST_CARRIED=""
     if [ -n "$root" ]; then
-        mkdir -p "$root/ferros/std/photon" || return 1
-        for entry in "$FERROS_DIR/std/photon"/* "$FERROS_DIR/std/photon"/.[!.]*; do
-            { [ -e "$entry" ] || [ -L "$entry" ]; } || continue
-            [ "${entry##*/}" = target ] && continue
-            cp -a --reflink=auto "$entry" "$root/ferros/std/photon/" || return 1
-        done
+        ferros_kist_carry "$FERROS_DIR" "$root/ferros" || return 1
+        ferros_kist_carry_siblings "$root" || return 1
         FERROS_KIST_PKG="$root/ferros/std/photon"
     fi
-    FERROS_KIST_FROM="ferros $(ferros_kist_rev "$FERROS_DIR" std/photon ferros_rt targets tools/std-sysroot tools/photon-build.sh tools/photon-capsule.sh)"$'\n'"ferros-rust $(ferros_kist_rev "$FERROS_RUST_DIR" library)"$'\n'"ferros-libc $(ferros_kist_rev "$FERROS_LIBC_DIR" .)"
+    FERROS_KIST_FROM="ferros $(ferros_kist_rev "$FERROS_DIR" . ':(exclude)Claude memories' ':(exclude)CLAUDE MEMORY.md')${FERROS_KIST_CARRIED}"$'\n'"ferros-rust $(ferros_kist_rev "$FERROS_RUST_DIR" library)"$'\n'"ferros-libc $(ferros_kist_rev "$FERROS_LIBC_DIR" .)"
+    return 0
+}
+
+# One repo's source as its working tree holds it, tracked and untracked but never what git ignores, reflinked to `dest` with its layout kept.
+ferros_kist_carry() {
+    local src="$1" dest="$2"
+    mkdir -p "$dest" || return 1
+    (
+        set -o pipefail
+        cd "$src" && git ls-files -z -co --exclude-standard \
+            | while IFS= read -r -d '' f; do
+                { [ -e "$f" ] || [ -L "$f" ]; } && printf '%s\0' "$f"
+            done \
+            | xargs -0 -r cp -a --reflink=auto --parents -t "$dest"
+    ) || { echo "ERROR: could not freeze $src into the snapshot at $dest"; return 1; }
+}
+
+# Every path dependency the frozen std/photon reaches, directly or thru another crate, that the snapshot lacks: its live repo is carried whole, beside the others as it sits beside them live.
+# Absolute paths (ferros-libc) name live trees by design and are left alone; a `path` that names a source file ([lib], [[bin]]) holds no Cargo.toml and is passed over.
+ferros_kist_carry_siblings() {
+    local root="$1" code dir p dep live top seen=" "
+    local queue=("$root/ferros/std/photon")
+    code="$(cd "$FERROS_DIR/.." && pwd)"
+    while [ "${#queue[@]}" -gt 0 ]; do
+        dir="${queue[0]}"
+        queue=("${queue[@]:1}")
+        case "$seen" in *" $dir "*) continue ;; esac
+        seen="$seen$dir "
+        while IFS= read -r p; do
+            case "$p" in /*) continue ;; esac
+            dep="$(realpath -m "$dir/$p")"
+            case "$dep" in "$root"/*) ;; *) continue ;; esac
+            if [ ! -f "$dep/Cargo.toml" ]; then
+                live="$code/${dep#"$root"/}"
+                [ -f "$live/Cargo.toml" ] || continue
+                top="$(git -C "$live" rev-parse --show-toplevel)" || { echo "ERROR: $live is in no git repo; the snapshot cannot carry it"; return 1; }
+                ferros_kist_carry "$top" "$root/${top#"$code"/}" || return 1
+                FERROS_KIST_CARRIED="$FERROS_KIST_CARRIED"$'\n'"${top##*/} $(ferros_kist_rev "$top" .)"
+            fi
+            queue+=("$dep")
+        done < <(grep -vE '^[[:space:]]*#' "$dir/Cargo.toml" | grep -oE '(^|[^A-Za-z0-9_])path *= *"[^"]+"' | sed -E 's/.*"([^"]+)"/\1/')
+    done
     return 0
 }
 
