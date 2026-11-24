@@ -758,9 +758,9 @@ impl FluorApp<Px> for PhotonApp {
     ) -> EventResponse {
         // WAVE overlay controls are now retained Buttons (wave_action/decline/start) — their activation rides `dispatch_release` + the `take_click` poll in the Released and key paths (`dispatch_wave_button_clicks`), NOT this hit-id branch. Nothing to do here.
 
-        // Release's Unbind (Security page, the owner's removal of 2026-11-22): the typed handle's proof runs off this thread and the Depart machine decides (release_unbind in the tick).
-        if self.settings_removeshred_armed && self.release_confirm_base != HIT_NONE && hit_id == self.release_confirm_base {
-            self.release_verify_start(false);
+        // The pill under the Security page's handle box (an unbind or a shred asked): the typed handle's proof runs off this thread; the Depart machine decides an unbind (release_unbind in the tick), the proof matched decides a shred (security_verify_drain).
+        if self.security_box_open() && self.release_confirm_base != HIT_NONE && hit_id == self.release_confirm_base {
+            self.security_box_submit();
             self.mark_dirty();
             ctx.window.request_redraw();
             return EventResponse::Handled;
@@ -1030,18 +1030,8 @@ impl FluorApp<Px> for PhotonApp {
                         if let Some((pk, false, _, false, name, _, _, _)) = devices.get(idx).cloned() { // WHY/PROOF: the device rows are rebuilt each frame; a hit from the frame the human saw can outlive a device leaving the list
                             if self.fleet_unlock_armed == Some(pk) {
                                 self.fleet_unlock_armed = None;
-                                if let Some(hp) = self.session.as_ref().map(|s| s.handle_proof) {
-                                    self.pending_unlock = Some((pk, hp, name.clone()));
-                                    tohu::clear_session();
-                                    self.session = None;
-                                    self.private_s = crate::crypto::blind::PrivateS::None;
-                                    self.pending_broadcast_signal = -1;
-                                    self.state = AppState::Launch(LaunchState::Error(
-                                        tr(Msg::ConfirmReinstate(&name)).into_owned(),
-                                    ));
-                                    self.clear_handle_for_reproof();
-                                    crate::logf!("FLEET: unlock of {} armed — de-attested, awaiting handle confirmation", name);
-                                }
+                                let words = tr(Msg::ConfirmReinstate(&name)).into_owned();
+                                self.confirm_by_attest(pk, name, true, words);
                             } else {
                                 self.fleet_unlock_armed = Some(pk);
                             }
@@ -1053,29 +1043,20 @@ impl FluorApp<Px> for PhotonApp {
                         if let Some((pk, false, _, false, name, _, _, _)) = devices.get(idx).cloned() { // WHY/PROOF: the device rows are rebuilt each frame; a hit from the frame the human saw can outlive a device leaving the list
                             if self.fleet_lock_armed == Some(pk) {
                                 self.fleet_lock_armed = None;
-                                // The confirm DE-ATTESTS this device; the lock executes only inside the next successful attest (see pending_lock). Owner knows the handle and sails thru; a thief just signed themselves out of the one device they held. Same session teardown as Security's "Lock".
-                                if let Some(hp) = self.session.as_ref().map(|s| s.handle_proof) {
-                                    // Locking the LAST other live device leaves this one alone holding the fleet — if it is then lost while the lock stands, no member can ever sign the unlock (custodian supersession is the only exit, and it isn't built). Say so at the confirmation.
-                                    let other_live = devices
-                                        .iter()
-                                        .filter(|(rpk, is_self, _, retired, _, _, _, _)| {
-                                            !*is_self
-                                                && !*retired
-                                                && *rpk != pk
-                                                && !self.is_locked_device(rpk)
-                                        })
-                                        .count();
-                                    self.pending_lock = Some((pk, hp, name.clone()));
-                                    tohu::clear_session();
-                                    self.session = None;
-                                    self.private_s = crate::crypto::blind::PrivateS::None;
-                                    self.pending_broadcast_signal = -1;
-                                    // A Photon on the alias alone is locked out for good and never reinstates anything, so its confirm says Lock out and carries no last-unlocker warning.
-                                    let confirm = if self.is_alias_only_device(&pk) { tr(Msg::ConfirmLockOut(&name)) } else { tr(Msg::ConfirmRevoke { name: &name, last_unlocker: other_live == 0 }) };
-                                    self.state = AppState::Launch(LaunchState::Error(confirm.into_owned()));
-                                    self.clear_handle_for_reproof();
-                                    crate::logf!("FLEET: lock-out of {} armed — de-attested, awaiting handle confirmation", name);
-                                }
+                                // The confirm DE-ATTESTS this device; the lock executes only inside the next successful attest (confirm_by_attest).
+                                // Locking the LAST other live device leaves this one alone holding the fleet — if it is then lost while the lock stands, no member can ever sign the unlock (custodian supersession is the only exit, and it isn't built). Say so at the confirmation.
+                                let other_live = devices
+                                    .iter()
+                                    .filter(|(rpk, is_self, _, retired, _, _, _, _)| {
+                                        !*is_self
+                                            && !*retired
+                                            && *rpk != pk
+                                            && !self.is_locked_device(rpk)
+                                    })
+                                    .count();
+                                // A Photon on the alias alone is locked out for good and never reinstates anything, so its confirm says Lock out and carries no last-unlocker warning.
+                                let words = if self.is_alias_only_device(&pk) { tr(Msg::ConfirmLockOut(&name)) } else { tr(Msg::ConfirmRevoke { name: &name, last_unlocker: other_live == 0 }) }.into_owned();
+                                self.confirm_by_attest(pk, name, false, words);
                             } else {
                                 self.fleet_lock_armed = Some(pk);
                             }
@@ -1136,18 +1117,9 @@ impl FluorApp<Px> for PhotonApp {
                     }
                     // (Slots 1 and 2 are the departure request's Approve and Deny; Rename moved onto each device card at band 56+i. Remove-other stays retired: sovereign records, self-signed departure only.)
                 } else if page == SettingsPage::Security {
-                    if slot == 0 {
-                        // "Lock" → clear session only (de-attest); vault kept, re-unlock by re-typing your handle. Works on Android (the -1 broadcast drops Kotlin's sticky session).
-                        self.settings_shred_armed = false;
-                        self.settings_removeshred_armed = false;
-                        self.settings_revoke_armed = false;
-                        tohu::clear_session();
-                        self.session = None;
-                        self.private_s = crate::crypto::blind::PrivateS::None;
-                        self.pending_broadcast_signal = -1;
-                        self.state = self.not_signed_in_screen();
-                        self.clear_handle_for_reproof();
-                        crate::log("SECURITY: locked — session cleared, vault kept; re-type handle to unlock");
+                    if slot >= super::security::SECURITY_ROW_SLOT0 {
+                        // The shared rows (fgtw::security): lock, each other device's revoke or reinstate, shred, unbind this device; before attest the wipe alone.
+                        self.security_tap((slot - super::security::SECURITY_ROW_SLOT0) as usize);
                     } else if slot == 4 {
                         // "Kill" (Nick 2026-09-10): the identity goes NOW and so does the process — no vault wipe, relaunch = re-attest. Android: the OS-held sticky session capsule would re-attest the next launch on its own, so Kotlin clears it and ends the process (poll code -2); the desktop exits here.
                         tohu::clear_session();
@@ -1168,41 +1140,6 @@ impl FluorApp<Px> for PhotonApp {
                         let on = !self.bridge_shell;
                         self.set_bridge_shell(on);
                         crate::logf!("SECURITY: bridge shell switch → {}", if on { "on" } else { "off" });
-                    } else if slot == 1 {
-                        // "Revoke" (the desk case, from the device being revoked): treat THIS device as no-longer-trusted — the fleet key rotates away, the worker refuses it at announce, and it goes dark. It stays a permanent member (refusal, never removal); reinstating is handle-gated from another device, which is also why revoke_this_device refuses when there is no other device.
-                        if self.settings_revoke_armed {
-                            self.settings_revoke_armed = false;
-                            self.revoke_this_device();
-                        } else {
-                            self.settings_revoke_armed = true;
-                            self.settings_shred_armed = false;
-                            self.settings_removeshred_armed = false;
-                        }
-                    } else if slot == 2 {
-                        // "Shred (crypto-wipe)" → full clean (nuke vault + clear session). Two-tap confirm (destructive + irreversible). Arming disarms the other destructive pill so exactly one confirm is ever live.
-                        if self.settings_shred_armed {
-                            self.settings_shred_armed = false;
-                            // Pre-attest (Nick 2026-09-16) the wipe is for a device someone else held, or a handle nobody will ever type again: the log goes too, so the next owner inherits no trace of the last. Attested, Shred keeps the log — the wipe itself is the line a submitted log should carry.
-                            let unattested = self.session.is_none();
-                            self.clean_device_for_reuse();
-                            if unattested {
-                                crate::clear_log();
-                            }
-                        } else {
-                            self.settings_shred_armed = true;
-                            self.settings_removeshred_armed = false;
-                            self.settings_revoke_armed = false;
-                        }
-                    } else if slot == 3 {
-                        // "Release" (Nick 2026-09-08, the four verbs: Lock / Wipe / Release / Revoke): the BILATERAL departure: signs out, wipes, AND removes this device from the fleet, freeing the hardware brand. Why not unilateral: whoever briefly holds one unlocked device could sign it out, forcing a key rotation and laundering the hardware into their own fleet.
-                        // The owner's removal (2026-11-22): press once, type the handle, press Unbind; the Depart machine sends nothing until the typed handle's proof is this identity's. A second press puts it back.
-                        if self.settings_removeshred_armed {
-                            self.settings_removeshred_armed = false;
-                            self.depart_removal_cancel();
-                            self.change_focus(None);
-                        } else {
-                            self.release_arm();
-                        }
                     } else if slot == 6 {
                         // "Copy, then release" / "Stop waiting" (holdings.rs, removal safety phase 3): drawn under Release while something exists only here. Slot 6: slot 5 is the Shell switch, which took every tap on this pill before (both read slot 5, the Shell arm first).
                         self.holdings_copy_then_release_tap();
@@ -3984,6 +3921,11 @@ impl FluorApp<Px> for PhotonApp {
         if let Some((proof, hold)) = release_verdict {
             self.release_verify = None;
             self.release_unbind(proof, hold);
+            self.mark_dirty();
+            { needs_redraw = true; self.note_redraw(); }
+        }
+        // A shred's typed handle: its proof is in, and matched it carries the shred out.
+        if self.security_verify_drain() {
             self.mark_dirty();
             { needs_redraw = true; self.note_redraw(); }
         }

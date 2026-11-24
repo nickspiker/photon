@@ -944,8 +944,6 @@ impl PhotonApp {
             return;
         }
         self.settings_removeshred_armed = true;
-        self.settings_shred_armed = false;
-        self.settings_revoke_armed = false;
         self.holdings_check_start();
         self.release_verify = None;
         if let Some(tb) = self.release_confirm_tb.as_mut() {
@@ -1028,6 +1026,7 @@ impl PhotonApp {
     /// The handle box closes once the machine took the removal.
     fn release_confirmed_close(&mut self) {
         self.settings_removeshred_armed = false;
+        self.security_unbind_taken();
         if let Some(tb) = self.release_confirm_tb.as_mut() {
             tb.clear();
         }
@@ -3123,20 +3122,6 @@ impl PhotonApp {
         })
     }
 
-    /// SELF-REVOKE (Nick 2026-09-08, the desk case): this device revokes ITSELF — you're shelving it, or handing the room to someone, and you'd rather do it here than dig out another device. Same mechanism as revoking a sibling; the difference is the brick gate, because REINSTATE can only come from another device (a revoked device self-locks at every boot, so it can never forgive itself). With no other live device this would be a one-way trip, so it is refused rather than offered.
-    pub(super) fn revoke_this_device(&mut self) {
-        let Some(ours) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) else {
-            return;
-        };
-        if !self.has_usable_sibling() {
-            crate::log("SECURITY: self-revoke refused — no other device could ever reinstate this one");
-            self.ready_toast = Some(tr(Msg::RevokeNeedsAnotherDevice).into_owned());
-            return;
-        }
-        crate::log("SECURITY: revoking THIS device at its owner's request — rotating the fleet key away and going dark");
-        self.revoke_device(ours);
-    }
-
     /// Treat-as-stolen: lock a fleet device out WITHOUT touching the membership chain (removal is self-signed only, zero exceptions). The device stays a permanent member; the fleet stops trusting it — the locked set syncs fleet-wide, every trust gate refuses it, and the fleet key rotates so its cached key goes stale.
     pub(super) fn revoke_device(&mut self, pk: [u8; 32]) {
         // PER-KEY write, never read-union-write on one blob: two devices locking DIFFERENT pubkeys concurrently each unioned old+own into the same LWW key and one lock was DROPPED — a stolen device stayed trusted on part of the fleet until someone re-locked. Distinct keys commute under merge_global_settings, so a lock can no longer lose a race.
@@ -3146,7 +3131,7 @@ impl PhotonApp {
                 vsf::VsfType::ke(pk.to_vec()),
             );
         }
-        // ORDER IS LOAD-BEARING for a SELF-revoke (the Security page's desk case): apply_locked_set tears down our own session the moment it sees our pubkey in the set, and spawn_fleet_key_sync needs that session to mint the next epoch. Rotate and push FIRST, go dark second — otherwise a device revoking itself would leave its own key live in the current epoch and never reach the worker.
+        // Rotate and push FIRST, apply the lock second: apply_locked_set tears down our own session if it ever sees our pubkey in the set, and spawn_fleet_key_sync needs that session to mint the next epoch.
         // Rotation NOW, not at the next sentinel pass: the revoked device holds the current fleet key until an epoch it isn't wrapped into exists.
         self.spawn_fleet_key_sync_owing(true);
         // Push the lock to the worker so the refusal SURVIVES A WIPE: the local fleet.locked set (and the fleet-key rotation) only bind devices that still hold local state, but a wiped-and-reattested stolen device lost all of that — the worker's device_lock entry is the one authority a wipe can't erase, refusing the device at announce.

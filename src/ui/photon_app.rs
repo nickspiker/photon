@@ -68,6 +68,7 @@ mod group_avatar;
 pub mod root_conversion;
 mod devices;
 mod holdings;
+mod security;
 mod join;
 mod alias;
 mod space;
@@ -3004,8 +3005,6 @@ pub struct PhotonApp {
     /// One-shot window-geometry restore — a fluor `window_rect` (x, y, w, h in GLOBAL desktop units), armed with the zoom at settings load; the host applies it thru its maximize machinery, clamped into live surfaces.
     pending_geometry_restore: Option<(i32, i32, u32, u32)>,
     fleet_lock_armed: Option<[u8; 32]>,
-    /// Two-tap arm for the Security page's SELF-revoke (this device revoking itself — the desk case).
-    settings_revoke_armed: bool,
     /// Two-tap arm state for the Unlock pill (the lock pill's mirror).
     fleet_unlock_armed: Option<[u8; 32]>,
     /// An armed UNLOCK awaiting handle confirmation: (device to unlock, armer's handle_proof, display name). Fires in the attest-success path exactly like `pending_lock` — the owner re-proves the handle, then the reversal executes.
@@ -3104,8 +3103,11 @@ pub struct PhotonApp {
     /// Which rows the last frame drew of the open conversation (`ConvView`): what a page of rows landing later is held to before it asks for a frame. None when the last frame drew no conversation list.
     conv_view: Option<ConvView>,
     contacts_scroll_extent: isize,
-    settings_shred_armed: bool,
-    /// Two-tap confirm armed for the Security page's SELF-revoke (this device revoking itself — the desk case). Mutually exclusive with the other destructive pills; cleared on any page switch.
+    /// The Security page's state across presses, the model ferros draws too (fgtw::security::Page): the armed wipe and the act asked or under way.
+    security_page: fgtw::security::Page,
+    /// A shred's typed handle: its memory-hard proof running off the UI thread, and whether the last one typed was not this identity's (the line under the box until it is typed again).
+    security_verify: Option<std::sync::mpsc::Receiver<[u8; 32]>>,
+    security_wrong: bool,
     /// A device leaving its fleet, both halves (fgtw::flow::depart, shared with ferros): our own request and a sibling's request awaiting this person. Made at the first fold of our chain; its state rests in the vault (`depart_state`).
     depart: Option<fgtw::flow::depart::Depart>,
     /// The Depart machine's jobs (signing a frame, the approve publish) answer here from their threads.
@@ -3117,7 +3119,7 @@ pub struct PhotonApp {
     depart_was_denied: bool,
     /// APPROVER side: the NFC reader is running because a departure request is pending here (Android; diffed per tick like the beacon scan): a tap of the leaving device, which serves its request salt, approves it.
     depart_nfc_reader: bool,
-    /// Two-tap confirm armed for the Security page's "Remove & shred" (self-departure from the fleet chain, then crypto-wipe). Mutually exclusive with `settings_shred_armed`; cleared on any page switch, like every destructive arm.
+    /// The Security page's unbind is asked: the handle box is open under it and the Depart machine waits on the typed handle (fgtw::flow::depart::Removal::TypeHandle).
     settings_removeshred_armed: bool,
     /// The Release card's have-set check (holdings.rs): started on arming, answered by siblings, drawn under the pill. RAM only.
     holdings_check: Option<holdings::HoldingsCheck>,
@@ -3939,7 +3941,6 @@ impl PhotonApp {
             fleet_rows_logged: Vec::new(),
             pending_geometry_restore: None,
             fleet_lock_armed: None,
-            settings_revoke_armed: false,
             fleet_unlock_armed: None,
             pending_unlock: None,
             locked_retry_hit: HIT_NONE,
@@ -3995,7 +3996,9 @@ impl PhotonApp {
             msg_max_floor: false,
             conv_view: None,
             contacts_scroll_extent: 0,
-            settings_shred_armed: false,
+            security_page: fgtw::security::Page::new(),
+            security_verify: None,
+            security_wrong: false,
             depart: None,
             flow_tx,
             flow_rx,
@@ -4916,8 +4919,8 @@ impl PhotonApp {
                     if let Some(cb) = self.settings_background_check.as_mut() {
                         f(cb);
                     }
-                    // Release armed shows its handle box.
-                    if self.settings_removeshred_armed {
+                    // An unbind or a shred asked shows its handle box.
+                    if self.security_box_open() {
                         if let Some(tb) = self.release_confirm_tb.as_mut() {
                             f(tb);
                         }

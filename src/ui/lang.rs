@@ -554,6 +554,8 @@ pub enum Msg<'a> {
     /// A Photon on the alias alone (a ferros one) locked out from another device of ours: the Fleet page pill, its handle confirm, and what came of it.
     LockOutPill { armed: bool },
     ConfirmLockOut(&'a str),
+    /// Above the Security page's handle box while a shred is asked.
+    ShredTypeHandle,
     LockedOutToast,
     LockOutFailed,
     /// Photon on the alias alone signs itself out (the About page there): the pill and what it does.
@@ -563,7 +565,6 @@ pub enum Msg<'a> {
     DeviceSignsItselfOut,
     RenamePill,
     // ---- security page ----
-    SecurityLock,
     /// KILL (Nick 2026-09-10): one tap drops the identity and ends the process this instant; the vault stays.
     SecurityKill,
     SecurityKillHint,
@@ -572,15 +573,6 @@ pub enum Msg<'a> {
     SecurityShellHint,
     /// What the operator sees when a host whose switch is off receives a command.
     BridgeShellOff,
-    SecurityRevoke { armed: bool },
-    SecurityRevokeHint,
-    /// Why Revoke is dead on a fleet of one — shown IN PLACE of the normal hint, so the greying always carries its reason.
-    SecurityRevokeAloneHint,
-    /// Why Release is dead on a fleet of one.
-    SecurityReleaseAloneHint,
-    RevokeNeedsAnotherDevice,
-    SecurityShred { armed: bool },
-    SecurityRemoveShred { armed: bool },
     SecurityStatusLine,
     LoadOnStartup,
     LoadOnStartupExplainer,
@@ -599,13 +591,6 @@ pub enum Msg<'a> {
     Custodians,
     CustodianCheckbox,
     CustodianExplainer,
-    SecurityIntro,
-    // Pre-attest Security page (Nick 2026-09-16): one verb, Wipe, for a device someone else held or a handle nobody will type again.
-    SecurityIntroUnattested,
-    SecurityWipeUnattestedHint,
-    SecurityLockHint,
-    SecurityShredHint,
-    SecurityRemoveShredHint,
     // ---- appearance ----
     Theme,
     DarkChrome,

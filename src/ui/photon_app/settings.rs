@@ -17,12 +17,12 @@ impl PhotonApp {
         if *p != SettingsPage::Octopus {
             self.octopus_armed = None;
         }
-        if *p != SettingsPage::Security && self.settings_removeshred_armed {
-            self.depart_removal_cancel();
-        }
         if *p != SettingsPage::Security {
-            self.settings_removeshred_armed = false;
-            self.settings_shred_armed = false;
+            // An act still asked closes with its box (nothing sent), then the page is left: the armed wipe disarms and an ended act's line is said no more.
+            if let Some(act) = self.security_asked() {
+                self.security_ask_closed(act);
+            }
+            self.security_page.left();
             // A stranded unattended-confirm modal must not survive navigating away.
             self.unattended_confirm = None;
             self.unattended_confirm_failed = false;

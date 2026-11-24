@@ -723,6 +723,11 @@ impl PhotonApp {
             self.depart_step(fgtw::flow::Event::User(fgtw::flow::UserOp::Remove));
             { needs_redraw = true; self.note_redraw(); }
         }
+        // The shred's mismatch line clears the same way.
+        if self.security_wrong && self.release_confirm_tb.as_ref().is_some_and(|tb| !tb.chars.is_empty()) {
+            self.security_wrong = false;
+            { needs_redraw = true; self.note_redraw(); }
+        }
 
         // Clear the "handle didn't match" line as soon as the operator edits the confirm box again — event-shown, interaction-cleared, no timers.
         if self.unattended_confirm_failed {

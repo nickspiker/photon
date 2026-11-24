@@ -24,26 +24,28 @@ The load-bearing page for multi-device with no server.
 - List of bound devices, each with its **two-word name** (e.g. `zesty-otter`) + online / last-seen.
 - **Add device** — the pairing-words flow.
 - **Rename** — self-rename propagates to the fleet roster so siblings show the new name; renaming a sibling is allowed (you manage your own fleet).
-- **Retire this device** — see Security; reachable from the device row.
+- **Unbind this device** — see Security; a sibling is **revoked** there, or with Lock out on its row here.
 - **Device sidecar**: each device keeps its own device-local preferences.
   Split: **device-local** = this device's name, notification volume, appearance, its log.
   **Fleet-wide (synced)** = identity, contacts, avatar, party colours.
   The device-local sidecar is a device-keyed store that must NOT propagate thru the synced vault.
 
 ### Security
-Named by **destructiveness** — three distinct actions:
-- **Lock** — zeroize the in-RAM seed, keep the vault ciphertext on disk. The manual version of the reboot boundary: re-unlock with your handle. (This is `clear_session()` + zeroize; half-built already.)
-- **Retire this device** — remove a device from the fleet.
-  On **this** device (selling it): unbind from the fleet chain + offer a **Shred**.
-  On a **sibling** (remotely, from another device): a fleet-chain **revoke** — it may be offline/already sold, so it can't be shredded, only barred from rejoining/decrypting. The remote revoke is the "I sold it and forgot to wipe" safety net.
-- **Shred** — crypto-shred: zeroize the keys (data is already ciphertext, so the dying key makes it unrecoverable), then delete files and let the OS reclaim. Distinct from Retire, pairs with it for handoff. A plain "wipe local storage, re-fetch from fleet" belongs here too — format bumps (e.g. vsf v7→v9) make a clean re-fetch genuinely useful.
-- Sec/Recovery posture strip.
+One page on every TOKEN app: the rows, their order, their words, when each is enabled and why not, and the confirmation each needs are `fgtw::security` (owner, 2026-11-24: "I'd like to get it synchronized in the FGTW crate so ferros and Photon render the same"); Photon draws them (`ui/photon_app/security.rs`) and carries each act out with its own hooks.
+Named by **destructiveness**, least to most, and by the owner's words for leaving (2026-11-24: "not retire, unbind/bind, shit like that. retire means never again which is wrong."):
+- **Lock** — zeroize the in-RAM seed, keep the vault ciphertext on disk. The manual version of the reboot boundary: re-unlock with your handle. Tightening only, so no confirmation.
+- **Revoke** / **reinstate**, one row per other device of the fleet — the remote act: a fleet-chain lock of a sibling that may be offline or already sold, so it can't be shredded, only barred from announcing, writing or opening anything sealed after (the worker's refusal survives a wipe; the fleet key rotates away from it). The "I sold it and forgot to wipe" safety net. **Reinstate** undoes it. Revoke, not "unbind remotely": an unbound device may be bound again by anyone, a revoked one is barred until its fleet reinstates it.
+- **Shred** — crypto-shred of this device's copy: zeroize the keys (data is already ciphertext, so the dying key makes it unrecoverable), then delete files and let the OS reclaim. The device **stays in the fleet**, so attesting again here with the same handle fetches everything back: the "wipe local storage, re-fetch from fleet" that format bumps (e.g. vsf v7→v9) make genuinely useful.
+- **Unbind this device** — it leaves the fleet (the departure, `fgtw::flow::depart`) and its data here is erased; anyone may bind it again. Never "Retire": retire means never again.
+- Photon's own rows follow the shared ones: Kill, the Shell switch, the posture strip, Load on startup, the lifeline, unattended.
 
-**Before attest** the rail shows About, Updates and a Security page narrowed to one verb, **Wipe** (2026-09-16). There is no identity to lock, kill, revoke or release, but there may be a sealed vault, a binding marker and a log left by whoever held the hardware before — and a bound device with a lost or foreign handle had no way out but the dev chord or the OS. Three things make it safe to offer:
+Every act that destroys or bars something of the person's needs the identity proved, never a tap a child could make (owner, 2026-11-24). In Photon a revoke or a reinstatement is confirmed on the attest screen (this device de-attests and the act runs inside the next attest whose handle is this identity's), a shred or an unbind by the handle typed under its row, its memory-hard proof matched. Only the pre-attest wipe is two presses of its row.
+
+**Before attest** the rail shows About, Updates and a Security page narrowed to one verb, **Wipe** (2026-09-16). There is no identity to lock, kill, revoke or unbind, but there may be a sealed vault, a binding marker and a log left by whoever held the hardware before — and a bound device with a lost or foreign handle had no way out but the dev chord or the OS. Three things make it safe to offer:
 - **It grants nothing.** The vault is sealed under the handle-derived seed; the attest screen was never the lock. Anyone holding the unlocked phone can already destroy the data with the OS "clear storage", and the availability loss is exactly that loss, bounded by fleet-holds-history.
-- **It is Shred, not Release.** No session means no signature and no countersigning device. The fingerprint-derived device key survives the wipe, so the previous identity's fleet still lists this hardware until one of *its* devices removes it. The hint says so.
+- **It is Shred, not Unbind.** No session means no signature and no countersigning device. The fingerprint-derived device key survives the wipe, so the previous identity's fleet still lists this hardware until one of *its* devices removes it. The hint says so.
 - **It cannot bypass lockout.** Lockout's teeth are the other devices refusing this key, which lives on them; the local state going away changes nothing.
-The wipe does what the post-attest Shred does (same slot, same two-tap arm, same code path) and additionally clears the log, so the next owner inherits no trace of the last. It drops to a fresh Launch; it never exits the process (on Android an exit reads as a crash).
+The wipe does what the post-attest Shred does (the same code path, confirmed by two presses of its row since no identity is here to prove) and additionally clears the log, so the next owner inherits no trace of the last. It drops to a fresh Launch; it never exits the process (on Android an exit reads as a crash).
 
 ### Recovery
 The only page about *getting back in* rather than *clearing out* — kept separate from the wipes.

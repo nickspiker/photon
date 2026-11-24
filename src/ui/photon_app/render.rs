@@ -813,8 +813,13 @@ impl PhotonApp {
             noise_on_screen
         };
         self.noise_drawn = (noise_scroll, noise_base);
-        // Security page's fleet-of-one gate — hoisted here for the same reason as the scroll above: the pills draw inside the chrome borrow, and asking `self` a question there is a second borrow. Cheap (a filtered pass over sibling rows), and ONE definition shared with the action that would otherwise refuse the tap.
-        let has_sibling_device = self.has_usable_sibling();
+        // The Security page's model (fgtw::security), the name of each device its rows name, and the act under way with its device's name — hoisted here for the same reason as the scroll above: the pills draw inside the chrome borrow, and asking `self` a question there is a second borrow.
+        let security_view = matches!(self.state, AppState::Settings(SettingsPage::Security)).then(|| {
+            let (intro, rows) = self.security_model();
+            let names: Vec<String> = rows.iter().map(|r| self.security_device_name(r.act)).collect();
+            let status = self.security_page.status().map(|s| (s, self.security_device_name(s.act)));
+            (intro, rows, names, status)
+        });
         // The standing bands are computed BEFORE the chrome borrow (they read plain state), then painted by a free fn on the two screens that show them.
         let standing_bands = self.standing_bands();
         let link_btn_visible = self.compose_link_available();
@@ -6166,13 +6171,14 @@ impl PhotonApp {
                     measured_extent = Some((flow.used(), inset.h));
                 }
                 SettingsPage::Security => {
-                    // SECURITY, Flow rework (Nick 2026-09-02): SHORT pill labels with the explanation as a wrapped hint BELOW each pill (the parentheticals moved out of the buttons), everything wrapping at the pane edge. Destructiveness ramp unchanged: Lock (green, reversible) · Remove (yellow) · Shred (orange) · Remove & shred (red); the wipers stay two-tap + mutually exclusive; hit ids unchanged (0..3 + the unattended base).
+                    // SECURITY on the shared model (fgtw::security, owner 2026-11-24: "I'd like to get it synchronized in the FGTW crate so ferros and Photon render the same"): the rows, their order, their words, when each is enabled and why not come from fgtw, drawn as one pill each with what it does (or why not) under it; Photon's own rows follow. The destructiveness ramp is the row's tone: green, yellow, orange, red.
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
                     flow.page_title(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                    // Pre-attest (Nick 2026-09-16: "wipe without attesting upon first boot") the page is ONE verb: Wipe. There is no identity to lock, kill, revoke or release, but there may be a vault, a binding marker and a log left by whoever held this hardware before — and a bound device with a lost or foreign handle has no other way out. The vault is sealed under the handle-derived seed, so the attest screen was never the lock: this grants nothing an OS "clear storage" doesn't.
-                    let unattested = self.session.is_none();
-                    flow.prose(&mut canvas, ctx.text, &tr(if unattested { Msg::SecurityIntroUnattested } else { Msg::SecurityIntro }), hspan2, *theme::LABEL_COLOUR, 400);
+                    // Before attest (Nick 2026-09-16: "wipe without attesting upon first boot") the model gives one row: wipe. There is no identity to lock, kill, revoke or unbind, but there may be a vault, a binding marker and a log left by whoever held this hardware before, and a bound device with a lost or foreign handle has no other way out. The vault is sealed under the handle-derived seed, so the attest screen was never the lock: this grants nothing an OS "clear storage" doesn't.
+                    let (intro, rows, names, status) = security_view.as_ref().expect("the Security page's model is gathered whenever the Security page is drawn");
+                    let present = self.session.is_some();
+                    flow.prose(&mut canvas, ctx.text, &tr(*intro), hspan2, *theme::LABEL_COLOUR, 400);
                     flow.gap(hspan2 * 0.6);
                     // One pill + its hint, flowed. Armed actions turn their hint red + bold — the confirm state IS the explanation.
                     let action = |flow: &mut Flow,
@@ -6204,45 +6210,56 @@ impl PhotonApp {
                         let n = settings_prose(canvas, text, region, hint, hspan2 * 0.85, hc, hw);
                         flow.y += (n.max(1) as Coord) * hspan2 * 0.85 * 1.25 + hspan2 * 0.9; // design: an empty hint still advances one line
                     };
-                    if unattested {
-                        // Same slot, arm flag and dispatch as the post-attest Wipe (Shred) — one verb, one code path; the hint is the pre-attest contract (Shred, not Release: the fingerprint-derived device key survives, so the previous identity's fleet still lists this hardware until one of ITS devices removes it).
-                        action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
-                            &tr(Msg::SecurityShred { armed: self.settings_shred_armed }),
-                            &tr(Msg::SecurityWipeUnattestedHint),
-                            2, *theme::PILL_ORANGE, self.settings_shred_armed, true);
+                    for (i, row) in rows.iter().enumerate() {
+                        // What a revoke is, once, before the first device.
+                        if let Some(lead) = row.lead {
+                            flow.prose(&mut canvas, ctx.text, &tr(lead), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                            flow.gap(hspan2 * 0.4);
+                        }
+                        if let Some(line) = row.line(&names[i]) {
+                            flow.line(&mut canvas, ctx.text, &tr(line), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                        }
+                        let asked = status.as_ref().is_some_and(|(s, _)| *s == fgtw::security::Status { act: row.act, phase: fgtw::security::Phase::Asked });
+                        let armed = self.security_page.armed(row.act);
+                        // Asked, the same pill puts it back.
+                        let label = if asked { tr(Msg::Cancel) } else { tr(row.button(armed)) };
+                        let note = row.note.map(tr).unwrap_or_default();
+                        action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, &label, &note, super::security::SECURITY_ROW_SLOT0 + i as HitId, super::security::tone_fill(row.tone), armed || asked, row.enabled);
+                        if let Some(warn) = row.warn {
+                            flow.prose(&mut canvas, ctx.text, &tr(warn), hspan2 * 0.9, *theme::ERROR_TEXT_COLOUR, 600);
+                            flow.gap(hspan2 * 0.6);
+                        }
+                        // A shred asked: the handle typed here, its proof matched, then the shred.
+                        if asked && row.act == fgtw::security::Act::Shred {
+                            let checking = self.security_verify.is_some();
+                            flow.prose(&mut canvas, ctx.text, &tr(Msg::ShredTypeHandle), hspan2, *theme::ERROR_TEXT_COLOUR, 600);
+                            let tb_band = flow.band(hspan2 * 2.2);
+                            if let Some(tb) = self.release_confirm_tb.as_mut() {
+                                tb.set_font_size(hspan2, ctx.text);
+                                tb.set_rect(tb_band.center_x(), tb_band.center_y(), tb_band.w * 0.9, tb_band.h * 0.85);
+                                let id = tb.hit_id();
+                                tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
+                            }
+                            if checking {
+                                flow.line(&mut canvas, ctx.text, &tr(fgtw::text::Msg::RemoveChecking), hspan2, *theme::LABEL_COLOUR, 600);
+                            } else if self.security_wrong {
+                                flow.prose(&mut canvas, ctx.text, &tr(Msg::UnattendedMismatch), hspan2, *theme::ERROR_TEXT_COLOUR, 600);
+                            }
+                            flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
+                                (&tr(row.button(false)), self.release_confirm_base, !checking, Some(super::security::tone_fill(row.tone))),
+                            ], "Open Sans");
+                            flow.gap(hspan2 * 0.6);
+                        }
+                    }
+                    // The act under way or just ended, in the model's words.
+                    if let Some(line) = status.as_ref().and_then(|(s, name)| s.msg(name)) {
+                        flow.prose(&mut canvas, ctx.text, &tr(line), hspan2, *theme::SEARCH_FOUND_COLOUR, 600);
+                        flow.gap(hspan2 * 0.6);
+                    }
+                    if !present {
                         flow.gap(hspan2);
                         measured_extent = Some((flow.used(), inset.h));
                     } else {
-                        // Lock and Wipe are this device's own business and always available, even to a fleet of one. Revoke and Release both REQUIRE another device — one to reinstate us, one to countersign the departure — so on a lone device they render dead with the reason in place of the hint, rather than arming into a refusal toast.
-                        let fleet_verbs = has_sibling_device;
-                        action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
-                            &tr(Msg::SecurityLock),
-                            &tr(Msg::SecurityLockHint),
-                            0, *theme::PILL_GREEN, false, true);
-                        // KILL (Nick 2026-09-10): Lock plus the process ending — one tap, no arm state. The hint carries the whole contract.
-                        action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
-                            &tr(Msg::SecurityKill),
-                            &tr(Msg::SecurityKillHint),
-                            4, *theme::PILL_RED, false, true);
-                        // SHELL (security audit UPW-027, Nick 2026-11-03): the bridge shell's host-side switch, off by default, one tap flips it; set here on this device only, never synced (docs/bridge.md Law 3).
-                        #[cfg(all(unix, not(target_os = "android")))]
-                        action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
-                            &tr(Msg::SecurityShell { on: self.bridge_shell }),
-                            &tr(Msg::SecurityShellHint),
-                            5, if self.bridge_shell { *theme::PILL_GREEN } else { *theme::PILL_GREY }, false, true);
-                        action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
-                            &tr(Msg::SecurityRevoke { armed: self.settings_revoke_armed }),
-                            &tr(if fleet_verbs { Msg::SecurityRevokeHint } else { Msg::SecurityRevokeAloneHint }),
-                            1, if self.settings_revoke_armed { *theme::PILL_RED } else { *theme::PILL_YELLOW }, self.settings_revoke_armed, fleet_verbs);
-                        action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
-                            &tr(Msg::SecurityShred { armed: self.settings_shred_armed }),
-                            &tr(Msg::SecurityShredHint),
-                            2, *theme::PILL_ORANGE, self.settings_shred_armed, true);
-                        action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
-                            // Armed, the same pill puts the removal back.
-                            &tr(if self.settings_removeshred_armed { Msg::Cancel } else { Msg::SecurityRemoveShred { armed: false } }),
-                            &tr(if fleet_verbs { Msg::SecurityRemoveShredHint } else { Msg::SecurityReleaseAloneHint }),
-                            3, *theme::PILL_RED, self.settings_removeshred_armed, fleet_verbs);
                         // THE OWNER'S REMOVAL (2026-11-22): after the first press the handle is typed here and Unbind sends the removal; the Depart machine checks the typed handle's proof and sends nothing on a mismatch. The warnings below say what the person releases past.
                         if self.settings_removeshred_armed {
                             let checking = self.release_verify.is_some();
@@ -6306,6 +6323,18 @@ impl PhotonApp {
                                 }
                             }
                         }
+                        // Photon's own rows, after the shared ones.
+                        // KILL (Nick 2026-09-10): Lock plus the process ending — one tap, no arm state. The hint carries the whole contract.
+                        action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
+                            &tr(Msg::SecurityKill),
+                            &tr(Msg::SecurityKillHint),
+                            4, *theme::PILL_RED, false, true);
+                        // SHELL (security audit UPW-027, Nick 2026-11-03): the bridge shell's host-side switch, off by default, one tap flips it; set here on this device only, never synced (docs/bridge.md Law 3).
+                        #[cfg(all(unix, not(target_os = "android")))]
+                        action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
+                            &tr(Msg::SecurityShell { on: self.bridge_shell }),
+                            &tr(Msg::SecurityShellHint),
+                            5, if self.bridge_shell { *theme::PILL_GREEN } else { *theme::PILL_GREY }, false, true);
                         flow.gap(hspan2 * 0.4);
                         // LEAVER's pending departure (owner, 2026-11-10): it is asking the person's devices, approve on any of them. No words, and nothing about which devices answered or how they are reached. A denied request says so; asking again (Release) makes a new request.
                         if self.depart.as_ref().is_some_and(|m| m.asking()) {
