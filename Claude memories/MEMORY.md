@@ -41,6 +41,7 @@ Hooks are reminders; read the topic file before acting on one.
 - [base + language are identity prefs](feedback_base_lang_identity_prefs.md) — owner 2026-11-22: the identity's space (fgtw), not Photon fleet settings; migration OPEN
 - Shell traps: [sed address guard](feedback_sed_address_guard.md) · [perl UTF-8](feedback_perl_utf8_trap.md) · [perl pipe delimiter](feedback_perl_pipe_delimiter.md) · [pgrep self-match](feedback_pgrep_self_match.md)
 - [fgtw deploys freely](feedback_fgtw_deploy_freely.md) · [terminal clipboard](feedback_terminal_clipboard.md) — spaces around = · [script timestamps](feedback_script_timestamps.md)
+- [census deletes parked files](feedback_census_deletes_parked_files.md) — HARD: never rename or park a file inside Photon's app dirs; MOVE it out first
 - [no redundant disk ops](feedback_no_redundant_disk_ops.md) — reflink · [legacy first](feedback_legacy_first.md) · [persist findings early](persist-findings-early.md)
 - [epoch is fixed](feedback_epoch_fixed.md) — HARD: never move it · [no compat text hatches](feedback_no_compat_text_hatches.md) — retired readers die same day
 - [pins are dated](feedback_pins_are_dated.md) — HARD: `MIGRATION-EXPIRES: YYYY-MM-DD` in code, the build gate refuses past-due; never a version count; live pins end 2027-02-01
