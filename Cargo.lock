@@ -446,8 +446,9 @@ dependencies = [
 [[package]]
 name = "audiopus_sys"
 version = "0.2.2"
-source = "git+https://github.com/nickspiker/audiopus_sys?rev=1b9aac825b34690416b44c7d48057dae51834492#1b9aac825b34690416b44c7d48057dae51834492"
+source = "git+https://github.com/nickspiker/audiopus_sys?rev=a0002f15c94d0b29d2b03e48f5ac252eaa980c1c#a0002f15c94d0b29d2b03e48f5ac252eaa980c1c"
 dependencies = [
+ "cc",
  "cmake",
  "log",
  "pkg-config",

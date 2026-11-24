@@ -281,7 +281,7 @@ softbuffer = { git = "https://github.com/nickspiker/softbuffer", rev = "0f07510a
 # Vendored winit with the Windows dark-mode integration NEUTRALIZED (src/platform_impl/windows/dark_mode.rs): stock winit fires SetWindowTheme + the undocumented SetWindowCompositionAttribute/uxtheme-ordinal calls on every window creation and OS theme change, and that family corrupted testers' system dark-theme Search text (white-on-white until a light/dark toggle rebuilt it — reproduced on two machines). fluor owns every pixel and has no non-client area, so photon wants ZERO Windows theme reads or writes. The patch resolves workspace-wide, so fluor's winit rides it too.
 winit = { git = "https://github.com/nickspiker/winit", rev = "a98203e873ad638b483999f3ae0e8314736b78a3" }
 # Opus static-link fix: upstream audiopus_sys searches only <build>/lib, but GNUInstallDirs installs to lib64 on Fedora-family systems — every vendored-static build there died at link. One-line fork adds the lib64 search path. Rides with the [env] OPUS_NO_PKG/OPUS_STATIC pair in .cargo/config.toml: photon ALWAYS builds opus from vendored source, statically, on every platform.
-audiopus_sys = { git = "https://github.com/nickspiker/audiopus_sys", rev = "1b9aac825b34690416b44c7d48057dae51834492" }
+audiopus_sys = { git = "https://github.com/nickspiker/audiopus_sys", rev = "a0002f15c94d0b29d2b03e48f5ac252eaa980c1c" }
 
 [profile.release]
 lto = true                 # Full LTO for final builds
@@ -320,6 +320,8 @@ fluor = { path = "../fluor", default-features = false, features = ["std", "text"
 tokio = { version = "1", features = ["rt", "rt-multi-thread", "sync", "time", "macros"] }
 fluor = { path = "../fluor", default-features = false, features = ["host-ferros", "simd", "emoji"] }
 getrandom02 = { package = "getrandom", version = "0.2", features = ["custom"] }
+# Opus on ferros (docs/ferros-media.md): the same crate as everywhere, its libopus built by the audiopus_sys fork with cc, fixed point (the fork's ferros path; std/photon carries the [patch] that names the fork, since a patch applies only from the workspace root).
+opus = "0.3.1"
 
 # target_os = "ferros" is the phone as a ferros process (a JSON target, STD-TARGET.md in the ferros repo): rustc does not know the name, so the cfg is declared here.
 [lints.rust]
