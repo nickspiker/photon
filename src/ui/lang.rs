@@ -162,6 +162,12 @@ pub enum Msg<'a> {
     MissedWaveRow,
     WaveDeclinedRow,
     BusyRow,
+    /// A beam's card headers, the wave's in the beam's own words (the owner 2026-11-24: "Recent beam shows as wave instead").
+    BeamEndedDur(&'a str),
+    BeamDroppedDur(&'a str),
+    MissedBeamRow,
+    RejectedBeamRow,
+    BeamDeclinedRow,
     // ---- launch / handle / join ----
     YesForever,
     HandleTaken,

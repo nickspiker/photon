@@ -96,6 +96,11 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::WaveRow => "\u{260E} dalga".into(),
         Msg::MissedWaveRow => "\u{260E} kaçan dalga".into(),
         Msg::WaveDeclinedRow => "\u{260E} dalga reddedildi".into(),
+        Msg::BeamEndedDur(dur) => format!("\u{1F4F9} ışın \u{00B7} {dur}").into(),
+        Msg::BeamDroppedDur(dur) => format!("\u{1F4F9} ışın \u{00B7} koptu \u{00B7} {dur}").into(),
+        Msg::MissedBeamRow => "\u{1F4F9} kaçan ışın".into(),
+        Msg::RejectedBeamRow => "\u{1F4F9} ışın yok sayıldı".into(),
+        Msg::BeamDeclinedRow => "\u{1F4F9} ışın reddedildi".into(),
         Msg::BusyRow => "\u{260E} meşgul".into(),
         // ---- launch / handle / join ----
         Msg::YesForever => "Evet, sonsuza dek".into(),

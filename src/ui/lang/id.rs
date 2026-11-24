@@ -94,6 +94,11 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::WaveRow => "\u{260E} gelombang".into(),
         Msg::MissedWaveRow => "\u{260E} gelombang terlewat".into(),
         Msg::WaveDeclinedRow => "\u{260E} gelombang ditolak".into(),
+        Msg::BeamEndedDur(dur) => format!("\u{1F4F9} pancaran \u{00B7} {dur}").into(),
+        Msg::BeamDroppedDur(dur) => format!("\u{1F4F9} pancaran \u{00B7} terputus \u{00B7} {dur}").into(),
+        Msg::MissedBeamRow => "\u{1F4F9} pancaran terlewat".into(),
+        Msg::RejectedBeamRow => "\u{1F4F9} pancaran diabaikan".into(),
+        Msg::BeamDeclinedRow => "\u{1F4F9} pancaran ditolak".into(),
         Msg::BusyRow => "\u{260E} sibuk".into(),
         // ---- launch / handle / join ----
         Msg::YesForever => "Ya, selamanya".into(),

@@ -43,6 +43,8 @@ pub(crate) struct WaveReplay {
     pub bar: (f32, f32),
     /// The wave's kept beam, decoding in step with the audio (wave/replay_video.rs) — only when beam video was saved and is held here.
     pub video: Option<crate::wave::replay_video::ReplayVideo>,
+    /// The kept beam's blob when it is not held here yet: asked of the fleet as the screen opens, and started the moment it lands while the screen is still up (the owner 2026-11-24: "shows audio and not the video frames").
+    pub video_want: Option<[u8; 32]>,
     /// The recording's first moment (Eagle oscillations): what the playhead's slot is measured from.
     pub base_osc: i64,
 }
@@ -136,9 +138,15 @@ impl PhotonApp {
             v.messages.iter().find(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == wave_ts) && m.file.as_ref().is_some_and(|f| f.role == crate::types::AttachRole::BeamVideo)).and_then(|m| m.file.as_ref().map(|f| f.addr()))
         });
         // Presence from the cache only (the UI thread makes no vault call): a blob not yet known here is the worker's to find, and its load says so if it is missing.
+        // A blob known NOT to be here is asked of the fleet now, and started when it lands (drain_attach_installed), so the frames come without reopening the screen.
+        let video_want = video.filter(|h| crate::storage::blob_present_known(h) == Some(false));
+        if let (Some(h), Some(id)) = (video_want, conv) {
+            crate::logf!("BEAM: replay — the kept beam {}… is not here; asking the fleet for it", hex::encode(&h[..4]));
+            self.attach_fetch_conversation(id, &h);
+        }
         let video = video.filter(|h| crate::storage::blob_present_known(h) != Some(false)).and_then(|h| self.session.as_ref().and_then(|s| crate::wave::replay_video::ReplayVideo::start(s.identity_seed, h)));
         let n = voices.len();
-        self.wave_replay = Some(WaveReplay { hash, title, voices, muted: vec![false; n], paused_at: None, total, faces: Vec::new(), face_diam: 0, bar: (0.0, 0.0), video, base_osc });
+        self.wave_replay = Some(WaveReplay { hash, title, voices, muted: vec![false; n], paused_at: None, total, faces: Vec::new(), face_diam: 0, bar: (0.0, 0.0), video, video_want, base_osc });
         crate::logf!("WAVE: replaying {}… — {} voice(s)", hex::encode(&hash[..4]), n);
         self.mark_dirty();
     }

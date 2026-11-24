@@ -95,6 +95,11 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::WaveRow => "\u{260E} alon".into(),
         Msg::MissedWaveRow => "\u{260E} hindi nasagot na alon".into(),
         Msg::WaveDeclinedRow => "\u{260E} tinanggihan ang alon".into(),
+        Msg::BeamEndedDur(dur) => format!("\u{1F4F9} sinag \u{00B7} {dur}").into(),
+        Msg::BeamDroppedDur(dur) => format!("\u{1F4F9} sinag \u{00B7} naputol \u{00B7} {dur}").into(),
+        Msg::MissedBeamRow => "\u{1F4F9} hindi nasagot na sinag".into(),
+        Msg::RejectedBeamRow => "\u{1F4F9} binalewala ang sinag".into(),
+        Msg::BeamDeclinedRow => "\u{1F4F9} tinanggihan ang sinag".into(),
         Msg::BusyRow => "\u{260E} abala".into(),
         // ---- launch / handle / join ----
         Msg::YesForever => "Oo, habambuhay".into(),

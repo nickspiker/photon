@@ -1439,6 +1439,10 @@ fn record_author(rec: &Record) -> Option<crate::types::PartyId> {
 fn set_wave_fields(mut rec: Record, msg: &ChatMessage) -> Record {
     if let Some(w) = msg.wave {
         rec = rec.set("wave_out", w.outcome as u64).set("wave_secs", w.secs as u64);
+        // Only a beam writes the field: a row without it reads as a wave, as every row written before it does.
+        if w.beam {
+            rec = rec.set("wave_beam", 1u64);
+        }
     }
     if !msg.envelope.is_empty() {
         rec = rec.set("wave_env", Value::Bytes(msg.envelope.clone()));
@@ -1448,7 +1452,7 @@ fn set_wave_fields(mut rec: Record, msg: &ChatMessage) -> Record {
 
 fn record_wave(rec: &Record) -> Option<crate::types::WaveInfo> {
     let outcome = crate::types::WaveOutcome::from_wire(rec.uint("wave_out")? as u8)?;
-    Some(crate::types::WaveInfo { outcome, secs: rec.uint("wave_secs").unwrap_or(0) as u32 })
+    Some(crate::types::WaveInfo { outcome, secs: rec.uint("wave_secs").unwrap_or(0) as u32, beam: rec.uint("wave_beam") == Some(1) })
 }
 
 fn record_envelope(rec: &Record) -> Vec<u8> {

@@ -547,6 +547,10 @@ impl PhotonApp {
             if !is_target {
                 continue;
             }
+            // A fleet member that is not a Photon (ferros's identity service, baf3dec7) holds none of our files: asking it spent a round on every fetch (the owner's MacBook, 2026-11-24).
+            if c.is_sibling && self.sibling_awaits_list(c) {
+                continue;
+            }
             let primary = c.device_key();
             // The pinned device at ITS OWN addresses (race_addrs_for): the contact's pair can belong to another of their devices, which then answered an ask meant for this one.
             if let Some((a, alt)) = primary.and_then(|k| c.race_addrs_for(&k)) {
@@ -590,13 +594,16 @@ impl PhotonApp {
         targets.sort_by_key(|t| t.0);
         // Whether any device had an address before the key and era checks below: a list those checks empty waits for a key, not an address.
         let had_address = !targets.is_empty();
+        // Passed over until the next address edge: devices the transport could not reach, and devices that said they hold none of this blob. With nobody left the fetch waits for that edge below, rather than spending its asks.
+        targets.retain(|t| !self.attach_unreachable.contains(&t.3) && !self.attach_declined.contains(&(*content_hash, t.3)));
         // ASK ONLY WHOM WE CAN OPEN (2026-11-01, Nick's Pixel: every launch asked Emma's desktop for ~200 files and dropped all 1076 chunks it sent, holding no key for that token): a device whose answer `attach_wire_key` cannot open is never asked — the same lookup the receive side runs, so an ask and its answer agree. Why one was passed over is said once per device and token.
         // …AND WHOSE ERA IS OURS (2026-11-01, Nick's Pixel: it held a friendship at era 0 while the friend and Nick's own devices were on era 2 — a key exists, it is just the wrong one, and 103 chunks failed to open): a device that last advertised another era index for this conversation seals under another key.
-        let chain_era = self.friendship_chains.iter().find(|(_, ch)| ch.conversation_token == token).map(|(fid, ch)| (*fid, ch.era_index));
+        // The era is told by its TAG, the key it derives from, as the presence edge tells it (status.rs): the index is a counter each side keeps, and a friend on our very era under another index was passed over, the one device holding the owner's beam (2026-11-24).
+        let chain_era = self.friendship_chains.iter().find(|(_, ch)| ch.conversation_token == token).and_then(|(fid, ch)| ch.era_tag().map(|t| (*fid, t)));
         let mut unopenable = Vec::new();
         let mut other_era = Vec::new();
         targets.retain(|t| {
-            let era_differs = chain_era.is_some_and(|(fid, ours)| self.peer_era_seen.get(&(fid, t.3)).is_some_and(|(idx, _)| *idx != ours));
+            let era_differs = chain_era.is_some_and(|(fid, ours)| self.peer_era_seen.get(&(fid, t.3)).is_some_and(|(_, tag)| *tag != ours));
             if era_differs {
                 other_era.push(t.3);
                 return false;
@@ -747,6 +754,10 @@ impl PhotonApp {
             f.ended = true;
             crate::logf!("attach: device {} holds none of {}… — asking the next", crate::fp(from), hex::encode(&hash[..4]));
         }
+        // Not asked for this blob again until a device comes online or a path proves out: asking it twice in a row only spent a round.
+        if !self.attach_declined.contains(&(*hash, *from)) {
+            self.attach_declined.push((*hash, *from));
+        }
     }
 
     /// The transport gave up on a device (by key, or by an address one of its endpoints carries): every ask aimed there is over.
@@ -766,11 +777,15 @@ impl PhotonApp {
                     })
             })
             .collect();
+        // An unreachable device tells nothing about the file, so its ask goes back to "not asked yet" (it never counts toward letting the fetch go), and the device is passed over until a device comes online or a path proves out (`attach_address_edge`).
         for f in self.attach_fetch_inflight.values_mut().filter(|f| f.asked.is_some_and(|d| devs.contains(&d)) && !f.ended) {
-            f.ended = true;
+            f.asked = None;
         }
         for d in &devs {
-            crate::logf!("attach: device {} is unreachable — its asks move on", crate::fp(d));
+            crate::logf!("attach: device {} is unreachable — its asks move on, and it is asked again once a device comes online", crate::fp(d));
+            if !self.attach_unreachable.contains(d) {
+                self.attach_unreachable.push(*d);
+            }
         }
     }
 
@@ -931,6 +946,9 @@ impl PhotonApp {
 
     /// An ADDRESS EDGE (a device came online, a direct path proved out, a record or a sibling's address book was adopted, a pair key was read): every fetch that found nobody to ask is asked again on the next tick.
     pub(super) fn attach_address_edge(&mut self, why: &str) {
+        // A device came online or a path proved out: the devices passed over as unreachable, and those that held none, may be asked again.
+        self.attach_unreachable.clear();
+        self.attach_declined.clear();
         let n = self.attach_addr_wait.release();
         if n > 0 {
             crate::logf!("attach: {} waiting attachment(s) asked again — {}", n, why);
@@ -1132,6 +1150,16 @@ impl PhotonApp {
             }
             // The landing is the fetch's end edge: nothing re-asks for a blob that is here.
             self.attach_fetch_inflight.remove(&r.content_hash);
+            // A replay on screen waiting for this beam's video: its frames start now, with no reopening.
+            let seed = self.session.as_ref().map(|s| s.identity_seed);
+            if let (Some(rp), Some(seed)) = (self.wave_replay.as_mut(), seed) {
+                if rp.video.is_none() && rp.video_want == Some(r.content_hash) {
+                    rp.video_want = None;
+                    rp.video = crate::wave::replay_video::ReplayVideo::start(seed, r.content_hash);
+                    crate::logf!("BEAM: replay — the kept beam {}… arrived; its frames start", hex::encode(&r.content_hash[..4]));
+                    self.mark_dirty();
+                }
+            }
             // A group's picture may be what landed (group_avatar.rs).
             self.group_faces_dirty = true;
             // A blob a leaver asked us to take (holdings.rs): one fewer item at risk on its screen.

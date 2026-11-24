@@ -79,6 +79,11 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::WaveRow => "\u{260E} wave".into(),
         Msg::MissedWaveRow => "\u{260E} missed wave".into(),
         Msg::WaveDeclinedRow => "\u{260E} wave declined".into(),
+        Msg::BeamEndedDur(dur) => format!("\u{1F4F9} beam \u{00B7} {dur}").into(),
+        Msg::BeamDroppedDur(dur) => format!("\u{1F4F9} beam \u{00B7} dropped \u{00B7} {dur}").into(),
+        Msg::MissedBeamRow => "\u{1F4F9} missed beam".into(),
+        Msg::RejectedBeamRow => "\u{1F4F9} beam rejected".into(),
+        Msg::BeamDeclinedRow => "\u{1F4F9} beam declined".into(),
         Msg::BusyRow => "\u{260E} busy".into(),
         // ---- launch / handle / join ----
         Msg::YesForever => "Yes, forever".into(),

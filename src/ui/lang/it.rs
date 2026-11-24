@@ -97,6 +97,11 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::WaveRow => "\u{260E} onda".into(),
         Msg::MissedWaveRow => "\u{260E} onda persa".into(),
         Msg::WaveDeclinedRow => "\u{260E} onda rifiutata".into(),
+        Msg::BeamEndedDur(dur) => format!("\u{1F4F9} raggio \u{00B7} {dur}").into(),
+        Msg::BeamDroppedDur(dur) => format!("\u{1F4F9} raggio \u{00B7} caduto \u{00B7} {dur}").into(),
+        Msg::MissedBeamRow => "\u{1F4F9} raggio perso".into(),
+        Msg::RejectedBeamRow => "\u{1F4F9} raggio ignorato".into(),
+        Msg::BeamDeclinedRow => "\u{1F4F9} raggio rifiutato".into(),
         Msg::BusyRow => "\u{260E} occupato".into(),
         // ---- launch / handle / join ----
         Msg::YesForever => "Sì, per sempre".into(),

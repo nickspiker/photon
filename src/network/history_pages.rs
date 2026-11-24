@@ -26,6 +26,8 @@ pub struct HistoryRow {
     pub marks: Vec<crate::types::MessageMark>,
     /// Wave row payload as page COLUMNS (raw wire outcome, live seconds) — absent on pre-feature pages ⇒ None.
     pub wave: Option<(u8, u32)>,
+    /// The wave row was a beam — a COLUMN written only when true; absent on pre-feature pages ⇒ a wave.
+    pub wave_beam: bool,
     /// Recording row envelope thumbnail as a native multi-value column — absent ⇒ empty.
     pub envelope: Vec<u8>,
     /// Typed attachment columns (2026-09-10): (raw wire kind, w, h, preview-blob hash) — absent on pre-feature pages ⇒ None.
@@ -61,6 +63,7 @@ impl HistoryRow {
             notified: m.notified,
             marks: m.marks.clone(),
             wave: m.wave.map(|w| (w.outcome as u8, w.secs)),
+            wave_beam: m.wave.is_some_and(|w| w.beam),
             envelope: m.envelope.clone(),
             gpl: Vec::new(),
             delivered_to: m.delivered_to.clone(),
@@ -121,6 +124,9 @@ pub fn seal_history_page(page: &HistoryPagePlain, key: &[u8; 32]) -> Result<Vec<
         if let Some((o, secs)) = row.wave {
             r.push(f("wave_outcome", uint(o as u64)));
             r.push(f("wave_secs", uint(secs as u64)));
+            if row.wave_beam {
+                r.push(f("wave_beam", uint(1)));
+            }
         }
         // Thumbnails are opaque bytes — one value, never a number per byte.
         if !row.envelope.is_empty() {
@@ -258,6 +264,7 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
             reference: r.uint("ref_kind").and_then(|k| Some((u8::try_from(k).ok()?, r.osc("ref_target")?))),
             marks: Vec::new(),
             wave: r.uint("wave_outcome").and_then(|o| Some((u8::try_from(o).ok()?, u32::try_from(r.uint("wave_secs")?).ok()?))),
+            wave_beam: r.uint("wave_beam") == Some(1),
             envelope: r.bytes("envelope").unwrap_or_default(),
             gpl: r.bytes("gpl").unwrap_or_default(),
             delivered_to: r.bytes("dlv_to").map(|b| b.chunks_exact(32).filter_map(|c| <[u8; 32]>::try_from(c).ok()).collect()).unwrap_or_default(),
@@ -308,6 +315,7 @@ mod tests {
                     // A link mark rides the page: range covers "oldest " — validation checks bounds + dest scheme, and the round trip must return it intact.
                     marks: vec![crate::types::MessageMark { kind: 1, start: 0, len: 7, dest: "https://x.example/".into() }],
                     wave: Some((4, 61)),
+                    wave_beam: true,
                     envelope: (0..288u32).map(|b| (b % 256) as u8).collect(),
                     gpl: vec![7, 7, 7],
                     delivered_to: vec![[3u8; 32]],
@@ -329,6 +337,7 @@ mod tests {
                     reference: Some((1, 1_000)), // a reply column rides the page
                     marks: Vec::new(),
                     wave: None,
+                    wave_beam: false,
                     envelope: Vec::new(),
                     gpl: Vec::new(),
                     delivered_to: Vec::new(),
@@ -349,6 +358,7 @@ mod tests {
                     reference: None,
                     marks: Vec::new(),
                     wave: None,
+                    wave_beam: false,
                     envelope: Vec::new(),
                     gpl: Vec::new(),
                     delivered_to: Vec::new(),
@@ -436,6 +446,7 @@ mod tests {
                 reference: None,
                 marks: Vec::new(),
                 wave: None,
+                wave_beam: false,
                 envelope: Vec::new(),
                 gpl: Vec::new(),
                 delivered_to: Vec::new(),

@@ -3932,7 +3932,7 @@ pub(super) fn merge_pair_page_rows(conv: &mut crate::types::Conversation, rows: 
                 let before = (existing.wave, existing.envelope.len());
                 crate::types::merge_wave_fields(
                     existing,
-                    row.wave.and_then(|(o, s)| crate::types::WaveOutcome::from_wire(o).map(|outcome| crate::types::WaveInfo { outcome, secs: s })),
+                    row.wave.and_then(|(o, s)| crate::types::WaveOutcome::from_wire(o).map(|outcome| crate::types::WaveInfo { outcome, secs: s, beam: row.wave_beam })),
                     &row.envelope,
                 );
                 if (existing.wave, existing.envelope.len()) != before {
@@ -3992,7 +3992,7 @@ pub(super) fn merge_pair_page_rows(conv: &mut crate::types::Conversation, rows: 
                 .and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t))),
             replicated: from_sibling && row.sender_outgoing,
             marks: crate::types::valid_marks(&row.content, &row.marks),
-            wave: row.wave.and_then(|(o, s)| crate::types::WaveOutcome::from_wire(o).map(|outcome| crate::types::WaveInfo { outcome, secs: s })),
+            wave: row.wave.and_then(|(o, s)| crate::types::WaveOutcome::from_wire(o).map(|outcome| crate::types::WaveInfo { outcome, secs: s, beam: row.wave_beam })),
             envelope: row.envelope.clone(),
             attach: row.attach.and_then(|(k, w, h, ph)| crate::types::AttachKind::from_wire(k).map(|kind| crate::types::AttachMeta { kind, dims: (w > 0 && h > 0).then_some((w, h)), preview_hash: ph })),
             preview: if row.preview.len() <= crate::types::MICRO_PREVIEW_MAX_BYTES { row.preview.clone() } else { Vec::new() },

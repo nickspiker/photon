@@ -94,6 +94,11 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::WaveRow => "\u{260E} ngaru".into(),
         Msg::MissedWaveRow => "\u{260E} ngaru ngaro".into(),
         Msg::WaveDeclinedRow => "\u{260E} ngaru whakakāhoretia".into(),
+        Msg::BeamEndedDur(dur) => format!("\u{1F4F9} hihi \u{00B7} {dur}").into(),
+        Msg::BeamDroppedDur(dur) => format!("\u{1F4F9} hihi \u{00B7} i motu \u{00B7} {dur}").into(),
+        Msg::MissedBeamRow => "\u{1F4F9} hihi ngaro".into(),
+        Msg::RejectedBeamRow => "\u{1F4F9} hihi i whakarerea".into(),
+        Msg::BeamDeclinedRow => "\u{1F4F9} hihi whakakāhoretia".into(),
         Msg::BusyRow => "\u{260E} kei te ngaru kē".into(),
         // ---- launch / handle / join ----
         Msg::YesForever => "Āe, mō ake tonu".into(),

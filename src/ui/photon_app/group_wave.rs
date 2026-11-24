@@ -939,6 +939,8 @@ impl PhotonApp {
         // The beam video spool stops taking frames; its ticket rides the keep, or its file goes.
         crate::wave::spool::beam_disarm();
         let beam = self.beam_ticket.take();
+        // Whether this was a beam, read before the camera is retired below: this device beaming, or a beam-video spool armed for it.
+        let was_beam = w.beam_tx.is_some() || beam.is_some();
         if w.ever_linked && !spent.is_empty() {
             self.spawn_group_keep(w.gid, w.offer_osc, w.wave_id, spent, beam);
         } else if let Some(b) = beam {
@@ -971,7 +973,7 @@ impl PhotonApp {
         };
         let id = crate::types::FriendshipId::from_bytes(w.gid.0);
         let mut row = ChatMessage::new_with_timestamp(String::new(), w.we_are_origin, w.offer_osc + 1);
-        row.wave = Some(WaveInfo { outcome, secs });
+        row.wave = Some(WaveInfo { outcome, secs, beam: was_beam });
         row.notified = true;
         row.delivered = true;
         row.author = if w.we_are_origin {
@@ -1271,6 +1273,8 @@ impl PhotonApp {
         row.delivered = true;
         row.author = self.own_party_id();
         let mut pushed = vec![row.clone()];
+        // A kept video is what makes this wave a beam on the row, for every device the row reaches.
+        let kept_video = video.is_some();
         // The beams' video (saved only when the user turned it on): its own fleet-internal row at +4, each track named by its person.
         if let Some(v) = video {
             let vfile = crate::types::AttachRef { hash: v.hash, name: String::new(), size: v.size, role: crate::types::AttachRole::BeamVideo, head: None, wrap: None, parties: v.tracks };
@@ -1287,7 +1291,7 @@ impl PhotonApp {
             conv.insert_message_sorted(row);
             if let Some(w) = conv.messages.iter_mut().find(|m| m.timestamp == offer_osc + 1 && m.wave.is_some()) {
                 let before = w.wave;
-                crate::types::merge_wave_fields(w, Some(WaveInfo { outcome: WaveOutcome::Answered, secs: kept.secs }), &[]);
+                crate::types::merge_wave_fields(w, Some(WaveInfo { outcome: WaveOutcome::Answered, secs: kept.secs, beam: kept_video }), &[]);
                 if w.wave != before {
                     pushed.push(w.clone());
                 }

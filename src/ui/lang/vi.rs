@@ -95,6 +95,11 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::WaveRow => "\u{260E} sóng".into(),
         Msg::MissedWaveRow => "\u{260E} sóng nhỡ".into(),
         Msg::WaveDeclinedRow => "\u{260E} sóng bị từ chối".into(),
+        Msg::BeamEndedDur(dur) => format!("\u{1F4F9} chùm \u{00B7} {dur}").into(),
+        Msg::BeamDroppedDur(dur) => format!("\u{1F4F9} chùm \u{00B7} bị rớt \u{00B7} {dur}").into(),
+        Msg::MissedBeamRow => "\u{1F4F9} chùm nhỡ".into(),
+        Msg::RejectedBeamRow => "\u{1F4F9} chùm bị làm ngơ".into(),
+        Msg::BeamDeclinedRow => "\u{1F4F9} chùm bị từ chối".into(),
         Msg::BusyRow => "\u{260E} đang bận".into(),
         // ---- launch / handle / join ----
         Msg::YesForever => "Đồng ý, mãi mãi".into(),

@@ -96,6 +96,11 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::WaveRow => "\u{260E} लहर".into(),
         Msg::MissedWaveRow => "\u{260E} छूटी लहर".into(),
         Msg::WaveDeclinedRow => "\u{260E} लहर से मना".into(),
+        Msg::BeamEndedDur(dur) => format!("\u{1F4F9} किरण \u{00B7} {dur}").into(),
+        Msg::BeamDroppedDur(dur) => format!("\u{1F4F9} किरण \u{00B7} कट गई \u{00B7} {dur}").into(),
+        Msg::MissedBeamRow => "\u{1F4F9} छूटी किरण".into(),
+        Msg::RejectedBeamRow => "\u{1F4F9} किरण अनदेखी".into(),
+        Msg::BeamDeclinedRow => "\u{1F4F9} किरण से मना".into(),
         Msg::BusyRow => "\u{260E} व्यस्त".into(),
         // ---- launch / handle / join ----
         Msg::YesForever => "हाँ, हमेशा के लिए".into(),

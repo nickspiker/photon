@@ -134,6 +134,8 @@ pub struct WaveInfo {
     pub outcome: WaveOutcome,
     /// Live seconds (Active phase only; 0 for missed/declined/busy). The recording's slot count refines it when the keep lands.
     pub secs: u32,
+    /// It was a beam (video), not a wave: drawn as one on every device (the owner 2026-11-24: "Recent beam shows as wave instead"). Set by the device that lived it and by a kept beam video; the copies fold it with OR, so a device that missed the beam flag learns it from one that had it.
+    pub beam: bool,
 }
 
 /// Envelope thumbnail buckets per channel on a recording row — one GROSS. Small enough to ride the row fleet-wide (a sibling draws the shape without the blob), coarse enough that the fine envelope in the container is worth opening when the blob is held.

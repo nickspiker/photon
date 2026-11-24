@@ -3181,6 +3181,10 @@ pub struct PhotonApp {
     attach_fetch_prefer: crate::linear_map::SortedMap<[u8; 32], [u8; 32]>,
     /// Fetches that found nobody to ask (attachments.rs AddrWait): held until an address arrives, said once per edge.
     attach_addr_wait: attachments::AddrWait,
+    /// Devices the transport gave up reaching since the last address edge (a relay that said offline): no fetch asks them until a device comes online or a path proves out (`attach_address_edge`). Such an ask proves nothing about the file, so it never counts toward letting a fetch go (the owner's MacBook, 2026-11-24: eight asks at offline devices in two seconds, and the fetch was dropped).
+    attach_unreachable: Vec<[u8; 32]>,
+    /// (blob, device) pairs where the device said it holds none: not asked for that blob again until the next address edge, so the asks rotate to devices that might have it.
+    attach_declined: Vec<([u8; 32], [u8; 32])>,
     /// wave_ids THIS device dialed this session — the license for the stray-answer loud-kill (wave_ui Answer arm): a device that never dialed must never hang up the friend. RAM-only on purpose; a few entries per session, never pruned.
     dialed_wave_ids: crate::linear_map::SortedSet<[u8; 16]>,
     /// Fleet wave-presence chip: a wave is running on ANOTHER of our devices — `(wave_id, that device's pubkey if the row named it, the friend's handle hash)`. Lit by our fleet's replicated offer/answer rows, cleared by the terminal rows (hangup/decline/busy — the tombstones). Purely informational v1; join/switch reads this state later.
@@ -4037,6 +4041,8 @@ impl PhotonApp {
             space_launch_checked: false,
             attach_fetch_prefer: crate::linear_map::SortedMap::new(),
             attach_addr_wait: attachments::AddrWait::default(),
+            attach_unreachable: Vec::new(),
+            attach_declined: Vec::new(),
             dialed_wave_ids: Default::default(),
             fleet_wave_elsewhere: None,
             signing_bundle: None,

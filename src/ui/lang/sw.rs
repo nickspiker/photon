@@ -96,6 +96,11 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::WaveRow => "\u{260E} wimbi".into(),
         Msg::MissedWaveRow => "\u{260E} wimbi lisilopokelewa".into(),
         Msg::WaveDeclinedRow => "\u{260E} wimbi limekataliwa".into(),
+        Msg::BeamEndedDur(dur) => format!("\u{1F4F9} mwale \u{00B7} {dur}").into(),
+        Msg::BeamDroppedDur(dur) => format!("\u{1F4F9} mwale \u{00B7} umekatika \u{00B7} {dur}").into(),
+        Msg::MissedBeamRow => "\u{1F4F9} mwale usiopokelewa".into(),
+        Msg::RejectedBeamRow => "\u{1F4F9} mwale umepuuzwa".into(),
+        Msg::BeamDeclinedRow => "\u{1F4F9} mwale umekataliwa".into(),
         Msg::BusyRow => "\u{260E} ana shughuli".into(),
         // ---- launch / handle / join ----
         Msg::YesForever => "Ndiyo, milele".into(),

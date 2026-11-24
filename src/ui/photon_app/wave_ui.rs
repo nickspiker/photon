@@ -71,6 +71,17 @@ mod duration_kat {
 pub(super) fn wave_header(w: crate::types::WaveInfo) -> String {
     use crate::types::WaveOutcome as O;
     let dur = fmt_duration_secs(w.secs as i64);
+    // A beam says so (the owner 2026-11-24: "Recent beam shows as wave instead"); busy is the same word for both.
+    if w.beam {
+        return match w.outcome {
+            O::Answered => tr(Msg::BeamEndedDur(&dur)).into_owned(),
+            O::Dropped => tr(Msg::BeamDroppedDur(&dur)).into_owned(),
+            O::Missed => tr(Msg::MissedBeamRow).into_owned(),
+            O::Rejected => tr(Msg::RejectedBeamRow).into_owned(),
+            O::Declined => tr(Msg::BeamDeclinedRow).into_owned(),
+            O::Busy => tr(Msg::BusyRow).into_owned(),
+        };
+    }
     match w.outcome {
         O::Answered => tr(Msg::WaveEndedDur(&dur)).into_owned(),
         O::Dropped => tr(Msg::WaveDroppedDur(&dur)).into_owned(),
@@ -1792,6 +1803,8 @@ impl PhotonApp {
         if self.active_wave.as_ref().is_some_and(|c| c.phase == WavePhase::Active) {
             crate::platform::audio::play_end_sweep();
         }
+        // A beam: offered as one, or this device beaming, read before the camera is retired below; a kept beam video marks the row too (the video keep).
+        let was_beam = self.active_wave.as_ref().is_some_and(|c| c.beam || c.beam_tx.is_some()) || self.beam_ticket.is_some();
         // The engine thread outlives `stop()` by the fill drain (engine.rs: the peer hands back the windows we lost); the keep joins it before reading the spool.
         if let Some(w) = self.active_wave.as_mut() {
             // The sender's join (capture thread + AVCaptureSession stopRunning) and a camera still opening finish on a worker, never here.
@@ -1837,7 +1850,7 @@ impl PhotonApp {
             if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
                 // The wave row, always: empty content, typed payload. Same stamp on every device that lived any part of the wave → one row fleet-wide, outcome folded by rank.
                 let mut row = ChatMessage::new_with_timestamp(String::new(), was_origin, offer_osc + 1);
-                row.wave = Some(WaveInfo { outcome, secs });
+                row.wave = Some(WaveInfo { outcome, secs, beam: was_beam });
                 row.notified = true;
                 row.delivered = true;
                 if let Some(conv) = self.conv_mut_of(ci) {
@@ -2103,7 +2116,7 @@ impl PhotonApp {
                             conv.insert_message_sorted(row.clone());
                             if let Some(w) = conv.messages.iter_mut().find(|m| m.timestamp == r.offer_osc + 1 && m.wave.is_some()) {
                                 let before = w.wave;
-                                crate::types::merge_wave_fields(w, Some(WaveInfo { outcome: WaveOutcome::Answered, secs: kept.secs }), &[]);
+                                crate::types::merge_wave_fields(w, Some(WaveInfo { outcome: WaveOutcome::Answered, secs: kept.secs, beam: r.video.is_some() }), &[]);
                                 if w.wave != before {
                                     pushed.push(w.clone());
                                 }
