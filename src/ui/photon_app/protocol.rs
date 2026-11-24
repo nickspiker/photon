@@ -1025,6 +1025,13 @@ impl PhotonApp {
                     // The chain moved: re-read what it says about schemes (a Declare, a Lock, a join) for the Fleet page.
                     self.spawn_scheme_refresh(&hp);
                     // Cutover: OUR fold is the primary registry's truth — converge on the fold-change edge (any member may; writes are idempotent and epoch-guarded, so racing siblings settle).
+                    // A device of ours left (an approved departure, fgtw::security UNBIND's rotate step): the fleet key turns over now, on this edge, whichever surviving member sees it first (the worker's epoch guard settles racing siblings), never waiting on fgtw.org's hub notice. The mint wraps the fold after the Remove, so the leaver opens nothing sealed from here on.
+                    let ours = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
+                    let left: Vec<[u8; 32]> = self.registry_converged_fold.iter().filter(|m| !members.contains(m)).copied().collect();
+                    if !left.is_empty() && ours.is_some_and(|me| members.contains(&me)) {
+                        crate::logf!("FLEET: {} device(s) left our fleet ({}); turning the fleet key over", left.len(), left.iter().map(|d| crate::fp(d)).collect::<Vec<_>>().join(", "));
+                        self.spawn_fleet_key_sync_owing(true);
+                    }
                     if self.registry_converged_fold != members {
                         // The first fold of a session is the edge our chain loaded: only now can a sibling be told a fleet member from an alias one (alias::alias_only_sibling), so the alias siblings' pair secrets are read again.
                         if self.registry_converged_fold.is_empty() && self.photon_keys.is_some() {

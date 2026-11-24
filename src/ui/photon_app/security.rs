@@ -217,15 +217,13 @@ impl PhotonApp {
                 self.security_lock();
                 self.security_page.finished(act, true);
             }
-            Act::Shred | Act::Wipe => {
-                // Before attest (Nick 2026-09-16) the wipe is for a device someone else held, or a handle nobody will ever type again: the log goes too, so the next owner inherits no trace of the last. Attested, the shred keeps the log: the wipe itself is the line a submitted log should carry.
-                let unattested = self.session.is_none();
-                crate::logf!("SECURITY: {} — this device's copy of the identity destroyed; it stays in the fleet", if act == Act::Wipe { "wipe" } else { "shred" });
+            Act::Shred => {
+                // The shred as it stands until the vault salt lands (docs/settings-panel.md "Security"): the device vault discarded thru kete. Keys only, nothing deleted, once the salt is in.
+                crate::log("SECURITY: shred, confirmed with the handle; this device's copy of the identity destroyed, and it stays in the fleet");
                 self.clean_device_for_reuse();
-                if unattested {
-                    crate::clear_log();
-                }
             }
+            // Before attest nothing is drawn, so nothing is pressed (owner, 2026-11-24: "if you cannot attest, there's ZERO reason my shit should get wiped"); the arm stays only while fgtw still names the act.
+            Act::Wipe => {}
             Act::Revoke(k) => {
                 self.revoke_device(k);
                 self.security_page.finished(act, true);

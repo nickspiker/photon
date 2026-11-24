@@ -6175,7 +6175,7 @@ impl PhotonApp {
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
                     flow.page_title(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                    // Before attest (Nick 2026-09-16: "wipe without attesting upon first boot") the model gives one row: wipe. There is no identity to lock, kill, revoke or unbind, but there may be a vault, a binding marker and a log left by whoever held this hardware before, and a bound device with a lost or foreign handle has no other way out. The vault is sealed under the handle-derived seed, so the attest screen was never the lock: this grants nothing an OS "clear storage" doesn't.
+                    // Before attest the model gives no row and says why (owner, 2026-11-24: "if you cannot attest, there's ZERO reason my shit should get wiped"): nothing on this device can be changed or destroyed without the identity's handle or its fleet's consent.
                     let (intro, rows, names, status) = security_view.as_ref().expect("the Security page's model is gathered whenever the Security page is drawn");
                     let present = self.session.is_some();
                     flow.prose(&mut canvas, ctx.text, &tr(*intro), hspan2, *theme::LABEL_COLOUR, 400);
