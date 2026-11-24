@@ -1743,13 +1743,31 @@ pub use desktop::{capture_rate, has_render, input_names, opened, output_names, p
 #[cfg(target_os = "ferros")]
 pub use ferros::{capture_rate, has_render, input_names, opened, output_names, picks, set_mic_pick, set_picks, set_speaker_pick};
 
-// ferros: no audio devices are driven yet (the kernel has no sound path; drivers move to userspace in time), so there is nothing to open, pick or start.
+// ferros (docs/ferros-media.md): the speaker thru ferros's audio service (ferros docs/AUDIO.md; ferros_sys `audio` is the protocol's one copy, restated here since Photon calls the kernel itself): a MEDIA stream at 48 kHz, stereo i16, each 5 ms engine frame written as the service frees room, so the writer runs on the hardware's clock.
+// Today's WRITE keeps the stream's ring full (1024 frames, 21.3 ms) plus the two periods the service keeps at the AoC: the floor docs/ferros-media.md measures first, then replaces with a shared ring held one period ahead.
+// No microphone yet: ferros has no capture stream for kists (docs/ferros-media.md, step 2). Until it does, the render clock hands the engine a frame of silence for every frame it plays, so a wave runs full duplex and sends silence.
 #[cfg(target_os = "ferros")]
 mod ferros {
     use super::*;
 
+    /// The `audio` grant: the kernel's sound out, after the GPU's three (std/photon in the ferros repo; tools/photon-capsule.sh).
+    const AUDIO_SLOT: u64 = 13;
+    const OPEN: u8 = 0;
+    const WRITE: u8 = 1;
+    const CLOSE: u8 = 2;
+    /// A call's voice is media: it plays in every sound mode.
+    const MEDIA: u8 = 0;
+    /// The service's period and a stream's ring, in frames (ferros_sys `audio::PERIOD`, `RING`).
+    const PERIOD: i64 = 1 << 8;
+    const RING: i64 = PERIOD << 2;
+    /// What the service keeps queued at the AoC beyond the ring (AUDIO.md "Latency").
+    const AOC_QUEUED: i64 = 2 * PERIOD;
+
+    static THREAD: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+    static OPENED: AtomicBool = AtomicBool::new(false);
+
     pub fn route() -> AudioRoute {
-        AudioRoute::Unknown
+        AudioRoute::Speaker
     }
 
     pub fn input_names() -> Vec<String> {
@@ -1771,7 +1789,7 @@ mod ferros {
     pub fn set_speaker_pick(_pick: Option<String>) {}
 
     pub fn opened() -> (Option<String>, Option<String>) {
-        (None, None)
+        (None, OPENED.load(Ordering::Relaxed).then(|| "speaker".to_string()))
     }
 
     pub fn capture_rate() -> Option<u32> {
@@ -1779,15 +1797,97 @@ mod ferros {
     }
 
     pub fn has_render() -> bool {
-        false
+        OPENED.load(Ordering::Relaxed)
     }
 
     pub fn start() -> bool {
-        crate::log("AUDIO: no devices on ferros yet");
-        false
+        if ACTIVE.swap(true, Ordering::SeqCst) {
+            return true;
+        }
+        clear_queues();
+        let spawned = std::thread::Builder::new().name("wave-render".into()).spawn(render_thread).ok();
+        let ok = spawned.is_some();
+        if !ok {
+            ACTIVE.store(false, Ordering::SeqCst);
+            crate::log("AUDIO: the render thread did not start");
+        }
+        *THREAD.lock().unwrap() = spawned;
+        ok
     }
 
-    pub fn stop() {}
+    pub fn stop() {
+        if super::end_sweep_holds_stop() {
+            return; // the disconnect sweep is playing; its own stop follows the drain
+        }
+        ACTIVE.store(false, Ordering::SeqCst);
+        let t = THREAD.lock().unwrap().take();
+        if let Some(h) = t {
+            if h.join().is_err() {
+                crate::log("AUDIO: the render thread panicked");
+            }
+        }
+    }
+
+    /// Frames as oscillations on the boot clock.
+    fn frames_osc(frames: i64) -> i64 {
+        (frames as i128 * crate::OSC_PER_SEC as i128 / SAMPLE_RATE as i128) as i64
+    }
+
+    /// The session: open the stream, then write a frame at a time until the wave ends; the service's answer to each write (the ring's room) says how much plays ahead of the next frame, which stamps its DAC instant.
+    fn render_thread() {
+        let mut r = [0u8; 19];
+        let opened = crate::platform::ferros_net::call_slot(AUDIO_SLOT, &[OPEN, MEDIA], &mut r);
+        if opened != Some(19) || r[0] != 0 {
+            match opened {
+                Some(n) => crate::logf!("AUDIO: the audio service refused the stream ({} bytes back, status {})", n, r[0]),
+                None => crate::log("AUDIO: the kernel refused the call: no audio grant in slot 13"),
+            }
+            ACTIVE.store(false, Ordering::SeqCst);
+            return;
+        }
+        let handle: [u8; 8] = r[1..9].try_into().expect("an 8-byte handle in a 19-byte reply");
+        let rate = u32::from_le_bytes([r[9], r[10], r[11], r[12]]);
+        let period = u16::from_le_bytes([r[13], r[14]]);
+        let ring = u32::from_le_bytes([r[15], r[16], r[17], r[18]]);
+        crate::logf!("AUDIO: speaker open on ferros: {} Hz, period {} frames, ring {} frames", rate, period, ring);
+        OPENED.store(true, Ordering::Relaxed);
+        let mut msg = vec![0u8; 9 + FRAME_SAMPLES * 4];
+        msg[0] = WRITE;
+        msg[1..9].copy_from_slice(&handle);
+        // Until the first answer, the ring is taken as full: the stamp errs late, never early.
+        let mut queued = RING;
+        let mut pos: i64 = 0;
+        while ACTIVE.load(Ordering::Relaxed) {
+            let now = crate::network::time_base::boot_now();
+            let at = crate::network::time_base::eagle_at_boot_rt(now + frames_osc(queued + AOC_QUEUED));
+            let frame = next_render_frame_at(at);
+            // The capture stub: a silent frame stamped as it would have been heard (see the head of this module).
+            push_captured(crate::network::time_base::eagle_at_boot_rt(now), pos, vec![0i32; FRAME_SAMPLES]);
+            pos += FRAME_SAMPLES as i64;
+            for (k, s) in frame.iter().enumerate() {
+                let b = s.to_le_bytes();
+                msg[9 + 4 * k..11 + 4 * k].copy_from_slice(&b);
+                msg[11 + 4 * k..13 + 4 * k].copy_from_slice(&b);
+            }
+            let mut a = [0u8; 5];
+            let got = crate::platform::ferros_net::call_slot(AUDIO_SLOT, &msg, &mut a);
+            if got != Some(5) || a[0] != 0 {
+                match got {
+                    Some(n) => crate::logf!("AUDIO: the speaker stream ended ({} bytes back, status {})", n, a[0]),
+                    None => crate::log("AUDIO: the speaker stream ended: the kernel refused the write"),
+                }
+                break;
+            }
+            queued = RING - u32::from_le_bytes([a[1], a[2], a[3], a[4]]) as i64;
+        }
+        let mut c = [0u8; 9];
+        c[0] = CLOSE;
+        c[1..9].copy_from_slice(&handle);
+        let mut a = [0u8; 1];
+        crate::platform::ferros_net::call_slot(AUDIO_SLOT, &c, &mut a);
+        OPENED.store(false, Ordering::Relaxed);
+        crate::log("AUDIO: speaker closed");
+    }
 }
 
 /// Android renders thru AAudio for the life of the wave; its stall watchdog always has a stream to rebuild.

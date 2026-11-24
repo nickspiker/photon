@@ -40,8 +40,13 @@ fn cap(slot: u64) -> u64 {
 
 /// One call to the ip server: the reply's length, or an io error when the kernel refused the call.
 pub(crate) fn call(req: &[u8], reply: &mut [u8]) -> io::Result<usize> {
-    let n = svc(CALL, cap(UDP_SLOT), off(req.as_ptr()), req.len() as u64, off(reply.as_mut_ptr()), reply.len() as u64);
-    if n == ERR { Err(io::Error::new(io::ErrorKind::Other, "the ip server refused the call")) } else { Ok(n as usize) }
+    call_slot(UDP_SLOT, req, reply).ok_or_else(|| io::Error::new(io::ErrorKind::Other, "the ip server refused the call"))
+}
+
+/// One call on the endpoint in grant `slot` (the audio service's too): the reply's length, or None when the kernel refused it (an empty slot, a dead endpoint).
+pub(crate) fn call_slot(slot: u64, req: &[u8], reply: &mut [u8]) -> Option<usize> {
+    let n = svc(CALL, cap(slot), off(req.as_ptr()), req.len() as u64, off(reply.as_mut_ptr()), reply.len() as u64);
+    (n != ERR).then_some(n as usize)
 }
 
 /// The counter the kernel's deadlines are on (`cntvct_el0`), and its ticks a second.
