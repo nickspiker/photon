@@ -30,6 +30,11 @@ Mouth to ear, two ferros phones on one LAN. "Today" is the design as built (AUDI
 | Mix period | 256 frames (5.3 ms) | 64–128 frames (1.3–2.7 ms), if the AoC takes it |
 | **Mouth to ear** | ~40–50 ms by design | **~12–15 ms** |
 
+**Measured** (ferros's audio agent, the Pro, 2026-11-24):
+- ferros had been playing thru the AoC's deep-buffer entry point (EP6), which takes 480 frames every 10 ms whatever period it is told. EP0 (Android's MMAP path) rings at the period asked, down to 1 ms (48 frames); a 1 ms block with only 64 frames queued (1.33 ms) ran 3 s with 0 underruns. The service is moving to EP0 at 1 ms.
+- AoC interrupt to the audio service running: 24–36 µs mean, 66–383 µs worst.
+- The draft APIs fit the engine's seam as they stand: ferros_sys `audio::mic` on the MIC mailbox (one writer, many readers, i32 per channel, a monotonic position and a capture-time anchor) and `audio::Shared` on SYS_SHARE, forge e4781298 (WRITE/READ/WAKE_AT, the DAC anchor, underruns).
+
 Glass to glass (camera to the far panel): today nothing; target ~25–35 ms at 60 frames/s capture, against 150–300 ms for a typical video call.
 
 ## Sound
