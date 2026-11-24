@@ -6,6 +6,12 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **The Security page is the same on every device.** Lock, then revoke or reinstate each of your other devices, then shred, then unbind this device, in that order and in the same words as Photon on ferros, and every button is lower case.
+- **Shredding and revoking ask for your handle.** Shred and unbind ask you to type your handle under the button; revoking or reinstating another device signs this one out and asks for your handle on the attest screen, and acts only when it matches.
+- **A beam is called a beam.** A video wave shows as a beam in your history, and replaying one fetches its video from whichever of your devices holds it.
+- **A computer finds its own vault again.** A desktop that came back up on its old machine key after moving to its hardware key moves back when you attest, and Photon never deletes the vault it is not using at that moment.
+- **The join question's yes button shows its words again.**
+- **Photon on ferros installs from kists.fgtw.org.** Each version is published there under its own fingerprint.
 
 ## v156
 - **New versions reach you through your own devices and friends.** When one of your devices or a friend's learns a release is out, it hands the signed release on to the others it is connected to, and each one checks the release's signature itself before it updates, so an update no longer waits for a server to ring.
