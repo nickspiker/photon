@@ -94,6 +94,47 @@ impl PhotonApp {
     }
 }
 
+/// The attest found this desktop running as its machine key while the fleet's member is its papers key: the move was made once, and the papers' vault went (Leviathan, 2026-11-24: it ran as its retired key 90e571bf, and every attest asked to add it as a new device).
+/// The fleet half is done already, so only the vault half runs, at the attest, with the roots the proof paid for: the machine key's vault is carried into a fresh vault under the papers, the machine key's vault goes thru kete, and the image starts again on the papers.
+/// True when the move ran; false when this desktop owes no move, the chain does not name the papers key as a live member, the machine key is still a member (the ordinary move at the session handles that), or the carry failed.
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+pub fn move_onto_member_papers(chain: &fleet::MembershipBlob, identity_seed: &[u8; 32]) -> bool {
+    let (legacy, new_root) = match OWED.lock().ok().as_deref() {
+        Some(Some(Owed::Convert { legacy, new })) => (legacy.clone(), new.clone()),
+        _ => return false,
+    };
+    let (old_pub, new_pub) = (pubkey_of(&signer_of(&legacy)), pubkey_of(&signer_of(&new_root)));
+    let (Ok(members), Ok(locked)) = (chain.fold(), chain.locked_out()) else { return false };
+    if !members.contains(&new_pub) || locked.contains(&new_pub) || members.contains(&old_pub) {
+        return false;
+    }
+    crate::logf!("ROOT: this desktop runs as its machine key {}, and the fleet's member is its papers key {}: carrying the vault onto the papers and starting again there", crate::fp(&old_pub), crate::fp(&new_pub));
+    let new_secret = tohu::device::device_secret_from(&new_root);
+    let Some(old_vault) = crate::storage::device_vault() else {
+        crate::log("ROOT: the device vault is not open; the move waits for the next attest");
+        return false;
+    };
+    let carried = kete::FlatStorage::open_device_shared(crate::storage::APP, new_secret)
+        .map_err(|e| e.to_string())
+        .and_then(|v| v.set_identity(*identity_seed).map(|_| v).map_err(|e| e.to_string()))
+        .and_then(|v| old_vault.rehome_into(&v).map_err(|e| e.to_string()));
+    match carried {
+        Ok(n) => crate::logf!("ROOT: vault carried: {} device-scope + {} identity-scope entries, {} left unopened", n.device, n.identity, n.unopened),
+        Err(e) => {
+            // A half-written vault under the papers would be selected first at the next start, so it goes now.
+            crate::logf!("ROOT: the vault re-home failed ({}); the papers' vault is discarded and the attest asks again", e);
+            crate::log_err!(kete::discard_device_vault(crate::storage::APP, &new_secret), "discarding the half-carried vault");
+            return false;
+        }
+    }
+    crate::log_err!(kete::discard_device_vault(crate::storage::APP, &tohu::device::device_secret_from(&legacy)), "discarding the machine key's vault");
+    if let Ok(mut g) = OWED.lock() {
+        *g = None;
+    }
+    REEXEC_OWED.store(true, std::sync::atomic::Ordering::Release);
+    true
+}
+
 /// The signer a root derives: the PQ bundle, whose Ed25519 half is the device key.
 fn signer_of(root: &[u8]) -> DeviceSigner {
     DeviceSigner::Pq(SigningBundle::derive(root))

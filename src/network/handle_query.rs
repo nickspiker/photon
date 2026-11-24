@@ -548,6 +548,20 @@ impl HandleQuery {
                         crate::log_err!(tx.send(QueryResult::Probe { outcome: ProbeOutcome::Member, session }), "attest: probe result to the UI");
                         continue;
                     }
+                    // A desktop running as its retired machine key whose papers key is the member (root_conversion::move_onto_member_papers): the vault moves onto the papers and the image starts again there, the session kept so it resumes without the handle; no verdict goes to the screen, which the restart replaces.
+                    #[cfg(any(target_os = "linux", target_os = "windows"))]
+                    {
+                        let moved = |chain: &crate::network::fgtw::fleet::MembershipBlob| {
+                            if !crate::ui::photon_app::root_conversion::move_onto_member_papers(chain, &identity_seed) {
+                                return false;
+                            }
+                            crate::log_err!(tohu::set_session(&session), "keeping the session across the move onto the papers");
+                            true
+                        };
+                        if crate::network::fgtw::fleet::held_chain(&handle_proof).is_some_and(|c| moved(&c)) {
+                            continue;
+                        }
+                    }
                     set_attest_stage(attest_stage::ASKING_SEED);
                     let fetched = crate::network::fgtw::fleet::fetch(&handle_proof);
                     let seed = match &fetched {
@@ -577,6 +591,16 @@ impl HandleQuery {
                             continue;
                         }
                     };
+                    // The same desktop move from fgtw.org's copy of the chain, when this device held none.
+                    #[cfg(any(target_os = "linux", target_os = "windows"))]
+                    if outcome == ProbeOutcome::JoinOurs {
+                        if let Ok(Some(blob)) = &fetched {
+                            if crate::ui::photon_app::root_conversion::move_onto_member_papers(blob, &identity_seed) {
+                                crate::log_err!(tohu::set_session(&session), "keeping the session across the move onto the papers");
+                                continue;
+                            }
+                        }
+                    }
                     // A reinstalled phone whose fleet member is its own legacy key: the old key sponsors this one, and the attest proceeds as a member (fleet.rs self_sponsor_from_legacy_root).
                     #[cfg(target_os = "android")]
                     if outcome == ProbeOutcome::JoinOurs {

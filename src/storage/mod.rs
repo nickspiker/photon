@@ -236,6 +236,19 @@ pub fn set_device_flag(key: &str, on: bool) {
     }
 }
 
+/// A second ring the desktop census keeps beside the running root's: the other root of a device mid-move between its machine identity and its papers (fgtw/fingerprint.rs `select_desktop_root`), so only the move discards a ring, never the census.
+/// DESKTOP ROOT CONVERSION PIN, MIGRATION-EXPIRES: 2027-02-01.
+#[cfg(not(target_os = "android"))]
+static CENSUS_ALSO_KEEP: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
+
+/// Name the other root's device secret whose ring the census keeps; set once by the root selection, before the vault opens.
+#[cfg(not(target_os = "android"))]
+pub fn census_also_keep(device_secret: [u8; 32]) {
+    if let Ok(mut g) = CENSUS_ALSO_KEEP.lock() {
+        *g = Some(device_secret);
+    }
+}
+
 /// THE CENSUS (Nick's rule, sharpened 2026-08-20): a file in the primary or secondary photon dir either matches `<device token>.vsf` or the log, or it is DELETED — no backups, no folding, no conversion, no exceptions. File-era artifacts (device_binding.vsf, opt-in markers, reboot capsule, blobs/, settings.vsf) die here with everything else: flags and bindings re-arm thru their live vault paths; sealed file content nothing can re-key is dead. Name-independent sweep, so the next stray CLASS never needs its own line. Runs once per process at first device-vault open.
 /// Desktop only: on Android `photon_config_dir` is the app-private files ROOT, which the OS and the JNI layer also write into — sweeping unknown names there would eat platform files; the sandbox already isolates it.
 fn census_sweep(device_secret: &[u8; 32]) {
@@ -277,11 +290,17 @@ fn census_sweep(device_secret: &[u8; 32]) {
     #[cfg(not(target_os = "android"))]
     {
         let ring = tohu::device_vault_path_name(APP.id, device_secret);
-        let keep = [
+        let mut keep = vec![
             format!("{}.vsf", ring),
             format!("{}.shadow.vsf", ring), // the mirror when primary and secondary collide into one dir (macOS)
             "photon.log.vsf".to_string(),
         ];
+        // The other root's ring of a device mid-move (`census_also_keep`): only the move discards it (DESKTOP ROOT CONVERSION PIN, MIGRATION-EXPIRES: 2027-02-01).
+        if let Some(other) = CENSUS_ALSO_KEEP.lock().ok().and_then(|g| *g) {
+            let other_ring = tohu::device_vault_path_name(APP.id, &other);
+            keep.push(format!("{}.vsf", other_ring));
+            keep.push(format!("{}.shadow.vsf", other_ring));
+        }
         let mut targets: Vec<std::path::PathBuf> = Vec::new();
         if let Ok(d) = photon_config_dir() {
             targets.push(d);

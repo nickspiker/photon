@@ -111,6 +111,9 @@ pub fn select_desktop_root() {
     };
     let vault_under = |root: &[u8]| kete::device_vault_present(crate::storage::APP, &tohu::device::device_secret_from(root));
     let (on_papers, on_legacy) = (vault_under(&papers), vault_under(&legacy));
+    // Whichever root this process runs on, the census keeps the other root's ring too: only the move discards a ring, thru kete (Leviathan, 2026-11-24: its papers vault was gone and it ran as its retired machine key; a census that kept the running root's ring alone deletes the other).
+    // DESKTOP ROOT CONVERSION PIN, MIGRATION-EXPIRES: 2027-02-01.
+    crate::storage::census_also_keep(tohu::device::device_secret_from(if on_legacy && !on_papers { &papers } else { &legacy }));
     let root = if on_legacy && !on_papers {
         crate::log("ROOT: this device's vault is under the machine identity — running as that device until the session moves it onto the papers");
         note_owed(Owed::Convert { legacy, new: papers });
