@@ -74,7 +74,9 @@ ferros_kist_carry() {
 # Every path dependency the frozen std/photon reaches, directly or thru another crate, that the snapshot lacks: its live repo is carried whole, beside the others as it sits beside them live.
 # Absolute paths (ferros-libc) name live trees by design and are left alone; a `path` that names a source file ([lib], [[bin]]) holds no Cargo.toml and is passed over.
 ferros_kist_carry_siblings() {
-    local root="$1" code dir p dep live top seen=" "
+    local root code dir p dep live top seen=" "
+    # Resolved like every dependency below: the deploy names the snapshot `photon/../.build-snap`, and a root left unresolved matches no resolved path, so every repo was passed over (v157's second deploy, 2026-11-24: tatau).
+    root="$(realpath -m "$1")"
     local queue=("$root/ferros/std/photon")
     code="$(cd "$FERROS_DIR/.." && pwd)"
     while [ "${#queue[@]}" -gt 0 ]; do
