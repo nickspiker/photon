@@ -86,6 +86,9 @@ pub enum AvatarFrame {
     /// An app icon on a transparent canvas (Mahere's round map fills the middle 80 %, Lumis's has a margin and a soft shadow) then reaches the circle's edge, where the centred square would leave the margin as a ring (ferros kist icons, 2026-11-20: the one icon format, made by this process).
     /// A source with no alpha frames as `Centre`.
     Art,
+    /// `Art`'s square cut in by this much on every edge, in 1/1024ths of its side, still centred on the art: for icon art whose own margin or shadow would show at the circle's edge (Lumis, 2026-11-24: 3 % off each edge, about 31).
+    /// The cut is part of the frame, ahead of the one resize, so the source is resampled once. An inset of 512 or more (half the side or past it) leaves nothing and is refused; a source with no alpha frames as `Centre`, with no cut.
+    ArtInset(u16),
 }
 
 /// What a source's codes mean.
@@ -151,7 +154,7 @@ pub fn image_to_avatar_rgb_f32_framed(image_data: &[u8], frame: AvatarFrame, cod
     let orig_height = img.height() as usize;
 
     // The art frame's opacity, one value a source pixel (0 to 1); None for the centred square and for a source without alpha.
-    let alpha: Option<Vec<f32>> = (frame == AvatarFrame::Art && img.color().has_alpha()).then(|| img.to_rgba16().pixels().map(|p| p[3] as f32 / 65535.).collect());
+    let alpha: Option<Vec<f32>> = (matches!(frame, AvatarFrame::Art | AvatarFrame::ArtInset(_)) && img.color().has_alpha()).then(|| img.to_rgba16().pixels().map(|p| p[3] as f32 / 65535.).collect());
 
     // Center-crop to square before color conversion (the art frame: the square about the opaque art)
     let (crop_x, crop_y, crop_size) = match &alpha {
@@ -177,6 +180,18 @@ pub fn image_to_avatar_rgb_f32_framed(image_data: &[u8], frame: AvatarFrame, cod
             // WHY the min: the conversion below reads the source square directly, so it must lie inside the image.
             // PROOF:art wider than the image's short side (a wide logo on a wide canvas) makes a square past the short edge, and the loops would index outside the pixels; it is cut to the short side, centred on the art.
             let side = (x1 - x0).max(y1 - y0).min(orig_width.min(orig_height));
+            // ArtInset's cut, each edge rounded to the nearest pixel.
+            let inset = match frame {
+                AvatarFrame::ArtInset(n) => n as usize,
+                _ => 0,
+            };
+            let cut = (side * inset + (1 << 9)) >> 10;
+            // WHY: the inset is a caller's number (app-icons' --inset); an inset near half the side or past it cuts the art to nothing.
+            // PROOF: side - 2 x cut underflows usize once cut passes side / 2, and a zero side leaves the resize nothing to read (an inset of 512 or more always lands here).
+            if 2 * cut >= side {
+                return Err(format!("an inset of {inset}/1024 leaves nothing of art {side} pixels across"));
+            }
+            let side = side - 2 * cut;
             // The square centred on the art, slid inside the image.
             // WHY the saturating sub and the min, as above: a square about art near an edge would start before 0 or end past the far edge.
             let place = |lo: usize, hi: usize, extent: usize| ((lo + hi) / 2).saturating_sub(side / 2).min(extent - side);
