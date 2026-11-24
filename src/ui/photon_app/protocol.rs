@@ -363,6 +363,11 @@ impl PhotonApp {
         if std::mem::take(&mut self.fanout_grow_pending) {
             crate::log("FANOUT: newly egged sibling — growing so it gets a wrap");
             self.spawn_fleet_key_grow();
+            // The same edge is the first a new sibling can open a chain push: the whole push at its fold went out before its pair existed and was marked sent (Emma's 3a, 2026-11-24: her desktop pushed its group to the 3a 13 s before their ceremony, and the group never reached it). Every chain, group rosters with them, goes again now.
+            crate::log("CHAIN-SYNC: a sibling's pair just completed — every chain goes to it again");
+            self.lane_pushed_pos.clear();
+            self.chain_pushed_osc.clear();
+            self.molecule_roster_pushed.clear();
         }
 
         // Drain handle_query results. `try_recv` is non-blocking; we collect into local Vecs so the immutable borrow on `handle_query` ends before the `&mut self` handlers run. Three channels feed in: attestation results, connectivity changes, handle searches.
