@@ -309,13 +309,18 @@ WINDOWS_SHA256=$(cat target/x86_64-pc-windows-gnu/release/photon-messenger.exe.s
 REL_PATH="$R2_PATH/v$SHIP_VERSION"
 REL_URL="$R2_URL/v$SHIP_VERSION"
 RELEASE_FILES=(photon-messenger-linux-x86_64-release photon-messenger-linux-arm64-release photon-messenger-windows-release.exe photon-messenger-windows-arm64-release.exe photon-messenger-macos-x86_64-release photon-messenger-macos-arm64-release photon-messenger-android-release.apk photon-messenger-ferros-arm64-release.vsf)
-# The ferros capsule's row names its file over plain HTTP: a ferros device has no TLS, and the host answers http:// without a redirect (checked 2026-11-10). Nothing is trusted for the transport: the device checks the signed manifest, the capsule's blake3 against its row, and the capsule's own signature (docs/updates.md, "ferros").
-REL_URL_PLAIN="http://${REL_URL#https://}"
+# The ferros capsule lives at kists.fgtw.org, in the `kists` bucket under its blake3 (owner 2026-11-24: "Photon and possibly some other system apps will be hosted at kists.fgtw.org since Photon is not mine"; ferros docs/KIST-DISTRIBUTION.md), not beside the other platforms.
+# Plain HTTP: a ferros device has no TLS, and the host answers http:// without a redirect. Nothing is trusted for the transport: the device checks the signed manifest, the capsule's blake3 against its row, and the capsule's own signature (docs/updates.md, "ferros").
+KISTS_BUCKET="kists"
+KISTS_URL="http://kists.fgtw.org"
 
 echo ""
 echo "Building signed release manifest..."
 MANIFEST_TOOL=target/release/photon-manifest
 b3() { b3sum "$1" | cut -d' ' -f1; }
+# The capsule's key in the kists bucket is its blake3, as kistcat keys every capsule; the version and name live inside the signed capsule.
+FERROS_B3="$(b3 "$FERROS_KIST_CAPSULE")"
+FERROS_KIST_KEY="capsules/$FERROS_B3.vsf"
 COMMIT="$TIP_COMMIT"
 "$MANIFEST_TOOL" --channel release --out /tmp/manifest-release.vsf \
     --artefact Linux   x86_64 "$FULL_VERSION" "$COMMIT" "$REL_URL/photon-messenger-linux-x86_64-release"  "$(b3 target/release/photon-messenger)" "$(manifest_size target/release/photon-messenger)" \
@@ -325,7 +330,7 @@ COMMIT="$TIP_COMMIT"
     --artefact macOS   x86_64 "$FULL_VERSION" "$COMMIT" "$REL_URL/photon-messenger-macos-x86_64-release"   "$(b3 target/x86_64-apple-darwin/release/photon-messenger)" "$(manifest_size target/x86_64-apple-darwin/release/photon-messenger)" \
     --artefact macOS   arm64  "$FULL_VERSION" "$COMMIT" "$REL_URL/photon-messenger-macos-arm64-release"   "$(b3 target/aarch64-apple-darwin/release/photon-messenger)" "$(manifest_size target/aarch64-apple-darwin/release/photon-messenger)" \
     --artefact Android arm64  "$FULL_VERSION" "$COMMIT" "$REL_URL/photon-messenger-android-release.apk"   "$(b3 android/app/build/outputs/apk/release/app-release.apk)" "$(manifest_size android/app/build/outputs/apk/release/app-release.apk)" \
-    --artefact ferros  arm64  "$FULL_VERSION" "$COMMIT" "$REL_URL_PLAIN/photon-messenger-ferros-arm64-release.vsf" "$(b3 "$FERROS_KIST_CAPSULE")" "$(manifest_size "$FERROS_KIST_CAPSULE")"
+    --artefact ferros  arm64  "$FULL_VERSION" "$COMMIT" "$KISTS_URL/$FERROS_KIST_KEY" "$FERROS_B3" "$(manifest_size "$FERROS_KIST_CAPSULE")"
 
 # Patch the Windows installer with the correct per-arch hashes NOW (a build-phase transform, no upload).
 sed "s/\$expectedHashX64 = \"[A-F0-9]*\"/\$expectedHashX64 = \"$WINDOWS_SHA256\"/" installers/install-release.ps1 > /tmp/install-release.ps1
@@ -425,7 +430,8 @@ r2_put "$R2_BUCKET/$REL_PATH/photon-messenger-macos-arm64-release" \
 r2_put "$R2_BUCKET/$REL_PATH/photon-messenger-android-release.apk" \
     --file android/app/build/outputs/apk/release/app-release.apk \
     --content-type application/vnd.android.package-archive --remote
-r2_put "$R2_BUCKET/$REL_PATH/photon-messenger-ferros-arm64-release.vsf" \
+# The ferros capsule to kists.fgtw.org under its blake3 (the owner's hosting, 2026-11-24); the directory there is built on the ferros side by kistcat, told this blake3.
+r2_put "$KISTS_BUCKET/$FERROS_KIST_KEY" \
     --file "$FERROS_KIST_CAPSULE" --content-type application/octet-stream --remote
 
 # THE SWITCH: the installers (patched to the folder above, which is now fully up), then the manifest — a few small files, so the new release goes live together.
@@ -451,6 +457,7 @@ r2_put "$R2_BUCKET/$R2_PATH/release-notes.md" \
 note_time "R2 upload (11 artefacts)" $((SECONDS - PHASE_T0))
 echo ""
 echo "Linux ARM64, Linux x86_64, Windows x86_64, Windows ARM64, macOS x86_64, macOS ARM64, Android binaries, the ferros capsule + manifest deployed to R2"
+echo "  ferros capsule: $KISTS_URL/$FERROS_KIST_KEY (blake3 $FERROS_B3: tell the ferros session, whose kistcat folds it into the kists.fgtw.org directory)"
 echo "  Windows SHA256: $WINDOWS_SHA256"
 
 # R2 is fully live — the release is public. Its provenance is the built commit $COMMIT: the hash build.rs baked into every binary (PHOTON_GIT_COMMIT) and the SHA the signed manifest stamped. Pin it with the IMMUTABLE v<n> tag and push THAT — the commit rides along with its hash intact, even tho main has moved past its parent during the ~1h build. This is NOT a branch push (a plain `git push` of the hour-old bump is rejected non-fast-forward the moment any device touched main during the build — five deploys died exactly here, 2026-08-28). main itself only ever gets the fast-forwarding dev-line bump, further down.
