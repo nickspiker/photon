@@ -1496,8 +1496,8 @@ impl FluorApp<Px> for PhotonApp {
                     if let Some(text) = text_opt {
                         if self.copy_to_clipboard(&text) {
                             crate::log("msg-details: message text copied");
-                            // Pill flips green + "copied" — event-cleared when the selection moves/closes.
-                            self.selected_msg_copied = true;
+                            // Pill flips green + "copied" on this message's strip alone — event-cleared when the selection moves/closes.
+                            self.selected_msg_copied = Some((sci, ts, out));
                             self.mark_dirty();
                         }
                     }
@@ -1858,7 +1858,7 @@ impl FluorApp<Px> for PhotonApp {
                             if key.is_some() {
                                 if self.selected_msg != key {
                                     self.selected_msg = key;
-                                    self.selected_msg_copied = false;
+                                    self.selected_msg_copied = None;
                                 } else {
                                     if self.music_play.as_ref().is_some_and(|m| m.hash == v.hash && m.playing()) {
                                         let f = ((px - v.x0) / (v.x1 - v.x0).max(1.0)).clamp(0.0, 1.0); // WHY/PROOF: the pointer can press past the bar's ends — a seek holds to the track's start or end
@@ -1937,7 +1937,7 @@ impl FluorApp<Px> for PhotonApp {
                         self.stop_playback_if_row_left(was);
                     }
                     // A fresh selection (or a close) resets the copy pill to its ready state.
-                    self.selected_msg_copied = false;
+                    self.selected_msg_copied = None;
                     self.mark_dirty();
                     ctx.window.request_redraw();
                 }
@@ -3354,7 +3354,7 @@ impl FluorApp<Px> for PhotonApp {
                 crate::log("msg-details: message tombstoned (deleted-for-everyone)");
             }
             self.selected_msg = None;
-            self.selected_msg_copied = false;
+            self.selected_msg_copied = None;
             self.msg_wrap = None; // row set changed — drop the wrap cache outright
             self.mark_dirty();
             { needs_redraw = true; self.note_redraw(); }

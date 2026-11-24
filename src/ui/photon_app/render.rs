@@ -4242,7 +4242,7 @@ impl PhotonApp {
                                     paint::fill_rect(&mut canvas, 0, hl_react_top as isize, buf_w as isize, hl_bot as isize - hl_react_top as isize, react_tint, Some(list_clip), None);
                                 }
                                 // Lower strip line: the ACTION ROW — reply · edit · copy/copied · resend · delete. Conditional pills: edit only for outgoing (stub until the message-format rework), resend only for undelivered outgoing (manual re-fire on the chain), delete always (LOCAL until tombstones — fleet sync may resurrect it), reply always. Each pill stamps its own hit id with generous padding.
-                                let (copy_label, copy_colour) = if self.selected_msg_copied {
+                                let (copy_label, copy_colour) = if self.selected_msg_copied.is_some() && self.selected_msg_copied == self.active_conversation.zip(sel_key).map(|(c, (ts, out))| (c, ts, out)) {
                                     (tr(Msg::CopiedPill), *theme::SEARCH_FOUND_COLOUR)
                                 } else {
                                     (tr(Msg::CopyPill), *theme::COPY_PILL_COLOUR)

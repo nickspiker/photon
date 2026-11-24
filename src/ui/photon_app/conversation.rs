@@ -528,7 +528,7 @@ impl PhotonApp {
         self.conv_filter = ChatFilter::All;
         self.wave_scrub = None;
         self.selected_msg = None;
-        self.selected_msg_copied = false;
+        self.selected_msg_copied = None;
         self.strip_dismissed = None;
         // The open IS the fleet-wide claim edge: this device is now the conversation's active clearer, and every sibling learns it before the next message can ding them.
         self.broadcast_focus_claim(true);

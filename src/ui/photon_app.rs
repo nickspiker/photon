@@ -2721,8 +2721,8 @@ pub struct PhotonApp {
     strip_live_rect: Option<PixelRect>,
     /// Wrap overflow of the selected message's ACTION ROW (extra lines × pill height): measured in the pill loop, consumed by the next frame's detail_h — the sel_meta_h pattern.
     sel_action_extra_h: f32,
-    /// The open strip's copy pill has fired (text on the clipboard): pill turns green + reads "copied". Event-cleared — reset whenever the selection moves or closes, never on a timer.
-    selected_msg_copied: bool,
+    /// The message whose text the copy pill put on the clipboard: its strip's pill turns green and reads "copied", and only its strip's. Kept by the message, not by the strip: with nothing selected the strip follows the newest row, so a bare flag read "copied" on a message that just arrived (owner, 2026-11-24). Event-cleared when the selection moves or closes, never on a timer.
+    selected_msg_copied: Option<(crate::types::ConversationId, i64, bool)>,
     /// Deferred delete: ((conversation id, timestamp, is_outgoing), painted). The press only ARMS this and repaints — the strip shows "deleting…" on that frame — and the tick performs the actual removal + mirror-verified persist AFTER the feedback frame painted (the synchronous save blocked the UI for a beat, reading as stuck).
     pending_delete: Option<((crate::types::ConversationId, i64, bool), bool)>,
     /// Armed reply target: the eagle_time the next send REFERENCES (a reply row, not a quote). Set by the strip's reply pill; the compose strip shows the referenced message at half alpha. Cleared on send, Esc, or conversation switch.
@@ -3810,7 +3810,7 @@ impl PhotonApp {
             sel_meta_h: 0.0,
             strip_live_rect: None,
             sel_action_extra_h: 0.0,
-            selected_msg_copied: false,
+            selected_msg_copied: None,
             pending_delete: None,
             compose_reply_to: None,
             compose_edit_of: None,
