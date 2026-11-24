@@ -333,7 +333,7 @@ pub fn put_log_blocking(log_bytes: &[u8], note: &str, device_keypair: &Keypair, 
             .header("Content-Type", "application/octet-stream")
             .body(body)
             .send()
-            .map_err(|e| BlobError::Network(format!("log_submit request failed: {}", e)))?;
+            .map_err(|e| BlobError::Network(format!("log_submit request failed: {}", crate::network::http::chain(&e))))?;
         let status = response.status();
         let body = response.bytes().unwrap_or_default();
         if let Some((reason, detail)) = fgtw::client::error_frame(&body) {

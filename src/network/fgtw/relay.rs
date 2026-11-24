@@ -204,7 +204,7 @@ async fn relay_send(
         .body(vsf_bytes)
         .send()
         .await
-        .map_err(|e| format!("Failed to send relay: {}", e))?;
+        .map_err(|e| format!("Failed to send relay: {}", crate::network::http::chain(&e)))?;
 
     let status = response.status();
     let body = response.bytes().await.unwrap_or_default();
@@ -297,7 +297,7 @@ pub fn send_via_relay_sync(
         .header("Content-Type", "application/octet-stream")
         .body(vsf_bytes)
         .send()
-        .map_err(|e| format!("Failed to send relay: {}", e))?;
+        .map_err(|e| format!("Failed to send relay: {}", crate::network::http::chain(&e)))?;
 
     let status = response.status();
     let body = response.bytes().unwrap_or_default();

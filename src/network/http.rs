@@ -84,6 +84,18 @@ impl RequestTimeout {
     }
 }
 
+/// An error with every cause under it, outermost first ("error sending request for url (…): client error (Connect): dns error: …"): what the log needs to tell DNS, TCP, TLS and a dead pooled connection apart. reqwest's own Display stops at the outermost line, which is all the 3a's 52 failed puts said (2026-11-24). For logs, never for the person.
+pub fn chain(e: &dyn std::error::Error) -> String {
+    let mut s = e.to_string();
+    let mut cur = e.source();
+    while let Some(c) = cur {
+        s.push_str(": ");
+        s.push_str(&c.to_string());
+        cur = c.source();
+    }
+    s
+}
+
 /// Short, plain message for a failed FGTW request — NO web-stack jargon (no "error sending request for url", no reqwest internals, no TCP/DNS strings the user can't act on). `action` is a short verb phrase like "reach FGTW" or "check the handle".
 /// Connect failure and TIMEOUT are deliberately NOT the same message. A connect failure means we never reached the server. A timeout means we DID — the request went out and the reply didn't come back in time, which is the server being slow on that path, not the network being down. Collapsing both into "No connection to FGTW" printed that line while the connectivity probe held FGTW ONLINE and the UI showed a green circle (observed 2026-07-29 05:06:40: challenge answered in 1ms, the 398B announce then timed out at exactly 10.000s while GET /status kept succeeding) — which sends you debugging your network instead of the announce path.
 #[cfg(not(target_os = "ferros"))]
