@@ -247,8 +247,10 @@ impl PhotonApp {
         crate::log("ADD-DEVICE: reading fgtw.org's binding requests");
         std::thread::spawn(move || {
             let r = crate::network::fgtw::fleet::bindreq_list(&kp, &hp, &seed);
-            if let Err(e) = &r {
-                crate::logf!("ADD-DEVICE: the binding request read failed: {}", e);
+            // Both outcomes said: words that matched nothing after a read that found no request mean the new device never reached fgtw.org (Emma's add, 2026-11-25: the read went out and nothing was ever logged of it).
+            match &r {
+                Ok(reqs) => crate::logf!("ADD-DEVICE: fgtw.org holds {} binding request(s) for this identity", reqs.len()),
+                Err(e) => crate::logf!("ADD-DEVICE: the binding request read failed: {}", e),
             }
             crate::log_err!(tx.send(FlowDone::AddListed(r)), "the binding requests to the UI thread");
             if let Some(w) = wake.as_ref() {

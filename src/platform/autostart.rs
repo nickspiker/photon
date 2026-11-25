@@ -126,7 +126,7 @@ const RUN_VALUE: &str = "PhotonMessenger";
 
 #[cfg(target_os = "windows")]
 pub fn enabled() -> bool {
-    std::process::Command::new("reg")
+    crate::platform::quiet("reg")
         .args(["query", RUN_KEY, "/v", RUN_VALUE])
         .output()
         .map(|o| o.status.success())
@@ -137,7 +137,7 @@ pub fn enabled() -> bool {
 pub fn enable() -> Result<(), String> {
     let exe = exe_path()?;
     let cmd = format!("\"{}\" --background", exe.display());
-    let out = std::process::Command::new("reg")
+    let out = crate::platform::quiet("reg")
         .args([
             "add", RUN_KEY, "/v", RUN_VALUE, "/t", "REG_SZ", "/d", &cmd, "/f",
         ])
@@ -155,7 +155,7 @@ pub fn enable() -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 pub fn disable() -> Result<(), String> {
-    let out = std::process::Command::new("reg")
+    let out = crate::platform::quiet("reg")
         .args(["delete", RUN_KEY, "/v", RUN_VALUE, "/f"])
         .output()
         .map_err(|e| format!("reg delete: {e}"))?;

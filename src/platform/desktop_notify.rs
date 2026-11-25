@@ -170,7 +170,7 @@ fn post(title: &str, body: &str, _on_click: OnClick) {
          [Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Microsoft.Windows.PowerShell').Show([Windows.UI.Notifications.ToastNotification]::new($x))";
     // The Child handle drops on the spot, which detaches the notifier rather than waiting on it.
     crate::log_err!(
-        std::process::Command::new("powershell").args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", PS]).env("PHOTON_TOAST_TITLE", title).env("PHOTON_TOAST_BODY", body).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn(),
+        crate::platform::quiet("powershell").args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", PS]).env("PHOTON_TOAST_TITLE", title).env("PHOTON_TOAST_BODY", body).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn(),
         "NOTIFY: the system notifier launch"
     );
 }

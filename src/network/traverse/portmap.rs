@@ -43,7 +43,7 @@ pub fn default_gateway() -> Option<Ipv4Addr> {
     }
     #[cfg(target_os = "windows")]
     {
-        let out = std::process::Command::new("route").args(["print", "0.0.0.0"]).output().ok()?;
+        let out = crate::platform::quiet("route").args(["print", "0.0.0.0"]).output().ok()?;
         let text = String::from_utf8_lossy(&out.stdout);
         text.lines()
             .filter_map(|l| {

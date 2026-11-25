@@ -212,3 +212,12 @@ pub mod control {
     /// No second instance can knock on ferros: the shell runs one Photon.
     pub fn spawn_accept_thread(_proxy: std::sync::Arc<dyn fluor::host::WakeSender<crate::ui::PhotonEvent>>) {}
 }
+
+/// A console tool run from Photon's window on Windows (`reg`, `route`, `powershell`, `rundll32`), with no console window of its own (CreateProcess's CREATE_NO_WINDOW). Spawned plain, each flashed one: 8 to 12 s of them before Photon showed on a new Windows device (2026-11-25).
+#[cfg(target_os = "windows")]
+pub fn quiet(program: &str) -> std::process::Command {
+    use std::os::windows::process::CommandExt;
+    let mut c = std::process::Command::new(program);
+    c.creation_flags(0x0800_0000);
+    c
+}

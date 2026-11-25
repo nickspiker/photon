@@ -4434,7 +4434,7 @@ fn open_url_in_browser(url: &str) {
     #[cfg(target_os = "windows")]
     {
         // NEVER thru `cmd` (security audit UPW-003): cmd.exe reads `&`, `|`, `^` and `%` in an unquoted argument as its own syntax, so `start <url>` ran whatever followed an `&`. The URL protocol handler takes the URL as one argument with no shell between.
-        crate::log_err!(std::process::Command::new("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn(), "the browser launch");
+        crate::log_err!(crate::platform::quiet("rundll32").args(["url.dll,FileProtocolHandler", url]).spawn(), "the browser launch");
     }
     #[cfg(target_os = "android")]
     {
