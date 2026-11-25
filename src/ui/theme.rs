@@ -81,8 +81,10 @@ pub static PILL_YELLOW: LazyLock<(u32, u32)> =
     LazyLock::new(|| (c(0x00_3D_37_10), c(0x00_7F_75_25)));
 pub static PILL_ORANGE: LazyLock<(u32, u32)> =
     LazyLock::new(|| (c(0x00_46_29_0E), c(0x00_8E_5A_21)));
-/// JOINER SELECTED flood — the whole-surface green a just-bound device shows while its sponsor confirms (docs/lifecycle.md). Opaque takeover, like the red.
-pub static SELECTED_FLOOD: LazyLock<u32> = LazyLock::new(|| c(0x00_08_37_12));
+/// JOINER SELECTED flood: the whole-surface green a new device shows from the moment a device of its fleet picks it until the fleet key arrives, while the person there is asked "Is your new device bright green?" (docs/lifecycle.md). VSF RGB primary green (0, 1, 0), as ferros's (owner, 2026-11-10: "background should change from black to VSF primary green at (0.,1.,0.)"). Opaque takeover, like the red.
+pub static SELECTED_FLOOD: LazyLock<u32> = LazyLock::new(|| c(0x00_00_FF_00));
+/// Text on the green flood: black, the one ink that reads on full green.
+pub static FLOOD_INK: LazyLock<u32> = LazyLock::new(|| c(0x00_00_00_00));
 /// LAST RITES flood — the whole-surface deep red the final-exit interstitial paints under its text (docs/lifecycle.md D3). Opaque: this is a takeover screen, not a tint.
 pub static LASTRITES_FLOOD: LazyLock<u32> = LazyLock::new(|| c(0x00_2F_06_06));
 pub static PILL_RED: LazyLock<(u32, u32)> = LazyLock::new(|| (c(0x00_4B_14_14), c(0x00_96_2D_2D)));

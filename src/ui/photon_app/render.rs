@@ -1734,12 +1734,24 @@ impl PhotonApp {
                 let line_h = (tb_h * 0.45).min(buf_w as f32 / 18.0);
                 let wrap_w = (attest.textbox.x1 - attest.textbox.x0) as f32;
                 let mut y = attest.error.y1 as f32 + line_h * 1.0;
-                // THE GREEN (owner 2026-11-10): a device of this fleet picked this one (bind_select, its sender checked against the chain). Nothing is bound yet; the keys follow the Add the person presses there.
+                // THE GREEN (owner 2026-11-10: "background should change from black to VSF primary green at (0.,1.,0.)"): a device of this fleet picked this one (bind_select, its sender checked against the chain), and the person there is asked "Is your new device bright green?".
+                // The whole screen floods VSF primary green (the flood at the end of the body, under everything drawn here) and says only who picked it, this device's name and that the add is approved there, in dark ink, as ferros's does; the words, the ways to finish and Start fresh wait until the join ends.
                 if let Some(by) = self.join_selected_by.as_ref() {
+                    let ink = *theme::FLOOD_INK;
                     let gsize = line_h * 1.3;
-                    ctx.text.draw_text_center(&mut canvas, &tr(fgtw::text::Msg::SelectedBy(by)), cx, y + gsize * 0.5, &TextStyle::new(gsize, *theme::SEARCH_FOUND_COLOUR).weight(800).font("Oxanium"), None, None);
+                    ctx.text.draw_text_center(&mut canvas, &tr(fgtw::text::Msg::SelectedBy(by)), cx, y + gsize * 0.5, &TextStyle::new(gsize, ink).weight(800).font("Oxanium"), None, None);
                     y += gsize * 1.6;
-                }
+                    if let Some(name) = self.join_view.as_ref().map(|v| v.name.clone()) {
+                        ctx.text.draw_text_center(&mut canvas, &tr(Msg::ThisDeviceName(&name)), cx, y, &TextStyle::new(line_h * 0.8, ink).weight(600).font("Oxanium"), None, None);
+                        y += line_h * 1.4;
+                    }
+                    let gsize = line_h * 0.62;
+                    let style = TextStyle::new(gsize, ink).weight(500).font("Oxanium");
+                    for line in wrap_text_lines(ctx.text, &tr(fgtw::text::Msg::LaunchJoinConfirmNote), &style, wrap_w) {
+                        ctx.text.draw_text_center(&mut canvas, &line, cx, y, &style, None, None);
+                        y += gsize * 1.5;
+                    }
+                } else {
                 // How to finish (owner, 2026-11-22): NFC first, the other device's screen on and its Fleet page open; else the touch to add over BLE.
                 {
                     let gsize = line_h * 0.62;
@@ -1845,6 +1857,7 @@ impl PhotonApp {
                         None,
                         None,
                     );
+                }
                 }
             } else {
                 // Hint slot — static "handle" label below the textbox. Tells the user what to type.
@@ -8042,43 +8055,18 @@ impl PhotonApp {
             self.settings_content_extent = (content_h - pane_h).max(0.0); // (no scroll when it fits)
         }
 
-        // JOINER SELECTED — the green flood (docs/lifecycle.md): this device is bound and waiting on the sponsor's human to confirm "yes, it's green and says Selected". A HOLD, not an interstitial — stray taps must not kill a ceremony mid-confirm, so presses are simply ignored while it's up (the poller or a relaunch are the exits).
-        if self.joiner_selected {
+        // JOINER SELECTED — the green flood (docs/lifecycle.md): from the moment a device of the fleet picks this one (the join screen says who) until the fleet key arrives (bound, the confirm held: "Selected"), the whole screen is VSF primary green, which the person at the other device is asked to see. A HOLD, not an interstitial — stray taps must not kill a ceremony mid-confirm, so presses are simply ignored while it's up (the poller or a relaunch are the exits).
+        // Front to back: the hold's words go in first, then the green under them and under everything the body drew (the flood used to go in first and hid its own words).
+        if self.joiner_selected || (self.launch_add_mode && self.join_selected_by.is_some()) {
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
-            paint::fill_rect(
-                &mut canvas,
-                0,
-                0,
-                buf_w as isize,
-                buf_h as isize,
-                *theme::SELECTED_FLOOD,
-                None,
-                None,
-            );
-            let span = 2. * buf_w as f32 * buf_h as f32 / (buf_w + buf_h) as f32;
-            let cx = buf_w as f32 * 0.5;
-            ctx.text.draw_text_center(
-                &mut canvas,
-                &tr(fgtw::text::Msg::JoinerSelected),
-                cx,
-                buf_h as f32 * 0.4,
-                &TextStyle::new(span / 8., *theme::CONTACT_NAME_COLOUR)
-                    .weight(800)
-                    .font("Oxanium"),
-                None,
-                None,
-            );
-            ctx.text.draw_text_center(
-                &mut canvas,
-                &tr(fgtw::text::Msg::JoinerConfirmOther),
-                cx,
-                buf_h as f32 * 0.58,
-                &TextStyle::new(span / 24., *theme::CONTACT_NAME_COLOUR)
-                    .weight(500)
-                    .font("Oxanium"),
-                None,
-                None,
-            );
+            if self.joiner_selected {
+                let span = 2. * buf_w as f32 * buf_h as f32 / (buf_w + buf_h) as f32;
+                let cx = buf_w as f32 * 0.5;
+                let ink = *theme::FLOOD_INK;
+                ctx.text.draw_text_center(&mut canvas, &tr(fgtw::text::Msg::JoinerSelected), cx, buf_h as f32 * 0.4, &TextStyle::new(span / 8., ink).weight(800).font("Oxanium"), None, None);
+                ctx.text.draw_text_center(&mut canvas, &tr(fgtw::text::Msg::JoinerConfirmOther), cx, buf_h as f32 * 0.58, &TextStyle::new(span / 24., ink).weight(500).font("Oxanium"), None, None);
+            }
+            paint::fill_rect(&mut canvas, 0, 0, buf_w as isize, buf_h as isize, *theme::SELECTED_FLOOD, None, None);
         }
 
         let mark_content = std::time::Instant::now();
