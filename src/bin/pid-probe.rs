@@ -29,7 +29,7 @@ fn main() {
             Err(e) => println!("hp {}…  chain fetch failed: {}", &hex_hp[..8], e),
         }
         match photon_messenger::network::fgtw::fleet::retired_devices(&hp) {
-            Ok(r) => println!("retired (the Fleet page's rows): {}", r.iter().map(|d| format!("{}â¦", hex::encode(&d[..4]))).collect::<Vec<_>>().join(" ")),
+            Ok(r) => println!("retired (the Fleet page's rows): {}", r.iter().map(|d| format!("{}…", hex::encode(&d[..4]))).collect::<Vec<_>>().join(" ")),
             Err(e) => println!("retired: {}", e),
         }
         // The chain's own locked set: what a device that reads only the chain (ferros) excludes from a grow.
