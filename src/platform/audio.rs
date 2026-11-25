@@ -753,6 +753,7 @@ pub fn far_level() -> u32 {
 /// Arm (routes with an acoustic path) or disarm (headset) the speaker duck. Arming re-seeds k at the reference — a route swap is new physics, the estimator starts from neutral and re-learns.
 pub fn set_speaker_duck(armed: bool) {
     SPEAKER_DUCK_ARMED.store(armed, Ordering::Relaxed);
+    DSP_LEAK_SEEN.store(false, Ordering::Relaxed);
     DUCK_K_Q16.store(DUCK_K_REF_Q16, Ordering::Relaxed);
     // Until the sweep measures this route, a PRIOR by its kind: a loudspeaker ducks in full, an earpiece a quarter, a headset not at all. The sweep replaces it within two seconds of the route coming up.
     // Under the phone's voice processing the vendor's canceller owns echo: no duck, no loss, whatever the route.
@@ -772,6 +773,8 @@ pub fn set_speaker_duck(armed: bool) {
 /// THE DUCK'S DEPTH (Nick 2026-10-02: "if the coupling is less than 1% now, not sure why we are even suppressing anything"): how much of the duck law applies, Q32, set from the connect sweep's MEASURED speaker→mic coupling.
 /// Zero below any coupling (a clean earpiece or a headset: nothing comes back, so nothing is suppressed), the full law from `DUCK_COUPLING_FULL` up (a loudspeaker at 0.25 is far past it), linear between.
 static DUCK_DEPTH_Q32: AtomicI64 = AtomicI64::new(crate::wave::qgain::UNITY);
+/// The live check found the phone's canceller letting echo thru this wave (`note_near_level`); cleared when the duck arms for a route.
+static DSP_LEAK_SEEN: AtomicBool = AtomicBool::new(false);
 /// THE RECEIVE LOSS, Q32, from the same measurement: `min(1, margin / coupling)`, never under a quarter (two stops: the rocker covers the rest). A clean route loses nothing; a loudspeaker at 0.25 takes the quarter. Until the sweep lands, a prior by route kind.
 /// It used to be derived from the LEARNED k, which only moves on frames emitted above 256 plan units — a quiet wave never gave it one, and the loss sat at its seed's quarter for the whole wave (2026-10-02).
 static RX_LOSS_Q32: AtomicI64 = AtomicI64::new(crate::wave::qgain::UNITY);
@@ -782,12 +785,22 @@ pub const DUCK_COUPLING_FULL: f32 = 1.0 / 32.0;
 /// The sweep's verdict for the live route: its measured speaker→mic amplitude coupling (0.0 for a route it found clean).
 pub fn set_duck_coupling(coupling: f32) {
     if VOICE_DSP_CANCELS.load(Ordering::Relaxed) {
+        // The live check already caught the vendor's canceller letting echo thru this wave: what it applied stands, and a later sweep the canceller's suppression hides cannot take it back.
+        if DSP_LEAK_SEEN.load(Ordering::Relaxed) {
+            crate::logf!("WAVE: sweep coupling {:.4} under the phone's voice processing; the live check's duck stands (the canceller leaked this wave)", coupling);
+            return;
+        }
         // The sweep still measures (the number says what the vendor's canceller left of the chirp), but the duck and the loss stay down: the canceller is the vendor's.
         DUCK_DEPTH_Q32.store(0, Ordering::Relaxed);
         RX_LOSS_Q32.store(crate::wave::qgain::UNITY, Ordering::Relaxed);
         crate::logf!("WAVE: duck depth 0‰, receive loss 1000‰ — the phone's voice processing owns echo (sweep coupling {:.4})", coupling);
         return;
     }
+    apply_coupling(coupling);
+}
+
+/// The duck's depth, its echo estimate's seed and the receive loss, from a measured speaker→mic coupling: the connect sweep's, or the live estimate's once the phone's own canceller is caught letting echo thru (`note_near_level`).
+fn apply_coupling(coupling: f32) {
     // WHY/PROOF: a measured ratio from the sweep fit — finite and non-negative by construction; the division is by a constant, the clamp holds the depth to the unit interval the law multiplies by.
     let depth = (coupling / DUCK_COUPLING_FULL).clamp(0.0, 1.0);
     DUCK_DEPTH_Q32.store((depth as f64 * crate::wave::qgain::UNITY as f64) as i64, Ordering::Relaxed);
@@ -827,6 +840,12 @@ pub fn note_near_level(mean: u32) {
         let k = DUCK_K_Q16.load(Ordering::Relaxed);
         let next = if sample < k { sample } else { (k + (k >> 9)).min(DUCK_K_MAX_Q16) };
         DUCK_K_Q16.store(next, Ordering::Relaxed);
+        // THE CANCELLER CHECKED IN THE CALL (Jeff's speakerphone wave, 2026-11-24: the far voice came back at its own level while the connect sweep, hidden by the vendor's noise suppression, said "no coupling"): under the phone's voice processing k is what its canceller LEFT of the echo, a minimum over the wave, low while the canceller works. Past the full-duck coupling it is not working: Photon's own duck and receive loss take the measured k, once a wave.
+        if VOICE_DSP_CANCELS.load(Ordering::Relaxed) && next > (DUCK_COUPLING_FULL as f64 * 65536.0) as i64 && !DSP_LEAK_SEEN.swap(true, Ordering::Relaxed) {
+            let coupling = next as f32 / 65536.0;
+            crate::logf!("WAVE: echo — the phone's voice processing is letting the far voice thru (live coupling {:.4}, past {:.4}); Photon's duck and receive loss take over", coupling, DUCK_COUPLING_FULL);
+            apply_coupling(coupling);
+        }
     }
     // The duck keys on the mic level ABOVE plausible echo (field 2026-09-14 00:15, the echo-ey wave: at 65-76x makeup the far side's own echo inflated `near` while they talked, so each talker was ducked BY their echo — chop with zero loss). k is the min-statistic lower bound, doubled for margin; the subtraction is continuous, no gate: echo-only mic → input ~0 → full duplex; real speech → input ≈ the voice.
     let k = DUCK_K_Q16.load(Ordering::Relaxed);

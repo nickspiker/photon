@@ -79,12 +79,16 @@ fn build(direction: AudioDirection, sharing: AudioSharingMode, format: i32, cb: 
 fn open_with_fallback(direction: AudioDirection, make_cb: &dyn Fn() -> ndk::audio::AudioStreamDataCallback) -> Result<AudioStream, String> {
     let formats: &[i32] = if matches!(direction, AudioDirection::Input) { &INPUT_FORMATS } else { &[ndk_sys::AAUDIO_FORMAT_PCM_I16 as i32] };
     let mut last = String::new();
+    // THE CANCELLER'S REFERENCE (Jeff's speakerphone wave, 2026-11-24: the far voice came back at its own level): when the phone's voice processing owns echo, the render goes thru the shared mixer, where the vendor's canceller takes its copy of what the speaker plays. An exclusive (MMAP) stream writes past the mixer, and the canceller, blind to it, passed the far voice straight back. The earpiece and headsets keep the exclusive path.
+    let exclusive = !(matches!(direction, AudioDirection::Output) && super::audio::voice_dsp_wanted());
     for &f in formats {
-        match build(direction, AudioSharingMode::Exclusive, f, make_cb()) {
-            Ok(s) => return Ok(s),
-            Err(e) => {
-                // Logged here and not kept: the shared attempt right below either succeeds or leaves the error that matters.
-                crate::logf!("AUDIO: AAudio {} exclusive open failed at format {} ({}) — trying shared", format!("{direction:?}"), f, e);
+        if exclusive {
+            match build(direction, AudioSharingMode::Exclusive, f, make_cb()) {
+                Ok(s) => return Ok(s),
+                Err(e) => {
+                    // Logged here and not kept: the shared attempt right below either succeeds or leaves the error that matters.
+                    crate::logf!("AUDIO: AAudio {} exclusive open failed at format {} ({}) — trying shared", format!("{direction:?}"), f, e);
+                }
             }
         }
         match build(direction, AudioSharingMode::Shared, f, make_cb()) {
