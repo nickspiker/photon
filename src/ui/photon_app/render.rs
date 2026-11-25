@@ -3981,14 +3981,17 @@ impl PhotonApp {
                                 + img_band_h
                                 + audio_band_h;
                             // THE ROW'S HIT BAND — the WHOLE wrapped block, WHY/PROOF (a rect, not the paint): the gaps between a row's glyphs and lines are the row too — claimed BEFORE the row paints and only where nothing opaque already sits (the chrome's strip and orb, since the list runs to the window top on desktop): the stamp rides the paint decision (see claim_hit_rect_under). Clamped to the list region so header/compose never lose their own hits. MODULAR SLOTS, not a spend-down budget (Nick 2026-09-05, after the field bug where the walk's off-screen rows below the viewport exhausted a 64-id budget before any visible row got a target): the slot is the count of visible rows newer than this one, modulo MSG_HIT_SPAN (from the newest, so rows landing above the screen move no drawn row's slot), so every row HAS an id by construction and there is nothing to exhaust. The table write below happens on the same band test, which keeps map and table in lockstep.
-                            let band_top = ((y - block_extra - line_h * 0.5).max(list_top)) as isize;
+                            let row_selected = sel_key.is_some_and(|(ts, out)| msg.timestamp == ts && msg.is_outgoing == out);
+                            // A SELECTED row lifts its body above its details strip and its meta above that (the walk moves y up by detail_h at the strip, and by the meta at the row's end), so its band reaches up over both: the text and its links were outside every band and a tap on them hit nothing (Nick 2026-11-25).
+                            // The meta's height is last frame's, as the extent walk takes it (one frame late on a selection change).
+                            let lift = if row_selected { detail_h + self.sel_meta_h } else { 0.0 };
+                            let band_top = ((y - lift - block_extra - line_h * 0.5).max(list_top)) as isize;
                             let band_bot = ((y + line_h * 0.5).min(list_bottom)) as isize;
                             walked.push((msg.timestamp, band_bot));
                             let slot = (n - 1 - vi) % super::MSG_HIT_SPAN as usize;
                             // On a frame drawn in part (a memmove, the strip's age alone) a row outside the damage keeps last frame's stamps (moved by the hit map's shift on a memmove); only rows touching the damage re-stamp (the read of every pixel in the band is the cost).
                             let band_in_damage = whole_frame || (band_bot > list_clip.y_start as isize && band_top < list_clip.y_end as isize);
                             // The SELECTED row's strip (its action pills, the reaction glyphs, the circled "+") paints inside this band further down the walk and is in front of it: there the band reads what is in front now and claims behind the strip at the row's end (FrontOpaque), so the strip's pills keep their own taps.
-                            let row_selected = sel_key.is_some_and(|(ts, out)| msg.timestamp == ts && msg.is_outgoing == out);
                             let mut band_front: Option<FrontOpaque> = None;
                             if band_bot > band_top && band_in_damage {
                                 if row_selected {
