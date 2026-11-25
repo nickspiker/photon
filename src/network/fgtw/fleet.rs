@@ -471,11 +471,16 @@ pub fn retired_devices(handle_proof: &[u8; 32]) -> Result<Vec<[u8; 32]>, String>
         return Ok(Vec::new());
     };
     let current = blob.fold().map_err(|e| format!("fleet fold: {e:?}"))?;
+    // A key that left while its hardware stayed, under a new key (a root conversion), is not a retired device: its plate is a current member's (Jeff, 2026-11-24: his phone's own key from before its conversion listed as an old device he never added).
+    let plates = blob.plates().map_err(|e| format!("fleet fold: {e:?}"))?;
+    let plate_of = |d: &[u8; 32]| plates.iter().find(|(k, _)| k == d).map(|(_, p)| *p);
+    let live_plates: Vec<[u8; 32]> = current.iter().filter_map(plate_of).collect();
     let mut out: Vec<[u8; 32]> = Vec::new();
     for op in &blob.ops {
         if matches!(op.kind, OpKind::Genesis | OpKind::Add)
             && !current.contains(&op.device_pubkey)
             && !out.contains(&op.device_pubkey)
+            && !plate_of(&op.device_pubkey).is_some_and(|p| live_plates.contains(&p))
         {
             out.push(op.device_pubkey);
         }

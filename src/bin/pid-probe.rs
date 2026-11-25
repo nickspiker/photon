@@ -28,12 +28,30 @@ fn main() {
             }
             Err(e) => println!("hp {}…  chain fetch failed: {}", &hex_hp[..8], e),
         }
+        match photon_messenger::network::fgtw::fleet::retired_devices(&hp) {
+            Ok(r) => println!("retired (the Fleet page's rows): {}", r.iter().map(|d| format!("{}â¦", hex::encode(&d[..4]))).collect::<Vec<_>>().join(" ")),
+            Err(e) => println!("retired: {}", e),
+        }
         // The chain's own locked set: what a device that reads only the chain (ferros) excludes from a grow.
         match photon_messenger::network::fgtw::fleet::fetch(&hp) {
-            Ok(Some(blob)) => match blob.locked_out() {
-                Ok(locked) => println!("chain locked: {}", locked.iter().map(|d| format!("{}…", hex::encode(&d[..4]))).collect::<Vec<_>>().join(" ")),
-                Err(e) => println!("chain locked: fold failed: {:?}", e),
-            },
+            Ok(Some(blob)) => {
+                match blob.locked_out() {
+                    Ok(locked) => println!("chain locked: {}", locked.iter().map(|d| format!("{}…", hex::encode(&d[..4]))).collect::<Vec<_>>().join(" ")),
+                    Err(e) => println!("chain locked: fold failed: {:?}", e),
+                }
+                // Each device's hardware plate (a key that moved keeps its hardware's plate), and every op in order: which keys are one machine.
+                match blob.plates() {
+                    Ok(plates) => {
+                        for (d, p) in &plates {
+                            println!("  plate {}…  device {}…", hex::encode(&p[..4]), hex::encode(&d[..4]));
+                        }
+                    }
+                    Err(e) => println!("plates: fold failed: {:?}", e),
+                }
+                for op in &blob.ops {
+                    println!("  op {:?} device {}… by {}…", op.kind, hex::encode(&op.device_pubkey[..4]), hex::encode(&op.signer_pubkey[..4]));
+                }
+            }
             Ok(None) => println!("chain locked: no chain"),
             Err(e) => println!("chain locked: fetch failed: {}", e),
         }
