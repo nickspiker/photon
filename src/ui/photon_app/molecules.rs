@@ -115,6 +115,16 @@ pub(super) fn join_admitted(local: Option<&MoleculeLocal>, roster: &Roster, join
     roster.is_standing(joiner) || local.is_some_and(|l| l.offered.iter().any(|(p, _)| p == joiner))
 }
 
+/// The groups `member` can hand this device the keys of: both stand in it, this device holds none of its keys (`keyed` false: no chains, or a holder still waiting on its root), and it was not left.
+pub(super) fn rootless_due(rosters: &[(MoleculeId, Roster)], locals: &[(MoleculeId, MoleculeLocal)], keyed: impl Fn(&MoleculeId) -> bool, member: &[u8; 32], us: &[u8; 32]) -> Vec<MoleculeId> {
+    rosters
+        .iter()
+        .filter(|(gid, r)| r.is_standing(member) && r.is_standing(us) && !keyed(gid))
+        .filter(|(gid, _)| !locals.iter().any(|(g, l)| g == gid && l.phase == MoleculePhase::Left))
+        .map(|(g, _)| *g)
+        .collect()
+}
+
 /// The groups our fleet still owes `invitee` an offer for: invited, not standing yet, in a group we hold and have not left.
 pub(super) fn invites_due(locals: &[(MoleculeId, MoleculeLocal)], rosters: &[(MoleculeId, Roster)], invitee: &[u8; 32]) -> Vec<MoleculeId> {
     locals
@@ -1172,6 +1182,35 @@ impl PhotonApp {
         }
     }
 
+    /// ROOTLESS GROUPS (owner, 2026-11-24: "Build it"): a group whose roster this device holds and stands in, but whose keys it does not, asks a standing member for them as another device of a member already standing.
+    /// Emma's desktop held 12 of its 13 groups that way: it could neither send in them nor hand them to her new 3a, and nothing ever asked for the keys back.
+    /// The member answers by wrapping the current era whole to the bundle we send (answer_bind's already-standing branch), so nothing is re-keyed; only a group whose current era derived a bond mints first.
+    /// The ask is the plain Join (bind_offer) over the member's friendship, its parked offer made here from the roster we hold and marked answered, so it never draws an invitation row; a real invitation not yet answered is the person's to tap, and is left alone.
+    /// Edge-driven: a standing member's online edge (status.rs, beside the re-offer).
+    pub(super) fn heal_rootless_groups(&mut self, ci: usize) {
+        let Some((member, member_fp)) = self.contacts.get(ci).filter(|c| !c.is_sibling).map(|c| (c.handle_hash, crate::fp(&c.handle_proof))) else {
+            return;
+        };
+        let Some(our_pid) = self.our_party_id(&self.contacts[ci]) else {
+            return;
+        };
+        let keyed = |gid: &MoleculeId| {
+            let fid = crate::types::FriendshipId::from_bytes(gid.0);
+            self.friendship_chains.iter().any(|(id, c)| *id == fid && !c.awaiting_root())
+        };
+        let due = rootless_due(&self.molecule_rosters, &self.molecule_locals, keyed, &member, &our_pid);
+        for gid in due {
+            let Some(roster) = self.molecule_rosters.iter().find(|(g, _)| *g == gid).map(|(_, r)| r.clone()) else { continue };
+            match self.bond_offers.iter_mut().find(|o| o.molecule_id == gid) {
+                Some(o) if !o.accepted => continue,
+                Some(o) => o.sponsor = member,
+                None => self.bond_offers.push(BondOffer { molecule_id: gid, sponsor: member, row_osc: 0, snapshot: roster, accepted: true }),
+            }
+            crate::logf!("MOLECULE: we stand in {} but hold none of its keys here — asking {} (standing) for its current era", hex::encode(&gid.0[..4]), member_fp);
+            self.bind_offer(gid);
+        }
+    }
+
     /// NOT NOW — the invitee's decline, which is an UNDO (Nick 2026-10-24: "if they decline … undo the invite and remove it from my end so it's like I never sent it").
     /// The parked offer and its card go from this device now; the sponsor's device, on our Decline, forgets the invite and deletes its offer row for everyone, and that delete clears the card from our other devices too.
     pub(super) fn decline_offer(&mut self, gid: MoleculeId) -> bool {
@@ -2218,7 +2257,7 @@ mod join_answer_tests {
 
 #[cfg(test)]
 mod fleet_invite_tests {
-    use super::{invite_of_row, invite_row, invites_due, join_admitted};
+    use super::{invite_of_row, invite_row, invites_due, join_admitted, rootless_due};
     use crate::network::history_pages::{open_history_page, seal_history_page, HistoryPagePlain};
     use crate::storage::molecule::{park_offer_into, BondOffer, MoleculeLocal, MoleculePhase};
     use crate::types::molecule::{found_atom, join_record, vouch_record, MoleculeId, Roster};
@@ -2362,6 +2401,21 @@ mod fleet_invite_tests {
             desktop.note_invite(jon, osc);
         }
         assert!(join_admitted(Some(&desktop), &roster, &jon));
+    }
+
+    /// A group both stand in, whose keys this device lacks, is asked of the member; one this device holds keys for, one the member does not stand in, and one we left are not (Emma's desktop, 2026-11-24).
+    #[test]
+    fn rootless_groups_are_asked_of_a_standing_member() {
+        let (gid, mut roster, founder, seed) = group();
+        let (emma, nick) = ([0x0Eu8; 32], [0x0Cu8; 32]);
+        stand(&mut roster, founder, &seed, emma);
+        let rosters = vec![(gid, roster.clone())];
+        assert_eq!(rootless_due(&rosters, &[], |_| false, &founder, &emma), vec![gid], "both stand, no keys here: asked");
+        assert!(rootless_due(&rosters, &[], |_| true, &founder, &emma).is_empty(), "keys held: nothing to ask");
+        assert!(rootless_due(&rosters, &[], |_| false, &nick, &emma).is_empty(), "a member who does not stand cannot hand the keys");
+        assert!(rootless_due(&rosters, &[], |_| false, &founder, &nick).is_empty(), "we do not stand: not ours to ask");
+        let left = vec![(gid, MoleculeLocal { phase: MoleculePhase::Left, ..MoleculeLocal::default() })];
+        assert!(rootless_due(&rosters, &left, |_| false, &founder, &emma).is_empty(), "a group we left stays left");
     }
 
     /// Jon stands (his invite ended on his stand), then his second device sends its own Join: answered, since he stands.

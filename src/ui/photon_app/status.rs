@@ -6147,6 +6147,7 @@ impl PhotonApp {
         for id in reoffer_after {
             if let Some(ci) = self.contacts.iter().position(|c| c.id == id) {
                 self.reoffer_pending_bonds(ci);
+                self.heal_rootless_groups(ci);
             }
         }
         // A friend back online is the edge a lockout re-key waits for (era.rs): one goes, never a storm.
