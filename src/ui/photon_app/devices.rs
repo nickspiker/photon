@@ -1712,6 +1712,33 @@ impl PhotonApp {
         }
     }
 
+    /// A contact's rotation (`rotation_push`, ferros PHOTON.md "How contacts keep trusting the person"): checked against the chain we hold for them and the identity we pinned, its alias kept beside the pin (Contact::take_rotation). With no chain held for them yet it waits: their fleet sends it again. True when an alias was newly kept.
+    pub(super) fn take_rotation(&mut self, hp: [u8; 32], bytes: &[u8], sender: [u8; 32]) -> bool {
+        let rotation = match fgtw::binding::Rotation::from_vsf_bytes(bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                crate::logf!("ROTATION: from {} does not read ({})", crate::fp(&sender), e);
+                return false;
+            }
+        };
+        let Some(chain) = crate::network::fgtw::fleet::held_chain(&hp) else {
+            crate::logf!("ROTATION: {} sent one for {}, whose chain is not held here yet; it waits", crate::fp(&sender), crate::fp(&hp));
+            return false;
+        };
+        let mut kept = false;
+        for c in self.contacts.iter_mut().filter(|c| c.handle_proof == hp && !c.is_sibling) {
+            match c.take_rotation(&rotation, &chain) {
+                Ok(true) => {
+                    crate::logf!("ROTATION: {} speaks Photon as alias {} now (via {})", crate::fp(&hp), crate::fp(&rotation.binding.alias_key()), crate::fp(&sender));
+                    kept = true;
+                }
+                Ok(false) => {}
+                Err(e) => crate::logf!("ROTATION: from {} for {} refused: {}", crate::fp(&sender), crate::fp(&hp), e),
+            }
+        }
+        kept
+    }
+
     /// A chain a peer handed us (`fleet_resp`): fold it, hold it, and feed the fold drain exactly as a seed fetch would — the drain's genesis pin and monotonic tip decide adoption. For the fleet this device is JOINING (no session yet) the bytes go to the join thread instead, which checks them against its own identity. Returns whether anything changed.
     pub(super) fn adopt_peer_chain(&mut self, hp: [u8; 32], chain: &[u8], sender: [u8; 32]) -> bool {
         if self.session.is_none() && self.add_join_hp == Some(hp) {

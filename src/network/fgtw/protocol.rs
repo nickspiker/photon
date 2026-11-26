@@ -2463,6 +2463,16 @@ pub fn parse_fleet_resp_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], Vec<u8>, [u8;
     fgtw::protocol::parse_fleet_resp(vsf_bytes)
 }
 
+/// Build a `rotation_push` — our Photon's rotation (fgtw::binding::Rotation) for identity `hp`, handed to a contact device (ferros PHOTON.md "How contacts keep trusting the person"). The rotation verifies itself against the chain the contact pinned; the carrier earns no trust.
+pub fn build_rotation_push_vsf(handle_proof: &[u8; 32], rotation: &[u8], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
+    fgtw::protocol::rotation_push(handle_proof, rotation, &envelope_signer(device_secret), vsf::eagle_time_oscillations())
+}
+
+/// Parse + verify a `rotation_push`. Returns (handle proof, the rotation's bytes, sender device pubkey). The rotation itself is NOT verified here: the UI checks it against the chain it holds for `hp`.
+pub fn parse_rotation_push_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], Vec<u8>, [u8; 32]), String> {
+    fgtw::protocol::parse_rotation_push(vsf_bytes)
+}
+
 /// Build a `bind_req` — the JOINING device's binding request handed straight to a sponsor device it heard on the LAN, signed by the request's own device. The sponsor verifies the request exactly as a registry row (`BindRequest::verify` + freshness) and screens it with the words as always.
 pub fn build_bind_req_vsf(req: &crate::network::fgtw::fleet::BindRequest, handle_proof: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
     fgtw::protocol::bind_req(req, handle_proof, &envelope_signer(device_secret), vsf::eagle_time_oscillations())

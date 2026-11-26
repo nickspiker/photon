@@ -642,7 +642,7 @@ pub struct Contact {
     pub id: ContactId,
     /// The friend's published profile name, adopted from their pong's always-granted name slot and synced across OUR fleet via the roster (PRST4). Empty renders the keyed voca pseudonym; carries zero trust — the pinned key does. Never defaulted to the typed handle: the handle string derives the identity seed, so storing it anywhere re-creates the honeypot (docs/identity-profile.md).
     pub published_name: String,
-    /// Runtime: `published_name` or a held profile record changed since the last state save — the status drain sets it, the post-drain sweep persists + clears it (persisting inside the drain would fight the contacts borrow).
+    /// Runtime: `published_name`, a held profile record or the kept alias changed since the last state save — the status drain sets it, the post-drain sweep persists + clears it (persisting inside the drain would fight the contacts borrow).
     pub published_name_dirty: bool,
     /// Runtime: `avatar_pin` adopted from a pong since the last save — the post-drain sweep persists the contact list + fetches the avatar, then clears it.
     pub avatar_pin_dirty: bool,
@@ -651,6 +651,8 @@ pub struct Contact {
     /// The friend's profile fields as their owner signed them (fgtw FLOWS.md "Profile"), newest revision per field: while one is held for a field, `published_name` / `avatar_pin` show its value and nothing unsigned overwrites them (a bare pong field, the roster, the avatar blob's name slot).
     /// Persisted in the contact document; empty for a friend whose build sends none yet.
     pub profile_records: Vec<fgtw::profile::ProfileRecord>,
+    /// The friend's Photon alias, kept beside the pin from a rotation that held (ferros PHOTON.md "How contacts keep trusting the person"): its public bundle, and the binding's time it came with. Records the alias signs are the friend's, checked with both families against this bundle; the handle-derived identity key anyone who knows the handle can make is not. Persisted in the contact document; None until the friend's fleet speaks the alias.
+    pub alias: Option<(fgtw::pq::KeyBundle, i64)>,
     pub handle_proof: [u8; 32], // Cached handle_proof (expensive to compute - ~1 second) - PUBLIC
     /// The PARTY ID: the friend's pinned identity PUBKEY (device-derived pid for siblings). Every ceremony/braid derivation keys on this opaque 32-byte id; it holds no signing power. (Pre-pin-set this was BLAKE3(handle) — the friend's identity SEED.)
     pub handle_hash: [u8; 32],
@@ -899,6 +901,7 @@ impl Contact {
             avatar_pin_dirty: false,
             avatar_pin,
             profile_records: Vec::new(),
+            alias: None,
             handle_proof,
             handle_hash: party_id,
             public_identity,
@@ -1227,13 +1230,22 @@ impl Contact {
         }
         let hp = self.handle_proof;
         let mut held = std::mem::take(&mut self.profile_records);
+        // A record the friend's ALIAS signed (the key their Photon speaks by, from the person key, which nobody computes from the handle): held only when both families verify against the alias kept from their rotation.
+        if let Some((alias, _)) = self.alias.as_ref().filter(|(a, _)| rec.identity == Some(a.ed25519())) {
+            let merged = fgtw::profile::accept_by(&mut held, rec, &hp, alias);
+            self.profile_records = held;
+            return merged == Some(Merged::Adopted) && self.show_profile_records();
+        }
         // Who may speak for this contact's profile. An IDENTITY-signed record (fgtw sign_as_identity) is vouched by the subject's pinned identity party id (`handle_hash`), which never changes owners — so a name or avatar stays valid through every device rotation (the owner's rule 2026-11-26: "signed by my identity, not a device that might change owners"). A DEVICE-signed (legacy) record still needs a current fleet member, which is exactly why those lapsed on a key rotation and the fleet forgot names.
         let merged = fgtw::profile::accept(&mut held, rec, |subject, key, _rev| *subject == hp && (*key == self.handle_hash || self.knows_device(key)));
         self.profile_records = held;
-        if merged != Some(Merged::Adopted) {
-            return false;
-        }
-        // The record itself is new state for the contact document, whether or not the shown value moved.
+        merged == Some(Merged::Adopted) && self.show_profile_records()
+    }
+
+    /// A record was just adopted: it is new state for the contact document whether or not the shown value moved, and the held name and pin show from now on. Always true, for the caller's answer.
+    fn show_profile_records(&mut self) -> bool {
+        use fgtw::profile::Field;
+        let hp = self.handle_proof;
         self.published_name_dirty = true;
         if let Some(name) = fgtw::profile::current(&self.profile_records, &hp, Field::Name).and_then(|r| r.name()) {
             if self.published_name != name {
@@ -1253,6 +1265,27 @@ impl Contact {
             }
         }
         true
+    }
+
+    /// Take a rotation from this contact (ferros PHOTON.md "How contacts keep trusting the person"): it names Photon (a binding for another kist's alias is never Photon's), it holds against `chain`, the chain we hold for this contact, and the identity we pinned (`handle_hash`), and it is not older than an alias already kept (an old rotation cannot roll the alias back). Then its alias is kept beside the pin.
+    /// True when the alias is new here; false for the alias already kept. Once kept it stays: the binding's signer leaving the fleet later drops nothing (the owner, 2026-11-26: "signed records ALWAYS stay active").
+    pub fn take_rotation(&mut self, rotation: &fgtw::binding::Rotation, chain: &fgtw::fleet::MembershipBlob) -> Result<bool, String> {
+        let b = &rotation.binding;
+        if b.developer != fgtw::alias::PHOTON_DEVELOPER || b.option != fgtw::alias::PHOTON_OPTION {
+            return Err("a binding for another kist's alias".to_string());
+        }
+        if b.handle_proof != self.handle_proof {
+            return Err("a binding for another person".to_string());
+        }
+        rotation.verify(chain, &self.handle_hash).map_err(|e| format!("{e:?}"))?;
+        match &self.alias {
+            Some((kept, _)) if *kept == b.alias => return Ok(false),
+            Some((_, when)) if b.when <= *when => return Err("older than the alias kept".to_string()),
+            _ => {}
+        }
+        self.alias = Some((b.alias.clone(), b.when));
+        self.published_name_dirty = true;
+        Ok(true)
     }
 
     /// Does `device_pubkey` belong to this contact's identity? Trust respects the fold.
@@ -1755,6 +1788,51 @@ mod profile_record_tests {
         let bad = fgtw::profile::ProfileRecord::sign_as_identity(&[0x99; 32], &HP, fgtw::profile::Field::Name, b"NotZinnia".to_vec(), 200);
         assert!(!c.offer_profile_record(bad), "a different identity key does not match the pinned party id");
         assert_eq!(c.published_name, "Zinnia");
+    }
+
+    /// The readers' half of ferros PHOTON.md's rotation: a friend's alias, vouched by a member of the chain we hold for them, is kept beside the pin; records it signs hold with both families from then on, through every later device change, and nothing older or for another kist moves it.
+    #[test]
+    fn a_rotation_keeps_the_alias_and_its_records_hold_with_both_families() {
+        use fgtw::alias::{PHOTON_DEVELOPER, PHOTON_OPTION};
+        use fgtw::binding::{Binding, Rotation};
+        use fgtw::pq::{FleetSigner, SigningBundle};
+        let dev = SigningBundle::derive(b"friend device");
+        let friend_seed = [0x5A; 32];
+        let mut chain = fgtw::fleet::MembershipBlob::genesis_v2(&dev, HP, &friend_seed, 1_000);
+        chain.declare(&dev, 1_001);
+        let mask = chain.declared_mask(&dev.keypair().public.to_bytes());
+        let alias = fgtw::alias::bundle(&fgtw::alias::seed(&[9; 32], &PHOTON_DEVELOPER, &PHOTON_OPTION));
+        let rotation = Rotation::make(Binding::sign(&dev, mask, &HP, &PHOTON_DEVELOPER, &PHOTON_OPTION, alias.public(), 2_000), &alias, Some(&friend_seed));
+        let mut c = Contact::new(HandleText::new("zinnia"), HP, DevicePubkey::from_bytes([0x11; 32]));
+        c.handle_hash = crate::crypto::clutch::identity_party_id(&friend_seed);
+
+        let rec = ProfileRecord::sign_by(&alias, &HP, Field::Name, b"Bloom".to_vec(), 100);
+        assert!(!c.offer_profile_record(rec.clone()), "before the rotation the alias is nobody's");
+        assert_eq!(c.take_rotation(&rotation, &chain), Ok(true));
+        assert!(c.published_name_dirty, "the kept alias is owed a save");
+        assert_eq!(c.take_rotation(&rotation, &chain), Ok(false), "the same alias again changes nothing");
+        assert!(c.offer_profile_record(rec));
+        assert_eq!(c.published_name, "Bloom");
+
+        // Every device of the friend's leaves the fold later: the alias's records still hold.
+        c.fleet_members = vec![];
+        c.fleet_folded_once = true;
+        assert!(c.offer_profile_record(ProfileRecord::sign_by(&alias, &HP, Field::Name, b"Blossom".to_vec(), 200)));
+        assert_eq!(c.published_name, "Blossom");
+
+        // One family is not enough: a record under the alias's key with its Ed25519 egg alone is refused.
+        let msg = ProfileRecord::signing_bytes_identity(&HP, Field::Name, b"Weed", 300);
+        let thin = ProfileRecord { subject: HP, field: Field::Name, value: b"Weed".to_vec(), rev: 300, device: alias.public().ed25519(), identity: Some(alias.public().ed25519()), sig: fgtw::pq::eggs_to_bytes(&alias.eggs(&msg, fgtw::fleet::scheme::MASK_BASE)) };
+        assert!(!c.offer_profile_record(thin));
+        assert_eq!(c.published_name, "Blossom");
+
+        // Another kist's alias is never Photon's, and an older rotation cannot roll the alias back.
+        let lumis = Rotation::make(Binding::sign(&dev, mask, &HP, &[7; 32], &PHOTON_OPTION, alias.public(), 3_000), &alias, None);
+        assert!(c.take_rotation(&lumis, &chain).is_err());
+        let earlier = fgtw::alias::bundle(&fgtw::alias::seed(&[8; 32], &PHOTON_DEVELOPER, &PHOTON_OPTION));
+        let stale = Rotation::make(Binding::sign(&dev, mask, &HP, &PHOTON_DEVELOPER, &PHOTON_OPTION, earlier.public(), 1_500), &earlier, None);
+        assert!(c.take_rotation(&stale, &chain).is_err());
+        assert_eq!(c.alias.as_ref().map(|(a, _)| a.ed25519()), Some(alias.public().ed25519()));
     }
 
     #[test]

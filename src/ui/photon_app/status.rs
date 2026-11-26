@@ -373,6 +373,7 @@ impl PhotonApp {
                 StatusUpdate::ReleaseTold { .. } => "ReleaseTold",
                 StatusUpdate::ReleaseClaimed { .. } => "ReleaseClaimed",
                 StatusUpdate::FleetChainReceived { .. } => "FleetChainReceived",
+                StatusUpdate::RotationReceived { .. } => "RotationReceived",
                 StatusUpdate::AddressPushed { .. } => "AddressPushed",
                 StatusUpdate::BindSelectReceived { .. } => "BindSelectReceived",
                 StatusUpdate::LanFleetAsked { .. } => "LanFleetAsked",
@@ -495,6 +496,8 @@ impl PhotonApp {
         // Siblings asking for our fan-out (`fanout_req`), answered after the drain: (handle proof, the revision they hold, the asker, where it asked from).
         let mut fanout_asks_after: Vec<([u8; 32], u64, [u8; 32], std::net::SocketAddr)> = Vec::new();
         let mut fleet_chains_after: Vec<([u8; 32], Vec<u8>, [u8; 32])> = Vec::new();
+        // Contacts' rotations, taken after the drain and after its chains, so a chain that came in the same batch is the one each is checked against: (handle proof, the rotation's bytes, the sender).
+        let mut rotations_after: Vec<([u8; 32], Vec<u8>, [u8; 32])> = Vec::new();
         let mut addresses_after: Vec<crate::network::fgtw::PeerRecord> = Vec::new();
         // The join over the mesh, deferred likewise: binding request frames handed to this sponsor (for the Add machine, screen up or not), and fan-outs handed to this device.
         let mut bind_reqs_after: Vec<(Vec<u8>, std::net::SocketAddr)> = Vec::new();
@@ -4543,6 +4546,12 @@ impl PhotonApp {
                         fleet_chains_after.push((handle_proof, chain, sender_pubkey.key));
                     }
                 }
+                // A contact's rotation: the carrier earns no trust; it is checked against the chain we hold for that contact after the drain.
+                StatusUpdate::RotationReceived { handle_proof, rotation, sender_pubkey } => {
+                    if self.contacts.iter().any(|c| c.handle_proof == handle_proof && !c.is_sibling) {
+                        rotations_after.push((handle_proof, rotation, sender_pubkey.key));
+                    }
+                }
                 StatusUpdate::AddressPushed { record } => addresses_after.push(record),
                 // A sponsor picked this joining device: parked for the join thread, which lights green only if the sender folds as a member of the fleet we are joining.
                 StatusUpdate::BindSelectReceived { handle_proof, joiner, sender_pubkey } => {
@@ -5966,6 +5975,11 @@ impl PhotonApp {
         }
         for (hp, chain, sender) in fleet_chains_after {
             if self.adopt_peer_chain(hp, &chain, sender) {
+                changed!();
+            }
+        }
+        for (hp, rotation, sender) in rotations_after {
+            if self.take_rotation(hp, &rotation, sender) {
                 changed!();
             }
         }

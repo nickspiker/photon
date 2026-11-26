@@ -168,6 +168,8 @@ fn contact_state_schema() -> SectionSchema {
         .field("hist_oldest", TypeConstraint::Any) // e6 eagle-time cursor: oldest recovered row so far (i64::MAX = head page pending). Absent = history recovery never ran for this contact.
         .field("hist_complete", TypeConstraint::AnyUnsigned) // bool: friend-history backfill finished (server said no-more, or early-stop). Absent = false.
         .field("published_name", TypeConstraint::AnyString) // The friend's chosen display name, adopted from their pong (always-granted name slot). Absent = never received.
+        .field("alias", TypeConstraint::Any) // The friend's Photon alias public bundle (fgtw KeyBundle bytes, `ge`), kept from a rotation that held (ferros PHOTON.md "How contacts keep trusting the person"). Absent = none yet.
+        .field("alias_when", TypeConstraint::Any) // e6: the time of the binding the kept alias came with, so an older rotation cannot roll it back. Written with `alias`.
         .field("profile", TypeConstraint::Any) // multi: one owner-signed profile record (fgtw::profile, the `vP` wrapped section) per field held. Absent = none (a friend on an older build, or a document written before records).
         .field("sibling", TypeConstraint::AnyUnsigned) // bool: this entry is one of OUR OWN fleet devices (fleet weave), keyed by sibling party id. Absent = false (a friend).
         .field("blind", TypeConstraint::Any) // multi-value per deposited blind: (depositor device ke, 64B blob tensor, deposited-at e6). Friend-side storage of OTP-blinded S blobs; absent = none.
@@ -288,6 +290,14 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
         // The friend's pong-adopted display name — written only when received (absent = never).
         builder = builder
             .set("published_name", VsfType::x(contact.published_name.clone()))
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    // The friend's Photon alias, kept from their rotation; none kept writes neither field.
+    if let Some((alias, when)) = &contact.alias {
+        builder = builder
+            .set("alias", VsfType::ge(alias.to_bytes()))
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .set("alias_when", VsfType::e(vsf::types::EtType::e6(*when)))
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
     // The friend's owner-signed profile records, one field value each; none held writes no field at all (never an empty one).
@@ -481,6 +491,13 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
     }
     if let Ok(name) = section.get_value::<String>("published_name") {
         contact.published_name = name;
+    }
+    // The kept alias: checked when its rotation was taken, so read back as kept; a bundle this build cannot read leaves none (the next rotation brings it again).
+    if let Some(VsfType::ge(b)) = section.get_fields("alias").first().and_then(|f| f.values.first()) {
+        if let Ok(alias) = fgtw::pq::KeyBundle::from_bytes(b) {
+            let when = section.get_fields("alias_when").first().and_then(|f| f.values.first()).map(vsf_to_oscillations).unwrap_or(0);
+            contact.alias = Some((alias, when));
+        }
     }
     // Held profile records: verified when they were adopted, so read back as held; a value that is not a record this build knows is skipped.
     for f in section.get_fields("profile") {
@@ -2182,6 +2199,8 @@ mod tests {
         assert!(c.offer_profile_record(ProfileRecord::sign(&friend_dev, &hp, Field::Name, "Flower".as_bytes().to_vec(), 500)));
         assert!(c.offer_profile_record(ProfileRecord::sign(&friend_dev, &hp, Field::AvatarPin, vec![0x5A; 64], 501)));
         let held = c.profile_records.clone();
+        // The alias kept from the friend's rotation rides the same document.
+        c.alias = Some((fgtw::alias::bundle(&[0x3C; 32]).public(), 2_000));
         // The document's bare name and the index pin are stale: the records must win on load.
         c.published_name = "Weed".to_string();
 
@@ -2199,6 +2218,7 @@ mod tests {
         assert_eq!(loaded.profile_records, held, "every held record survives a restart");
         assert_eq!(loaded.published_name, "Flower");
         assert_eq!(loaded.avatar_pin, [0x5A; 64], "the record's pin outranks the index row");
+        assert_eq!(loaded.alias, c.alias, "the kept alias and its binding's time survive a restart");
 
         // An empty pin (a removed avatar) is a real record: it rides as a wrapped record, never an empty field.
         let mut gone = Contact::new(HandleText::new("flora"), hp, DevicePubkey::from_bytes(friend_dev.public.to_bytes()));
@@ -2207,6 +2227,7 @@ mod tests {
         let loaded = load_contact_state(&identity, &storage).unwrap();
         assert_eq!(loaded.profile_records, gone.profile_records);
         assert_eq!(loaded.avatar_pin, [0u8; 64]);
+        assert_eq!(loaded.alias, None, "no alias kept writes none");
 
         // A document written before records reads as none.
         let legacy = contact_state_schema().build().set("clutch_state", 0u8).unwrap().encode().unwrap();

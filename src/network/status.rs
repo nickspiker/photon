@@ -241,8 +241,8 @@ fn is_sibling_device(pk: &[u8; 32]) -> bool {
         .unwrap_or(false)
 }
 
-/// The frames a signer we do not know may send (security audit NET-09): each is the opening move of a relationship the UI thread decides on, so the key cannot be known yet — the CLUTCH proof (the reconciled-sibling race documented at the ladder), a friend knock, the fleet chain ask and answer, the join's binding request and fan-out.
-const STRANGER_SECTIONS: [&str; 7] = ["clutch_complete", "friend_knock", "fleet_req", "fleet_resp", "bind_req", "fanout_resp", "bind_select"];
+/// The frames a signer we do not know may send (security audit NET-09): each is the opening move of a relationship the UI thread decides on, so the key cannot be known yet — the CLUTCH proof (the reconciled-sibling race documented at the ladder), a friend knock, the fleet chain ask and answer, the join's binding request and fan-out, and a contact's rotation (a Photon on the alias alone is no member of its person's chain, so its key is not one we know; the rotation proves itself against the chain we pinned).
+const STRANGER_SECTIONS: [&str; 8] = ["clutch_complete", "friend_knock", "fleet_req", "fleet_resp", "bind_req", "fanout_resp", "bind_select", "rotation_push"];
 
 /// NET-09: `Some(section)` when `bytes` is a VSF frame signed by a key that is no contact, sibling, group member or ourselves AND whose primary section is not one a stranger may send; `None` admits it to the parse ladder.
 /// A frame with no readable signer is admitted as before: every parser refuses it itself, and nothing a stranger gains from an unsigned frame is worth a second grammar here.
@@ -589,6 +589,8 @@ pub enum StatusUpdate {
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
     },
+    /// A contact's rotation (`rotation_push`, ferros PHOTON.md "How contacts keep trusting the person"): opaque bytes here; the UI thread checks it against the chain it holds for `handle_proof` and the identity it pinned, then keeps the alias beside the pin.
+    RotationReceived { handle_proof: [u8; 32], rotation: Vec<u8>, sender_pubkey: DevicePubkey },
     /// A joining device's binding request (`bind_req`, docs/pairing-v2.md over the mesh), whole, for the Add machine (fgtw::flow::add) to open and check like a registry row: the bytes, where they came from, and the signer the cheap parse read.
     BindReqFrame {
         bytes: Vec<u8>,
@@ -892,6 +894,7 @@ impl StatusUpdate {
             StatusUpdate::FanoutReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FleetStatePushed { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::FleetChainReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::RotationReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::ReleaseTold { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::ReleaseClaimed { device, .. } => Some(device),
             StatusUpdate::AddressPushed { record } => Some(record.device_pubkey.as_bytes()),
@@ -2427,6 +2430,9 @@ async fn run_checker(
                                             StatusUpdate::FleetChainReceived { handle_proof, chain, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey), sender_addr: src_addr },
                                             &event_proxy_recv,
                                         );
+                                    } else if let Ok((handle_proof, rotation, sender_pubkey)) = crate::network::fgtw::protocol::parse_rotation_push_vsf(&data) {
+                                        // A contact's rotation is past one datagram (its binding carries every egg), so it comes by PT; the UI checks it against the chain it holds.
+                                        send_status_update(&status_tx_recv, StatusUpdate::RotationReceived { handle_proof, rotation, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) }, &event_proxy_recv);
                                     } else if let Ok((handle_proof, sealed, sender_pubkey)) = crate::network::fgtw::protocol::parse_fstate_push_vsf(&data) {
                                         send_status_update(
                                             &status_tx_recv,
@@ -3116,6 +3122,18 @@ async fn run_checker(
                                     },
                                     &event_proxy_recv,
                                 );
+                                continue;
+                            }
+                            // A contact's rotation: the same mandatory packet-ack as the chain it is checked against.
+                            if let Ok((handle_proof, rotation, sender_pubkey)) = crate::network::fgtw::protocol::parse_rotation_push_vsf(msg_bytes) {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(&status_tx_recv, StatusUpdate::RotationReceived { handle_proof, rotation, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) }, &event_proxy_recv);
                                 continue;
                             }
                             // The join over the mesh: a binding request handed to a sponsor, and a fan-out handed to a newcomer or a sibling. Same mandatory packet-ack.
