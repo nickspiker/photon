@@ -586,6 +586,81 @@ impl PhotonApp {
             records.extend(self.ensure_own_record(Field::AvatarPin, "profile.avatar_pin", pin));
         }
         crate::network::status::set_profile_records(records);
+        // SELF owed: one of our own fields is newer here than what the identity space last said (an edit on this device, a sibling's merged edit, a fresh load), so a settle carries it there. A field SELF never held is owed only when it says something; an empty one would ask a settle that changes nothing.
+        if !self.alias_alone() {
+            if self_owed_by(&self.own_profile_stamped(), &self.self_settled) {
+                self.self_owed = true;
+                self.spawn_alias_settle("our profile changed");
+            }
+        }
+    }
+
+    /// Our own name and avatar pin as the fleet settings hold them, each with the stamp it was set at: what a settle offers the identity space's SELF (network/fgtw/alias.rs settle).
+    pub(super) fn own_profile_stamped(&self) -> Vec<(fgtw::profile::Field, Vec<u8>, i64)> {
+        use crate::storage::fleet_settings::{as_bytes, as_text};
+        use fgtw::profile::Field;
+        let Some(fs) = self.fleet_settings.as_ref() else {
+            return Vec::new();
+        };
+        let mut own = Vec::new();
+        if let (Some(name), Some(at)) = (fs.effective("profile.name").and_then(as_text), fs.effective_stamp("profile.name")) {
+            own.push((Field::Name, name.into_bytes(), at));
+        }
+        // WHY: the same 64-byte gate ensure_avatar_pin_readonly applies; a settings value of another length is no pin, and set_own refuses it.
+        if let (Some(pin), Some(at)) = (fs.effective("profile.avatar_pin").and_then(as_bytes).filter(|p| p.len() == 64), fs.effective_stamp("profile.avatar_pin")) {
+            own.push((Field::AvatarPin, pin, at));
+        }
+        own
+    }
+
+    /// Take SELF's values where they are newer than our own settings, written at SELF's stamp so a record signed from either carries the same revision; then what a sibling's merged profile edit does follows (devices.rs: the You page reloads, the name and pin publish, the picture syncs).
+    pub(super) fn adopt_self(&mut self, own: Vec<(fgtw::profile::Field, Vec<u8>, i64)>) {
+        use fgtw::profile::Field;
+        if !self.ensure_fleet_settings() {
+            return;
+        }
+        let (mut name_moved, mut pin_moved) = (false, false);
+        for (field, value, at) in own {
+            let key = match field {
+                Field::Name => "profile.name",
+                Field::AvatarPin => "profile.avatar_pin",
+            };
+            // ensure_fleet_settings above made it.
+            let fs = self.fleet_settings.as_mut().unwrap();
+            if fs.effective_stamp(key).is_some_and(|held| held >= at) {
+                continue;
+            }
+            let typed = match field {
+                Field::Name => match String::from_utf8(value) {
+                    Ok(s) => vsf::VsfType::x(s),
+                    Err(_) => continue,
+                },
+                // Photon removes no avatar (a pin is only ever replaced by a new picture), so a cleared avatar from another keeper of the identity is left as it is here.
+                Field::AvatarPin if value.is_empty() => {
+                    crate::logf!("PROFILE: SELF cleared our avatar at {}; Photon keeps its picture (it has no removal)", at);
+                    continue;
+                }
+                Field::AvatarPin => vsf::VsfType::hR(value),
+            };
+            if fs.set(key, typed, at) {
+                crate::logf!("PROFILE: our {} taken from SELF (set at {})", field.label(), at);
+                match field {
+                    Field::Name => name_moved = true,
+                    Field::AvatarPin => pin_moved = true,
+                }
+            }
+        }
+        if !name_moved && !pin_moved {
+            return;
+        }
+        self.persist_and_push_settings();
+        self.you_fields_loaded = false;
+        self.publish_profile_name();
+        self.publish_avatar_pin();
+        if pin_moved {
+            self.spawn_avatar_sync();
+            self.want_own_avatar_from_siblings();
+        }
     }
 
     /// The fleet-settings key our own record for `field` lives under, beside the bare value, so every device of ours carries the one signed copy, revision and all.
@@ -2294,6 +2369,28 @@ fn hold_polled_release(tx: &std::sync::mpsc::Sender<UpdateEvent>, bytes: Vec<u8>
     let hash = *blake3::hash(&bytes).as_bytes();
     if let Some(rel) = crate::network::peer_release::held_from_poll(bytes, stamp, rows, vsf::eagle_time_oscillations()) {
         crate::log_err!(tx.send(UpdateEvent::ReleaseChecked { hash, from: None, result: Ok(rel) }), "hand a polled release manifest to the UI");
+    }
+}
+
+/// Whether SELF is owed one of our own fields: `local` holds one newer than `settled` (what the identity space last said) with another value. A field SELF never held is owed only when it says something; an empty one would ask a settle that changes nothing.
+fn self_owed_by(local: &[(fgtw::profile::Field, Vec<u8>, i64)], settled: &[(fgtw::profile::Field, Vec<u8>, i64)]) -> bool {
+    local.iter().any(|(f, v, at)| settled.iter().find(|(sf, _, _)| sf == f).map_or(!v.is_empty(), |(_, sv, sat)| at > sat && v != sv))
+}
+
+#[cfg(test)]
+mod self_tests {
+    use super::self_owed_by;
+    use fgtw::profile::Field;
+
+    #[test]
+    fn self_is_owed_only_a_newer_different_value() {
+        let settled = vec![(Field::Name, b"Bloom".to_vec(), 100)];
+        assert!(!self_owed_by(&[(Field::Name, b"Bloom".to_vec(), 100)], &settled), "what the space holds");
+        assert!(self_owed_by(&[(Field::Name, b"Blossom".to_vec(), 200)], &settled), "an edit here");
+        assert!(!self_owed_by(&[(Field::Name, b"Bud".to_vec(), 50)], &settled), "older than the space: the space's wins, nothing to carry");
+        assert!(self_owed_by(&[(Field::AvatarPin, vec![7; 64], 10)], &settled), "a field the space never held");
+        assert!(!self_owed_by(&[(Field::Name, Vec::new(), 10)], &[]), "an empty field the space never held changes nothing");
+        assert!(self_owed_by(&[(Field::Name, Vec::new(), 200)], &settled), "a cleared name is a value");
     }
 }
 

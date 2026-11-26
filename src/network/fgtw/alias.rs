@@ -14,6 +14,25 @@ pub struct AliasReady {
     pub keys: PhotonKeys,
     /// The alias's device list as the join left it, with what the chain says is locked.
     pub joined: Joined,
+    /// The person's own name and avatar pin as the identity space holds them after the settle (fgtw::profile::SELF): field, value, the stamp it was set at. Empty on ferros, where the identity service keeps SELF and Photon only joins the list.
+    pub own: Vec<(fgtw::profile::Field, Vec<u8>, i64)>,
+}
+
+/// SELF: each of this Photon's own fields goes into `space` when it is newer than the space's, at the stamp it was set at, so every device signs the same revision for the same value; an older one is left for the app to replace with the space's. `me` is this device's key, the writer. True when the space changed.
+fn self_into_space(space: &mut fgtw::space::Space, me: &[u8; 32], own_local: &[(fgtw::profile::Field, Vec<u8>, i64)]) -> bool {
+    let mut changed = false;
+    for (field, value, at) in own_local {
+        if fgtw::profile::own(space, *field).map_or(true, |(_, held_at)| *at > held_at) && fgtw::profile::set_own(space, me, *field, value, *at) {
+            crate::logf!("ALIAS: our {} into SELF at {}", field.label(), at);
+            changed = true;
+        }
+    }
+    changed
+}
+
+/// SELF's two fields as `space` holds them, in one order, to tell whether two copies agree.
+fn self_of(space: &fgtw::space::Space) -> [Option<(Vec<u8>, i64)>; 2] {
+    [fgtw::profile::own(space, fgtw::profile::Field::Name), fgtw::profile::own(space, fgtw::profile::Field::AvatarPin)]
 }
 
 /// The vault entry holding the fleet's space document as this device last merged it, so the person key (with its mint stamp) is at hand offline and `held` is never a guess.
@@ -85,7 +104,8 @@ fn eggs(device_secret: &[u8; 32]) -> Vec<Vec<u8>> {
 /// Settle the person key and the alias, sign the binding, and put this device in the alias's device list.
 /// `fleet_key` opens the fleet's space; `vault_seed` addresses the fleet keys a rotation left behind on this device ([`keep_prior_fleet_key`]), under which the person key and the space are found too, and the person key is sealed again under `fleet_key`; `signer` is this device's full bundle (every egg the chain says it holds).
 /// Err when the person key cannot be had: fgtw.org did not answer and no key is held (never minted on a pull that did not complete), the key is sealed under a fleet key this device does not hold, or the chain is not held.
-pub fn settle(identity_seed: &[u8; 32], vault_seed: &[u8; 32], handle_proof: &[u8; 32], fleet_key: &[u8; 32], signer: &SigningBundle, device_secret: &[u8; 32], kept: &Kept) -> Result<AliasReady, String> {
+/// `own_local` is the person's own name and avatar pin as this Photon holds them (its fleet settings), each with the stamp it was set at: the newer of each and the space's SELF goes into the space, and the answer carries SELF back for the app to take where it is the newer (the owner, 2026-11-26: the identity manager keeps the person's preferred name and avatar for every kist).
+pub fn settle(identity_seed: &[u8; 32], vault_seed: &[u8; 32], handle_proof: &[u8; 32], fleet_key: &[u8; 32], signer: &SigningBundle, device_secret: &[u8; 32], kept: &Kept, own_local: &[(fgtw::profile::Field, Vec<u8>, i64)]) -> Result<AliasReady, String> {
     let vault = crate::storage::device_vault().ok_or("no vault")?;
     let me = signer.keypair().public.to_bytes();
     let now = crate::network::time_base::now_osc();
@@ -104,20 +124,28 @@ pub fn settle(identity_seed: &[u8; 32], vault_seed: &[u8; 32], handle_proof: &[u
     let pulled = fgtw::client::pull_space(&PhotonTransport, handle_proof);
     // Whether fgtw.org's own copy already holds the person key under the current fleet key: then the keys left behind have done their work.
     let mut remote_current = false;
+    // fgtw.org's SELF as it answered (None while it did not answer), so a SELF it lacks is pushed even when the person key needs nothing.
+    let mut remote_self = None;
     let heard = match &pulled {
         Ok(Some(sealed)) => {
             let doc = keys.iter().find_map(|k| fgtw::space::open(sealed, handle_proof, k).ok()).ok_or("fgtw.org's space opens under no fleet key this device holds")?;
             let remote = fgtw::space::Space::from_doc(&doc)?;
             remote_current = matches!(fgtw::person::find(&remote, handle_proof, fleet_key), fgtw::person::Found::Key { .. });
+            remote_self = Some(self_of(&remote));
             space.merge(remote);
             true
         }
-        Ok(None) => true,
+        Ok(None) => {
+            remote_self = Some([None, None]);
+            true
+        }
         Err(e) => {
             crate::logf!("ALIAS: fgtw.org's space did not answer ({}); the held person key only, nothing minted", e);
             false
         }
     };
+    self_into_space(&mut space, &me, own_local);
+    let self_behind = remote_self.as_ref().is_some_and(|r| *r != self_of(&space));
     let person_key = if heard {
         let s = fgtw::person::settle(&mut space, handle_proof, fleet_key, held.as_ref().map(|(k, m)| (k, *m)), || eggs(device_secret), now, &me)?;
         let key = match s.what {
@@ -136,8 +164,8 @@ pub fn settle(identity_seed: &[u8; 32], vault_seed: &[u8; 32], handle_proof: &[u
         if matches!(s.what, fgtw::person::Settled::Minted { .. }) {
             crate::log("ALIAS: no person key in the fleet's space; minted one here");
         }
-        // Sent when the space changed, and whenever fgtw.org's copy does not yet hold the person key under the current key (a push that failed after an earlier re-seal here is sent again).
-        if s.changed || !remote_current {
+        // Sent when the space changed, whenever fgtw.org's copy does not yet hold the person key under the current key (a push that failed after an earlier re-seal here is sent again), and whenever its SELF is not ours.
+        if s.changed || !remote_current || self_behind {
             let sealed = fgtw::space::seal(&space.to_doc(now)?, handle_proof, fleet_key)?;
             match fgtw::client::push_space(&PhotonTransport, handle_proof, signer, &sealed) {
                 Ok(()) => remote_current = true,
@@ -166,7 +194,9 @@ pub fn settle(identity_seed: &[u8; 32], vault_seed: &[u8; 32], handle_proof: &[u
     let identity_pub = crate::crypto::clutch::identity_party_id(identity_seed);
     let keys = PhotonKeys::new(alias, *handle_proof, identity_pub, binding, Some(*identity_seed));
     let joined = join_list(&keys, &me, kept);
-    Ok(AliasReady { keys, joined })
+    let [name, pin] = self_of(&space);
+    let own = [(fgtw::profile::Field::Name, name), (fgtw::profile::Field::AvatarPin, pin)].into_iter().filter_map(|(f, v)| v.map(|(v, at)| (f, v, at))).collect();
+    Ok(AliasReady { keys, joined, own })
 }
 
 /// The person's fleet chain, as held, else as fgtw.org has it (ferros's Photon holds none: it is never a member), folded before it is trusted.
@@ -337,4 +367,40 @@ pub fn leave_list(keys: &PhotonKeys, device_key: &impl fgtw::pq::FleetSigner, ke
         }
     }
     Err("the device list stayed stale after two publishes".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{self_into_space, self_of};
+    use fgtw::profile::Field;
+    use fgtw::space::Space;
+
+    const DESK: [u8; 32] = [1; 32];
+
+    /// The first settle after this build lands carries Photon's own name and pin into SELF at the stamps they were set at, so the records every device signs keep their revisions.
+    #[test]
+    fn our_profile_moves_into_self_at_its_own_stamps() {
+        let mut space = Space::new();
+        assert!(self_into_space(&mut space, &DESK, &[(Field::Name, b"Bloom".to_vec(), 100), (Field::AvatarPin, vec![7; 64], 90)]));
+        assert_eq!(self_of(&space), [Some((b"Bloom".to_vec(), 100)), Some((vec![7; 64], 90))]);
+        assert!(!self_into_space(&mut space, &DESK, &[(Field::Name, b"Bloom".to_vec(), 100)]), "the same again changes nothing");
+    }
+
+    /// The newer of the two wins: an edit here goes in, while one older than SELF (another keeper of the identity changed it since) is left for the app to replace.
+    #[test]
+    fn the_newer_of_ours_and_self_wins() {
+        let mut space = Space::new();
+        self_into_space(&mut space, &DESK, &[(Field::Name, b"Bloom".to_vec(), 100)]);
+        assert!(!self_into_space(&mut space, &DESK, &[(Field::Name, b"Bud".to_vec(), 50)]));
+        assert_eq!(self_of(&space)[0], Some((b"Bloom".to_vec(), 100)));
+        assert!(self_into_space(&mut space, &DESK, &[(Field::Name, b"Blossom".to_vec(), 200)]));
+        assert_eq!(self_of(&space)[0], Some((b"Blossom".to_vec(), 200)));
+        // A cleared name is carried too, so friends learn it.
+        assert!(self_into_space(&mut space, &DESK, &[(Field::Name, Vec::new(), 300)]));
+        assert_eq!(self_of(&space)[0], Some((Vec::new(), 300)));
+        // An empty name SELF never held writes nothing.
+        let mut fresh = Space::new();
+        assert!(!self_into_space(&mut fresh, &DESK, &[(Field::Name, Vec::new(), 10)]));
+        assert!(fresh.entries().is_empty());
+    }
 }

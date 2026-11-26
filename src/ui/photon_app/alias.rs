@@ -21,7 +21,7 @@ impl PhotonApp {
                 let kept = self.alias_kept();
                 std::thread::Builder::new().name("alias".into()).spawn(move || {
                     let joined = crate::network::fgtw::alias::join_list(&keys, &device, &kept);
-                    crate::log_err!(tx.send(Ok(crate::network::fgtw::alias::AliasReady { keys, joined })), "the alias list to the UI thread");
+                    crate::log_err!(tx.send(Ok(crate::network::fgtw::alias::AliasReady { keys, joined, own: Vec::new() })), "the alias list to the UI thread");
                 })
             }
             None => {
@@ -37,8 +37,9 @@ impl PhotonApp {
                 };
                 let secret = *kp.secret.as_bytes();
                 let kept = self.alias_kept();
+                let own = self.own_profile_stamped();
                 std::thread::Builder::new().name("alias".into()).spawn(move || {
-                    let r = crate::network::fgtw::alias::settle(&session.identity_seed, &session.vault_seed, &session.handle_proof, &fleet_key, &bundle, &secret, &kept);
+                    let r = crate::network::fgtw::alias::settle(&session.identity_seed, &session.vault_seed, &session.handle_proof, &fleet_key, &bundle, &secret, &kept, &own);
                     crate::log_err!(tx.send(r), "the alias settle to the UI thread");
                 })
             }
@@ -47,6 +48,8 @@ impl PhotonApp {
             Ok(_) => {
                 crate::logf!("ALIAS: settling ({})", why);
                 self.alias_rx = Some(rx);
+                // This settle carries our profile as it stands now.
+                self.self_owed = false;
             }
             Err(e) => crate::logf!("ALIAS: the settle thread did not start ({})", e),
         }
@@ -63,7 +66,7 @@ impl PhotonApp {
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Err("the settle thread ended without an answer".to_string()),
         };
         self.alias_rx = None;
-        let ready = match r {
+        let mut ready = match r {
             Ok(ready) => ready,
             Err(e) => {
                 crate::logf!("ALIAS: not settled: {}", e);
@@ -72,6 +75,12 @@ impl PhotonApp {
             }
         };
         crate::logf!("ALIAS: settled; alias {}", hex::encode(&fgtw::alias::ed25519_public(&ready.keys.alias)[..4]));
+        // SELF as the space holds it now: taken where it is newer than our own settings, and kept as what the space last said, so a later edit here knows it is owed.
+        let own = std::mem::take(&mut ready.own);
+        if !self.alias_alone() {
+            self.self_settled = own.clone();
+            self.adopt_self(own);
+        }
         if self.photon_keys.is_none() {
             self.set_photon_keys(ready.keys);
             // The alias is in hand from here: the pong seals for alias siblings switch to the alias's sibling secret, and each alias sibling gets our fleet state again under the alias's state key. A push before this went under the fleet key, which an alias sibling cannot open (the desktop's push to the Pro at its online edge, 2026-11-17).
@@ -101,6 +110,10 @@ impl PhotonApp {
             None => self.alias_owe(),
         }
         self.redrive_alias_locks();
+        // Our profile moved while that settle ran: one more carries it.
+        if self.self_owed {
+            self.spawn_alias_settle("our profile changed during the settle");
+        }
         true
     }
 

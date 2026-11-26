@@ -3139,6 +3139,10 @@ pub struct PhotonApp {
     space_rx: Option<std::sync::mpsc::Receiver<Option<space::SpaceReading>>>,
     /// The alias settle running off the UI thread (photon_app/alias.rs).
     alias_rx: Option<std::sync::mpsc::Receiver<Result<crate::network::fgtw::alias::AliasReady, String>>>,
+    /// SELF (fgtw::profile::SELF), the person's own name and avatar pin, as the last settle left it in the identity space: field, value, stamp.
+    self_settled: Vec<(fgtw::profile::Field, Vec<u8>, i64)>,
+    /// Our own name or pin changed past what SELF holds and no settle has carried it yet (settings.rs publish_profile_records).
+    self_owed: bool,
     /// Each alias sibling's pair secret (fanout_pairs), read by a worker: what frames to it seal under (alias::alias_seal_key).
     alias_pairs: Vec<([u8; 32], [u8; 32])>,
     alias_pairs_rx: Option<std::sync::mpsc::Receiver<Vec<([u8; 32], [u8; 32])>>>,
@@ -4016,6 +4020,8 @@ impl PhotonApp {
             release_when_copied: false,
             space_rx: None,
             alias_rx: None,
+            self_settled: Vec::new(),
+            self_owed: false,
             alias_pairs: Vec::new(),
             alias_pairs_rx: None,
             alias_chains_owed: Vec::new(),
