@@ -1227,7 +1227,8 @@ impl Contact {
         }
         let hp = self.handle_proof;
         let mut held = std::mem::take(&mut self.profile_records);
-        let merged = fgtw::profile::accept(&mut held, rec, |subject, device, _rev| *subject == hp && self.knows_device(device));
+        // Who may speak for this contact's profile. An IDENTITY-signed record (fgtw sign_as_identity) is vouched by the subject's pinned identity party id (`handle_hash`), which never changes owners — so a name or avatar stays valid through every device rotation (the owner's rule 2026-11-26: "signed by my identity, not a device that might change owners"). A DEVICE-signed (legacy) record still needs a current fleet member, which is exactly why those lapsed on a key rotation and the fleet forgot names.
+        let merged = fgtw::profile::accept(&mut held, rec, |subject, key, _rev| *subject == hp && (*key == self.handle_hash || self.knows_device(key)));
         self.profile_records = held;
         if merged != Some(Merged::Adopted) {
             return false;
@@ -1736,6 +1737,24 @@ mod profile_record_tests {
         c.fleet_members = vec![phone.public.to_bytes(), laptop.public.to_bytes()];
         c.fleet_folded_once = true;
         c
+    }
+
+    #[test]
+    fn an_identity_signed_record_is_held_through_a_full_device_rotation() {
+        // The forgetfulness fix (owner, 2026-11-26): a name signed by the contact's IDENTITY stays valid even when none of the devices that ever belonged to them is a current fleet member any more.
+        let friend_seed = [0x5A; 32];
+        let party_id = crate::crypto::clutch::identity_party_id(&friend_seed);
+        let mut c = Contact::new(HandleText::new("zinnia"), HP, DevicePubkey::from_bytes([0x11; 32]));
+        c.handle_hash = party_id; // the friend's pinned identity party id
+        c.fleet_members = vec![]; // every device rotated away — a full root conversion
+        c.fleet_folded_once = true; // folded, so knows_device() would reject every device
+        let rec = fgtw::profile::ProfileRecord::sign_as_identity(&friend_seed, &HP, fgtw::profile::Field::Name, b"Zinnia".to_vec(), 100);
+        assert!(c.offer_profile_record(rec), "identity-signed: held with no current device (the BOOP cannot happen)");
+        assert_eq!(c.published_name, "Zinnia");
+        // A stranger's identity cannot speak for this contact: a record signed by a different identity key is rejected.
+        let bad = fgtw::profile::ProfileRecord::sign_as_identity(&[0x99; 32], &HP, fgtw::profile::Field::Name, b"NotZinnia".to_vec(), 200);
+        assert!(!c.offer_profile_record(bad), "a different identity key does not match the pinned party id");
+        assert_eq!(c.published_name, "Zinnia");
     }
 
     #[test]
