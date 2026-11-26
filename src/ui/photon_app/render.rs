@@ -905,12 +905,12 @@ impl PhotonApp {
         let mut measured_extent: Option<(f32, f32)> = None;
         // Stage marks for the >1s breakdown at the end of the frame — the flat "render took Nms" line named the SCREEN but not the STAGE, which stalled the 2026-08-21 hang hunt (5.8-8.8s Conversation renders, no idea where inside).
         let mark_pre = std::time::Instant::now();
-        // SCROLL AS A MEMMOVE (Nick 2026-10-06): when the host applied the shift `damage_rect` armed for this frame (`scroll_hint` above), the bg layer shifts by the same dy and only the exposed band re-rasters; the hit map shifts after the chrome pass; the lists clip their rows to the damage; the final bg flatten covers only the damage.
+        // SCROLL AS A MEMMOVE (Nick 2026-10-06): when the host applied the shift `damage_rect` armed for this frame (`scroll_hint` above), the bg layer shifts by the same dy and only the exposed band re-rasters; the host has shifted the hit map with the scratch; the lists clip their rows to the damage; the final bg flatten covers only the damage.
         // The rects the host cleared and presents this frame (one, the damage clip, unless a memmove frame named several), copied before the canvas borrows the context.
         let frame_rects: Vec<fluor::canvas::PixelRect> = match ctx.damage_rects.as_slice() { [] => vec![ctx.damage_clip], r => r.to_vec() };
         _rt.3 = scroll_hint.is_some() && self.scroll_frames_hinted < 3 && crate::is_dev_build();
         // A scroll this frame that the hint did NOT carry (something else was dirty, the host forced a full repaint, no pane recorded yet): the bg layer `pane_scroll` left alone must now re-raster at the new offset, or the noise stands still under moving rows.
-        // The hit map needs nothing here: such a frame is a whole one, and `clear_hits` below starts every pixel of it afresh (until 2026-11-17 the chrome was invalidated too, only so its re-raster would wipe the map).
+        // The hit map needs nothing here: such a frame is a whole one, and the host cleared every pixel of the map before this render (until 2026-11-17 the chrome was invalidated too, only so its re-raster would wipe the map).
         if scroll_hint.is_none() && self.scroll_shift != 0 {
             chrome.invalidate_bg();
         }
@@ -992,14 +992,8 @@ impl PhotonApp {
         chrome.rasterize_chrome(ctx.damage, ctx.text, ctx.clip_mask);
         // THE HIT MAP GOES FRONT TO BACK, as the pixels do (fluor `paint::claim_hit`, 2026-11-17): the frontmost thing claims its pixels first and a pixel already claimed is never written again.
         // Nothing has claimed yet: the bg, the perimeter and the chrome's re-raster above write no hits into the frame's map (the chrome's go in at its flatten below).
-        // So the scroll's move comes first, mirroring the host's memmove of the scratch, then the map is cleared over each damage rect, as the host cleared the scratch there; outside the damage it keeps last frame's claims, as the frame keeps last frame's pixels.
+        // The host moved the map with the scroll and cleared it over these same `frame_rects` before this render, as it did the scratch (fluor 2026-11-26; this render did both itself until then); outside the damage it keeps last frame's claims, as the frame keeps last frame's pixels.
         // Until 2026-11-17 each screen wiped its own region with HIT_NONE stamps (taking the chrome's and the wave bar's hits with them) and the wave overlay re-stamped itself last to win them back.
-        if let Some((rect, dy, _)) = scroll_hint {
-            chrome.scroll_hit_map(rect, dy);
-        }
-        for r in &frame_rects {
-            chrome.clear_hits(*r);
-        }
         // The orb's bbox (ring included): a fixed thing that may reach into a scrolling pane, so the pane records it as an overlay for the memmove path.
         let orb_bbox: Option<fluor::canvas::PixelRect> = chrome.orb_geometry().map(|(cx, cy, r)| {
             let t = super::ring_thickness(r as f32).ceil() as isize + 1;

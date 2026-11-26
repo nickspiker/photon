@@ -3499,7 +3499,7 @@ impl FluorApp<Px> for PhotonApp {
                 self.change_focus(None);
                 // A screen swap must also re-raster the CACHED bg layer — it's dirty-gated and nothing else invalidates it on navigation, so the previous screen's backdrop stayed baked beneath the new one (the launch chromatic wave + wordmark showing thru the settings panel; the settings divider-split noise lingering after Back). One noise re-raster per screen change is cheap.
                 if let Some(chrome) = self.chrome.as_mut() {
-                    // The dirty bg layer makes the frame a whole one, so the render clears the previous screen's hits everywhere (`clear_hits`), and the chrome claims its own (the orb's) at its flatten every frame (until 2026-11-17 the chrome was invalidated here too, only so its re-raster would wipe the map).
+                    // The dirty bg layer makes the frame a whole one, so the host clears the previous screen's hits everywhere before the render (fluor `paint::clear_hits`), and the chrome claims its own (the orb's) at its flatten every frame (until 2026-11-17 the chrome was invalidated here too, only so its re-raster would wipe the map).
                     chrome.invalidate_bg();
                 }
                 { needs_redraw = true; self.note_redraw(); }
@@ -4292,10 +4292,8 @@ impl FluorApp<Px> for PhotonApp {
         }
     }
 
-    fn hit_test_map(&self) -> Option<(&[HitId], usize, usize)> {
-        let chrome = self.chrome.as_ref()?;
-        let (w, h) = chrome.dims();
-        Some((chrome.hit_test_map(), w, h))
+    fn hit_test_map(&mut self) -> Option<(&mut [HitId], usize, usize)> {
+        Some(self.chrome.as_mut()?.hit_map_mut())
     }
 
     fn overlay_deltas(&mut self) -> Vec<u32> {
@@ -4690,7 +4688,7 @@ impl PhotonApp {
             // A rigid shift leaves both layers alone: the render memmoves the bg layer and the hit map by the same dy and repaints only the exposed band (SCROLL AS A MEMMOVE).
             if !rigid {
                 if let Some(chrome) = self.chrome.as_mut() {
-                    // The dirty bg layer makes this frame a whole one, and the render clears the hit map over all of it (`clear_hits`) before anything claims at the scrolled positions, so no hit zone is left behind at the old ones.
+                    // The dirty bg layer makes this frame a whole one, and the host clears the hit map over all of it (fluor `paint::clear_hits`) before anything claims at the scrolled positions, so no hit zone is left behind at the old ones.
                     // Until 2026-11-17 the chrome was invalidated here too, only so its re-raster would wipe the map.
                     chrome.invalidate_bg();
                 }
