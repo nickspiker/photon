@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v158
 - **Your name and picture are signed by you.** Your preferred name and picture are now signed by your own identity, not by a key anyone who knows your handle could work out, and they live with the rest of your identity on every device of yours.
 - **A friend's name and picture survive their new keys.** When a friend's devices move to new keys, the name and picture they signed stay on your screen.
 - **The fleet key turns over when a device leaves.** The moment one of your devices leaves the fleet, the rest move to a new key, and nothing is wiped from a device before it has attested.
@@ -18,6 +20,8 @@ One sentence per line, however long; plain language for the person who installs 
 - **"copied" stays on the message you copied.** A message that arrives after you copy no longer says it was copied.
 - **Links open in a selected message.** Tapping a link works whether or not its message is selected.
 - **Photon on ferros plays a wave.** A friend's voice in a wave plays through the phone's speaker on ferros.
+
+Built from photon aa5972ce · chirp fdc25a82 · fgtw 52060ea3 · fluor a74cc168 · ihi 92796ee6 · kete c712e071 · limbus 30ab5cc3 · manifestus 48dfb168 · nunc b518ad11 · opsin 9ff95017 · rarangi 387b44ab · spirix 35d57456 · tapuwae 0bc864d7 · tohu 90ffb986 · voca 04dcf2df · vsf ee3886c4
 
 ## v157
 - **The Security page is the same on every device.** Lock, then revoke or reinstate each of your other devices, then shred, then unbind this device, in that order and in the same words as Photon on ferros, and every button is lower case.
