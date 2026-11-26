@@ -6,6 +6,18 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Your name and picture are signed by you.** Your preferred name and picture are now signed by your own identity, not by a key anyone who knows your handle could work out, and they live with the rest of your identity on every device of yours.
+- **A friend's name and picture survive their new keys.** When a friend's devices move to new keys, the name and picture they signed stay on your screen.
+- **The fleet key turns over when a device leaves.** The moment one of your devices leaves the fleet, the rest move to a new key, and nothing is wiped from a device before it has attested.
+- **A fleet of one can add again.** A single device whose fleet key opened only for devices that had already left now makes a fresh key, so adding your next device no longer waits forever.
+- **The same phone is not an old device.** A device that is still in your fleet under a newer key no longer shows as a retired device of yours.
+- **The new device turns bright green when it is picked.** As soon as your other device picks it, the whole screen turns green, as the question on your other device says.
+- **Your groups follow you to a new device.** A device you just added gets every group at once, and a device that holds a group but not its keys asks a member for them.
+- **Less echo on Android speakerphone.** When the phone's own echo canceller is in charge, Photon gives it the sound it needs to cancel, and takes over if it hears the canceller letting your friend's voice back through.
+- **Windows starts without flashing windows.** No command windows pop up while Photon starts or works.
+- **"copied" stays on the message you copied.** A message that arrives after you copy no longer says it was copied.
+- **Links open in a selected message.** Tapping a link works whether or not its message is selected.
+- **Photon on ferros plays a wave.** A friend's voice in a wave plays through the phone's speaker on ferros.
 
 ## v157
 - **The Security page is the same on every device.** Lock, then revoke or reinstate each of your other devices, then shred, then unbind this device, in that order and in the same words as Photon on ferros, and every button is lower case.
