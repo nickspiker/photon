@@ -597,12 +597,12 @@ impl PhotonApp {
     }
 
     /// Our own record for `field`, in step with `value` (the fleet settings' `value_key`): a held record for that value is kept as it is, whichever of our devices signed it, its revision unchanged; a held record newer than the value is kept too.
-    /// Otherwise this device signs one whose revision is the moment the value was set (the setting's own stamp, never a later one) and keeps it in the fleet settings at that same stamp.
-    /// None while there is no identity, device key or value yet.
+    /// Otherwise our IDENTITY signs one whose revision is the moment the value was set (the setting's own stamp, never a later one) and keeps it in the fleet settings at that same stamp.
+    /// None while there is no identity or value yet.
     fn ensure_own_record(&mut self, field: fgtw::profile::Field, value_key: &str, value: Vec<u8>) -> Option<fgtw::profile::ProfileRecord> {
         use fgtw::profile::ProfileRecord;
         let hp = self.our_handle_proof()?;
-        let kp = self.device_keypair.clone()?;
+        let identity_seed = self.session.as_ref().map(|s| s.identity_seed)?;
         let key = Self::own_record_key(field);
         let fs = self.fleet_settings.as_ref()?;
         let set_at = fs.effective_stamp(value_key)?;
@@ -610,8 +610,8 @@ impl PhotonApp {
         if let Some(h) = held.filter(|h| h.value == value || h.rev >= set_at) {
             return Some(h);
         }
-        // Signed with the device's Ed25519 key alone: the record rides every pong, one datagram, where a SPHINCS+ egg would add some 8 KB per record, and a record's verify reads the Ed25519 egg only.
-        let rec = ProfileRecord::sign(&kp, &hp, field, value, set_at);
+        // Signed by OUR IDENTITY (fgtw sign_as_identity), not this device: the record then stays valid for every contact through any device rotation or ownership change (owner, 2026-11-26) — a device-signed one lapsed the moment this device's root rotated, which is what made the fleet forget names. Envelope tier (Ed25519 + Falcon, ~730 bytes) so it still rides a pong in one datagram; SPHINCS+ stays off the wire. A contact on a build that predates the identity-accept rule falls back to the pong's bare name slot, still sent, so nothing regresses there.
+        let rec = ProfileRecord::sign_as_identity(&identity_seed, &hp, field, value, set_at);
         crate::logf!("PROFILE: own {} record signed at revision {}", field.label(), set_at);
         if self.fleet_settings.as_mut()?.set(key, rec.to_value(), set_at) {
             self.persist_and_push_settings();
