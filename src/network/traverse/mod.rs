@@ -68,3 +68,14 @@ pub fn our_public_v4() -> Option<std::net::Ipv4Addr> {
     let w = OUR_PUBLIC_V4.load(std::sync::atomic::Ordering::Relaxed);
     (w >> 32 != 0).then(|| std::net::Ipv4Addr::from(w as u32))
 }
+
+/// Raised by the desktop interface watcher when this machine's IPv4 interface addresses change (a move to another network; an IPv6 privacy address rotating is not one), taken by the UI's tick as its network edge, as Android's ConnectivityManager raises it there.
+static NETWORK_MOVED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn note_network_moved() {
+    NETWORK_MOVED.store(true, std::sync::atomic::Ordering::Release);
+}
+
+pub fn take_network_moved() -> bool {
+    NETWORK_MOVED.swap(false, std::sync::atomic::Ordering::AcqRel)
+}

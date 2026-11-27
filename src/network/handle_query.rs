@@ -175,6 +175,7 @@ fn bind_photon_socket() -> (UdpSocket, u16) {
                 if let Err(e) = udp.set_broadcast(true) {
                     crate::logf!("Network: Failed to enable broadcast: {}", e);
                 }
+                prefer_stable_source(&udp);
                 // ferros has no TCP yet: the UDP port is the port.
                 #[cfg(target_os = "ferros")]
                 {
@@ -383,6 +384,7 @@ impl HandleQuery {
             // Spawn async network watcher
             {
                 let net_change_tx_clone = net_change_tx.clone();
+                let mover_wake = event_proxy.clone();
                 thread::spawn(move || {
                     let rt = tokio::runtime::Builder::new_current_thread()
                         .enable_all()
@@ -393,9 +395,28 @@ impl HandleQuery {
                             use futures::StreamExt;
                             use if_watch::tokio::IfWatcher;
 
+                            // This machine's IPv4 interface addresses: when they change it has moved to another network, the edge a laptop's LAN beacon goes again on (2026-11-26: Nick's MacBook came home and said nothing, so the desktop beside it never learned it was there; only Android ever raised this edge).
+                            let v4_now = || {
+                                let mut s: Vec<std::net::IpAddr> = crate::network::udp::own_interface_addrs().into_iter().map(|a| a.ip).filter(|ip| ip.is_ipv4()).collect();
+                                s.sort();
+                                s
+                            };
+                            let mut v4_seen = v4_now();
                             if let Ok(mut watcher) = IfWatcher::new() {
                                 loop {
-                                    if watcher.next().await.is_some() && !crate::log_err!(net_change_tx_clone.send(()), "Connectivity: network-change wake") {
+                                    if watcher.next().await.is_none() {
+                                        break;
+                                    }
+                                    let v4 = v4_now();
+                                    if v4 != v4_seen {
+                                        crate::logf!("NET: this machine's IPv4 addresses changed ({} → {}) — a network move", v4_seen.len(), v4.len());
+                                        v4_seen = v4;
+                                        crate::network::traverse::note_network_moved();
+                                        if let Some(p) = mover_wake.as_ref() {
+                                            crate::log_err!(p.send(PhotonEvent::NetworkUpdate), "NET: wake the UI for the network move");
+                                        }
+                                    }
+                                    if !crate::log_err!(net_change_tx_clone.send(()), "Connectivity: network-change wake") {
                                         break;
                                     }
                                 }
@@ -1322,3 +1343,31 @@ impl HandleQuery {
         self.socket.lock().unwrap().clone()
     }
 }
+
+/// Send from our stable IPv6 address, not a temporary (privacy) one: what a peer sees a packet come from becomes our published reflexive address, and a temporary one is gone within the day, which left siblings holding a dead record (2026-11-26).
+/// Linux: IPV6_ADDR_PREFERENCES with IPV6_PREFER_SRC_PUBLIC; macOS: IPV6_PREFER_TEMPADDR off (63 in the BSD in6.h, which libc does not name). Windows chooses the source system-wide.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn prefer_stable_source(udp: &UdpSocket) {
+    use std::os::fd::AsRawFd;
+    let v: libc::c_int = libc::IPV6_PREFER_SRC_PUBLIC;
+    // SAFETY: a plain setsockopt on a socket this process owns, with the integer option value the API defines.
+    let r = unsafe { libc::setsockopt(udp.as_raw_fd(), libc::IPPROTO_IPV6, libc::IPV6_ADDR_PREFERENCES, &v as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t) };
+    if r != 0 {
+        crate::logf!("Network: stable IPv6 source preference refused: {}", std::io::Error::last_os_error());
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn prefer_stable_source(udp: &UdpSocket) {
+    use std::os::fd::AsRawFd;
+    const IPV6_PREFER_TEMPADDR: libc::c_int = 63;
+    let v: libc::c_int = 0;
+    // SAFETY: as on Linux.
+    let r = unsafe { libc::setsockopt(udp.as_raw_fd(), libc::IPPROTO_IPV6, IPV6_PREFER_TEMPADDR, &v as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t) };
+    if r != 0 {
+        crate::logf!("Network: stable IPv6 source preference refused: {}", std::io::Error::last_os_error());
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "android", target_os = "macos")))]
+fn prefer_stable_source(_udp: &UdpSocket) {}

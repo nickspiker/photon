@@ -82,6 +82,11 @@ impl PhotonApp {
         self.self_record_published_for = Some(addr);
         // Our address changed: each alias sibling, which cannot ask fgtw.org where we went, gets our book with the new record in it.
         self.addr_book_push(None, "our address changed");
+        // And every fleet sibling gets the record itself, over whatever path reaches it, the relay included: their phonebook gossip needs a path between us, so a sibling we reach only thru the relay kept our old record (2026-11-26: the MacBook held the desktop's dead IPv6 all day while the desktop's new record sat unsent).
+        if let Some((_, frame)) = self.own_record_frame() {
+            crate::logf!("PHONEBOOK: our new record to every sibling, by any path that reaches it");
+            self.dispatch_frame_to_siblings(frame);
+        }
         // Same edge, second registry: a fresh reflexive publish is also the moment to re-check the primary registry against the last-adopted fold (empty plan when in sync — one cheap GET).
         if !self.registry_converged_fold.is_empty() {
             if let Some(our_hp) = self.our_handle_proof() {
@@ -220,16 +225,10 @@ impl PhotonApp {
         Some(rec)
     }
 
-    pub(super) fn push_address_record_to(&mut self, targets: Vec<[u8; 32]>) {
-        let Some(kp) = self.device_keypair.as_ref() else {
-            return;
-        };
-        if targets.is_empty() {
-            return;
-        }
-        let Some(rec) = self.own_peer_record() else {
-            return; // nothing honest to say at all
-        };
+    /// Our own record, signed now, as the phonebook answer a peer adopts addresses from: (the address it leads with, the frame). None with nothing honest to say.
+    fn own_record_frame(&self) -> Option<(std::net::SocketAddr, Vec<u8>)> {
+        let kp = self.device_keypair.as_ref()?;
+        let rec = self.own_peer_record()?;
         let addr = rec.ip;
         let provenance = *blake3::hash(&rec.device_pubkey.as_bytes()[..]).as_bytes();
         let sig = kp.sign(&provenance);
@@ -243,9 +242,19 @@ impl PhotonApp {
             peers: vec![rec],
         };
         let bytes = msg.to_vsf_bytes();
-        if bytes.is_empty() {
+        (!bytes.is_empty()).then_some((addr, bytes))
+    }
+
+    pub(super) fn push_address_record_to(&mut self, targets: Vec<[u8; 32]>) {
+        let Some(kp) = self.device_keypair.as_ref() else {
+            return;
+        };
+        if targets.is_empty() {
             return;
         }
+        let Some((addr, bytes)) = self.own_record_frame() else {
+            return; // nothing honest to say at all
+        };
         crate::logf!("PHONEBOOK: pushing our new address {} to {} device(s) over the relay", addr, targets.len());
         let secret = kp.clone();
         crate::network::http::runtime().spawn(async move {
@@ -537,7 +546,8 @@ fn own_address_set(reflexive: std::net::SocketAddr, reflexive_other: Option<std:
         }
         let mut own = crate::network::udp::own_interface_addrs();
         own.sort_by_key(|a| a.ip.is_ipv6());
-        for a in own {
+        // A temporary or deprecated IPv6 is never published: it goes away within the day and leaves the record pointing nowhere (udp::OwnAddr::temporary).
+        for a in own.into_iter().filter(|a| !a.temporary) {
             push(std::net::SocketAddr::new(a.ip, port), if a.wifi_direct { AddrKind::WifiDirect } else { AddrKind::Interface });
         }
     }

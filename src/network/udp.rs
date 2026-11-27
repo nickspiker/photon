@@ -110,10 +110,12 @@ fn get_local_ip_uncached() -> Option<std::net::Ipv4Addr> {
     }
 }
 
-/// One address bound on one of our own interfaces, and whether that interface is a Wi-Fi Direct group.
+/// One address bound on one of our own interfaces, whether that interface is a Wi-Fi Direct group, and whether the address is one that goes away (an IPv6 privacy address, or one past its preferred lifetime).
 pub struct OwnAddr {
     pub ip: std::net::IpAddr,
     pub wifi_direct: bool,
+    /// A temporary (RFC 8981) or deprecated IPv6 address: fine to send from, never to publish, since a record naming it goes stale within the day (2026-11-26: siblings held the desktop's rotated-away IPv6 as its only address). Known on Linux and Windows; elsewhere false.
+    pub temporary: bool,
 }
 
 /// Every address another device could reach us at on our OWN interfaces (docs/addresses.md stage 2): each up, non-loopback interface's usable LAN v4 (`is_usable_lan_ipv4`, so never the CLAT `192.0.0.4`), and its global or unique-local v6 — two or four on a v6 network, stable and temporary alike.
@@ -122,6 +124,7 @@ pub struct OwnAddr {
 #[cfg(unix)]
 pub fn own_interface_addrs() -> Vec<OwnAddr> {
     let mut out = Vec::new();
+    let passing = passing_v6();
     let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
     // SAFETY: getifaddrs fills `head` with a list we own until freeifaddrs; on failure it returns -1 and leaves nothing to free.
     if unsafe { libc::getifaddrs(&mut head) } != 0 {
@@ -151,12 +154,41 @@ pub fn own_interface_addrs() -> Vec<OwnAddr> {
             _ => continue,
         };
         if reachable_own(ip) && !out.iter().any(|a: &OwnAddr| a.ip == ip) {
-            out.push(OwnAddr { ip, wifi_direct: name.starts_with(b"p2p") });
+            let temporary = matches!(ip, std::net::IpAddr::V6(v6) if passing.contains(&v6));
+            out.push(OwnAddr { ip, wifi_direct: name.starts_with(b"p2p"), temporary });
         }
     }
     // SAFETY: `head` came from a successful getifaddrs and is freed exactly once.
     unsafe { libc::freeifaddrs(head) };
     out
+}
+
+/// Our IPv6 addresses that go away: the kernel's temporary (IFA_F_TEMPORARY, 0x01) and deprecated (IFA_F_DEPRECATED, 0x20) ones, read from /proc/net/if_inet6 (address, index, prefix, scope, flags, name per line).
+/// A file that does not open (a sandbox that hides it) names none, and every address is published as before.
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn passing_v6() -> Vec<std::net::Ipv6Addr> {
+    const IFA_F_TEMPORARY: u32 = 0x01;
+    const IFA_F_DEPRECATED: u32 = 0x20;
+    let Ok(text) = std::fs::read_to_string("/proc/net/if_inet6") else {
+        return Vec::new();
+    };
+    text.lines()
+        .filter_map(|l| {
+            let mut f = l.split_whitespace();
+            let hex = f.next()?;
+            let flags = u32::from_str_radix(f.nth(3)?, 16).ok()?;
+            if flags & (IFA_F_TEMPORARY | IFA_F_DEPRECATED) == 0 {
+                return None;
+            }
+            u128::from_str_radix(hex, 16).ok().map(std::net::Ipv6Addr::from)
+        })
+        .collect()
+}
+
+/// No flag list here (macOS and the BSDs keep it behind an ioctl): the main socket prefers stable source addresses instead (handle_query `prefer_stable_source`), so what peers see us at is the stable one.
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "android"))))]
+fn passing_v6() -> Vec<std::net::Ipv6Addr> {
+    Vec::new()
 }
 
 /// An address of ours another device could reach: a usable LAN v4 (`is_usable_lan_ipv4`, never the CLAT `192.0.0.4`), or a global unicast (2000::/3) or unique-local (fc00::/7) v6 — link-local, loopback, multicast and mapped forms no peer can reach. One rule for every platform's enumeration.
@@ -214,7 +246,9 @@ pub fn own_interface_addrs() -> Vec<OwnAddr> {
                 _ => continue,
             };
             if reachable_own(ip) && !out.iter().any(|o: &OwnAddr| o.ip == ip) {
-                out.push(OwnAddr { ip, wifi_direct: false });
+                // A random suffix is a temporary (privacy) address and a deprecated one is past its preferred lifetime: both go away (NL_SUFFIX_ORIGIN IpSuffixOriginRandom = 3, NL_DAD_STATE IpDadStateDeprecated = 3).
+                let temporary = ip.is_ipv6() && (u.SuffixOrigin.0 == 3 || u.DadState.0 == 3);
+                out.push(OwnAddr { ip, wifi_direct: false, temporary });
             }
         }
     }
