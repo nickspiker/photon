@@ -1931,11 +1931,6 @@ impl PhotonApp {
         // A beam's ring is three bursts: the express path marked this offer (RING_IS_BEAM), consumed here.
         let beam = crate::wave::RING_IS_BEAM.swap(false, std::sync::atomic::Ordering::SeqCst);
         crate::wave::RING_SOUNDING_BEAM.store(beam, std::sync::atomic::Ordering::SeqCst);
-        // No ring on ferros yet: no notification surface and no audio engine.
-        #[cfg(target_os = "ferros")]
-        {
-            return None;
-        }
         let ring_hp = *blake3::hash(&digest).as_bytes();
         // Honor the Notifications "Ring on incoming wave" tick: unchecked = the notification still posts (the wave is never invisible) but the audible ring loop stays silent. Read BEFORE the platform blocks — Android's ring loops now, and an unhonored mute there is a ring that cannot be silenced.
         let ring_audible = self
@@ -1944,6 +1939,16 @@ impl PhotonApp {
             .and_then(|fs| fs.effective("notify.ring_wave"))
             .and_then(crate::storage::fleet_settings::as_bool)
             .unwrap_or(true);
+        // ferros has no notification surface yet: the ring plays on the wave output path through the audio service, the ringback's cadence and level, and the wave screen is the alert.
+        #[cfg(target_os = "ferros")]
+        {
+            let _ = (&ring_hp, &sender_name);
+            if !ring_audible {
+                crate::log("WAVE: ring muted by notify.ring_wave — the wave screen only");
+                return None;
+            }
+            return crate::wave::ringback::ring_in(digest, beam);
+        }
         #[cfg(target_os = "android")]
         {
             // App on screen → the full-screen ring panel IS the alert (and the in-process chirp below rings) — posting the notification too was the double-alert whose heads-up banner covered the old top-bar Answer button. Backgrounded/locked → the WAVE-CLASS notification (fullScreenIntent + Answer/Decline actions) is the whole surface.

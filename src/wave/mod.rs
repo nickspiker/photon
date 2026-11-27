@@ -241,7 +241,6 @@ pub static RING_IS_BEAM: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 pub static RING_SOUNDING_BEAM: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// The relationship ring for a wave (two bursts) or a beam (three).
-#[cfg(not(target_os = "ferros"))]
 pub fn ring_chirp(digest: [u8; 32], beam: bool) -> chirp::Chirp {
     if beam { chirp::Chirp::beam_ring_from_hash(digest) } else { chirp::Chirp::ring_from_hash(digest) }
 }

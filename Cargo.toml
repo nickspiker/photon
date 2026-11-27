@@ -322,6 +322,11 @@ fluor = { path = "../fluor", default-features = false, features = ["host-ferros"
 getrandom02 = { package = "getrandom", version = "0.2", features = ["custom"] }
 # Opus on ferros (docs/ferros-media.md): the same crate as everywhere, its libopus built by the audiopus_sys fork with cc, fixed point (the fork's ferros path; std/photon carries the [patch] that names the fork, since a patch applies only from the workspace root).
 opus = "0.3.1"
+# The relationship ring and the ringback on ferros: chirp's synthesis alone (pure Rust), played on the wave output path through the audio service, as Android takes it without rodio.
+chirp = { path = "../chirp", default-features = false }
+# BEAMS on ferros (docs/ferros-media.md step 5): the same OpenH264 crate, its C++ built by ferros's fork of openh264-sys2 with no C++ runtime library (std/photon carries the [patch], ferros e10814c7).
+openh264 = { version = "0.9.8", default-features = false, features = ["source"] }
+openh264-sys2 = { version = "0.9.8", default-features = false, features = ["source"] }
 
 # target_os = "ferros" is the phone as a ferros process (a JSON target, STD-TARGET.md in the ferros repo): rustc does not know the name, so the cfg is declared here.
 [lints.rust]

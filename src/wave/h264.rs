@@ -1,6 +1,6 @@
 //! The desktop H.264 codec for beams (docs/beams.md): Cisco OpenH264, C++ built from source by cc, desktop-only — the phones encode and decode in hardware through MediaCodec and never link this.
 //!
-//! Where the toolchain can build its C++ today: x86_64 Linux, macOS, and Android (decode; the phone encodes thru MediaCodec). Everywhere else this module is the stub below, [`AVAILABLE`] is false and a beam is not offered — aarch64 Linux joins once its cross sysroot carries libstdc++, Windows once the builder has a C++ cross-compiler and a static C++ runtime link. The gate is the same cfg as the dependency in Cargo.toml; keep the two in step.
+//! Where the toolchain can build its C++ today: x86_64 Linux, macOS, Android (decode; the phone encodes thru MediaCodec), and ferros (ferros's openh264-sys2 fork, no C++ runtime library). Everywhere else this module is the stub below, [`AVAILABLE`] is false and a beam is not offered — aarch64 Linux joins once its cross sysroot carries libstdc++, Windows once the builder has a C++ cross-compiler and a static C++ runtime link. The gate is the same cfg as the dependency in Cargo.toml; keep the two in step.
 //!
 //! What OpenH264 lacks against the design: a rolling intra refresh (it has only whole IDR frames, periodic or on demand) and a per-frame byte cap (only per-NAL slicing).
 //! So the DESKTOP sends a keyframe at the stream's start, at a size change, and when a receiver asks for one ([`super::beam::Kind::KeyAsk`]) — never on a timer (Nick 2026-11-11: "if my friends don't need a keyframe, don't send one. If they need one, I'd send it now, not in 2 minutes").
@@ -154,7 +154,7 @@ pub fn param_sets(au: &[u8]) -> Vec<u8> {
     out
 }
 
-#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos", target_os = "android"))]
+#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos", target_os = "android", target_os = "ferros"))]
 mod real {
     use super::I420;
     use openh264::decoder::{Decoder as Dec, DecoderConfig, Flush};
@@ -304,7 +304,7 @@ mod real {
     }
 }
 
-#[cfg(not(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos", target_os = "android")))]
+#[cfg(not(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos", target_os = "android", target_os = "ferros")))]
 mod real {
     use super::I420;
 
@@ -406,7 +406,7 @@ mod conv_tests {
     }
 }
 
-#[cfg(all(test, any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos", target_os = "android")))]
+#[cfg(all(test, any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos", target_os = "android", target_os = "ferros")))]
 mod tests {
     use super::*;
 

@@ -64,6 +64,17 @@ fn to_wave_rate(src: &[f32], src_rate: u32) -> Vec<f32> {
 /// Start the ringback for a wave we are placing. `digest` is the relationship digest — the SAME seed as the answering side's own ring, so what we hear is genuinely their cadence.
 /// Returns `None` when the audio session won't open (a mic-less/speaker-less box still waves, just silently).
 pub fn start(digest: [u8; 32], beam: bool) -> Option<RingbackGuard> {
+    play(digest, beam).map(RingbackGuard)
+}
+
+/// An incoming wave's ring where the platform posts no ring of its own (ferros: no notification sound yet): the same cadence on the wave output path, its probe the engine's seed at answer as the ringback's is.
+#[cfg(target_os = "ferros")]
+pub fn ring_in(digest: [u8; 32], beam: bool) -> Option<super::RingGuard> {
+    play(digest, beam).map(super::RingGuard)
+}
+
+/// The cadence on the wave output path until the returned flag flips.
+fn play(digest: [u8; 32], beam: bool) -> Option<Arc<AtomicBool>> {
     let Some(gen) = crate::platform::audio::start_owned() else {
         crate::log("WAVE: ringback — audio session refused, waving silently");
         return None;
@@ -80,14 +91,9 @@ pub fn start(digest: [u8; 32], beam: bool) -> Option<RingbackGuard> {
         crate::platform::audio::stop_owned(gen);
         return None;
     }
-    Some(RingbackGuard(stop))
+    Some(stop)
 }
 
-/// No chime synthesis on ferros yet (chirp is desktop and Android).
-#[cfg(target_os = "ferros")]
-fn run(_digest: [u8; 32], _beam: bool, _stop: Arc<AtomicBool>, _gen: u64) {}
-
-#[cfg(not(target_os = "ferros"))]
 fn run(digest: [u8; 32], beam: bool, stop: Arc<AtomicBool>, gen: u64) {
     use crate::platform::audio;
 
