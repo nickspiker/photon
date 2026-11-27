@@ -35,7 +35,7 @@ for t in target/release target/debug target/*-*/release target/*-*/debug; do
     scrub_divergent_cmake_caches "$t"
 done
 
-# The ferros toolchain (ferros, ferros-rust, ferros-libc beside photon, nightly, the aarch64 binutils) is checked NOW, in a second: Photon for ferros is a required target like Windows ARM64, so a missing piece refuses the deploy here instead of an hour in, after every other platform built.
+# The ferros toolchain (ferros beside photon, its forks inside it, nightly, the aarch64 binutils) is checked NOW, in a second: Photon for ferros is a required target like Windows ARM64, so a missing piece refuses the deploy here instead of an hour in, after every other platform built.
 ferros_kist_preflight || exit 1
 
 # Version scheme (2026-07-16): major.minor.patch. THIS SCRIPT does the release increment: whatever the tree holds (X.Y.0 fresh, or X.Y.P after dev publishes), the release ships X.(Y+1).0 — minor bumped, patch zeroed (patch 0 is RESERVED for releases; dev publishes bump the patch ≥1 and reach clients via the dev manifest).

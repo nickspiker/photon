@@ -89,7 +89,7 @@ static A: Counting = Counting;
 
 const MIB: f64 = (1u64 << 20) as f64;
 
-/// The process's threads (Linux): on ferros each one's stack comes from the heap, 256 KiB unless it asks for more (ferros-rust std).
+/// The process's threads (Linux): on ferros each one's stack comes from the heap, 256 KiB unless it asks for more (the std fork, ferros forks/rust).
 fn threads() -> usize {
     std::fs::read_to_string("/proc/self/status").ok().and_then(|s| s.lines().find_map(|l| l.strip_prefix("Threads:").map(|n| n.trim().parse().unwrap_or(0)))).unwrap_or(0)
 }

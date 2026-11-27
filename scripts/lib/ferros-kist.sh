@@ -1,5 +1,5 @@
 # Sourced, not executed. Photon for ferros devices: the kist capsule deploy.sh builds, signs and publishes beside the other platforms (docs/updates.md, "ferros").
-# The build is ferros's, from its repo beside this one: std/photon is Photon's library under fluor's ferros host, built by ferros's tools/photon-build.sh (nightly, the ferros-rust std fork, the ferros target JSON, ferros_rt), and ferros's tools/photon-capsule.sh signs the flat image into a capsule carrying Photon's declaration (its wants, in slot order) and its option (ferros docs/KISTS.md). The declaration lives only there, so a development install and a release can never declare different wants.
+# The build is ferros's, from its repo beside this one: std/photon is Photon's library under fluor's ferros host, built by ferros's tools/photon-build.sh (nightly, the std fork in ferros forks/rust, the ferros target JSON, ferros_rt), and ferros's tools/photon-capsule.sh signs the flat image into a capsule carrying Photon's declaration (its wants, in slot order) and its option (ferros docs/KISTS.md). The declaration lives only there, so a development install and a release can never declare different wants.
 # The capsule is signed with Photon's release key (owner, 2026-11-10: Photon is a commons project, so its kist carries the key that signs its manifest and binaries, not ferros's key), so the capsule's developer key (`ke`) is AUTHOR_PUBKEY. The bridge reads a key only in its VSF form (ferros_kist::secret: section developer_key { label, seed kge }; it refuses a raw key file), so the kist is signed with photon-signing-key.vsf, the same release seed converted once from the raw photon-signing-key (2026-11-12, ferros tools/kistcat `devkey convert --label PHOTON_RELEASE`: the label whose Falcon-512 and SPHINCS+ domains are SigningBundle::release's, so the bundle is the one fgtw pins); every other signer in this repo still reads the raw file thru PHOTON_SIGNING_KEY. The key's PATH (PHOTON_KIST_KEY) is handed to ferros-bridge as FERROS_DEV_KEY; the key itself is read only inside the bridge's process, never copied or printed.
 # Callers cd to the repo root first. Every function `return 1`s on failure with a line saying what, so the caller's set -e and traps abort the deploy: a release ships every platform or none (the Windows ARM64 rule), so a missing ferros toolchain fails the deploy, never skips the target.
 
@@ -16,9 +16,7 @@ FERROS_KIST_CAPSULE="$FERROS_KIST_TARGET/aarch64-unknown-ferros/$FERROS_KIST_PRO
 FERROS_KIST_ENTRY="$FERROS_KIST_TARGET/aarch64-unknown-ferros/$FERROS_KIST_PROFILE/photon.capsule.entry.vsf"
 # The first ferros forge commit with the entry form (photon-capsule.sh --entry, 25abc81c) and `kistcat publish` with the append endpoint (7376db93).
 FERROS_KIST_ENTRY_FORGE="7376db93"
-# ferros-rust (the std fork) and ferros-libc are named by absolute path in photon-build.sh and std/photon's Cargo.toml; checked here, recorded in the provenance below.
-FERROS_RUST_DIR="/mnt/Harbor/Code/ferros-rust"
-FERROS_LIBC_DIR="/mnt/Harbor/Code/ferros-libc"
+# The std fork and libc with a ferros arm live inside ferros (forks/rust, forks/libc, since ferros 81658181): std/photon names libc relatively and the fork's std names ferros_rt relatively, so whichever ferros tree builds, live or frozen, builds against its own forks.
 # Photon's release key in the VSF form the bridge reads (the header above); never the raw file, which the bridge refuses.
 PHOTON_KIST_KEY="${PHOTON_KIST_KEY:-/mnt/Harbor/Code/keys/photon-signing-key.vsf}"
 
@@ -28,8 +26,8 @@ ferros_kist_preflight() {
     for f in std/photon/Cargo.toml tools/photon-build.sh tools/photon-capsule.sh targets/aarch64-unknown-ferros.json tools/std-sysroot/include tools/ferros-bridge/Cargo.toml; do
         [ -e "$FERROS_DIR/$f" ] || missing="$missing\n    $FERROS_DIR/$f"
     done
-    [ -d "$FERROS_RUST_DIR/library/std" ] || missing="$missing\n    $FERROS_RUST_DIR/library (the ferros-rust std fork)"
-    [ -f "$FERROS_LIBC_DIR/Cargo.toml" ] || missing="$missing\n    $FERROS_LIBC_DIR (libc with a ferros arm)"
+    [ -d "$FERROS_DIR/forks/rust/library/std" ] || missing="$missing\n    $FERROS_DIR/forks/rust/library (the std fork)"
+    [ -f "$FERROS_DIR/forks/libc/Cargo.toml" ] || missing="$missing\n    $FERROS_DIR/forks/libc (libc with a ferros arm)"
     for t in aarch64-linux-gnu-gcc aarch64-linux-gnu-ar aarch64-linux-gnu-objcopy; do
         command -v "$t" >/dev/null 2>&1 || missing="$missing\n    $t (binutils-aarch64-linux-gnu, gcc-aarch64-linux-gnu)"
     done
@@ -40,7 +38,7 @@ ferros_kist_preflight() {
     if [ -n "$missing" ]; then
         echo "ERROR: the ferros toolchain is incomplete; Photon for ferros (the kist capsule) is a required target. Missing:"
         printf '%b\n' "$missing"
-        echo "       Clone ferros, ferros-rust and ferros-libc beside photon (ferros docs/STD-TARGET.md), or remove the ferros target from deploy.sh."
+        echo "       Clone ferros beside photon (ferros docs/STD-TARGET.md), or remove the ferros target from deploy.sh."
         return 1
     fi
 }
@@ -49,17 +47,20 @@ ferros_kist_preflight() {
 # The whole tree, not std/photon alone: std/photon names ferros crates by path (ferros_fluor, ferros_sys and theirs), and those inherit from ferros's workspace root, which cargo loads with every member (v157's first deploy, 2026-11-24: a snapshot holding std/photon alone failed on ferros_fluor).
 # A repo beside ferros that a crate names by `../../<repo>` (tatau) is carried the same way (ferros_kist_carry_siblings).
 # With no root (the snapshot did not take) the live std/photon builds, against the live tree, as every other platform does then.
-# Also reads what the ferros build stands on, for the tag: ferros (its tree, its memories aside), each repo carried beside it, ferros-rust, ferros-libc, each HEAD, `+dirty` when that repo has changes the build reads. ferros_rt and the std fork build from their live trees (named by absolute path inside ferros-rust), so their commits are what this records.
+# Also reads what the ferros build stands on, for the tag: ferros (its tree, forks included, its memories aside) and each repo carried beside it, each HEAD, `+dirty` when that repo has changes the build reads.
+# The std source is the frozen tree's own forks/rust/library (FERROS_KIST_STD_SRC, handed to photon-build.sh as __CARGO_TESTS_ONLY_SRC_ROOT), so std, ferros_rt and libc all come from the one snapshot and the one ferros rev names them.
 ferros_kist_freeze() {
     local root="$1"
     FERROS_KIST_PKG="$FERROS_DIR/std/photon"
+    FERROS_KIST_STD_SRC="$FERROS_DIR/forks/rust/library"
     FERROS_KIST_CARRIED=""
     if [ -n "$root" ]; then
         ferros_kist_carry "$FERROS_DIR" "$root/ferros" || return 1
         ferros_kist_carry_siblings "$root" || return 1
         FERROS_KIST_PKG="$root/ferros/std/photon"
+        FERROS_KIST_STD_SRC="$root/ferros/forks/rust/library"
     fi
-    FERROS_KIST_FROM="ferros $(ferros_kist_rev "$FERROS_DIR" . ':(exclude)Claude memories' ':(exclude)CLAUDE MEMORY.md')${FERROS_KIST_CARRIED}"$'\n'"ferros-rust $(ferros_kist_rev "$FERROS_RUST_DIR" library)"$'\n'"ferros-libc $(ferros_kist_rev "$FERROS_LIBC_DIR" .)"
+    FERROS_KIST_FROM="ferros $(ferros_kist_rev "$FERROS_DIR" . ':(exclude)Claude memories' ':(exclude)CLAUDE MEMORY.md')${FERROS_KIST_CARRIED}"
     return 0
 }
 
@@ -78,7 +79,7 @@ ferros_kist_carry() {
 }
 
 # Every path dependency the frozen std/photon reaches, directly or thru another crate, that the snapshot lacks: its live repo is carried whole, beside the others as it sits beside them live.
-# Absolute paths (ferros-libc) name live trees by design and are left alone; a `path` that names a source file ([lib], [[bin]]) holds no Cargo.toml and is passed over.
+# Absolute paths name live trees by design and are left alone; a `path` that names a source file ([lib], [[bin]]) holds no Cargo.toml and is passed over.
 ferros_kist_carry_siblings() {
     local root code dir p dep live top seen=" "
     # Resolved like every dependency below: the deploy names the snapshot `photon/../.build-snap`, and a root left unresolved matches no resolved path, so every repo was passed over (v157's second deploy, 2026-11-24: tatau).
@@ -107,7 +108,7 @@ ferros_kist_carry_siblings() {
     return 0
 }
 
-# A repo's HEAD for the provenance, `+dirty` when the named paths have changes; `uncommitted` for a repo with no commit yet (ferros-rust, 2026-11-10: its whole library is staged, never committed), so the tag says so instead of the deploy dying on it.
+# A repo's HEAD for the provenance, `+dirty` when the named paths have changes; `uncommitted` for a repo with no commit yet (the std fork, 2026-11-10, before it moved into ferros: its whole library staged, never committed), so the tag says so instead of the deploy dying on it.
 ferros_kist_rev() {
     local dir="$1" h
     shift
@@ -123,7 +124,7 @@ ferros_kist_build() {
     local args=()
     [ "$FERROS_KIST_PROFILE" = "release" ] && args=(--release)
     ( cd "$FERROS_DIR" && env -u CARGO_TARGET_DIR cargo build -p ferros-bridge ) || { echo "^^^ BUILD FAILED: ferros-bridge (in $FERROS_DIR), the capsule signer ^^^" >&2; return 1; }
-    PHOTON_FERROS_PKG="$FERROS_KIST_PKG" CARGO_TARGET_DIR="$FERROS_KIST_TARGET" "$FERROS_DIR/tools/photon-build.sh" "${args[@]}" || { echo "^^^ BUILD FAILED: Photon for ferros ($FERROS_KIST_PKG) ^^^" >&2; return 1; }
+    __CARGO_TESTS_ONLY_SRC_ROOT="$FERROS_KIST_STD_SRC" PHOTON_FERROS_PKG="$FERROS_KIST_PKG" CARGO_TARGET_DIR="$FERROS_KIST_TARGET" "$FERROS_DIR/tools/photon-build.sh" "${args[@]}" || { echo "^^^ BUILD FAILED: Photon for ferros ($FERROS_KIST_PKG) ^^^" >&2; return 1; }
     [ -s "$FERROS_KIST_IMAGE" ] || { echo "ERROR: no image at $FERROS_KIST_IMAGE after the ferros build" >&2; return 1; }
 }
 
