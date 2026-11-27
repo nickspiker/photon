@@ -38,7 +38,7 @@ android {
     defaultConfig {
         applicationId "com.photon.messenger"
         minSdk 26  // API 26 for IMEI access and modern features
-        // 35 = current Play/OS expectation. Android 15 ENFORCES edge-to-edge at targetSdk 35 — photon draws every pixel on a full SurfaceView and mirrors IME insets natively (adjustNothing + nativeImeInset), so it should be unaffected, but the first phone build on this target must verify the keyboard model; the manifest opt-out is windowOptOutEdgeToEdgeEnforcement if it regresses.
+        // 35 = current Play/OS expectation. Android 15 ENFORCES edge-to-edge at targetSdk 35; photon goes edge to edge itself (PhotonActivity: setDecorFitsSystemWindows(false), the bars' extents to Rust thru nativeSystemInsets, IME insets mirrored natively), so there is nothing to opt out of and a bump to 36 forces nothing new.
         targetSdk 35
         versionCode gitCommitCount
         versionName cargoVersion
