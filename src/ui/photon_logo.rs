@@ -60,9 +60,11 @@ pub fn paint_photon_logo_clipped<P: Pixel>(
     let text_x = (rect.x0 + rect.x1) as f32 * 0.5;
     let text_y = (rect.y0 + rect.y1) as f32 * 0.5;
 
-    // Scratch [start, stop) is 1.5× the rect's height, centred on `text_y`. Padding tied to rect height (not text size) so the scratch dimensions stay inside the rect's safety margin: half_span = rect_h × 3/4, so start = y_center − rect_h × 3/4 = rect.y0 × 5/4 − rect.y1 × 1/4 and stop = rect.y1 × 5/4 − rect.y0 × 1/4. Since launch_layout produces rects with y0 > 0 (the wordmark always sits below the spectrum bar) and y1 < buf_h (the attest block follows below), both bounds land inside [0, buf_h) by construction — no clamps needed.
+    // Scratch [start, stop) is 1.5× the rect's height, centred on `text_y`. Padding tied to rect height (not text size) so the scratch dimensions stay inside the rect's safety margin: half_span = rect_h × 3/4, so start = y_center − rect_h × 3/4 = rect.y0 × 5/4 − rect.y1 × 1/4 and stop = rect.y1 × 5/4 − rect.y0 × 1/4. A scratch taller than that (the glow's rows, below) can hang past the buffer: the composites crop every row to the clip band, so nothing lands outside it.
     let rect_h_px = rect.y1 - rect.y0;
-    let half_span = rect_h_px * 3 / 4;
+    // The glow must fit as well: the glyphs' half height and as many rows past them as the halo's light carries at this frame's depth, so the scratch's edge never cuts it (owner, 2026-11-26: "glows technically extend forever").
+    // The taller of the two bands holds both, so it is a union of extents, not a clamp.
+    let half_span = (rect_h_px * 3 / 4).max(text_size as usize / 2 + 1 + halo_rows::<P>(LOGO_GLOW_GRAY));
     let y_center = (rect.y0 + rect.y1) as isize / 2;
     // LOCAL scratch space: start may be negative relative to the logical band top; all scratch raster happens in local rows, and the composite offsets by `top + start`.
     let start = y_center - half_span as isize;
@@ -85,8 +87,6 @@ pub fn paint_photon_logo_clipped<P: Pixel>(
         0,
         FONT,
     );
-    blur_horizontal_soft(&mut scratch_glow);
-    blur_vertical_soft(&mut scratch_glow, buf_w, virtual_height);
 
     // Body scratch — "Photon" at full coverage (255). The coverage byte at each pixel is the α-weight used by `composite_body_black` (an all-dark under() layer) to drive the bg toward pure black; AA edges get partial coverage so the rasterized body inherits cosmic-text's hinted antialiasing.
     let mut scratch_body = vec![0_u8; scratch_size];
@@ -147,7 +147,7 @@ pub fn paint_photon_logo_clipped<P: Pixel>(
     let canvas_start = top + start;
     composite_body_black(canvas.pixels, buf_w, canvas_start, clip_y0, clip_y1, &scratch_body);
     composite_glow_white(canvas.pixels, buf_w, canvas_start, clip_y0, clip_y1, &scratch_highlight);
-    composite_glow_white(canvas.pixels, buf_w, canvas_start, clip_y0, clip_y1, &scratch_glow);
+    halo_under(canvas.pixels, buf_w, canvas_start, (clip_y0, clip_y1), &scratch_glow);
 
     // Report the rasterized area to the damage accumulator — full window width since blur passes spread horizontally; clamped to the clip band.
     let dy0 = canvas_start.max(clip_y0 as isize).max(0) as usize; // WHY/PROOF: the logo can start above the canvas (negative isize) — the usize cast would wrap it
@@ -172,48 +172,6 @@ fn blur_horizontal_sharp(buf: &mut [u8]) {
     for i in (0..len).rev() {
         prev = (((buf[i] as u16 + prev as u16 * 15) >> 4) as u8).max(buf[i]);
         buf[i] = prev;
-    }
-}
-
-/// Soft 1D blur (factor 3/4) — same shape as `blur_horizontal_sharp` but with a wider spread per step.
-pub(crate) fn blur_horizontal_soft(buf: &mut [u8]) {
-    let len = buf.len();
-    if len == 0 {
-        return;
-    }
-    let mut prev = buf[0];
-    for i in 1..len {
-        prev = (((buf[i] as u16 + prev as u16 * 3) >> 2) as u8).max(buf[i]);
-        buf[i] = prev;
-    }
-    let mut prev = buf[len - 1];
-    for i in (0..len).rev() {
-        prev = (((buf[i] as u16 + prev as u16 * 3) >> 2) as u8).max(buf[i]);
-        buf[i] = prev;
-    }
-}
-
-/// Vertical blur (factor 1/2) per column. Two passes (top-to-bottom + bottom-to-top) so the halo spreads symmetrically. Stride is `buf_w` because the scratch is row-major.
-pub(crate) fn blur_vertical_soft(buf: &mut [u8], buf_w: usize, virtual_height: usize) {
-    if virtual_height < 2 {
-        return;
-    }
-    for x in 0..buf_w {
-        let mut prev = buf[x];
-        for y in 1..virtual_height {
-            let idx = y * buf_w + x;
-            prev = (((buf[idx] as u16 + prev as u16) >> 1) as u8).max(buf[idx]);
-            buf[idx] = prev;
-        }
-    }
-    for x in 0..buf_w {
-        let last_idx = (virtual_height - 1) * buf_w + x;
-        let mut prev = buf[last_idx];
-        for y in (0..virtual_height - 1).rev() {
-            let idx = y * buf_w + x;
-            prev = (((buf[idx] as u16 + prev as u16) >> 1) as u8).max(buf[idx]);
-            buf[idx] = prev;
-        }
     }
 }
 
@@ -260,4 +218,18 @@ fn composite_body_black<P: Pixel>(pixels: &mut [P], buf_w: usize, start_row: isi
         let src = P::from_g2t8(Argb8::from_channels(cov as u32, [Argb8::ONE; 3]));
         pixels[pixel_idx] = pixels[pixel_idx].under(src, BlendMode::Normal);
     }
+}
+
+/// How many rows a soft halo of text drawn at grey `grey` carries above and below its glyphs before its light is under one step of this frame's depth (fluor `paint::halo_extent`): the band a halo is built in reaches this far past its text.
+pub(crate) fn halo_rows<P: Pixel>(grey: u8) -> usize {
+    fluor::paint::halo_extent((grey as u32) << 16, P::DEPTH).1
+}
+
+/// The soft halo of a coverage scratch (bytes the text rasterizer wrote, `buf_w` wide, its row 0 at canvas row `top`): widened to the halo's Q24 coverage, blurred, and laid under the canvas as white light at the frame's own depth (fluor `paint::halo_blur`, `halo_under_white`), rows outside `rows` (the clip band) left as they are.
+/// At 24 bits the tail falls by the blur's factors until it is under one step of the frame, where the byte scratch floored it to zero a few pixels out.
+pub(crate) fn halo_under<P: Pixel>(pixels: &mut [P], buf_w: usize, top: isize, rows: (usize, usize), scratch: &[u8]) {
+    let h = scratch.len() / buf_w;
+    let mut q: Vec<u32> = scratch.iter().map(|&c| (c as u32) << 16).collect();
+    fluor::paint::halo_blur(&mut q, buf_w, h);
+    fluor::paint::halo_under_white(pixels, buf_w, 0, top, buf_w, &q, rows);
 }

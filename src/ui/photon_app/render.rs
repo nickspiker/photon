@@ -2583,11 +2583,13 @@ impl PhotonApp {
                 }
                 if row_pressed {
                     // Press = the wordmark's halo, scoped to this row — composited AFTER the name (under() = topmost paints first, so program-order-later lands BENEATH the glyphs; the logo calls its glow last for the same reason — glow-first blew the text out to white). Full-width band like the wordmark, so the shared blur math holds.
-                    let band_top = row_top.max(list_from as isize) as usize; // WHY/PROOF: a row scrolled above the buffer has a negative top — the usize cast would wrap it; on a safe circle the glow stops where the list shows from, as the row does
+                    // The band reaches past the row as far as the halo's light carries at this frame's depth, so no band edge cuts the glow (owner, 2026-11-26: "glows technically extend forever").
+                    let halo = crate::ui::photon_logo::halo_rows::<crate::ui::Px>(0xB0) as isize;
+                    let band_top = (row_top - halo).max(list_from as isize) as usize; // WHY/PROOF: a row scrolled above the buffer has a negative top — the usize cast would wrap it; on a safe circle the glow stops where the list shows from, as the row does
                     // WHY: a scrolled row can lie wholly BELOW the buffer, so its clipped bottom is above its top.
                     // PROOF: that row has no band — zero height, skipped by the `>= 2` gate — where a plain subtraction would wrap to a band taller than the screen.
                     let band_h =
-                        ((row_top + rh).min(buf_h as isize) as usize).saturating_sub(band_top);
+                        ((row_top + rh + halo).min(buf_h as isize) as usize).saturating_sub(band_top);
                     if band_h >= 2 {
                         let mut scratch = vec![0u8; buf_w * band_h];
                         for (k, line) in name_lines.iter().enumerate() {
@@ -2605,16 +2607,7 @@ impl PhotonApp {
                                 "Oxanium",
                             );
                         }
-                        crate::ui::photon_logo::blur_horizontal_soft(&mut scratch);
-                        crate::ui::photon_logo::blur_vertical_soft(&mut scratch, buf_w, band_h);
-                        crate::ui::photon_logo::composite_glow_white(
-                            canvas.pixels,
-                            buf_w,
-                            band_top as isize,
-                            0,
-                            buf_h,
-                            &scratch,
-                        );
+                        crate::ui::photon_logo::halo_under(canvas.pixels, buf_w, band_top as isize, (0, buf_h), &scratch);
                     }
                 }
 
@@ -3306,10 +3299,12 @@ impl PhotonApp {
                         );
                     }
                     if back_pressed {
-                        let band_top = (back_y - back_size) as usize;
+                        // The band reaches past the label as far as the halo's light carries at this frame's depth, as the row's does above; the f32 cast floors a top above the buffer at row 0.
+                        let halo = crate::ui::photon_logo::halo_rows::<crate::ui::Px>(0xB0) as f32;
+                        let band_top = (back_y - back_size - halo) as usize;
                         // WHY/PROOF: as for the row band above — the back pill can sit below the buffer, and its band is then empty, not a wrapped giant.
                         let band_h =
-                            (((back_y + back_size) as usize).min(buf_h)).saturating_sub(band_top);
+                            (((back_y + back_size + halo) as usize).min(buf_h)).saturating_sub(band_top);
                         if band_h >= 2 {
                             let mut scratch = vec![0u8; buf_w * band_h];
                             ctx.text.draw_text_left_legacy(
@@ -3325,16 +3320,7 @@ impl PhotonApp {
                                 0,
                                 "Oxanium",
                             );
-                            crate::ui::photon_logo::blur_horizontal_soft(&mut scratch);
-                            crate::ui::photon_logo::blur_vertical_soft(&mut scratch, buf_w, band_h);
-                            crate::ui::photon_logo::composite_glow_white(
-                                canvas.pixels,
-                                buf_w,
-                                band_top as isize,
-                                0,
-                                buf_h,
-                                &scratch,
-                            );
+                            crate::ui::photon_logo::halo_under(canvas.pixels, buf_w, band_top as isize, (0, buf_h), &scratch);
                         }
                     }
                     // ONE LAYOUT, ONE LAYER (user spec, 2026-07-26): the conversation is a single scrolling stream whose ENTRY #0 is the avatar + name (+ ceremony status while pending) — visible ONLY at the conversation GENESIS, at the literal top of the content area, scrolling like any message. The fixed centred header is DEAD for every state (its pre-woven survival was the root of the "different layer" saga). The fixed strip holds ONLY the tiny always-on name, the orb, and the sliding "‹ Contacts".
