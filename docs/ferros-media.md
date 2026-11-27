@@ -106,6 +106,15 @@ Every stage stamps the AoC sample count or the TE count it acted at, and the num
 - **Glass to glass**: the far phone's camera filming the near panel's frame counter, the two counts compared.
 - **Wakeup**: mailbox doorbell to thread running, per core and class.
 
+## Where it stands (2026-11-26)
+
+Built and compiling for aarch64-unknown-ferros; not yet run on a phone (none on USB today).
+- **Sound out**: the engine's render thread writes the MEDIA stream through the audio service (a3666b1a); an incoming wave rings and the ringback plays, chirp's synthesis on the wave output path (b180fba4).
+- **Network**: every named port opens a socket ring at bind (ip ops 15/16, ferros ee7bd434) and sends and receives only through it; a wave's packets and express signals ride CLASS_VOICE (EF), a beam's CLASS_VIDEO (AF41) (c95aba60, 8f028cfd). ip feeds rings while the identity is unlocked (ferros fact 83), the same gate as op 2, so the screen going dark at the ear changes nothing.
+- **Beam in**: OpenH264 decodes on ferros through ferros's openh264-sys2 fork (std/photon's patch, ferros e10814c7); the receiver starts with every answered wave, so a phone that waves back to a beam shows the picture (b180fba4).
+- **Sound in (next)**: the `mic` right (ferros_kist::MIC = 15, ferros 91c9386f) is the proof that opens the MIC mailbox, and opening it lights the microphone bead; the mailbox carries the last 64 ms as 1 ms periods, each with its frame position and capture anchor, the header the newest position. Photon reads from its last position to the newest, opens the view when the engine starts and closes it at hangup. Until then the render clock hands the engine silence.
+- **Beam out**: waits on the camera talk with the owner (the develop, the capture right).
+
 ## The order
 
 Each step is shipped, measured and kept; stubs only as steps toward the real thing.
