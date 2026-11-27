@@ -3834,6 +3834,7 @@ async fn run_checker(
                                                 braid: Some(crate::crypto::chain::BRAID_CURRENT),
                                                 profile: profile_records(),
                                                 release: Some(own_release_claim()),
+                                                book: Some(peer_store_recv.lock().unwrap().digest()),
                                             },
                                             &key,
                                         ) {
@@ -4176,6 +4177,12 @@ async fn run_checker(
 
                                     // The release claim follows the presence it rides with (network/peer_release.rs): a peer holding less than we do is handed our manifest.
                                     let release_claim = tail.release.map(|claim| (*responder_pubkey.as_bytes(), claim));
+                                    // THE BOOKS DIFFER (2026-11-26): the friend holds a phonebook other than ours, so we ask it for its book, once for this digest of theirs; it sees ours differ in our pong and asks for ours, and both end holding the union (every device keeps the whole phonebook while it fits, owner 2026-11-26).
+                                    if let Some(theirs) = tail.book {
+                                        if theirs != peer_store_recv.lock().unwrap().digest() {
+                                            ask_book(src_addr, *responder_pubkey.as_bytes(), theirs);
+                                        }
+                                    }
                                     // Send status update with sync_records for retransmit handling
                                     send_status_update(
                                         &status_tx_recv,
@@ -4695,16 +4702,19 @@ async fn run_checker(
                                     let sig = keypair_recv.sign(&provenance_hash);
                                     let mut sig_bytes = [0u8; 64];
                                     sig_bytes.copy_from_slice(&sig.to_bytes());
-                                    let resp = FgtwMessage::PhonebookResponse {
-                                        timestamp: eagle_time_now(),
-                                        responder_pubkey: our_pubkey_recv.clone(),
-                                        provenance_hash,
-                                        signature: sig_bytes,
-                                        peers,
-                                    };
-                                    let resp_bytes = resp.to_vsf_bytes();
-                                    if !resp_bytes.is_empty() {
-                                        udp::send(&socket_recv, &resp_bytes, src_addr).await;
+                                    // The whole book in chunks a datagram carries whole, each echoing the request, and over the relay when the request came that way (2026-11-26): one datagram stops fitting at a few dozen records, and a reply to a relayed request sent by UDP went to 0.0.0.0.
+                                    for chunk in peers.chunks(PHONEBOOK_CHUNK) {
+                                        let resp = FgtwMessage::PhonebookResponse {
+                                            timestamp: eagle_time_now(),
+                                            responder_pubkey: our_pubkey_recv.clone(),
+                                            provenance_hash,
+                                            signature: sig_bytes,
+                                            peers: chunk.to_vec(),
+                                        };
+                                        let resp_bytes = resp.to_vsf_bytes();
+                                        if !resp_bytes.is_empty() {
+                                            relay_reply(&socket_recv, &keypair_recv, src_addr, sender_pubkey.as_bytes(), &resp_bytes).await;
+                                        }
                                     }
                                 }
 
@@ -4716,7 +4726,8 @@ async fn run_checker(
                                     peers,
                                 } => {
                                     // THE ANSWER IS THE RESPONDER'S, AND TO OUR QUESTION (security audit NET-06): its signature over the echoed provenance was never checked, and a response that answered nothing we asked was merged all the same. A push (one record, the sender's own) is not an answer and stands on its record's own signature.
-                                    let solicited = take_ask(&outstanding_asks_recv, &provenance_hash);
+                                    // A whole book arrives in several chunks (PHONEBOOK_CHUNK), each echoing the one request: the request stays open for all of them, ageing out of the bounded ask ring as newer asks arrive.
+                                    let solicited = has_ask(&outstanding_asks_recv, &provenance_hash);
                                     let own_push = peers.len() == 1 && peers[0].device_pubkey.as_bytes() == responder_pubkey.as_bytes();
                                     if !verify_provenance_signature(&provenance_hash, &responder_pubkey, &signature) {
                                         continue;
@@ -4733,7 +4744,9 @@ async fn run_checker(
                                     };
                                     // A group member we never friended may push its OWN record only (one record, its own device): enough for a group wave to find it, nothing of anyone else's.
                                     let member_push = !is_contact && peers.len() == 1 && peers[0].device_pubkey.as_bytes() == responder_pubkey.as_bytes() && molecule_member_device(responder_pubkey.as_bytes());
-                                    if !is_contact && !member_push {
+                                    // Anyone's own self-signed record is phonebook news: every device keeps the whole phonebook while it fits (owner, 2026-11-26), and the store's friend priority means a stranger's record can never push out a friend's.
+                                    let stranger_own = !is_contact && !member_push && own_push;
+                                    if !is_contact && !member_push && !stranger_own {
                                         continue;
                                     }
                                     // An unsolicited PUSH (one record, the sender's own) rather than an answer to our request.
@@ -4780,7 +4793,7 @@ async fn run_checker(
                                         send_status_update(&status_tx_recv, StatusUpdate::AddressPushed { record }, &event_proxy_recv);
                                     }
                                     // ANSWER A PUSH WITH OURSELVES (push reroute, step two, 2026-09-11): the device that just told us where it moved is the one most likely to hold nothing for us. Reply with our own signed record over the relay — only when the push was NEW to us, so the exchange settles after one round each way (our reply is not new to them a second time).
-                                    if is_push && merged > 0 && !push_echo {
+                                    if is_push && merged > 0 && !push_echo && !stranger_own {
                                         let ours = peer_store_recv
                                             .lock()
                                             .unwrap()
@@ -4916,6 +4929,7 @@ async fn run_checker(
                                 braid: Some(crate::crypto::chain::BRAID_CURRENT),
                                 profile: profile_records(),
                                 release: Some(own_release_claim()),
+                                book: Some(peer_store.lock().unwrap().digest()),
                             },
                             &key,
                         )
@@ -5009,6 +5023,20 @@ async fn run_checker(
             let bytes = req.to_vsf_bytes();
             if !bytes.is_empty() {
                 udp::send(&socket, &bytes, addr).await;
+            }
+        }
+        // The books a pong said differ (`ask_book`): each asked where its friend was heard, over the relay when that is where it came from.
+        let book_asks: Vec<(SocketAddr, [u8; 32])> = std::mem::take(&mut *BOOK_ASKS.lock().unwrap());
+        for (addr, device) in book_asks {
+            let ts = eagle_time_now();
+            let prov = compute_provenance_hash(&our_pubkey, ts);
+            note_ask(&outstanding_asks, prov);
+            let sig = keypair.sign(&prov);
+            let mut sig_bytes = [0u8; 64];
+            sig_bytes.copy_from_slice(&sig.to_bytes());
+            let bytes = FgtwMessage::PhonebookRequest { timestamp: ts, sender_pubkey: our_pubkey.clone(), provenance_hash: prov, signature: sig_bytes }.to_vsf_bytes();
+            if !bytes.is_empty() {
+                relay_reply(&socket, &keypair, addr, &device, &bytes).await;
             }
         }
 
@@ -5764,6 +5792,33 @@ fn relayed_group_frame(data: &[u8], src_addr: SocketAddr, known: &[DevicePubkey]
 /// How many of our own asks are remembered while unanswered.
 const OUTSTANDING_ASKS: usize = 1 << 6;
 
+/// Records in one phonebook answer datagram: four signed records and the envelope stay under a path MTU of 1280 bytes, so no chunk is ever fragmented.
+const PHONEBOOK_CHUNK: usize = 1 << 2;
+
+/// Phonebook asks the receive loop queues for the send loop: where the friend was heard (RELAY_ADDR when over the relay) and its device key.
+static BOOK_ASKS: Mutex<Vec<(SocketAddr, [u8; 32])>> = Mutex::new(Vec::new());
+/// The (friend device, its book digest) pairs already asked for: a friend whose book stays different (records our fleet gate refuses, say) is asked once per digest of its, not every pong.
+static BOOK_ASKED: Mutex<Vec<([u8; 32], [u8; 32])>> = Mutex::new(Vec::new());
+/// How many asked pairs are remembered: well past the friends a device pongs with between two changes of a book.
+const BOOK_ASKED_MAX: usize = 1 << 6;
+
+/// Ask `device` (heard at `from`) for its phonebook, unless this digest of its book was asked for already.
+fn ask_book(from: SocketAddr, device: [u8; 32], digest: [u8; 32]) {
+    {
+        let mut asked = BOOK_ASKED.lock().unwrap();
+        if asked.iter().any(|a| *a == (device, digest)) {
+            return;
+        }
+        asked.retain(|(d, _)| *d != device);
+        if asked.len() >= BOOK_ASKED_MAX {
+            asked.remove(0);
+        }
+        asked.push((device, digest));
+    }
+    crate::logf!("PHONEBOOK: {}'s book differs from ours — asking for it", crate::fp(&device));
+    BOOK_ASKS.lock().unwrap().push((from, device));
+}
+
 /// Remember an ask this device just sent, by the provenance hash its answer must echo.
 fn note_ask(asks: &Mutex<Vec<[u8; 32]>>, provenance: [u8; 32]) {
     if let Ok(mut a) = asks.lock() {
@@ -5774,7 +5829,12 @@ fn note_ask(asks: &Mutex<Vec<[u8; 32]>>, provenance: [u8; 32]) {
     }
 }
 
-/// Whether `provenance` echoes an ask this device sent; the ask is spent by the first answer taken for it.
+/// Whether `provenance` echoes an ask this device sent, the ask left open for further answers to it (a phonebook in several chunks); it ages out of the bounded ask ring.
+fn has_ask(asks: &Mutex<Vec<[u8; 32]>>, provenance: &[u8; 32]) -> bool {
+    asks.lock().map(|a| a.contains(provenance)).unwrap_or(false)
+}
+
+/// Whether `provenance` echoes an ask this device sent, the ask spent by this answer (an answer that comes once, as a reflect does).
 fn take_ask(asks: &Mutex<Vec<[u8; 32]>>, provenance: &[u8; 32]) -> bool {
     match asks.lock() {
         Ok(mut a) => match a.iter().position(|p| p == provenance) {

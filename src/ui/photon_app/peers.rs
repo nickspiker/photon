@@ -5,7 +5,28 @@ use super::*;
 /// Seed-lookup failures already logged this run, by their message (it names the device and the record's epoch).
 static SEED_FAILURES_SAID: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
 
+/// Non-friend devices a change of our address goes to directly, nearest by node id: the share of the network this device answers for. While the phonebook holds fewer, that is everyone; past it, the rest learn it from the devices whose share it is.
+const PHONEBOOK_PUSH_SHARE: usize = 1 << 5;
+
+/// The friend list last handed to the phonebook store (`give_phonebook_friends`), so the store is told only when it changes.
+static PHONEBOOK_FRIENDS_GIVEN: std::sync::Mutex<Vec<[u8; 32]>> = std::sync::Mutex::new(Vec::new());
+
 impl PhotonApp {
+    /// Hand the phonebook store the identities it keeps first at its cap: our own and every friend's handle proof (owner, 2026-11-26: "friend priority of course"). Told only when the set changes.
+    pub(super) fn give_phonebook_friends(&self) {
+        let Some(store) = self.peer_store.as_ref() else {
+            return;
+        };
+        let mut friends: Vec<[u8; 32]> = self.contacts.iter().map(|c| c.handle_proof).chain(self.our_handle_proof()).collect();
+        friends.sort();
+        friends.dedup();
+        let mut given = PHONEBOOK_FRIENDS_GIVEN.lock().unwrap();
+        if *given != friends {
+            store.lock().unwrap().set_friends(friends.clone());
+            *given = friends;
+        }
+    }
+
     /// Put OUR OWN device's peer record into the store, self-signed.
     ///
     /// Nothing did this before, and it is why phonebook gossip has never carried a single record:
@@ -136,29 +157,64 @@ impl PhotonApp {
         if self.our_reflexive.is_none() {
             return; // the address-change edge without an address: nothing new to say yet
         }
-        // Who is wrong right now: the wave's peer device first, then anyone whose pin points at where we no longer are.
-        let mut targets: Vec<[u8; 32]> = self.active_wave.as_ref().and_then(|c| c.peer_device).into_iter().collect();
-        for c in self.contacts.iter().filter(|c| c.validated_path.is_some()) {
-            if let Some(d) = c.device_key() {
-                if !targets.contains(&d) {
-                    targets.push(d);
+        // The wave's peer first, at once over the relay: its media is aimed at where we no longer are.
+        if let Some(dev) = self.active_wave.as_ref().and_then(|c| c.peer_device) {
+            self.push_address_record_to(vec![dev]);
+        }
+        let Some((addr, frame)) = self.own_record_frame() else {
+            return;
+        };
+        let Some(checker) = self.status_checker.as_ref() else {
+            return;
+        };
+        let dispatch = checker.history_dispatch();
+        let unspecified = std::net::SocketAddr::from(([0, 0, 0, 0], 0));
+        let our_lan = crate::network::udp::get_local_ip();
+        // EVERY DEVICE IN THE PHONEBOOK (owner, 2026-11-26: "see my address change and immediately update EVERY SINGLE DEVICE in my phonebook"), friends first: every device of every friend (our siblings get it from the publish), direct where a path is proven and the relay beside it until that path is trusted, the relay alone where we hold no address.
+        let mut told: Vec<[u8; 32]> = Vec::new();
+        for c in self.contacts.iter().filter(|c| !c.is_sibling && !c.locked_out) {
+            let relays = super::relay_unless_direct_trusted(c, our_lan);
+            for dev in c.device_endpoints.iter().map(|e| e.pubkey).chain(c.device_key()) {
+                if told.contains(&dev) {
+                    continue;
                 }
+                told.push(dev);
+                let (peer_addr, alt_addr, relay_to) = match c.race_addrs_for(&dev) {
+                    Some((p, a)) => (p, a, if relays.is_empty() { Vec::new() } else { vec![dev] }),
+                    None => (unspecified, None, vec![dev]),
+                };
+                crate::log_err!(dispatch.send(crate::network::status::HistorySendRequest { peer_addr, alt_addr, recipient_pubkey: dev, relay_to, vsf_bytes: frame.clone(), tag: None }), "our new record to a friend's device");
             }
         }
-        // ONLINE BUT RELAY-ONLY: the first cut pushed only to contacts holding a direct path to us — which excluded exactly the devices that cannot find us (field 2026-09-11: Emma's phone held no address at all for Nick's phone, and the push went to his own siblings). Every device of such a contact gets it; offline contacts learn from the seed when they return.
-        for c in self.contacts.iter().filter(|c| c.is_online && c.validated_path.is_none() && !c.is_sibling) {
-            for ep in &c.device_endpoints {
-                if !targets.contains(&ep.pubkey) {
-                    targets.push(ep.pubkey);
+        let friends = told.len();
+        // Then everyone else the phonebook holds, nearest to us first by node id (BLAKE3 of the device key, XOR distance), direct only: the share of the network this device answers for (docs/phonebook-web.md "The web"), which while the network is small is all of it; the relay is spent on friends alone.
+        let Some(mine) = self.device_keypair.as_ref().map(|k| *blake3::hash(k.public.as_bytes()).as_bytes()) else {
+            return;
+        };
+        let own_hp = self.our_handle_proof();
+        let mut rest: Vec<([u8; 32], crate::network::fgtw::PeerRecord)> = self
+            .peer_store
+            .as_ref()
+            .map(|s| s.lock().unwrap().get_all_peers())
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|r| Some(r.handle_proof) != own_hp && !told.contains(r.device_pubkey.as_bytes()) && !self.contacts.iter().any(|c| c.handle_proof == r.handle_proof))
+            .filter(|r| !crate::network::traverse::gather::is_bogus_addr(&r.ip))
+            .map(|r| {
+                let id = blake3::hash(r.device_pubkey.as_bytes());
+                let mut d = [0u8; 32];
+                for (k, b) in d.iter_mut().enumerate() {
+                    *b = id.as_bytes()[k] ^ mine[k];
                 }
-            }
-            if let Some(d) = c.device_key() {
-                if !targets.contains(&d) {
-                    targets.push(d);
-                }
-            }
+                (d, r)
+            })
+            .collect();
+        rest.sort_by(|a, b| a.0.cmp(&b.0));
+        rest.truncate(PHONEBOOK_PUSH_SHARE);
+        for (_, r) in &rest {
+            self.send_frame_direct(frame.clone(), *r.device_pubkey.as_bytes(), r.ip, None);
         }
-        self.push_address_record_to(targets);
+        crate::logf!("PHONEBOOK: our new address {} to {} friend device(s) and {} more in the phonebook", addr, friends, rest.len());
     }
 
     /// Push our signed record to exactly these devices over the relay. With no reflexive learned yet the record carries our LAN address — one-sided is enough to open a wave: the side holding a public address for the other sends, its packets open its own NAT, and the other engine follows the first authenticated packet (field 2026-09-11 20:47, the first WAN wave to carry media both ways).

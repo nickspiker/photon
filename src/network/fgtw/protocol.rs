@@ -1251,10 +1251,12 @@ pub struct PongTail {
     pub profile: Vec<fgtw::profile::ProfileRecord>,
     /// The newest signed release manifest the sender holds (network/peer_release.rs), so a peer holding a newer one hands it over. None = an older build, which could not read the hand-over.
     pub release: Option<crate::network::peer_release::ReleaseClaim>,
+    /// The sender's whole phonebook as one hash (`PeerStore::digest`), so a friend whose book differs asks for it (every device keeps the whole phonebook while it fits, owner 2026-11-26). None = an older build.
+    pub book: Option<[u8; 32]>,
 }
 
 fn add_pong_sensitive_fields(section: &mut vsf::VsfSection, tail: &PongTail) {
-    let PongTail { sync_records, display_name, avatar_pin, locked, about, fleet_tip, braid, profile, release } = tail;
+    let PongTail { sync_records, display_name, avatar_pin, locked, about, fleet_tip, braid, profile, release, book } = tail;
     // One native multi-value `sync` row per conversation record — (hb token, e6 last_received). No counts, no numbered names.
     for record in sync_records {
         section.add_field_multi(
@@ -1329,6 +1331,10 @@ fn add_pong_sensitive_fields(section: &mut vsf::VsfSection, tail: &PongTail) {
         };
         section.add_field_multi("rel", values);
     }
+    // PHONEBOOK DIGEST (2026-11-26): our whole book as one BLAKE3 hash (hb); a new field name an older parser skips.
+    if let Some(d) = book {
+        section.add_field_multi("book", vec![VsfType::hb(d.to_vec())]);
+    }
 }
 
 /// Build + AEAD-seal a pong's sensitive tail under the PAIRWISE pong key: the per-conversation sync rows (who-talks-to-whom metadata), the display name, and the 64-byte avatar pin (a bearer capability). Plaintext is an inner `pongsec` VSF section (encode_encrypted — the headerless form made for exactly this), sealed with kete ChaCha20-Poly1305 like history pages and the log seal. The key comes from the caller's PongSealKeys map, derived on the UI thread — this codec never sees an identity seed.
@@ -1388,6 +1394,11 @@ pub fn open_pong_sensitive(
         release: section.get_field("rel").map(|_| match section.eagle("rel") {
             Some(stamp) => crate::network::peer_release::ReleaseClaim::Holds(stamp),
             None => crate::network::peer_release::ReleaseClaim::HoldsNone,
+        }),
+        // The sender's book digest, read by its marker; any other shape is an older or newer build's and reads as absent.
+        book: section.get_field("book").and_then(|f| f.values.first()).and_then(|v| match v {
+            VsfType::hb(h) if h.len() == 32 => <[u8; 32]>::try_from(h.as_slice()).ok(),
+            _ => None,
         }),
     })
 }
@@ -4564,6 +4575,15 @@ mod pong_seal_tests {
         let open = |release: Option<ReleaseClaim>| open_pong_sensitive(&seal_pong_sensitive(&PongTail { sync_records: sample_records(), release, ..Default::default() }, &key).unwrap(), &key).unwrap().release;
         assert_eq!(open(Some(ReleaseClaim::Holds(2_555_000_000_000_000_000))), Some(ReleaseClaim::Holds(2_555_000_000_000_000_000)));
         assert_eq!(open(Some(ReleaseClaim::HoldsNone)), Some(ReleaseClaim::HoldsNone));
+        assert_eq!(open(None), None);
+    }
+
+    /// The phonebook digest round-trips the sealed tail, and an older build's tail carries none.
+    #[test]
+    fn pong_tail_book_digest_round_trips() {
+        let key = [0x5Au8; 32];
+        let open = |book: Option<[u8; 32]>| open_pong_sensitive(&seal_pong_sensitive(&PongTail { sync_records: sample_records(), book, ..Default::default() }, &key).unwrap(), &key).unwrap().book;
+        assert_eq!(open(Some([7u8; 32])), Some([7u8; 32]));
         assert_eq!(open(None), None);
     }
 

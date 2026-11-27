@@ -3135,6 +3135,8 @@ impl FluorApp<Px> for PhotonApp {
         self.dirty_before_tick = self.scene_dirty;
         // Our public IPv4 as the candidate gather judges contacts' addresses by (traverse::our_public_v4): taken from the reflexive addresses we hold, each tick, so every place that learns or forgets them is followed.
         crate::network::traverse::set_our_public(&[self.our_reflexive, self.our_reflexive_other]);
+        // The phonebook keeps our friends first at its cap: told whenever the friend set changes.
+        self.give_phonebook_friends();
         // Dev instrument (scroll memmove hunt): the first checkpoint that sees `scene_dirty` newly raised this tick names the block before it.
         let mut dirty_blame: u32 = 0;
         macro_rules! dirty_checkpoint {

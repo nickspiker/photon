@@ -7,6 +7,8 @@ use crate::PEER_EXPIRY_OSC;
 pub struct PeerStore {
     /// Sorted by handle_proof for binary search
     peers: Vec<PeerRecord>,
+    /// The identities we keep first (our own and our friends', by handle proof): every device holds the whole phonebook while it fits, and at the cap a stranger's oldest record goes before any friend's (owner, 2026-11-26: "friend priority of course").
+    friends: Vec<[u8; 32]>,
 }
 
 /// How many devices one identity may hold in the store: a fleet of sixteen is far past any real one, and a sender inventing devices under a handle stops here.
@@ -29,7 +31,7 @@ fn floor_to_now(mut peer: PeerRecord) -> PeerRecord {
 }
 impl PeerStore {
     pub fn new() -> Self {
-        Self { peers: Vec::new() }
+        Self { peers: Vec::new(), friends: Vec::new() }
     }
 
     /// Serialise the store for the vault by reusing the GOSSIP MESSAGE codec verbatim — a persisted phonebook is literally a `PhonebookResponse` addressed to ourselves.
@@ -187,12 +189,18 @@ impl PeerStore {
             self.peers.remove(oldest);
         }
         if new_device && self.peers.len() >= MAX_PEERS {
-            let Some(oldest) = self.peers.iter().enumerate().min_by_key(|(_, p)| p.local_seen).map(|(i, _)| i) else {
+            // Friends first: the oldest stranger's record makes room, and a friend's record always takes a stranger's place, however old; a stranger never takes a friend's, and among friends alone the newer record wins.
+            let incoming_friend = self.friends.contains(&peer.handle_proof);
+            let oldest_of = |friend: bool| self.peers.iter().enumerate().filter(|(_, p)| self.friends.contains(&p.handle_proof) == friend).min_by_key(|(_, p)| p.local_seen).map(|(i, _)| i);
+            let victim = match (oldest_of(false), incoming_friend) {
+                (Some(s), true) => Some(s),
+                (Some(s), false) => (self.peers[s].local_seen < peer.local_seen).then_some(s),
+                (None, true) => oldest_of(true).filter(|&f| self.peers[f].local_seen < peer.local_seen),
+                (None, false) => None,
+            };
+            let Some(oldest) = victim else {
                 return false;
             };
-            if self.peers[oldest].local_seen >= peer.local_seen {
-                return false;
-            }
             self.peers.remove(oldest);
         }
         let pos = self.find_position(&peer.handle_proof);
@@ -302,6 +310,25 @@ impl PeerStore {
             }
             i += 1;
         }
+    }
+
+    /// The identities kept first at the cap (our own and our friends' handle proofs), as the app holds them now.
+    pub fn set_friends(&mut self, friends: Vec<[u8; 32]>) {
+        self.friends = friends;
+    }
+
+    /// The whole book in one hash: BLAKE3 over every fresh record's device key and signed stamp, ordered by device key, so two devices holding the same records agree on it whatever order they learned them in.
+    /// Pongs carry it; a friend whose hash differs holds something we do not, or lacks something we hold, and the two swap books (every device keeps the whole phonebook while it fits, owner 2026-11-26).
+    pub fn digest(&self) -> [u8; 32] {
+        let now = crate::network::time_base::now_osc();
+        let mut rows: Vec<([u8; 32], i64)> = self.peers.iter().filter(|p| is_fresh(now, p.local_seen)).map(|p| (*p.device_pubkey.as_bytes(), p.last_seen)).collect();
+        rows.sort();
+        let mut h = blake3::Hasher::new_derive_key("photon phonebook digest v0");
+        for (dev, stamp) in rows {
+            h.update(&dev);
+            h.update(&stamp.to_le_bytes());
+        }
+        *h.finalize().as_bytes()
     }
 
     /// Remove stale peers (older than 7 days)
@@ -598,5 +625,66 @@ mod tests {
             0,
             "only a stale friend and ourselves → zero peers"
         );
+    }
+    /// A signed record on a routable test address, its device key from `seed`.
+    fn routable(handle: [u8; 32], seed: u8, last_seen: i64) -> PeerRecord {
+        use ed25519_dalek::SigningKey;
+        let sk = SigningKey::from_bytes(&[seed; 32]);
+        let mut r = PeerRecord::new(handle, DevicePubkey::from_bytes(sk.verifying_key().to_bytes()), "203.0.113.50:4383".parse().unwrap());
+        r.last_seen = last_seen;
+        r.sign(&sk);
+        r
+    }
+
+    /// A store at its cap: `strangers` records under distinct stranger handles and the rest under distinct friends' handles (each friend handle starts 0xF0), each `stamp` old, laid in sorted as merge keeps them (the eviction reads only handle and stamp).
+    fn full_store(strangers: usize, stamp: i64) -> PeerStore {
+        let template = routable([0; 32], 9, stamp);
+        let mut store = PeerStore::new();
+        let mut friends = Vec::new();
+        for i in 0..MAX_PEERS {
+            let mut r = template.clone();
+            r.local_seen = stamp;
+            r.handle_proof = [0; 32];
+            r.handle_proof[1..3].copy_from_slice(&(i as u16).to_be_bytes());
+            if i >= strangers {
+                r.handle_proof[0] = 0xF0;
+                friends.push(r.handle_proof);
+            }
+            store.peers.push(r);
+        }
+        friends.push([0xF1; 32]);
+        store.set_friends(friends);
+        store.peers.sort_by(|a, b| a.handle_proof.cmp(&b.handle_proof));
+        store
+    }
+
+    /// At the cap, friends first (owner, 2026-11-26): a friend's record takes a stranger's place however old it is, a stranger's never takes a friend's, and a stranger's replaces an older stranger's.
+    #[test]
+    fn at_the_cap_friends_come_first() {
+        let now = crate::network::time_base::now_osc();
+        let friend = [0xF1; 32];
+        let mut store = full_store(MAX_PEERS / 2, now - 1000);
+        assert!(store.merge_peer(routable(friend, 1, now - 5000)), "an older friend record still takes a stranger's place");
+        assert_eq!(store.peers.iter().filter(|p| store.friends.contains(&p.handle_proof)).count(), MAX_PEERS / 2 + 1);
+        assert!(store.merge_peer(routable([0xEE; 32], 2, now)), "a newer stranger record replaces an older stranger's");
+        let mut all_friends = full_store(0, now - 1000);
+        assert!(!all_friends.merge_peer(routable([0xEE; 32], 3, now)), "a stranger never takes a friend's place");
+        assert_eq!(all_friends.peers.len(), MAX_PEERS);
+    }
+
+    /// The digest is the book, not the order it was learned in, and moves when any record's stamp does.
+    #[test]
+    fn the_digest_is_the_book_whatever_its_order() {
+        let now = crate::network::time_base::now_osc();
+        let (a, b) = (routable([1; 32], 11, now - 10), routable([2; 32], 12, now - 20));
+        let mut one = PeerStore::new();
+        one.merge_peer(a.clone());
+        one.merge_peer(b.clone());
+        let mut two = PeerStore::new();
+        two.merge_peer(b);
+        two.merge_peer(a);
+        assert_eq!(one.digest(), two.digest());
+        two.merge_peer(routable([1; 32], 11, now - 5));
+        assert_ne!(one.digest(), two.digest(), "a newer record of one device changes the book");
     }
 }
