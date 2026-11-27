@@ -1962,6 +1962,10 @@ async fn run_checker(
         let media_socket = socket_recv.clone();
         tokio::spawn(async move {
             while let Some((bytes, addr)) = media_rx.recv().await {
+                // On ferros a wave's packets ride WiFi's voice queue: the socket's ring carries the class to ip, which marks them EF (docs/ferros-media.md "Network").
+                #[cfg(target_os = "ferros")]
+                crate::log_err!(media_socket.send_to_class(&bytes, addr, crate::platform::ferros_ring::CLASS_VOICE).await, "UDP voice send to {}", addr);
+                #[cfg(not(target_os = "ferros"))]
                 udp::send(&media_socket, &bytes, addr).await;
             }
         });

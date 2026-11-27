@@ -56,6 +56,31 @@ fn counter() -> u64 {
     t
 }
 
+/// The counter, for the ring module's stamps and deadlines.
+pub(super) fn now_counter() -> u64 {
+    counter()
+}
+
+/// The rings open on named ports (ferros_ring), one a port however many sockets share it, held weakly so the last socket's drop gives the run back to ip.
+static RINGS: Mutex<Vec<(u16, std::sync::Weak<super::ferros_ring::Ring>)>> = Mutex::new(Vec::new());
+
+/// The ring on `port`, opened at its first named bind: None for an ip without rings, a refusal, or a layout this Photon does not know (the socket then sends by op 1).
+fn ring_for(port: u16) -> Option<std::sync::Arc<super::ferros_ring::Ring>> {
+    let mut rings = RINGS.lock().unwrap();
+    rings.retain(|(_, w)| w.strong_count() > 0);
+    if let Some(r) = rings.iter().find(|(p, _)| *p == port).and_then(|(_, w)| w.upgrade()) {
+        return Some(r);
+    }
+    let r = super::ferros_ring::Ring::open(port, |req, reply| call(req, reply).ok())?;
+    rings.push((port, std::sync::Arc::downgrade(&r)));
+    Some(r)
+}
+
+/// How long a send waits for room in a full ring: one pass of ip is microseconds, so a millisecond full is ip stalled, and the datagram is dropped as a full socket buffer drops it.
+fn room_deadline() -> u64 {
+    counter() + (counter_hz() >> 10)
+}
+
 fn counter_hz() -> u64 {
     let f: u64;
     unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) f, options(nomem, nostack, preserves_flags)) };
@@ -145,6 +170,26 @@ fn watch_add(port: u16) {
         let mut req = vec![12u8];
         req.extend_from_slice(&watch_id().to_be_bytes());
         let _ = call(&req, &mut r);
+    }
+}
+
+/// The watcher running with no port of its own: a process whose sockets all read rings still hears the flags (the network edge, `network_generation`).
+fn watch_start() {
+    let mut w = WATCHER.lock().unwrap();
+    if !w.started {
+        w.started = true;
+        std::thread::Builder::new().name("ip-watch".into()).spawn(watcher).expect("the ip watcher thread");
+    }
+}
+
+/// Ready once `ring` holds a datagram: the waker is registered before the look, so the ring's doorbell either finds it or the look sees what came.
+struct RingReady<'a>(&'a std::sync::Arc<super::ferros_ring::Ring>);
+
+impl Future for RingReady<'_> {
+    type Output = ();
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        self.0.register(cx.waker());
+        if self.0.ready() { Poll::Ready(()) } else { Poll::Pending }
     }
 }
 
@@ -288,7 +333,7 @@ fn open_port(port: u16, id: u32) -> io::Result<()> {
 }
 
 /// The ip server's (family, address bytes). An IPv4 address written in IPv6's mapped form (::ffff:a.b.c.d, which udp::send makes of every v4 destination for dual-stack sockets) goes as IPv4: the ip server took it as a real IPv6 destination no host holds, and every ping, pong and offer Photon sent from ferros was lost (2026-11-17).
-fn family_and_bytes(ip: IpAddr) -> (u8, [u8; 16]) {
+pub(super) fn family_and_bytes(ip: IpAddr) -> (u8, [u8; 16]) {
     let mut b = [0u8; 16];
     let ip = match ip {
         IpAddr::V6(a) => a.to_ipv4_mapped().map_or(IpAddr::V6(a), IpAddr::V4),
@@ -306,7 +351,7 @@ fn family_and_bytes(ip: IpAddr) -> (u8, [u8; 16]) {
     }
 }
 
-fn ip_from(family: u8, b: &[u8]) -> IpAddr {
+pub(super) fn ip_from(family: u8, b: &[u8]) -> IpAddr {
     if family == 4 { IpAddr::V4(Ipv4Addr::new(b[0], b[1], b[2], b[3])) } else { IpAddr::V6(Ipv6Addr::from(<[u8; 16]>::try_from(&b[..16]).unwrap())) }
 }
 
@@ -314,21 +359,33 @@ fn ip_from(family: u8, b: &[u8]) -> IpAddr {
 pub struct UdpSocket {
     port: u16,
     peer: Mutex<Option<SocketAddr>>,
+    /// The port's ring when it has one: sends go into it with no call.
+    ring: Option<std::sync::Arc<super::ferros_ring::Ring>>,
 }
 
 impl UdpSocket {
     /// Open `addr`'s port (the address is the device's one address; 0 picks a port from the dynamic range).
     pub async fn bind(addr: SocketAddr) -> io::Result<Self> {
         let port = if addr.port() == 0 { 49152 + (ferros_counter() % 16384) as u16 } else { addr.port() };
-        open_port(port, watch_id())?;
-        watch_add(port);
-        Ok(UdpSocket { port, peer: Mutex::new(None) })
+        // A named port reads its ring (every datagram for the port lands in it); the watch and op 2 would queue a second copy at ip that nothing reads, so a ring socket stays out of both.
+        let ring = if addr.port() == 0 { None } else { ring_for(port) };
+        if ring.is_some() {
+            watch_start();
+        } else {
+            open_port(port, watch_id())?;
+            watch_add(port);
+        }
+        Ok(UdpSocket { port, peer: Mutex::new(None), ring })
     }
 
     /// The blocking socket's port becomes this async one's, as tokio's `from_std` takes a std socket over.
     pub fn from_std(s: StdUdpSocket) -> io::Result<Self> {
-        watch_add(s.port);
-        Ok(UdpSocket { port: s.port, peer: Mutex::new(*s.peer.lock().unwrap()) })
+        if s.ring.is_some() {
+            watch_start();
+        } else {
+            watch_add(s.port);
+        }
+        Ok(UdpSocket { port: s.port, peer: Mutex::new(*s.peer.lock().unwrap()), ring: s.ring.clone() })
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -347,7 +404,12 @@ impl UdpSocket {
     }
 
     pub async fn send_to(&self, data: &[u8], addr: SocketAddr) -> io::Result<usize> {
-        send_datagram(self.port, data, addr)
+        send_datagram(self.port, self.ring.as_deref(), super::ferros_ring::CLASS_BULK, data, addr)
+    }
+
+    /// `send_to` in a traffic class (ferros_ring CLASS_*): ip marks the datagram's DSCP and puts it in that WiFi queue, a wave's voice in the shortest wait for the air. Only a ring carries the class; a socket without one sends it as bulk.
+    pub async fn send_to_class(&self, data: &[u8], addr: SocketAddr, class: u8) -> io::Result<usize> {
+        send_datagram(self.port, self.ring.as_deref(), class, data, addr)
     }
 
     pub async fn send(&self, data: &[u8]) -> io::Result<usize> {
@@ -357,6 +419,15 @@ impl UdpSocket {
 
     /// The next datagram on the port: `(length, sender)`; waits while there is none, on the watch (`News`), never on a clock. Cancel-safe as tokio's is: a dropped wait has taken nothing.
     pub async fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
+        // A ring socket takes from its ring, and waits on the ring's doorbell when it is empty.
+        if let Some(ring) = self.ring.as_ref() {
+            loop {
+                if let Some(got) = ring.recv(buf)? {
+                    return Ok(got);
+                }
+                RingReady(ring).await;
+            }
+        }
         loop {
             // The port's news count before the RECV: news after it ends the wait at once.
             let seen = watch_news(self.port);
@@ -395,7 +466,9 @@ impl UdpSocket {
 
 impl Drop for UdpSocket {
     fn drop(&mut self) {
-        watch_drop(self.port);
+        if self.ring.is_none() {
+            watch_drop(self.port);
+        }
     }
 }
 
@@ -439,6 +512,8 @@ pub struct StdUdpSocket {
     watched: std::sync::atomic::AtomicBool,
     peer: Mutex<Option<SocketAddr>>,
     read_timeout: Mutex<Option<std::time::Duration>>,
+    /// The port's ring when it has one (a named port): sends go into it with no call.
+    ring: Option<std::sync::Arc<super::ferros_ring::Ring>>,
 }
 
 impl Drop for StdUdpSocket {
@@ -458,13 +533,17 @@ impl StdUdpSocket {
         let addr = addr.to_socket_addrs()?.next().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no address to bind"))?;
         let id = reader_id();
         // A named port is a listening one: a RECV opens it on the server side now, so what comes before the first receive is kept. An unnamed one is opened by its first send or receive: the routing look-ups (`get_local_ip_toward`) bind one, connect and read the address, and opened at the bind each took one of the server's eight kept ports from a socket that listens.
-        let port = if addr.port() == 0 {
-            49152 + (ferros_counter() % 16384) as u16
+        // A named port on a ring needs no RECV to open it: the ring is bound to the port at RING OPEN and holds what comes from then on.
+        let (port, ring) = if addr.port() == 0 {
+            (49152 + (ferros_counter() % 16384) as u16, None)
         } else {
-            open_port(addr.port(), id)?;
-            addr.port()
+            let ring = ring_for(addr.port());
+            if ring.is_none() {
+                open_port(addr.port(), id)?;
+            }
+            (addr.port(), ring)
         };
-        Ok(StdUdpSocket { port, id, watched: false.into(), peer: Mutex::new(None), read_timeout: Mutex::new(None) })
+        Ok(StdUdpSocket { port, id, watched: false.into(), peer: Mutex::new(None), read_timeout: Mutex::new(None), ring })
     }
 
     pub fn local_addr(&self) -> io::Result<SocketAddr> {
@@ -479,7 +558,7 @@ impl StdUdpSocket {
 
     /// The clone reads under an id of its own: two blocking receives on one port are two readers, each its own copy of each datagram once it watches, and dropping one never retires the other (UNWATCH names the id).
     pub fn try_clone(&self) -> io::Result<Self> {
-        Ok(StdUdpSocket { port: self.port, id: reader_id(), watched: false.into(), peer: Mutex::new(*self.peer.lock().unwrap()), read_timeout: Mutex::new(*self.read_timeout.lock().unwrap()) })
+        Ok(StdUdpSocket { port: self.port, id: reader_id(), watched: false.into(), peer: Mutex::new(*self.peer.lock().unwrap()), read_timeout: Mutex::new(*self.read_timeout.lock().unwrap()), ring: self.ring.clone() })
     }
 
     pub fn set_read_timeout(&self, t: Option<std::time::Duration>) -> io::Result<()> {
@@ -527,17 +606,37 @@ impl StdUdpSocket {
 
     pub fn send_to<A: std::net::ToSocketAddrs>(&self, data: &[u8], addr: A) -> io::Result<usize> {
         let addr = addr.to_socket_addrs()?.next().ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no address to send to"))?;
-        send_datagram(self.port, data, addr)
+        send_datagram(self.port, self.ring.as_deref(), super::ferros_ring::CLASS_BULK, data, addr)
     }
 
     pub fn send(&self, data: &[u8]) -> io::Result<usize> {
         let peer = self.peer.lock().unwrap().ok_or_else(|| io::Error::new(io::ErrorKind::NotConnected, "no peer connected"))?;
-        send_datagram(self.port, data, peer)
+        send_datagram(self.port, self.ring.as_deref(), super::ferros_ring::CLASS_BULK, data, peer)
     }
 
     /// The next datagram, waiting up to the read timeout (none set: as long as it takes). The wait is the ip server's: the RECV held there to the timeout's deadline exactly (op 2 with a deadline), answered as a datagram lands. A hold answered early with nothing (nobody present, or the server's sixteen holds taken) waits on a watch of this port and the flags to the same deadline (op 11), so an absence is slept through, not asked about.
     pub fn recv_from(&self, buf: &mut [u8]) -> io::Result<(usize, SocketAddr)> {
         let timeout = *self.read_timeout.lock().unwrap();
+        // A ring socket takes from its ring, asleep on its doorbell to the timeout's deadline between datagrams.
+        if let Some(ring) = self.ring.as_ref() {
+            let deadline = match timeout {
+                Some(t) if t.is_zero() => 0,
+                Some(t) => deadline_after(t),
+                None => u64::MAX,
+            };
+            loop {
+                if let Some(got) = ring.recv(buf)? {
+                    return Ok(got);
+                }
+                if deadline == 0 {
+                    return Err(io::Error::new(io::ErrorKind::WouldBlock, "no datagram"));
+                }
+                if counter() >= deadline {
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, "no datagram"));
+                }
+                ring.wait(deadline);
+            }
+        }
         if timeout == Some(std::time::Duration::ZERO) {
             return recv_once(self.port, self.id, buf, 0)?.ok_or_else(|| io::Error::new(io::ErrorKind::WouldBlock, "no datagram"));
         }
@@ -576,8 +675,11 @@ impl StdUdpSocket {
     }
 }
 
-/// One datagram out through the ip server (op 1 SEND).
-fn send_datagram(from_port: u16, data: &[u8], addr: SocketAddr) -> io::Result<usize> {
+/// One datagram out: into the port's ring when it has one open (no call; ip sends it the pass it sees it), else through the ip server (op 1 SEND). A ring ip let go falls back to op 1.
+fn send_datagram(from_port: u16, ring: Option<&super::ferros_ring::Ring>, class: u8, data: &[u8], addr: SocketAddr) -> io::Result<usize> {
+    if let Some(r) = ring.filter(|r| !r.closed()) {
+        return r.send(data, addr, class, room_deadline());
+    }
     let (fam, ip) = family_and_bytes(addr.ip());
     let mut req = Vec::with_capacity(22 + data.len());
     req.push(1);

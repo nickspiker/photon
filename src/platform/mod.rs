@@ -145,6 +145,9 @@ pub fn lower_this_thread() {
 pub mod net;
 #[cfg(target_os = "ferros")]
 pub mod ferros_net;
+// A socket's rings shared with the ip server (ops 15 and 16): datagrams with no call each way.
+#[cfg(target_os = "ferros")]
+pub mod ferros_ring;
 // Plain HTTP over the ip server's client TCP: FGTW's calls to fgtw.org from ferros.
 #[cfg(target_os = "ferros")]
 pub mod ferros_http;
