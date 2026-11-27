@@ -1,6 +1,6 @@
 # The phonebook web
 
-Status: **design, 2026-11-10.** Phase 0 (below) is built and deployed; phases 1 and 2 are not.
+Status: **design, 2026-11-10.** Phase 0 (below) is built and deployed; phases 1 and 2 are not. The first step of phase 2 is built (2026-11-26): every device keeps the whole phonebook while it fits (friends first at the cap), friends swap books when the digests in their pongs differ, and an address change goes to every device in the book (direct, the relay only for friends); node ids order the push (the nearest 32 non-friend devices), the slice it becomes when the network outgrows full replication.
 Supersedes the open phases of `peers-are-fgtw.md` (B, C, D); that doc's Phase A and A′ stay as written.
 
 ## The rule
@@ -61,7 +61,7 @@ Nick 2026-11-10: "if I do any change to the phonebook, avatar, device removal, w
 | Change | Status |
 |---|---|
 | Chains (device added, removed, locked, declared) | **Built 2026-11-10** (`chain_news`): a new held head goes to our siblings and contacts (our chain) or to our siblings and the owner's devices (a contact's chain). Our own writes still reach fgtw.org first inside the fgtw client, a moment before the mesh push. |
-| Addresses | **Built 2026-11-10**: pushed to contacts on change; a friend's fresh own push is passed on to our siblings, once (`pass_address_on`), and a record a sibling passes on goes no further. |
+| Addresses | **Built 2026-11-10, widened 2026-11-26**: pushed on change to every device of every friend and to the 32 nearest other devices in the phonebook (`push_address_change`), and to every sibling by any path; a friend's fresh own push is passed on to our siblings, once (`pass_address_on`), and a record a sibling passes on goes no further. |
 | Avatars and names | **Built 2026-11-10**: a changed avatar pin or name owes every contact one announce pong, sent with a ping round at once (`announce_profile`); the pong salvage carries the sealed name and pin. |
 | Settings and roster | **Built 2026-11-10**: pushed to siblings first; the fgtw.org backup merges into the slot as last seen and writes by compare-and-set (`merge_into_slot`, the worker's `prev`), reading fgtw.org only when it answers that the slot moved. |
 | Join requests | **Built 2026-11-10**: local first (LAN beacon, the direct bind_req, NFC). The joining device posts to fgtw.org, listens to its hub and reads its chain copy only after "My devices aren't nearby: ask through fgtw.org"; the adding device reads fgtw.org's requests only after "Not nearby? Look through fgtw.org". |
