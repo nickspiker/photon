@@ -1755,7 +1755,7 @@ mod desktop {
 #[cfg(not(any(target_os = "android", target_os = "ferros")))]
 pub use desktop::{route, start, stop};
 #[cfg(target_os = "ferros")]
-pub use ferros::{route, start, stop};
+pub use ferros::{mic_hold, route, start, stop, MicHold};
 /// The wave screen's mic and speaker pickers (desktop: cpal's devices by name).
 #[cfg(not(any(target_os = "android", target_os = "ferros")))]
 pub use desktop::{capture_rate, has_render, input_names, opened, output_names, picks, set_mic_pick, set_picks, set_speaker_pick};
@@ -1764,13 +1764,39 @@ pub use ferros::{capture_rate, has_render, input_names, opened, output_names, pi
 
 // ferros (docs/ferros-media.md): the speaker thru ferros's audio service (ferros docs/AUDIO.md; ferros_sys `audio` is the protocol's one copy, restated here since Photon calls the kernel itself): a MEDIA stream at 48 kHz, stereo i16, each 5 ms engine frame written as the service frees room, so the writer runs on the hardware's clock.
 // Today's WRITE keeps the stream's ring full (1024 frames, 21.3 ms) plus the two periods the service keeps at the AoC: the floor docs/ferros-media.md measures first, then replaces with a shared ring held one period ahead.
-// No microphone yet: ferros has no capture stream for kists (docs/ferros-media.md, step 2). Until it does, the render clock hands the engine a frame of silence for every frame it plays, so a wave runs full duplex and sends silence.
+// The microphones: a wave's engine holds them (`mic_hold`), which opens the MIC mailbox with the mic right as proof (the bead lights) and reads its ring of 1 ms periods by position into engine frames; before that (the ringback) the render clock hands the engine silence.
 #[cfg(target_os = "ferros")]
 mod ferros {
     use super::*;
 
-    /// The `audio` grant: the kernel's sound out, after the GPU's three (std/photon in the ferros repo; tools/photon-capsule.sh).
-    const AUDIO_SLOT: u64 = 13;
+    /// The `audio` grant: the kernel's sound out, after the wants (the mic tenth) and the GPU's three (ferros_kist::slots; tools/photon-capsule.sh, ferros 374cb1ba).
+    const AUDIO_SLOT: u64 = 14;
+    /// The `mic` right (ferros_kist::MIC): its send right on the audio service's `mic` endpoint, the proof that opens the MIC mailbox and the endpoint that starts the stream.
+    const MIC_SLOT: u64 = 10;
+    /// The stream's op on `mic` (ferros_sys `audio::MIC_STREAM`): [0] streaming, [1] refused (no view held, or the Developer page's meter has the capture).
+    const MIC_STREAM: u8 = 11;
+    /// SYS_MAILBOX and its ops; the microphones' mailbox (ferros_mailbox `MIC`).
+    const SYS_MAILBOX: u64 = 47;
+    const MAILBOX_OPEN: u64 = 0;
+    const MAILBOX_CLOSE: u64 = 1;
+    const MIC_BOX: u64 = 2;
+    const SYS_WAIT: u64 = 16;
+    /// The mailbox's words (ferros_mailbox, restated): the sequence (odd while a publish runs, bit 63 when the writer ended), the kind, the payload's words, then the payload from word 8.
+    const MB_SEQ: u64 = 0;
+    const MB_KIND: u64 = 1;
+    const MB_LEN: u64 = 2;
+    const MB_HEADER: u64 = 1 << 3;
+    const MB_DEAD: u64 = 1 << 63;
+    /// The microphones' layout (ferros_mailbox `mic`, version 0): the newest position, the format (rate | channels << 32), the anchor (a position and its CNTVCT), the AoC's overruns, then the ring of 2^12 frames of four channel words each, i32 in a word's low half.
+    const MIC_KIND: u64 = 0x4D49_4300_0000_0000;
+    const MIC_POS: u64 = 0;
+    const MIC_FORMAT: u64 = 1;
+    const MIC_ANCHOR_POS: u64 = 2;
+    const MIC_ANCHOR_AT: u64 = 3;
+    const MIC_RING: u64 = 8;
+    const MIC_RING_FRAMES: u64 = 1 << 12;
+    const MIC_CHANNELS_MAX: u64 = 1 << 2;
+    const MIC_WORDS: u64 = MIC_RING + MIC_RING_FRAMES * MIC_CHANNELS_MAX;
     const OPEN: u8 = 0;
     const WRITE: u8 = 1;
     const CLOSE: u8 = 2;
@@ -1875,14 +1901,14 @@ mod ferros {
         msg[1..9].copy_from_slice(&handle);
         // Until the first answer, the ring is taken as full: the stamp errs late, never early.
         let mut queued = RING;
-        let mut pos: i64 = 0;
         while ACTIVE.load(Ordering::Relaxed) {
             let now = crate::network::time_base::boot_now();
             let at = crate::network::time_base::eagle_at_boot_rt(now + frames_osc(queued + AOC_QUEUED));
             let frame = next_render_frame_at(at);
-            // The capture stub: a silent frame stamped as it would have been heard (see the head of this module).
-            push_captured(crate::network::time_base::eagle_at_boot_rt(now), pos, vec![0i32; FRAME_SAMPLES]);
-            pos += FRAME_SAMPLES as i64;
+            // Before the microphones stream (the ringback, or a mic the person has not granted): a silent frame stamped as it would have been heard, so the engine's capture cadence runs.
+            if !MIC_LIVE.load(Ordering::Relaxed) {
+                push_captured(crate::network::time_base::eagle_at_boot_rt(now), CAP_POS.fetch_add(FRAME_SAMPLES as i64, Ordering::Relaxed), vec![0i32; FRAME_SAMPLES]);
+            }
             for (k, s) in frame.iter().enumerate() {
                 let b = s.to_le_bytes();
                 msg[9 + 4 * k..11 + 4 * k].copy_from_slice(&b);
@@ -1906,6 +1932,183 @@ mod ferros {
         crate::platform::ferros_net::call_slot(AUDIO_SLOT, &c, &mut a);
         OPENED.store(false, Ordering::Relaxed);
         crate::log("AUDIO: speaker closed");
+    }
+
+    /// The capture stream's position in frames, one count for the render clock's silent frames and the microphones' after them: the engine's aligner fits position to time and drops a position that goes back, so the hand-over keeps counting up.
+    static CAP_POS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+    /// The microphones stream into the engine (the render clock's silent frames stop).
+    static MIC_LIVE: AtomicBool = AtomicBool::new(false);
+    /// The engines holding the microphones (a group wave runs one a link), and the capture thread they share.
+    static MIC_HOLDERS: Mutex<(u32, Option<std::thread::JoinHandle<()>>)> = Mutex::new((0, None));
+    static MIC_WANTED: AtomicBool = AtomicBool::new(false);
+
+    /// Held by a wave's engine for its life: the first holder opens the microphones' view (the mic bead lights) and starts the capture, the last one's drop closes it, so the bead is lit exactly while a voice is live.
+    pub struct MicHold(());
+
+    pub fn mic_hold() -> MicHold {
+        let mut h = MIC_HOLDERS.lock().unwrap();
+        h.0 += 1;
+        if h.0 == 1 {
+            MIC_WANTED.store(true, Ordering::SeqCst);
+            h.1 = std::thread::Builder::new().name("wave-mic".into()).spawn(mic_thread).ok();
+            if h.1.is_none() {
+                crate::log("AUDIO: the microphone thread did not start");
+            }
+        }
+        MicHold(())
+    }
+
+    impl Drop for MicHold {
+        fn drop(&mut self) {
+            let t = {
+                let mut h = MIC_HOLDERS.lock().unwrap();
+                h.0 -= 1;
+                if h.0 > 0 {
+                    return;
+                }
+                MIC_WANTED.store(false, Ordering::SeqCst);
+                h.1.take()
+            };
+            if let Some(t) = t {
+                if t.join().is_err() {
+                    crate::log("AUDIO: the microphone thread panicked");
+                }
+            }
+        }
+    }
+
+    #[inline(always)]
+    fn svc(n: u64, a0: u64, a1: u64, a2: u64, a3: u64, a4: u64) -> u64 {
+        let r: u64;
+        unsafe { core::arch::asm!("svc #0", inlateout("x0") a0 => r, in("x1") a1, in("x2") a2, in("x3") a3, in("x4") a4, in("x8") n, options(nostack)) };
+        r
+    }
+
+    #[inline(always)]
+    fn arc_base() -> u64 {
+        let b: u64;
+        unsafe { core::arch::asm!("mov {}, x28", out(reg) b, options(nomem, nostack, preserves_flags)) };
+        b
+    }
+
+    fn cntvct() -> u64 {
+        let t: u64;
+        unsafe { core::arch::asm!("isb", "mrs {}, cntvct_el0", out(reg) t, options(nomem, nostack, preserves_flags)) };
+        t
+    }
+
+    fn cntfrq() -> u64 {
+        let f: u64;
+        unsafe { core::arch::asm!("mrs {}, cntfrq_el0", out(reg) f, options(nomem, nostack, preserves_flags)) };
+        f
+    }
+
+    /// The capture: the view opened with the mic right as proof, the stream started, then every publish read from our position up to the newest, channel 0's samples cut into engine frames, each stamped with the instant its first sample was taken (the publish's anchor), until the last holder lets go.
+    fn mic_thread() {
+        use crate::platform::ferros_handle as h;
+        // The grant's token: past the handle table (512 bytes) and the u32 count at G#200 (ferros SANDBOX.md "Handles"), as ferros_net's `cap`.
+        let proof = 0x204 + 32 * MIC_SLOT;
+        let mut token = [0u8; 32];
+        let base = svc(SYS_MAILBOX, MAILBOX_OPEN, MIC_BOX, proof, (token.as_mut_ptr() as u64).wrapping_sub(arc_base()), 0);
+        let Some(slot) = (base != u64::MAX && base != 0).then(|| h::slot_of(base, 0)).flatten() else {
+            crate::log("AUDIO: the microphones refused: no mic right granted, or no handle for the view");
+            return;
+        };
+        let mut r = [0u8; 4];
+        let streaming = crate::platform::ferros_net::call_slot(MIC_SLOT, &[MIC_STREAM], &mut r);
+        if streaming.is_none() || r[0] != 0 {
+            crate::logf!("AUDIO: the microphone stream refused (status {})", r[0]);
+            svc(SYS_MAILBOX, MAILBOX_CLOSE, MIC_BOX, 0, 0, 0);
+            return;
+        }
+        crate::log("AUDIO: microphones open on ferros");
+        let ld = |i: u64| h::read64(slot, 8 * i);
+        let p = |i: u64| ld(MB_HEADER + i);
+        let freq = cntfrq();
+        // Our position: None until the first publish says where the capture stands (we take what comes after, not the ring's past).
+        let mut next: Option<u64> = None;
+        // Channel 0's samples not yet a whole engine frame, and the position and counter instant of the first of them.
+        let mut pend: Vec<i32> = Vec::with_capacity(FRAME_SAMPLES);
+        let mut pend_at: (u64, i64) = (0, 0);
+        let mut copied: Vec<i32> = Vec::with_capacity(MIC_RING_FRAMES as usize);
+        let mut seen = 0u64;
+        while MIC_WANTED.load(Ordering::Relaxed) {
+            // Asleep until the next publish (1 ms) or 2^4 ms, so a let-go is seen promptly even if the writer stalls; the wait names the word by its address, the kernel resolving it to the view.
+            let deadline = cntvct() + (freq >> 6);
+            svc(SYS_WAIT, (base + 8 * MB_SEQ).wrapping_sub(arc_base()), seen, deadline, 1, 0);
+            let s0 = ld(MB_SEQ);
+            std::sync::atomic::fence(Ordering::Acquire);
+            if s0 & MB_DEAD != 0 {
+                crate::log("AUDIO: the microphones' writer ended");
+                break;
+            }
+            if s0 & 1 != 0 || s0 == 0 || s0 == seen {
+                continue;
+            }
+            if ld(MB_KIND) != MIC_KIND || ld(MB_LEN) != MIC_WORDS {
+                crate::log("AUDIO: the microphones' mailbox is in a layout this Photon does not know");
+                break;
+            }
+            let pos = p(MIC_POS);
+            let format = p(MIC_FORMAT);
+            // WHY the min: the channels are the writer's word, read under no lock; the stride stays inside a frame's slots whatever it says (a torn read is caught by the sequence below).
+            let channels = ((format >> 32) & 0xFF).min(MIC_CHANNELS_MAX);
+            let rate = format as u32 as u64;
+            let (anchor_pos, anchor_at) = (p(MIC_ANCHOR_POS), p(MIC_ANCHOR_AT));
+            // WHY the saturating subtract: positions count from zero at the capture's start, and until a ring's frames are in the oldest frame held is frame 0.
+            // PROOF: `pos - MIC_RING_FRAMES` with fewer frames written than a ring underflows a u64 and would name a frame beyond every frame written.
+            let oldest = pos.saturating_sub(MIC_RING_FRAMES);
+            let from = match next {
+                None => pos,
+                // A position past the newest is a writer that started again from zero: taken from the oldest it holds.
+                Some(n) if n < oldest || n > pos => oldest,
+                Some(n) => n,
+            };
+            copied.clear();
+            if channels > 0 {
+                for f in from..pos {
+                    let w = MIC_RING + (f & (MIC_RING_FRAMES - 1)) * MIC_CHANNELS_MAX;
+                    copied.push(p(w) as u32 as i32);
+                }
+            }
+            std::sync::atomic::fence(Ordering::Acquire);
+            if ld(MB_SEQ) != s0 {
+                continue; // a publish landed during the copy: look again at the next one
+            }
+            seen = s0;
+            if let Some(n) = next {
+                if from > n {
+                    crate::logf!("AUDIO: {} microphone frames lost (more than a ring behind)", from - n);
+                    // The stream position moves past the gap and the partial frame dropped with it, so the aligner's fit of position to time stays a line.
+                    CAP_POS.fetch_add((from - n) as i64 + pend.len() as i64, Ordering::Relaxed);
+                    pend.clear();
+                }
+            }
+            next = Some(pos);
+            if channels == 0 || rate == 0 {
+                continue;
+            }
+            MIC_LIVE.store(true, Ordering::Relaxed);
+            for (k, s) in copied.iter().enumerate() {
+                if pend.is_empty() {
+                    let f = from + k as u64;
+                    // The instant of frame f: the anchor's counter plus its distance from the anchor at the capture's rate.
+                    let ticks = (f as i64 - anchor_pos as i64) as i128 * freq as i128 / rate as i128;
+                    pend_at = (f, anchor_at as i64 + ticks as i64);
+                }
+                // The capture is full-scale 32-bit; the engine's queues hold 24-bit (the Android and desktop captures').
+                pend.push(*s >> 8);
+                if pend.len() == FRAME_SAMPLES {
+                    // Counter → boot clock: the two read together, the frame's age on the counter carried across.
+                    let age = (cntvct() as i64 - pend_at.1) as i128 * crate::OSC_PER_SEC as i128 / freq as i128;
+                    let boot = crate::network::time_base::boot_now() - age as i64;
+                    push_captured(crate::network::time_base::eagle_at_boot_rt(boot), CAP_POS.fetch_add(FRAME_SAMPLES as i64, Ordering::Relaxed), std::mem::replace(&mut pend, Vec::with_capacity(FRAME_SAMPLES)));
+                }
+            }
+        }
+        MIC_LIVE.store(false, Ordering::Relaxed);
+        svc(SYS_MAILBOX, MAILBOX_CLOSE, MIC_BOX, 0, 0, 0);
+        crate::log("AUDIO: microphones closed");
     }
 }
 

@@ -5,7 +5,7 @@
 
 use std::io;
 use std::net::SocketAddr;
-use std::sync::atomic::{fence, AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{fence, AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::Waker;
 
@@ -72,7 +72,9 @@ const fn rec_bytes(len: usize) -> usize {
 
 /// One open ring: the run's address and bytes, the view the kernel gave it, where its rings lie, Photon's two positions (each under the one side that moves it), and the tasks waiting for a datagram.
 pub struct Ring {
+    /// The run's address in the shared window (the kernel's wait and wake name its words by it) and the handle slot every load and store goes through (Photon is masked code: ferros_handle).
     base: u64,
+    slot: u64,
     view: u64,
     port: u16,
     tx_off: usize,
@@ -88,17 +90,13 @@ pub struct Ring {
 }
 
 impl Ring {
-    fn word(&self, at: usize) -> &AtomicU64 {
-        // SAFETY: the run is mapped read-write for this process while it holds the view (ferros docs/KERNEL.md "Shared regions"), `at` is an aligned offset inside it (the header's, or the rings' checked against the run's bytes at open), and the view is let go only in Drop, after every user of this Ring is gone.
-        unsafe { &*((self.base + at as u64) as *const AtomicU64) }
-    }
-
+    /// A word of the run, through its handle: `at` is an aligned offset (the header's, or the rings' checked against the run's bytes at open), and the view is let go only in Drop, after every user of this Ring is gone.
     fn ld(&self, at: usize) -> u64 {
-        self.word(at).load(Ordering::Relaxed)
+        super::ferros_handle::read64(self.slot, at as u64)
     }
 
     fn st(&self, at: usize, v: u64) {
-        self.word(at).store(v, Ordering::Relaxed)
+        super::ferros_handle::write64(self.slot, at as u64, v)
     }
 
     /// RING OPEN on `port` at the ip server (`call` is the ip endpoint's), the run mapped and checked: None when ip has no rings (an older image), refused, or laid the run out in a shape this copy does not know.
@@ -117,8 +115,7 @@ impl Ring {
             return None;
         }
         let bytes = u64::from_le_bytes(b[..8].try_into().unwrap()) as usize;
-        // SAFETY: the kernel just mapped `bytes` bytes at `base` for this process (SHARE VIEW); its first word is the run's.
-        let first = unsafe { &*((base + W_MAGIC as u64) as *const AtomicU64) }.load(Ordering::Relaxed);
+        let slot = u64::from_le_bytes(b[8..].try_into().unwrap());
         let give_back = |why: &str| {
             crate::logf!("ferros net: the ring on port {} {}: the socket stays on ip's calls", port, why);
             let mut req = vec![16u8];
@@ -126,13 +123,17 @@ impl Ring {
             let mut a = [0u8; 4];
             call(&req, &mut a);
         };
-        if first != MAGIC {
+        // WHY the check: the slot is the kernel's word (u64::MAX when no pair was free), and the handle dispatch takes only the table's 32.
+        if slot >= super::ferros_handle::SLOTS || super::ferros_handle::pair(slot).0 != base {
+            give_back("has no handle this process can reach");
+            return None;
+        }
+        if super::ferros_handle::read64(slot, W_MAGIC as u64) != MAGIC {
             give_back("is laid out in a version this Photon does not know");
             return None;
         }
         fence(Ordering::Acquire);
-        // SAFETY: as `first`; each header word is inside the run's first page.
-        let w = |at: usize| unsafe { &*((base + at as u64) as *const AtomicU64) }.load(Ordering::Relaxed) as usize;
+        let w = |at: usize| super::ferros_handle::read64(slot, at as u64) as usize;
         let (tx_off, tx_len, rx_off, rx_len) = (w(W_TX_OFF), w(W_TX_LEN), w(W_RX_OFF), w(W_RX_LEN));
         // WHY the check: the offsets are ip's words, and every load and store below lands at them; one outside the run would touch memory that is not the run.
         let fits = |off: usize, len: usize| len.is_power_of_two() && len >= 8 && off >= HEAD && off % 8 == 0 && off <= bytes && len <= bytes - off;
@@ -142,6 +143,7 @@ impl Ring {
         }
         let ring = Ring {
             base,
+            slot,
             view,
             port,
             tx_off,

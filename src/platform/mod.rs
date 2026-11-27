@@ -148,6 +148,9 @@ pub mod ferros_net;
 // A socket's rings shared with the ip server (ops 15 and 16): datagrams with no call each way.
 #[cfg(target_os = "ferros")]
 pub mod ferros_ring;
+// A granted region through its handle slot (masked code reaches shared runs and mailbox views no other way).
+#[cfg(target_os = "ferros")]
+pub mod ferros_handle;
 // Plain HTTP over the ip server's client TCP: FGTW's calls to fgtw.org from ferros.
 #[cfg(target_os = "ferros")]
 pub mod ferros_http;

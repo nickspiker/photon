@@ -335,6 +335,9 @@ pub fn start(params: EngineParams) -> EngineHandle {
         .spawn(move || {
             // THE RANK: a voice is live on this device for exactly as long as this thread runs, and bulk transfers give way for that long (network::rank).
             let _rank = crate::network::rank::realtime_begin();
+            // ferros: the microphones are held for exactly as long, so the mic bead is lit only while a voice is live (platform::audio::ferros).
+            #[cfg(target_os = "ferros")]
+            let _mic = crate::platform::audio::mic_hold();
             // Android: the engine thread runs the 5ms capture→send cadence; at default priority both phones in the 2026-09-09 LAN wave produced 194 of 200 frames a second (the receiver underruns, the jitter target ratchets). URGENT_AUDIO's nice (-19) is what the platform grants an app's own audio threads.
             #[cfg(target_os = "android")]
             {
