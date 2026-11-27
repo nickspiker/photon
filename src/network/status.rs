@@ -1532,8 +1532,6 @@ async fn run_checker(
             }
         }
     };
-    #[cfg(any(target_os = "android", target_os = "ferros"))]
-    let tcp_listener: Option<crate::platform::net::TcpListener> = None;
 
     let pending: Arc<Mutex<Vec<PendingPing>>> = Arc::new(Mutex::new(Vec::new()));
 
@@ -1793,156 +1791,32 @@ async fn run_checker(
         });
     }
 
-    // Spawn TCP receiver task for large CLUTCH payloads (VSF format)
+    // Each injected frame carries where it came from: the relay pipe hands `RELAY_ADDR`, a PT transfer no PT arm claimed hands its real sender, a TCP fallback delivery hands `RELAY_ADDR`.
+    let (inject_tx, mut inject_rx) = tokio::sync::mpsc::channel::<(Vec<u8>, SocketAddr)>(64);
+
+    // The TCP fallback's receiver: PT sends a payload whole over TCP when its SPEC goes unacked (pt/mod.rs), any kind of frame, and each one goes into the receive loop as if it had arrived there, so every arm and the stranger gate apply to it.
+    // Each connection reads on a task of its own under a timeout, capped at a PT transfer's own bound; the frame is injected as `RELAY_ADDR`, never the sender's ephemeral TCP port, which nothing may answer or adopt (2026-11-26: CLUTCH alone was parsed here, everything else dropped, and the read ran on a std stream left non-blocking).
+    #[cfg(not(any(target_os = "android", target_os = "ferros")))]
     if let Some(listener) = tcp_listener {
-        let status_tx_tcp = status_tx.clone();
-        let event_proxy_tcp = event_proxy.clone();
-        let contacts_tcp = contacts.clone();
+        let inject_tcp = inject_tx.clone();
         tokio::spawn(async move {
             crate::log("Status: TCP receiver task started");
             loop {
                 // Async accept - sleeps until connection arrives (no polling)
                 match listener.accept().await {
-                    Ok((stream, src_addr)) => {
-                        crate::logf!("Status: TCP connection from {}", src_addr);
-                        // Convert to std TcpStream for tcp::recv (uses VSF L field for framing)
-                        let std_stream = stream.into_std();
-                        match std_stream {
-                            Ok(mut std_stream) => {
-                                // Read payload using VSF L field
-                                match crate::network::tcp::recv(&mut std_stream) {
-                                    Ok(data) => {
-                                        crate::logf!(
-                                            "Status: Received {} bytes via TCP from {}",
-                                            data.len(),
-                                            src_addr
-                                        );
-
-                                        // VSF inspection for development builds
-                                        #[cfg(feature = "development")]
-                                        {
-                                            if let Ok(inspection) = vsf::inspect::inspect_vsf(&data)
-                                            {
-                                                crate::logf!(
-                                                    "Status: Received TCP VSF:\n{}",
-                                                    inspection
-                                                );
-                                            }
-                                        }
-
-                                        // Check for VSF magic bytes (RÅ< = 0x52 0xC3 0x85 0x3C)
-                                        if data.len() >= 4
-                                            && &data[0..3] == b"R\xC3\x85"
-                                            && data[3] == b'<'
-                                        {
-                                            // Parse VSF header to determine message type Try parsing as ClutchOffer first
-                                            use crate::network::fgtw::protocol::{
-                                                parse_clutch_complete_vsf_without_recipient_check,
-                                                parse_clutch_kem_response_vsf_without_recipient_check,
-                                                parse_clutch_offer_vsf_without_recipient_check,
-                                            };
-
-                                            // Helper to check if sender is a known contact
-                                            let is_known_sender =
-                                                |pubkey_bytes: &[u8; 32]| -> bool {
-                                                    let sender =
-                                                        DevicePubkey::from_bytes(*pubkey_bytes);
-                                                    let contact_list = contacts_tcp.lock().unwrap();
-                                                    contact_list.iter().any(|p| *p == sender)
-                                                };
-
-                                            // Trust gate BEFORE the ~500KB CLUTCH section parse: the signer pubkey lives in the header (cheap to extract, no section walk), so reject an untrusted sender here rather than after parsing half a megabyte of their payload. The per-message is_known_sender checks below stay as defence-in-depth.
-                                            if let Ok(signer) =
-                                                vsf::verification::extract_signer_pubkey(&data)
-                                            {
-                                                if !is_known_sender(&signer) {
-                                                    crate::logf!("TCP: CLUTCH message REJECTED before parse - sender not in contacts (pubkey: {})", hex::encode(&signer[..signer.len().min(8)]));
-                                                    continue;
-                                                }
-                                            }
-
-                                            // Try full offer first (has clutch_offer section)
-                                            if let Ok((payload, sender_pubkey, offer_provenance, conversation_token)) =
-                                                parse_clutch_offer_vsf_without_recipient_check(&data)
-                                            {
-                                                // SECURITY: Only accept from known contacts
-                                                if !is_known_sender(&sender_pubkey) {
-                                                    crate::logf!("TCP: ClutchOffer REJECTED from {} - sender not in contacts (pubkey: {})", src_addr, hex::encode(&sender_pubkey[..8]));
-                                                    continue;
-                                                }
-                                                crate::log("Status: Received ClutchOffer via TCP (VSF verified)");
-                                                send_status_update(
-                                                    &status_tx_tcp,
-                                                    StatusUpdate::ClutchOfferReceived {
-                                                        conversation_token,
-                                                        offer_provenance,
-                                                        sender_pubkey,
-                                                        payload,
-                                                        sender_addr: src_addr,
-                                                    },
-                                                    &event_proxy_tcp,
-                                                );
-                                            }
-                                            // Try KEM response
-                                            else if let Ok((payload, sender_pubkey, ceremony_id, conversation_token)) =
-                                                parse_clutch_kem_response_vsf_without_recipient_check(&data)
-                                            {
-                                                // SECURITY: Only accept from known contacts
-                                                if !is_known_sender(&sender_pubkey) {
-                                                    crate::logf!("TCP: ClutchKemResponse REJECTED from {} - sender not in contacts (pubkey: {})", src_addr, hex::encode(&sender_pubkey[..8]));
-                                                    continue;
-                                                }
-                                                crate::log("Status: Received ClutchKemResponse via TCP (VSF verified)");
-                                                send_status_update(
-                                                    &status_tx_tcp,
-                                                    StatusUpdate::ClutchKemResponseReceived {
-                                                        conversation_token,
-                                                        ceremony_id,
-                                                        sender_pubkey,
-                                                        payload,
-                                                        sender_addr: src_addr,
-                                                    },
-                                                    &event_proxy_tcp,
-                                                );
-                                            }
-                                            // Try complete proof
-                                            else if let Ok((payload, sender_pubkey, ceremony_id, conversation_token)) =
-                                                parse_clutch_complete_vsf_without_recipient_check(&data)
-                                            {
-                                                // SECURITY: Only accept from known contacts
-                                                if !is_known_sender(&sender_pubkey) {
-                                                    crate::logf!("TCP: ClutchComplete REJECTED from {} - sender not in contacts (pubkey: {})", src_addr, hex::encode(&sender_pubkey[..8]));
-                                                    continue;
-                                                }
-                                                crate::log("Status: Received ClutchComplete via TCP (VSF verified)");
-                                                send_status_update(
-                                                    &status_tx_tcp,
-                                                    StatusUpdate::ClutchCompleteReceived {
-                                                        conversation_token,
-                                                        ceremony_id,
-                                                        sender_pubkey,
-                                                        payload,
-                                                        sender_addr: src_addr,
-                                                    },
-                                                    &event_proxy_tcp,
-                                                );
-                                            }
-                                            else {
-                                                crate::log("Status: Failed to parse TCP VSF as CLUTCH message");
-                                            }
-                                        } else {
-                                            crate::logf!("Status: TCP payload is not VSF format (len={}, magic={})", data.len(), format!("{:02x?}", if data.len() >= 4 { &data[0..4] } else { &data[..] }));
-                                        }
-                                    }
-                                    Err(e) => {
-                                        crate::logf!("Status: TCP recv error: {}", e);
-                                    }
+                    Ok((mut stream, src_addr)) => {
+                        let inject = inject_tcp.clone();
+                        tokio::spawn(async move {
+                            let read = crate::network::tcp::recv_async(&mut stream, crate::network::pt::PTSpec::MAX_TOTAL as usize);
+                            match tokio::time::timeout(TCP_FALLBACK_READ, read).await {
+                                Ok(Ok(data)) => {
+                                    crate::logf!("Status: Received {} bytes via TCP from {}", data.len(), src_addr);
+                                    crate::log_err!(inject.send((data, RELAY_ADDR)).await, "Status: a TCP delivery into the receive loop");
                                 }
+                                Ok(Err(e)) => crate::logf!("Status: TCP recv error from {}: {}", src_addr, e),
+                                Err(_) => crate::logf!("Status: TCP delivery from {} did not finish in {} s — dropped", src_addr, TCP_FALLBACK_READ.as_secs()),
                             }
-                            Err(e) => {
-                                crate::logf!("Status: Failed to convert TCP stream: {}", e);
-                            }
-                        }
+                        });
                     }
                     Err(e) => {
                         crate::logf!("Status: TCP accept error: {}", e);
@@ -1980,9 +1854,6 @@ async fn run_checker(
             }
         });
     }
-
-    // Each injected frame carries where it came from: the relay pipe hands `RELAY_ADDR`, a PT transfer no PT arm claimed hands its real sender.
-    let (inject_tx, mut inject_rx) = tokio::sync::mpsc::channel::<(Vec<u8>, SocketAddr)>(64);
 
     // Spawn RELAY PIPE task — the live bridge for peers with NO direct path (asymmetric reachability: one end IPv6-only, the other IPv4-only). fgtw.org is dual-stack, so both reach it. We hold ONE WebSocket open to our own device's PipeHub (keyed by our device key); a sender's signed `relay` request is forwarded straight down it by the worker — no polling, no store-and-forward, no R2. Every frame received is fed into the inject channel, so it rides the receiver task's real dispatch tagged RELAY_ADDR (the app skips address-learning + marks reached_via_relay). Trust is applied downstream exactly as for a UDP packet (each parser verifies the signature; CLUTCH handlers gate on fold-respecting knows_device). This carries the WHOLE data plane, not just the ceremony — presence and chat ride it too.
     // Runs on EVERY platform including Android, which is the whole reason the relay exists: the peers that need it are on Android. tokio-tungstenite is not target-gated in Cargo and ring/rustls cross-compile under the NDK (the same precedent that un-gated nunc); unlike peer_updates' desktop-only WS, this runs in the JNI network runtime too. If a device build ever fails to hold the WS over cellular, that's the thing to chase — not a reason to gate it off, which would strand the exact peers it serves.
@@ -5791,6 +5662,10 @@ fn relayed_group_frame(data: &[u8], src_addr: SocketAddr, known: &[DevicePubkey]
 
 /// How many of our own asks are remembered while unanswered.
 const OUTSTANDING_ASKS: usize = 1 << 6;
+
+/// How long one TCP fallback delivery may take to arrive whole: a full PT transfer (16 MiB) at a slow uplink's few Mbit/s, with margin.
+#[cfg(not(any(target_os = "android", target_os = "ferros")))]
+const TCP_FALLBACK_READ: std::time::Duration = std::time::Duration::from_secs(1 << 6);
 
 /// Records in one phonebook answer datagram: four signed records and the envelope stay under a path MTU of 1280 bytes, so no chunk is ever fragmented.
 const PHONEBOOK_CHUNK: usize = 1 << 2;

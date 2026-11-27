@@ -35,65 +35,29 @@ pub fn send(stream: &mut TcpStream, data: &[u8]) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The whole file's length from the first bytes of a VSF file (magic, then z, y, b, L): what a stream carrying one VSF file is framed by.
+fn vsf_file_length(header: &[u8]) -> std::io::Result<usize> {
+    let bad = |what: String| std::io::Error::new(std::io::ErrorKind::InvalidData, what);
+    if header.len() < 4 || &header[0..3] != "RÅ".as_bytes() || header[3] != b'<' {
+        return Err(bad("Invalid VSF magic number".into()));
+    }
+    let mut ptr = 4;
+    for field in ["version", "backward compat", "header length"] {
+        vsf::decoding::parse(header, &mut ptr).map_err(|e| bad(format!("TCP recv: Failed to parse {}: {}", field, e)))?;
+    }
+    match vsf::decoding::parse(header, &mut ptr) {
+        Ok(vsf::VsfType::l(len, _)) => Ok(len),
+        Ok(other) => Err(bad(format!("TCP recv: Expected L for file length, got {:?}", other))),
+        Err(e) => Err(bad(format!("TCP recv: Failed to parse L field: {}", e))),
+    }
+}
+
 /// Receive VSF data from TCP by parsing L from header Returns the complete VSF file bytes
 pub fn recv(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
-    // Read enough bytes to parse VSF header and extract L (file length) VSF header starts with: RÅ< (4 bytes) + z + y + b + L + ... We need to read incrementally until we have L
-
     // First, read magic + enough for header fields (conservatively 64 bytes)
     let mut header_buf = vec![0u8; 64];
     stream.read_exact(&mut header_buf)?;
-
-    // Verify VSF magic
-    if header_buf.len() < 4 || &header_buf[0..3] != "RÅ".as_bytes() || header_buf[3] != b'<' {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "Invalid VSF magic number",
-        ));
-    }
-
-    // Parse header to extract file length (L)
-    let mut ptr = 4; // After "RÅ<"
-
-    // Parse z (version)
-    vsf::decoding::parse(&header_buf, &mut ptr).map_err(|e| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("TCP recv: Failed to parse version: {}", e),
-        )
-    })?;
-
-    // Parse y (backward compat)
-    vsf::decoding::parse(&header_buf, &mut ptr).map_err(|e| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("TCP recv: Failed to parse backward compat: {}", e),
-        )
-    })?;
-
-    // Parse b (header length)
-    vsf::decoding::parse(&header_buf, &mut ptr).map_err(|e| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("TCP recv: Failed to parse header length: {}", e),
-        )
-    })?;
-
-    // Parse L (file length) - this is what we need!
-    let file_length = match vsf::decoding::parse(&header_buf, &mut ptr) {
-        Ok(vsf::VsfType::l(len, _)) => len,
-        Ok(other) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("TCP recv: Expected L for file length, got {:?}", other),
-            ))
-        }
-        Err(e) => {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("TCP recv: Failed to parse L field: {}", e),
-            ))
-        }
-    };
+    let file_length = vsf_file_length(&header_buf)?;
 
     // Sanity check - max 64MB
     if file_length > 64 * 1024 * 1024 {
@@ -217,4 +181,27 @@ impl TcpListener {
         let std_stream = stream.into_std()?;
         Ok((std_stream, addr))
     }
+}
+
+/// One VSF file from an accepted connection, read without blocking a thread: its header's L frames it, and a file claiming more than `cap` bytes is refused before anything past the header is read.
+/// The listener runs this per connection under a timeout, so a slow or silent sender holds only its own task (2026-11-26: the accept loop read every connection inline with a std stream left non-blocking, so large frames, CLUTCH included, failed on WouldBlock).
+#[cfg(not(any(target_os = "android", target_os = "ferros")))]
+pub async fn recv_async(stream: &mut tokio::net::TcpStream, cap: usize) -> std::io::Result<Vec<u8>> {
+    use tokio::io::AsyncReadExt;
+    let mut data = vec![0u8; 64];
+    stream.read_exact(&mut data).await?;
+    let file_length = vsf_file_length(&data)?;
+    if file_length > cap {
+        return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, format!("VSF file too large: {} bytes (cap {})", file_length, cap)));
+    }
+    // WHY: `file_length` is the SENDER's header claim, bounded above just now.
+    // PROOF: a claim shorter than the 64 bytes already read needs nothing more, and a plain subtraction would wrap.
+    if file_length > data.len() {
+        let have = data.len();
+        data.resize(file_length, 0);
+        stream.read_exact(&mut data[have..]).await?;
+    } else {
+        data.truncate(file_length);
+    }
+    Ok(data)
 }
