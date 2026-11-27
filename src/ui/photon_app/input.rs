@@ -667,7 +667,8 @@ impl PhotonApp {
     /// Drive the disabled state of every textbox + its sibling button off the "query in flight" busy flags, in ONE place. A busy field returns `None` from its fluor capability accessors, so click / key / Tab / hover dispatch skip it for free — replacing the per-screen hand-rolled "swallow the click / force hover off / lock the field" code that used to live scattered across `on_event`. Symmetric across screens: the launch handle field + Attest button freeze while attesting (`!can_edit_handle()`), the contacts search box + plus button freeze while an add-friend search is in flight (`add_in_flight`).
     ///
     /// Order matters: if the currently-focused widget is about to be disabled, release focus FIRST (via `change_focus(None)`), because a disabled widget's `focus()` accessor returns `None` and `apply_focus_change` could no longer reach it to clear `set_focused`. Called every `tick`; `set_enabled` is idempotent so steady-state frames are free.
-    pub(super) fn sync_busy_freeze(&mut self) {
+    /// The search box glows how its search stands (fluor `set_glow_colour`): yellow while one is in flight, then green or red for as long as its result line shows (cleared by the next click or key, `clear_hints`). Returns whether that glow changed, so the tick repaints.
+    pub(super) fn sync_busy_freeze(&mut self) -> bool {
         let busy_launch = matches!(self.state, AppState::Launch(ref s) if !s.can_edit_handle());
         let busy_contacts = self.add_in_flight;
 
@@ -687,12 +688,24 @@ impl PhotonApp {
         if let Some(btn) = self.attest_btn.as_mut() {
             btn.set_enabled(!busy_launch);
         }
+        let search_glow = if busy_contacts {
+            Some(fluor::theme::GLOW_PENDING)
+        } else {
+            match self.search_status {
+                Some((_, colour)) if colour == *theme::SEARCH_FAIL_COLOUR => Some(fluor::theme::GLOW_ERROR),
+                Some(_) => Some(fluor::theme::GLOW_SUCCESS),
+                None => None,
+            }
+        };
+        let mut glow_moved = false;
         if let Some(tb) = self.contacts_textbox.as_mut() {
             tb.set_enabled(!busy_contacts);
+            glow_moved = tb.set_glow_colour(search_glow);
         }
         if let Some(btn) = self.contacts_plus_btn.as_mut() {
             btn.set_enabled(!busy_contacts);
         }
+        glow_moved
     }
 
     /// True iff `id` belongs to one of photon's textboxes. Used by `change_focus` to detect focus transitions into / out of a text-input target so the Android IME show/hide signal can be triggered.

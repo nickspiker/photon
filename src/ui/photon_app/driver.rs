@@ -3512,7 +3512,9 @@ impl FluorApp<Px> for PhotonApp {
         }
 
         // Freeze / unfreeze the busy widgets (attest field+button while attesting, search box+plus while adding) before anything else this frame — disabled widgets drop out of dispatch via their fluor accessors.
-        self.sync_busy_freeze();
+        if self.sync_busy_freeze() {
+            { needs_redraw = true; self.note_redraw(); }
+        }
 
         // The Add machine's edges Photon learns by looking: the AddDevice screen shown or gone by any path (back, orb, an add starting), the fleet key's RAM copy, the BLE beacons heard since the last tick, and its deadline.
         if self.add_tick() {
