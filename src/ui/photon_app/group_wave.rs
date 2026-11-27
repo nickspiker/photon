@@ -1064,15 +1064,23 @@ impl PhotonApp {
             return Vec::new();
         };
         let mut out = Vec::new();
+        let ours = crate::network::traverse::our_public_v4();
         for rec in store.get_all_peers().into_iter().filter(|r| r.device_pubkey.as_bytes() == device) {
-            // Their LAN address only when it shares our LAN (the same rule the 1:1 gather keeps), then the public one.
+            // The record's public IPv4 names the NAT the device is behind: behind ours, its LAN address is the path and the public one is our own NAT's outside (it maps back to us); elsewhere, its LAN address names a host on its network.
+            // With our public IPv4 not yet learned, the LAN address is kept only when it shares our /24, as before.
+            let rec_v4 = match rec.ip.ip().to_canonical() {
+                std::net::IpAddr::V4(v) => Some(v),
+                std::net::IpAddr::V6(_) => None,
+            };
+            let same_nat = ours.is_some() && rec_v4 == ours;
             if let (Some(ip), true) = (rec.local_ip, rec.local_port != 0) {
                 let lan = std::net::SocketAddr::new(ip, rec.local_port);
-                if self.our_lan_ip.is_some_and(|ours| matches!(ip, std::net::IpAddr::V4(v4) if v4.octets()[..3] == ours.octets()[..3])) {
+                let shares_subnet = self.our_lan_ip.is_some_and(|l| matches!(ip, std::net::IpAddr::V4(v4) if v4.octets()[..3] == l.octets()[..3]));
+                if same_nat || (ours.is_none() && shares_subnet) {
                     out.push(lan);
                 }
             }
-            if !crate::network::traverse::gather::is_bogus_addr(&rec.ip) && !out.contains(&rec.ip) {
+            if !same_nat && !crate::network::traverse::gather::is_bogus_addr(&rec.ip) && !out.contains(&rec.ip) {
                 out.push(rec.ip);
             }
         }

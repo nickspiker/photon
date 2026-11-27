@@ -1531,7 +1531,7 @@ impl PhotonApp {
                 if !contact.knows_device(&ep.pubkey) {
                     continue;
                 }
-                for a in ep.all() {
+                for a in crate::network::traverse::gather::device_addrs(ep) {
                     push(&mut targets, a);
                 }
             }
@@ -1546,7 +1546,7 @@ impl PhotonApp {
                     }
                     if let Some(dev) = wave.peer_device {
                         if let Some(ep) = contact.device_endpoints.iter().find(|e| e.pubkey == dev) {
-                            for a in ep.all() {
+                            for a in crate::network::traverse::gather::device_addrs(ep) {
                                 push(&mut targets, a);
                             }
                         }

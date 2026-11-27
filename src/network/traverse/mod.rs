@@ -50,3 +50,21 @@ pub fn post_reflexive_seed(addr: std::net::SocketAddr) {
 pub fn take_reflexive_seed() -> Option<std::net::SocketAddr> {
     REFLEXIVE_SEED.lock().unwrap().take()
 }
+
+/// Our own public IPv4, the outside of the NAT we sit behind (the v4 among our reflexive addresses), shared so the candidate gather can tell a contact behind that same NAT from one elsewhere: bit 32 set while known, the address in the low 32.
+static OUR_PUBLIC_V4: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Take our public IPv4 from the reflexive addresses we hold (`None` for one not yet learned): the first IPv4 that is not LAN-scope, or unknown when there is none (a network change forgets both, so this goes unknown with them).
+pub fn set_our_public(reflexive: &[Option<std::net::SocketAddr>]) {
+    let v4 = reflexive.iter().flatten().filter(|a| !is_lan_scope(a)).find_map(|a| match a.ip().to_canonical() {
+        std::net::IpAddr::V4(v) => Some(v),
+        std::net::IpAddr::V6(_) => None,
+    });
+    OUR_PUBLIC_V4.store(v4.map_or(0, |v| 1 << 32 | u32::from(v) as u64), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Our public IPv4, when learned.
+pub fn our_public_v4() -> Option<std::net::Ipv4Addr> {
+    let w = OUR_PUBLIC_V4.load(std::sync::atomic::Ordering::Relaxed);
+    (w >> 32 != 0).then(|| std::net::Ipv4Addr::from(w as u32))
+}

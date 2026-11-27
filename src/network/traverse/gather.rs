@@ -8,7 +8,7 @@
 
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
-use crate::types::contact::Contact;
+use crate::types::contact::{is_private_ip, AddrSource, Contact};
 use fgtw::traverse::candidate::CandidateSet;
 use fgtw::traverse::gather::{LanPolicy, PeerEndpoint};
 
@@ -39,23 +39,51 @@ pub fn gather_device_candidates_from(contact: &Contact, device: &[u8; 32], our_v
     fgtw::traverse::gather::gather_peer_candidates(&eps, p2p, LanPolicy::SameSubnetAs(our_v4))
 }
 
-/// Every address a device is known at, one candidate endpoint each, most recently heard first (the candidate sort is stable, so within a kind the freshest is tried first).
+/// Every address a device is known at that is ours to try, one candidate endpoint each, most recently heard first (the candidate sort is stable, so within a kind the freshest is tried first).
+/// A private address is a place on the DEVICE's network: it is tried only when the device was heard or beaconed there by us, or when the device's public IPv4 is ours (behind the same NAT, so on the same LAN).
+/// Every default home router hands out the same 192.168.1.x block, so sharing our /24 says nothing (2026-11-26: a friend's 192.168.1.10, on their network, was tried from Nick's desktop 25 times into "No route to host").
+/// A public IPv4 that is ours is the outside of our own NAT: the router maps it back to us, never to the device, so it is dropped and the device's LAN addresses are its path (Esme's device on Nick's network, reached only thru the relay).
+/// With our public IPv4 not yet learned nothing is judged, and the caller's LAN policy alone applies, as before.
 fn endpoint_peers(ep: &crate::types::DeviceEndpoint) -> Vec<PeerEndpoint> {
-    ep.addrs
-        .iter()
-        .map(|a| if crate::types::contact::is_private_ip(&a.addr.ip()) { PeerEndpoint { public: None, lan: Some(a.addr) } } else { PeerEndpoint { public: Some(a.addr), lan: None } })
+    peers_judged(ep.addrs.iter().map(|a| (a.addr, matches!(a.how, AddrSource::Heard | AddrSource::Beacon))), crate::network::traverse::our_public_v4())
+}
+
+/// The judgement [`endpoint_peers`] makes, over (address, proven from here) pairs most recently heard first, given our public IPv4.
+fn peers_judged(addrs: impl Iterator<Item = (SocketAddr, bool)> + Clone, our_public: Option<Ipv4Addr>) -> Vec<PeerEndpoint> {
+    let v4_of = |a: &SocketAddr| match a.ip().to_canonical() {
+        IpAddr::V4(v) => Some(v),
+        IpAddr::V6(_) => None,
+    };
+    // The device's newest public IPv4 names the NAT it is behind.
+    let theirs = addrs.clone().filter(|(a, _)| !is_private_ip(&a.ip())).find_map(|(a, _)| v4_of(&a));
+    let elsewhere = our_public.is_some() && theirs.is_some() && theirs != our_public;
+    addrs
+        .filter_map(|(a, proven)| {
+            if is_private_ip(&a.ip()) {
+                (!elsewhere || proven).then_some(PeerEndpoint { public: None, lan: Some(a) })
+            } else {
+                (our_public.is_none() || v4_of(&a) != our_public).then_some(PeerEndpoint { public: Some(a), lan: None })
+            }
+        })
         .collect()
 }
 
+/// Every address of `ep` that is ours to try ([`endpoint_peers`]'s judgement), LAN first, for a sender that walks a device's addresses itself.
+pub fn device_addrs(ep: &crate::types::DeviceEndpoint) -> Vec<SocketAddr> {
+    let eps = endpoint_peers(ep);
+    let lan = eps.iter().filter_map(|p| p.lan);
+    let public = eps.iter().filter_map(|p| p.public);
+    lan.chain(public).collect()
+}
+
 fn contact_endpoints(contact: &Contact) -> Vec<PeerEndpoint> {
-    let mut eps = Vec::with_capacity(contact.device_endpoints.len() + 1);
-    eps.push(PeerEndpoint {
-        public: contact.ip,
-        lan: match (contact.local_ip, contact.local_port) {
-            (Some(v4), Some(port)) => Some(SocketAddr::new(IpAddr::V4(v4), port)),
-            _ => None,
-        },
-    });
+    let mut eps = Vec::with_capacity(contact.device_endpoints.len() + 2);
+    // The first-met pair judged as one device's addresses (`endpoint_peers`), the LAN half never proven from here: kept while the contact may be behind our NAT, dropped once its public IPv4 says it is elsewhere.
+    let lan = match (contact.local_ip, contact.local_port) {
+        (Some(v4), Some(port)) => Some(SocketAddr::new(IpAddr::V4(v4), port)),
+        _ => None,
+    };
+    eps.extend(peers_judged(contact.ip.into_iter().chain(lan).map(|a| (a, false)), crate::network::traverse::our_public_v4()));
     for ep in &contact.device_endpoints {
         eps.extend(endpoint_peers(ep));
     }
@@ -64,7 +92,7 @@ fn contact_endpoints(contact: &Contact) -> Vec<PeerEndpoint> {
 
 /// The addresses at which `contact` might be reachable, without our-LAN context: a peer LAN candidate is kept as long as the address is a usable LAN v4.
 ///
-/// This is what `Contact::race_addrs` and the punch-candidate gathers use — threading our-LAN through every send site would be a wide and risky change, and a foreign address here merely fails to validate rather than causing harm.
+/// This is what `Contact::race_addrs` and the punch-candidate gathers use. Each device's addresses are still judged against our public IPv4 (`endpoint_peers`), so a LAN address from another network, or our own NAT's outside, never becomes a candidate once that is known.
 pub fn gather_peer_candidates(contact: &Contact) -> CandidateSet {
     fgtw::traverse::gather::gather_peer_candidates(
         &contact_endpoints(contact),
@@ -196,5 +224,32 @@ mod tests {
         c.p2p_addr = Some(a("0.0.0.0:0"));
         c.device_endpoints = vec![endpoint(Some(a("0.0.0.0:0")), None)];
         assert!(gather_peer_candidates(&c).is_empty());
+    }
+    fn judged(addrs: &[(&str, bool)], ours: Option<&str>) -> Vec<SocketAddr> {
+        let eps = peers_judged(addrs.iter().map(|(s, p)| (a(s), *p)).collect::<Vec<_>>().into_iter(), ours.map(v4));
+        eps.iter().flat_map(|p| p.lan.into_iter().chain(p.public)).collect()
+    }
+
+    /// A device behind another NAT: its private address names a host on ITS network, however much it looks like ours, so it is dropped unless we heard the device there (2026-11-26: a friend's 192.168.1.10 tried from Nick's 192.168.1.x).
+    #[test]
+    fn another_networks_lan_address_is_not_ours_to_try() {
+        let got = judged(&[("174.45.252.101:4383", false), ("192.168.1.10:4383", false)], Some("97.46.103.153"));
+        assert_eq!(got, vec![a("174.45.252.101:4383")], "their LAN address is dropped, their public one kept");
+        let heard = judged(&[("174.45.252.101:4383", false), ("192.168.1.10:4383", true)], Some("97.46.103.153"));
+        assert!(heard.contains(&a("192.168.1.10:4383")), "an address the device was heard at from here is proven");
+    }
+
+    /// A device behind our NAT: its LAN address is the path, and its public address, ours, is our own NAT's outside, which maps back to us (2026-11-26: Esme's device on Nick's network, reached only thru the relay).
+    #[test]
+    fn a_device_behind_our_nat_goes_by_its_lan_address() {
+        let got = judged(&[("97.46.103.153:4383", false), ("192.168.1.42:4383", false)], Some("97.46.103.153"));
+        assert_eq!(got, vec![a("192.168.1.42:4383")]);
+    }
+
+    /// Our public IPv4 not yet learned: nothing is judged, and the caller's LAN policy alone applies.
+    #[test]
+    fn nothing_is_judged_before_our_public_address_is_known() {
+        let got = judged(&[("174.45.252.101:4383", false), ("192.168.1.10:4383", false)], None);
+        assert_eq!(got.len(), 2);
     }
 }

@@ -576,8 +576,22 @@ pub(super) fn adopt_endpoint_into(contacts: &mut [crate::types::Contact], locked
             crate::logf!("PHONEBOOK: {} belongs to dev {} (newer record) — cleared from dev {}", pubaddr, crate::fp(&dev), crate::fp(&e.pubkey));
         }
         let ep = contact.endpoint_mut(&dev);
-        ep.public_seen = ep.public_seen.max(seen);
-        let mut changed = !ep.has(pubaddr);
+        // An older record than the one the device's addresses came from says where it was, not where it is: it adds nothing, so a stale record loaded after a fresh one cannot bring a left-behind address back.
+        if seen < ep.public_seen {
+            continue;
+        }
+        // A newer record replaces what older records said: the addresses they named and it no longer does are dropped (2026-11-26: the MacBook kept its old home address beside its new one, and Nick's desktop kept sending there).
+        // Only record-sourced ones: an address the device was heard or beaconed at is proven here, and a sibling's hint ages on its own.
+        let mut retired = 0usize;
+        if seen > ep.public_seen {
+            let canon = |a: std::net::SocketAddr| std::net::SocketAddr::new(a.ip().to_canonical(), a.port());
+            let named: Vec<std::net::SocketAddr> = more.iter().copied().chain(std::iter::once(pubaddr)).map(canon).collect();
+            let before = ep.addrs.len();
+            ep.addrs.retain(|a| a.how != crate::types::contact::AddrSource::Record || named.contains(&a.addr));
+            retired = before - ep.addrs.len();
+        }
+        ep.public_seen = seen;
+        let mut changed = !ep.has(pubaddr) || retired > 0;
         // Least preferred first, so the public address the record leads with ends freshest.
         for a in more.iter().rev().filter(|a| !crate::network::traverse::gather::is_bogus_addr(a)) {
             changed |= !ep.has(*a);
@@ -593,12 +607,13 @@ pub(super) fn adopt_endpoint_into(contacts: &mut [crate::types::Contact], locked
             contact.punch_unvalidated_cycles = 0;
         }
         crate::logf!(
-            "PHONEBOOK: adopted {} → contact {}{} (dev {}, {} more address(es))",
+            "PHONEBOOK: adopted {} → contact {}{} (dev {}, {} more address(es), {} retired from older records)",
             pubaddr,
             crate::fp(&contact.handle_proof),
             if contact.is_sibling { " (sib row)" } else { "" },
             crate::fp(&dev),
-            more.len()
+            more.len(),
+            retired
         );
         learned += 1;
     }
@@ -667,5 +682,26 @@ mod adopt_tests {
         for a in more.iter().chain([&public]) {
             assert!(ep.has(*a), "{} is on the device", a);
         }
+    }
+
+    /// A newer record retires the addresses an older one named and it does not, and an older record arriving after it adds nothing back (2026-11-26: the MacBook's old home address kept beside its new one).
+    #[test]
+    fn a_newer_record_retires_what_an_older_one_said() {
+        let dev = [7u8; 32];
+        let hp = [0x22; 32];
+        let home: std::net::SocketAddr = "97.46.103.153:4383".parse().unwrap();
+        let away: std::net::SocketAddr = "73.11.128.186:4383".parse().unwrap();
+        let heard: std::net::SocketAddr = "[2001:db8::7]:4383".parse().unwrap();
+        let mut contacts = vec![Contact::new(HandleText::new("friend"), hp, DevicePubkey::from_bytes(dev))];
+        contacts[0].endpoint_mut(&dev).note(heard, crate::types::contact::AddrSource::Heard);
+        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, dev, home, &[], 100, false), 1);
+        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, dev, away, &[], 200, false), 1, "the newer record adopts");
+        let ep = contacts[0].device_endpoints.iter().find(|e| e.pubkey == dev).unwrap();
+        assert!(!ep.has(home), "the older record's address is retired");
+        assert!(ep.has(away));
+        assert!(ep.has(heard), "an address the device was heard at stays");
+        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, dev, home, &[], 150, false), 0, "an older record adds nothing");
+        let ep = contacts[0].device_endpoints.iter().find(|e| e.pubkey == dev).unwrap();
+        assert!(!ep.has(home), "and brings nothing back");
     }
 }
