@@ -197,18 +197,36 @@ pub fn profile_enabled() -> bool {
 }
 
 /// Media EGRESS: packets must leave from the MAIN UDP socket (the port the peer's NAT knows), so the engine hands them to a dedicated tokio forwarder inside the network runtime — installed once at checker startup.
-static MEDIA_TX: Mutex<Option<tokio::sync::mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>>> =
+static MEDIA_TX: Mutex<Option<tokio::sync::mpsc::UnboundedSender<(Vec<u8>, SocketAddr, MediaKind)>>> =
     Mutex::new(None);
 
-pub fn install_media_tx(tx: tokio::sync::mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>) {
+/// What a media packet carries, for the queue it rides where the link has classes (ferros: WiFi's voice queue, EF, and its video queue, AF41); elsewhere both go alike.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MediaKind {
+    /// A wave's sound and its express signals: small, and late is lost.
+    Voice,
+    /// A beam's pictures: bursts that must not crowd the voice queue.
+    Video,
+}
+
+pub fn install_media_tx(tx: tokio::sync::mpsc::UnboundedSender<(Vec<u8>, SocketAddr, MediaKind)>) {
     *MEDIA_TX.lock().unwrap() = Some(tx);
 }
 
 /// Engine-side send. False when the network runtime is gone (shutdown) — the engine treats that as a stop edge.
 pub fn send_media(bytes: Vec<u8>, addr: SocketAddr) -> bool {
+    send_kind(bytes, addr, MediaKind::Voice)
+}
+
+/// A beam's send: [`send_media`] in the video class.
+pub fn send_video(bytes: Vec<u8>, addr: SocketAddr) -> bool {
+    send_kind(bytes, addr, MediaKind::Video)
+}
+
+fn send_kind(bytes: Vec<u8>, addr: SocketAddr, kind: MediaKind) -> bool {
     let tx = MEDIA_TX.lock().unwrap();
     match tx.as_ref() {
-        Some(t) => t.send((bytes, addr)).is_ok(),
+        Some(t) => t.send((bytes, addr, kind)).is_ok(),
         None => false,
     }
 }

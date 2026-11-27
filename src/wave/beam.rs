@@ -275,7 +275,7 @@ impl BeamTx {
         self.chain.advance_to(StepChain::step_for_seq(seq));
         if let Some(wire) = packet::seal_beam(&self.chain, seq, payload) {
             let n = wire.len() as u64;
-            if super::send_media(wire, self.peer) {
+            if super::send_video(wire, self.peer) {
                 self.sent += 1;
                 self.bytes += n;
             } else {

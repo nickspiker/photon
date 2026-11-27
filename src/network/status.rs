@@ -1957,16 +1957,26 @@ async fn run_checker(
     // VOICE MEDIA egress (docs/waves.md): the engine's packets must leave from THIS socket — the port the peer's NAT already knows — so a dedicated awaited forwarder lives here (the polled request queues would add tens of ms; media gets its own task like the relay pipe).
     {
         let (media_tx, mut media_rx) =
-            tokio::sync::mpsc::unbounded_channel::<(Vec<u8>, SocketAddr)>();
+            tokio::sync::mpsc::unbounded_channel::<(Vec<u8>, SocketAddr, crate::wave::MediaKind)>();
         crate::wave::install_media_tx(media_tx);
         let media_socket = socket_recv.clone();
         tokio::spawn(async move {
-            while let Some((bytes, addr)) = media_rx.recv().await {
-                // On ferros a wave's packets ride WiFi's voice queue: the socket's ring carries the class to ip, which marks them EF (docs/ferros-media.md "Network").
+            while let Some((bytes, addr, kind)) = media_rx.recv().await {
+                // On ferros a wave's packets ride WiFi's voice queue and a beam's its video queue: the socket's ring carries the class to ip, which marks them EF or AF41 (docs/ferros-media.md "Network").
                 #[cfg(target_os = "ferros")]
-                crate::log_err!(media_socket.send_to_class(&bytes, addr, crate::platform::ferros_ring::CLASS_VOICE).await, "UDP voice send to {}", addr);
+                {
+                    use crate::platform::ferros_ring::{CLASS_VIDEO, CLASS_VOICE};
+                    let class = match kind {
+                        crate::wave::MediaKind::Voice => CLASS_VOICE,
+                        crate::wave::MediaKind::Video => CLASS_VIDEO,
+                    };
+                    crate::log_err!(media_socket.send_to_class(&bytes, addr, class).await, "UDP media send to {}", addr);
+                }
                 #[cfg(not(target_os = "ferros"))]
-                udp::send(&media_socket, &bytes, addr).await;
+                {
+                    let _ = kind;
+                    udp::send(&media_socket, &bytes, addr).await;
+                }
             }
         });
     }
